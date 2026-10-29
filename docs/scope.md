@@ -25,4 +25,4 @@ Then add bounded conversational authoring, compiler-diagnostic repair, artifact-
 - Real adapter guarantees and activation authority belong to the host; simulation cannot certify them.
 - License, UI framework, persistence engine, packaging and deployment choices remain open.
 
-Historical task design and review are preserved in `keir-core/docs/design-baseline/`. That snapshot is reference material; this document owns ongoing application scope and the core repository owns framework specifications.
+Historical task design and review are preserved in `keir-core/docs/internal/design-baseline/`. That snapshot is reference material; this document owns ongoing application scope and the core repository owns framework specifications.
