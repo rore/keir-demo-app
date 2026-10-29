@@ -2,6 +2,8 @@
 
 The task manager is a useful application and a reference consumer of `keir-core`. It owns the UI, task data, authentication/authorization, task DCM, real adapters, business scenarios and optional AI authoring and activation lifecycle.
 
+Implementation is deferred until useful packaged core behavior is available to integrate. The initial development team has two core developers; no demo application work is currently assigned. The dedicated demo developer starts with a bounded manager assignment at that point.
+
 ## First connected demonstration
 
 1. Deliver a small native create/list/complete task flow that works with extensions disabled. Grow the remaining CRUD, projects, tags, priority, due dates and search alongside later integration work; completing every app feature is not a prerequisite to the first connected scenario.
