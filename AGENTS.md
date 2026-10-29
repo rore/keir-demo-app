@@ -1,5 +1,7 @@
 # Working in keir-demo-app
 
+- Keir team responsibilities, architecture iteration and model/budget guidance live in [the core role guides](https://github.com/rore/keir-core/blob/main/roles/README.md). Team assignments must supply the applicable verified role and guide alongside the exact checkout and scope. The manager owns the shared core roadmap; this repository adds no separate workflow process. These guides do not assign work or change session settings.
+
 - Keep the app useful without Keir or AI. Domain services own persistence, native validation, authorization and transaction boundaries.
 - Project roadmap and demo feature status live in `keir-core/roadmap/`. Keep implementation and tests here; link demo PRs to the core feature rather than copying its status. Agent Workflow is not required in this repo initially.
 - Consume independently packaged `keir-core` components. Do not copy the compiler or runtime into this repository or depend on a sibling checkout for normal builds.
