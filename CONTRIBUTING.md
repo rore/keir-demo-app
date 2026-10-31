@@ -1,6 +1,8 @@
 # Contributing
 
-Start with [application scope](docs/scope.md). The project roadmap, including demo work, lives in `keir-core/roadmap/`; do not create a second roadmap here. Keep one reviewable behavior per change, with tests and PR review appropriate to the risk. Link demo PRs to the relevant core feature. Agent Workflow is not required here initially.
+Start with [application scope](docs/scope.md). The project roadmap, including demo work, lives in `keir-core/roadmap/`; do not create a second roadmap here. Keep one reviewable behavior per change, with tests and review appropriate to the risk. Work directly on main; PRs are not required.
+
+Follow the [shared Agent Workflow process](https://github.com/rore/keir-core/blob/main/docs/internal/workflow/current-process.md) for code, mixed changes and governance work. Keep the task's Work Record in core and run its resolver/checker from the core checkout with the explicit task slug and fresh demo evidence. Record this repo's revision and tests there. Documentation-only edits under `docs/`, `README.md` or `CONTRIBUTING.md` are exempt. No second workflow installation or record copy belongs here.
 
 Keep local test data isolated from everyday data. No build commands or dependencies are configured yet; add reproducible setup and CI with the first executable application slice, without altering global tools.
 
