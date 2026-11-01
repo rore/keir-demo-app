@@ -2,13 +2,21 @@
 
 The task manager is a useful application and a reference consumer of `keir-core`. It owns the UI, task data, authentication/authorization, task DCM, real adapters, business scenarios and optional AI authoring and activation lifecycle.
 
-Implementation is deferred until useful packaged core behavior is available to integrate. The initial development team has two core developers; no demo application work is currently assigned. The dedicated demo developer starts with a bounded manager assignment at that point.
+The app is a local web demonstration: visitors clone this repository, follow documented prerequisites/setup and open it in their browser. Normal startup must not require a sibling core checkout, hosted database, cloud account or AI credentials. Optional live AI setup is separate. Packaged core behavior is available; native app implementation remains unassigned until a bounded manager assignment.
+
+## Experience and user scopes
+
+- Deliver a distinctive, polished task application with coherent typography, spacing, color and interactions. Review rendered desktop/mobile, loading, empty and error states; include keyboard access. Choose a visual direction before implementation rather than accepting a generic generated dashboard.
+- Seed three fictional demo users with an explicit local sign-in/sign-out flow. This is local demo impersonation, not enterprise authentication. Each user stands in for a SaaS customer, with separate projects/tasks and, when introduced, extension sources, scenarios, approvals and active bindings. The immutable host catalog can be shared; customer programs and activation remain scoped. A production identity platform is outside this demo's scope.
+- Enforce ownership in host services and trusted invocation context. A client-supplied user/resource ID cannot select another user's data or extension. Async events retain their originating scope regardless of browser sign-out or user switching.
+- Demonstrate different programs at the same hook for different users; changing, disabling or rolling back one user's customization must leave the others intact. Customer authors may approve their own extensions where host policy permits; the AI agent cannot grant itself approval or publish the host catalog.
+- Persist local demo data across restarts and document a deliberate demo-data reset procedure. Keep runtime data and credentials out of tracked content; setup must use isolated project tooling.
 
 ## First connected demonstration
 
-1. Deliver a small native create/list/complete task flow that works with extensions disabled. Grow the remaining CRUD, projects, tags, priority, due dates and search alongside later integration work; completing every app feature is not a prerequisite to the first connected scenario.
+1. Deliver the polished local web flow with three demo logins, projects and native task create/edit/list/complete, working with extensions disabled and retained across restarts. Grow tags, priority, due dates and search alongside later integration work; completing every app feature is not a prerequisite to the first connected scenario.
 2. Consume the packaged core read-and-decide path through an on-demand hook and a real scoped read. The core Java sample and shared fixtures prove the other runtime; do not build a second task app.
-3. Once core's scalar-effect path is accepted, admit `TaskCompleted` after native completion and expose one protected create capability. Use actual task status/project data for the source-authored condition, not a customer-specific eligibility adapter. The host owns event admission, protected origin and original idempotency-key forwarding.
+3. Once core's real-effect assurance/admission contract and actual native evidence are accepted, admit `TaskCompleted` after native completion and expose generic `tasks.create`. Existing simulation-only support is insufficient. Use actual task status/project data for the source-authored condition, not a customer-specific eligibility adapter. The host owns user-scoped selection/event admission, protected origin and original idempotency-key forwarding.
 4. Compile a handwritten scalar follow-up, review exact-artifact simulation, approve that artifact and execute it through the same Node runner with real adapters. A richer tag/search/168-hour example follows when core admits those expressions; it does not block the initial scalar integration.
 5. Demonstrate no-op, business rejection, redelivery and uncertain outcomes. Verify atomic origin uniqueness, current authorization, pinned event admission and any claimed safe recovery with real persistence tests. Do not blindly replay an unknown effect.
 6. Add a pre-create guard consumer: DENY prevents persistence, while CONTINUE still runs native authorization, validation and required consistency checks. No independent extension-owned write may precede the native commit.
@@ -22,6 +30,14 @@ Add customer behaviors and host capabilities as implementation needs arise, thro
 Demonstrate the host integration assistant helping the app developer propose DCM/hooks/capability contracts and validation/evidence, with exact-revision host approval before publication. Core provides generic contracts and validators; the host owns this agent/tool integration. It need not be a separate chat product.
 
 Then demonstrate the distinct customer extension assistant using the approved scoped catalog: bounded generation/repair, artifact-derived previews, reviewed scenario expectations, immutable approval, activation, disable and rollback. Neither assistant can certify its own guarantees or approve its own publication/activation. Provider, credentials and spend limits are decided before live model calls.
+
+## Two future walkthroughs
+
+`main` becomes the ready-configured host application: visitors run it locally, sign in as different demo users and explore their independent customer customizations. The scaffold is not configured or runnable yet.
+
+A future `pre-design-time` branch starts from the same native app before Keir host integration is completed. Visitors can ask their coding agent to inspect the domain and help define the DCM, extension points, capability bindings and verification. Host-owner review remains required; this is the developer persona, separate from the in-app customer authoring persona.
+
+Create this branch/checkpoint once a useful native baseline exists. Back it with an immutable starting commit/tag, pin compatible core dependencies and document its scope, setup and deliberate refresh procedure. Verify that exact checkpoint; do not continually merge the finished integration into it. Treat it as a reproducible tutorial starting point rather than a second independently evolving app. Keep all planning and progress in the core roadmap's host-integration-assistant feature.
 
 ## Boundaries
 
