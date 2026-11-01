@@ -2,7 +2,7 @@
 
 The task manager is a useful application and a reference consumer of `keir-core`. It owns the UI, task data, authentication/authorization, task DCM, real adapters, business scenarios, AI-driven extension creation UI and activation lifecycle.
 
-The app is a local web demonstration: visitors clone this repository, follow documented prerequisites/setup and open it in their browser. The native baseline implements isolated demo sign-in, projects and tasks; see [local setup](../README.md) and the [native contract](native-task-app-design.md). Keir integration and extension authoring remain future work. The complete extension-authoring experience will require the visitor to configure their own AI provider/model and credentials. Native tasks and, once implemented, already activated extensions remain usable without AI calls; this fallback does not replace the AI-driven creation UI. Local hosting needs no sibling core checkout or hosted database.
+The app is a local web demonstration: visitors clone this repository, follow documented prerequisites/setup and open it in their browser. It implements isolated demo sign-in, projects, tasks and a packaged on-demand task-read integration; see [local setup](../README.md), the [native contract](native-task-app-design.md) and [real task reads](real-task-reads.md). Extension authoring remains future work and will require the visitor to configure their own AI provider/model and credentials. Native tasks and configured read programs remain usable without AI calls; this fallback does not replace the AI-driven creation UI. Local hosting needs no sibling core checkout, Java or hosted database.
 
 ## Experience and user scopes
 
@@ -47,7 +47,7 @@ Qualify at least two provider/model configurations through the same authoring wo
 
 ## Two future walkthroughs
 
-`main` becomes the ready-configured host application: visitors run it locally, sign in as different demo users and explore their independent customer customizations. The native baseline runs without Keir; customer customization is not implemented yet.
+`main` becomes the ready-configured host application: visitors run it locally, sign in as different demo users and explore their independent customer customizations. The native baseline is independent of extension advice; the first connected increment uses two preconfigured task-read programs. Interactive customer authoring is not implemented yet.
 
 A future `pre-design-time` branch starts from the same native app before Keir host integration is completed. Visitors load the host-design skill in their coding agent to inspect the domain and help define the DCM, extension points, capability bindings and verification. Host-owner review remains required; this is the developer persona, separate from the in-app customer authoring persona and its provider configuration.
 

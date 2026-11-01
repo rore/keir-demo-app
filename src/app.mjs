@@ -4,6 +4,7 @@ import staticFiles from '@fastify/static';
 import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { AppError, USERS, taskService } from './data.mjs';
+import { createTaskRead } from './task-read.mjs';
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
@@ -14,6 +15,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist') }) {
   const sessions = new Map();
   const anonymousContext = nonce();
   const service = taskService(db);
+  const taskAdvice = createTaskRead({ getTask: service.getTask });
   await app.register(cookie);
   app.decorateRequest('scope', null);
   function current(request) { return sessions.get(request.cookies[COOKIE]); }
@@ -71,6 +73,14 @@ export async function createApp({ db, origin, staticRoot = resolve('dist') }) {
   app.patch('/api/projects/:id', request => service.renameProject(authorize(request).userId, request.params.id, request.body));
   app.get('/api/projects/:id/tasks', request => service.listTasks(authorize(request).userId, request.params.id));
   app.get('/api/tasks/:id', request => service.getTask(authorize(request).userId, request.params.id));
+  app.post('/api/tasks/:id/advice', async request => {
+    const session = authorize(request);
+    if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new AppError(400, 'Task advice takes no fields.');
+    const result = await taskAdvice({ userId: session.userId, taskId: request.params.id,
+      authorize: () => { try { return authorize(request) === session; } catch { return false; } } });
+    authorize(request);
+    return result;
+  });
   app.post('/api/tasks', (request, reply) => { const result = service.createTask(authorize(request).userId, request.body); reply.code(201); return result; });
   app.patch('/api/tasks/:id', request => service.editTask(authorize(request).userId, request.params.id, request.body));
   app.post('/api/tasks/:id/complete', request => {

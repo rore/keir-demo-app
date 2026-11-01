@@ -2,7 +2,7 @@
 
 A small local task workspace: projects, tasks, notes and a satisfying completion flow. Sign in as Maya, Leo or Sam, three fictional demo people with independent data. Your work stays in a local SQLite database across restarts.
 
-The native app needs no Keir, AI credentials, Java, hosted database or sibling repository. Keir integration and the Extension Studio are later work; this baseline executes no extensions and calls no AI provider. Demo sign-in is local impersonation, not production authentication or a private account.
+Task details include an optional **Check task advice** action, powered by a pinned packaged Keir runtime. Maya and Leo have different source-authored rules; Sam has no configured rule. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
 
 ## Run locally
 
@@ -55,12 +55,13 @@ This prototype makes no provider calls or real task changes. The complete AI ext
 | `src/data.mjs` | SQLite schema, exclusive lock, seed/reset and native services |
 | `src/app.mjs`, `src/server.mjs` | Same-origin API, sessions and local startup |
 | `src/web/` | React/TypeScript workspace and responsive styles |
+| `src/task-read.mjs`, `extensions/task-read/`, `vendor/` | Scoped read adapter, trusted programs/model and integrity-pinned runtime package |
 | `tests/` | Real persistence/API checks and browser journeys |
 | `docs/` | [Scope](docs/scope.md), [native contract](docs/native-task-app-design.md), local operation and future design |
-| `keir/` | Reserved extension material; no integration in this slice |
+| `keir/` | Earlier extension material; current runnable reads are under `extensions/task-read/` |
 
 React/Vite and Fastify provide the UI/server foundation. Native services and database constraints enforce validation and ownership. Auth transitions serialize across tabs; stale requests cannot adopt another person's scope. Reopening, deletion, tags, priority, dates, search and collaboration are outside this slice.
 
-[keir-core](https://github.com/rore/keir-core) owns the shared roadmap, framework, roles and Work Records. Future integration consumes packaged components. The planned pre-design-time walkthrough/checkpoint and host-design skill are not delivered; see [future walkthroughs](docs/scope.md#two-future-walkthroughs).
+[keir-core](https://github.com/rore/keir-core) owns the shared roadmap, framework, roles and Work Records. See [real task reads](docs/real-task-reads.md) for rule behavior, authority, package provenance and regeneration. The planned pre-design-time walkthrough/checkpoint and host-design skill are not delivered; see [future walkthroughs](docs/scope.md#two-future-walkthroughs).
 
 License selection and public release are pending. No open-source license grant is implied.

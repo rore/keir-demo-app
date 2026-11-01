@@ -1,0 +1,14 @@
+language: keir/v0
+domain: {id: demo.tasks, version: '1', fingerprint: 'sha256:8919c93684f13d58fe70070d0dc90aac0c5259e7d7f87358b20b932c997726b8'}
+entrypoint: ClassifyTask
+name: maya-task-advice
+steps:
+  - id: source
+    call: tasks.get
+    args:
+      taskId: {cel: input.taskId}
+  - id: completed
+    let: {cel: 'source.status == "COMPLETED"'}
+return:
+  record:
+    classification: {cel: 'completed ? "DONE" : "PENDING"'}

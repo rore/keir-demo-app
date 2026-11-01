@@ -5,6 +5,8 @@ import "./styles.css";
 type User = { id: string; name: string; description?: string };
 type Session = { user: User | null; contextToken: string; users?: User[] };
 type Project = { id: string; name: string };
+type Advice = { status: "DISPLAYED"; classification: "DONE" | "PENDING" | "NEEDS_ATTENTION" }
+  | { status: "NOT_DISPLAYED"; message: string };
 type Task = {
   id: string;
   projectId: string;
@@ -682,7 +684,7 @@ function Workspace({
           <footer className="task-footer">
             <span>
               <span className="local-dot" aria-hidden="true" />
-              Local demo · extensions off
+              Local demo · read-only task advice
             </span>
             <span>Good work takes its own time.</span>
           </footer>
@@ -707,6 +709,19 @@ function Workspace({
             busy={busy}
             error={error}
             close={closeDetail}
+            check={async () => {
+              const instance = detailInstance.current, current = generation.current;
+              const fresh = () => !lifetime.current.signal.aborted && current === generation.current && instance === detailInstance.current;
+              try {
+                const result = await request<Advice>(`tasks/${detail.id}/advice`, "POST", {});
+                return fresh() ? result : undefined;
+              } catch (error) {
+                if (fresh()) {
+                  handleError(error);
+                  return { status: "NOT_DISPLAYED" as const, message: "Task advice is unavailable. Your task has not changed." };
+                }
+              }
+            }}
             save={(title, notes) => {
               const instance = detailInstance.current;
               action(
@@ -736,16 +751,32 @@ function TaskDetail({
   busy,
   error,
   close,
+  check,
   save,
 }: {
   task: Task;
   busy: boolean;
   error: string;
   close: () => void;
+  check: () => Promise<Advice | undefined>;
   save: (title: string, notes: string) => void;
 }) {
   const [title, setTitle] = useState(task.title);
   const [notes, setNotes] = useState(task.notes);
+  const [advice, setAdvice] = useState<Advice | null>(null);
+  const [checking, setChecking] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  async function checkTask() {
+    if (checking) return;
+    setChecking(true);
+    setAdvice(null);
+    const result = await check();
+    if (mounted.current) {
+      setAdvice(result ?? null);
+      setChecking(false);
+    }
+  }
   return (
     <form
       onSubmit={(event) => {
@@ -802,6 +833,16 @@ function TaskDetail({
           {error}
         </div>
       )}
+      <section aria-label="Task advice">
+        <button type="button" className="quiet-button" disabled={busy || checking} onClick={checkTask}>
+          {checking ? "Checking task…" : "Check task advice"}
+        </button>
+        <p className="muted">Checks the saved task status using your configured rule. Advice does not change tasks.</p>
+        {advice && <p role="status">{advice.status === "NOT_DISPLAYED" ? advice.message : {
+          DONE: "All done. This task is completed.", PENDING: "Still open. This task is pending.",
+          NEEDS_ATTENTION: "Still open. This task needs attention.",
+        }[advice.classification]}</p>}
+      </section>
       <div className="detail-actions">
         <button type="button" className="quiet-button" onClick={close}>
           Cancel

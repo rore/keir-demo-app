@@ -1,0 +1,3 @@
+extensions/task-read/*.json text eol=lf
+extensions/task-read/*.yaml text eol=lf
+vendor/*.tgz binary
