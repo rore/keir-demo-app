@@ -4,7 +4,7 @@ export function draft(project = 'Launch', title = 'Review completion') {
   return { revision: 1, project, title, request: `When a task is completed in ${project}, create a task called “${title}”.`, started: false, validated: false, tested: false, mismatch: false, expectation: 'skip', approved: false, error: '', step: 'describe' };
 }
 export function initialState() {
-  return { user: 'Maya', provider: true, users: Object.fromEntries(people.map(name => [name, { draft: draft(name === 'Leo' ? 'Operations' : 'Launch', name === 'Leo' ? 'Plan next step' : 'Review completion'), active: null, history: [], activity: [], messages: [{ role: 'assistant', text: 'What would you like to change about your task workflow? We can work it out together. I’ll use the canvas when a sketch, choice or example makes it easier to understand.' }] }])) };
+  return { user: 'Maya', provider: true, users: Object.fromEntries(people.map(name => [name, { draft: draft(name === 'Leo' ? 'Operations' : 'Launch', name === 'Leo' ? 'Plan next step' : 'Review completion'), active: null, history: [], activity: [], messages: [{ role: 'assistant', text: 'What would you like your task app to do for you? Tell me in your own words. I’ll show you an example as we work it out.' }] }])) };
 }
 export function transition(state, action) {
   const s = structuredClone(state);
@@ -20,13 +20,13 @@ export function transition(state, action) {
   d.error = '';
   switch (action.type) {
     case 'step':
-      if (['test', 'review'].includes(action.step) && !d.validated) return fail('Validate this draft before testing or review.');
-      if (action.step === 'review' && !d.tested) return fail('Run and review the scenarios before approval.');
+      if (['test', 'review'].includes(action.step) && !d.validated) return fail('Let’s try a few examples before you decide.');
+      if (action.step === 'review' && !d.tested) return fail('Let’s try a few examples first, so you can see what would happen.');
       if (['describe', 'behavior', 'test', 'review', 'activity'].includes(action.step)) d.step = action.step;
       break;
     case 'generate':
-      if (!s.provider) return fail('Connect your own AI provider to create an extension. This prototype only simulates that setup.');
-      if (!String(action.request ?? '').trim()) return fail('Describe the behavior you want first.');
+      if (!s.provider) return fail('The assistant is not connected. Ask the person who manages this app to connect its AI provider, then try again. Your saved work is still here.');
+      if (!String(action.request ?? '').trim()) return fail('Tell me what you’d like the app to do.');
       d.request = action.request; d.started = true; d.step = 'behavior'; d.validated = d.tested = d.approved = false;
       break;
     case 'edit': {
@@ -36,37 +36,37 @@ export function transition(state, action) {
       break;
     }
     case 'validate': d.validated = true; d.step = 'test'; break;
-    case 'unsupported': d.validated = d.tested = d.approved = false; d.step = 'behavior'; return fail('This request needs scheduled execution. Scheduling is outside the supported profile. Keep the event-triggered behavior or revise the request.');
+    case 'unsupported': d.validated = d.tested = d.approved = false; d.step = 'behavior'; return fail('This example can act when you finish a task, but it cannot run on a schedule. Would acting when a task is finished help?');
     case 'expectation': d.expectation = action.value === 'create' ? 'create' : 'skip'; d.tested = d.approved = false; break;
     case 'simulate':
-      if (!d.validated) return fail('Validate the current revision before running scenarios.');
+      if (!d.validated) return fail('Let’s check your latest changes before trying the examples.');
       d.mismatch = d.expectation !== 'skip'; d.tested = !d.mismatch; d.approved = false;
       break;
     case 'approve':
-      if (!d.validated || !d.tested || d.mismatch || !action.behavior || !action.scenarios) return fail('Review both the behavior and scenario expectations before approving this exact revision.');
+      if (!d.validated || !d.tested || d.mismatch || !action.behavior || !action.scenarios) return fail('Please confirm both what will change and the examples before continuing.');
       d.approved = true; break;
     case 'activate':
-      if (!d.approved || !d.validated || !d.tested) return fail('This revision needs validation, passing scenarios and your approval before activation.');
+      if (!d.approved || !d.validated || !d.tested) return fail('We need to check the examples and confirm this is what you want before turning it on.');
       if (u.active?.enabled && u.active.revision === d.revision && u.active.project === d.project && u.active.title === d.title) { d.step = 'activity'; break; }
       if (u.active) u.history.push(structuredClone(u.active));
       u.active = { revision: d.revision, project: d.project, title: d.title, enabled: true }; d.step = 'activity';
-      u.activity.unshift({ kind: 'activated', text: `Revision ${d.revision} selected for future example events.` });
+      u.activity.unshift({ kind: 'activated', text: `“${d.title}” is now the follow-up for completed tasks in ${d.project}.` });
       break;
     case 'example':
-      if (!u.active?.enabled) return fail('There is no enabled customization for this user.');
-      u.activity.unshift({ kind: 'example', text: `Illustration: completed “Prepare launch checklist” → created “${u.active.title}” in ${u.active.project}.` });
+      if (!u.active?.enabled) return fail('This is not turned on yet. Review your change first.');
+      u.activity.unshift({ kind: 'example', text: `Illustration: completed “Send the project update” → created “${u.active.title}” in ${u.active.project}.` });
       break;
     case 'unknown':
-      if (!u.active?.enabled) return fail('Activate an example revision first.');
-      u.activity.unshift({ kind: 'unknown', text: 'Illustration: create response was lost. Outcome UNCERTAIN; effect UNKNOWN. A task may exist. Inspect host records; do not blindly retry.' });
+      if (!u.active?.enabled) return fail('Turn on your reviewed change first.');
+      u.activity.unshift({ kind: 'unknown', text: 'We could not confirm whether the follow-up was added. Check your task list before trying again; another attempt could add it twice. Technical status: UNKNOWN / UNCERTAIN.' });
       break;
     case 'disable':
-      if (u.active) { u.active.enabled = false; u.activity.unshift({ kind: 'disabled', text: 'Disabled for future example events. Existing tasks and earlier effects are not undone.' }); }
+      if (u.active) { u.active.enabled = false; u.activity.unshift({ kind: 'disabled', text: 'Turned off. No new follow-ups will be added. Tasks already added stay in your list.' }); }
       break;
     case 'rollback':
-      if (!u.history.length) return fail('No previous active revision exists yet. Edit and activate a second revision to explore rollback.');
+      if (!u.history.length) return fail('There is no earlier setup to return to yet.');
       u.active = u.history.pop(); u.active.enabled = true;
-      u.activity.unshift({ kind: 'rollback', text: `Revision ${u.active.revision} restored for future example events; no earlier effects are undone.` }); break;
+      u.activity.unshift({ kind: 'rollback', text: `Returned to “${u.active.title}” for future follow-ups. Tasks already added stay in your list.` }); break;
     case 'revise': d.step = 'behavior'; break;
     default: return fail('Unsupported prototype action.');
   }
@@ -87,55 +87,57 @@ function respond(state, text) {
   const d = state.users[state.user].draft, lower = text.toLowerCase();
   if (/schedule|every monday|every day/.test(lower)) return exchange(state, text, { type: 'unsupported' }, '');
   if (!d.started) {
-    return exchange(state, text, { type: 'generate', request: text }, `Let’s make that concrete. I’ve sketched the supported task-completion example on the canvas. Should this apply to ${d.project}, and should the new task be called “${d.title}”? This prototype demonstrates that one pattern; confirm or change those choices.`);
+    return exchange(state, text, { type: 'generate', request: text }, `This preview lets us explore adding a follow-up when you finish a task. Should it happen only in ${d.project}? I’ve shown a task and its follow-up beside our conversation.`);
   }
+  if (/all projects|other projects too|every project/.test(lower)) return exchange(state, text, null, 'You want this in more than one project. This preview can show one project at a time: Launch or Operations. I haven’t changed your choice. Tell me which one to explore, or keep this request for the full app.');
   const project = /\boperations\b/i.test(text) ? 'Operations' : /\blaunch\b/i.test(text) ? 'Launch' : null;
   const title = text.match(/(?:call|title|name)[\s\S]*?["“]([^"”]+)["”]/i)?.[1] ?? text.match(/^title:\s*(.+)$/i)?.[1];
   if ((project && /use|apply|instead|switch|project:/.test(lower)) || title) {
-    const s = exchange(state, text, { type: 'edit', project: project ?? d.project, title: title ?? d.title }, 'I updated the draft on the canvas. The active version is unchanged. We’ll check this revision again before it can replace anything.');
+    const s = exchange(state, text, { type: 'edit', project: project ?? d.project, title: title ?? d.title }, 'I updated the preview. Your current setup hasn’t changed. Let’s try a few examples before you turn this change on.');
     s.users[s.user].draft.step = 'behavior'; return s;
   }
-  if (/fix.*expectation|expect.*no change/.test(lower)) {
-    let s = transition(state, { type: 'expectation', value: 'skip' }); s = transition(s, { type: 'validate' });
-    return exchange(s, text, { type: 'simulate' }, 'You changed the expected result to no changes. I reran the scripted examples; they now match. The canvas shows expected and observed outcomes side by side.');
+  if (/fix.*expectation|expect.*no change|^only (launch|operations)[.!]?$/.test(lower)) {
+    let s = /^only /i.test(text) && project ? transition(state, { type: 'edit', project }) : state;
+    s = transition(s, { type: 'expectation', value: 'skip' }); s = transition(s, { type: 'validate' });
+    return exchange(s, text, { type: 'simulate' }, 'Got it — leave other projects alone. I tried three examples: a finished task here, one in another project, and a task that no longer exists. They all do what you asked. Take a look, then we can review the change.');
   }
   if (/mismatch/.test(lower)) {
     let s = transition(state, { type: 'expectation', value: 'create' }); s = transition(s, { type: 'validate' });
-    return exchange(s, text, { type: 'simulate' }, 'The outside-project example disagrees with the draft. I’ve highlighted it on the canvas. We should decide whether the behavior or your expectation needs changing; I won’t silently change your test.');
+    return exchange(s, text, { type: 'simulate' }, 'There’s one thing to decide. You wanted a follow-up in another project, but this change would leave that project alone. Which should happen?');
   }
   if (/test|simulate|run.*scenario/.test(lower)) {
     const s = transition(state, { type: 'validate' });
-    return exchange(s, text, { type: 'simulate' }, d.expectation === 'skip' ? 'The three scripted examples match. On the canvas you can inspect what was expected and what happened, including the no-op and missing-task cases. What would you like to examine or change?' : 'There is a mismatch on the canvas. The draft skips other projects, but the expectation says to create a task. Which behavior do you intend?');
+    return exchange(s, text, { type: 'simulate' }, d.expectation === 'skip' ? 'The three examples do what you asked. A finished task here gets a follow-up. Other projects stay as they are, and a missing task adds nothing. Take a look at the results.' : 'One example needs your decision: should finishing a task in another project add a follow-up, or leave that project alone?');
   }
-  if (/scenario|example cases/.test(lower)) return exchange(state, text, { type: 'validate' }, 'I put three example scenarios on the canvas. Please inspect their expected outcomes; you can change an expectation there before asking me to run them.');
-  if (/review|approv|activat/.test(lower)) return exchange(state, text, { type: 'step', step: 'review' }, 'Here is the current revision and its evidence. The canvas has the explicit review controls. I can explain or revise it, but approval and activation are your decisions.');
+  if (/scenario|example cases/.test(lower)) return exchange(state, text, { type: 'validate' }, 'Here are three situations we can try without changing your tasks. Tell me if you’d want a different result.');
+  if (/review|approv|activat|looks right|turn.*on|what will change/.test(lower)) return exchange(state, text, { type: 'step', step: 'review' }, 'Here’s what will change. Check the summary and examples, then confirm that this is what you want. You’ll choose separately when to turn it on.');
   if (/lost response|uncertain/.test(lower)) {
-    const s = exchange(state, text, { type: 'unknown' }, 'The canvas shows an uncertain result: the write may have happened. There is no blind retry action. A real integration would need host evidence to resolve it.');
+    const s = exchange(state, text, { type: 'unknown' }, 'The follow-up may have been added, but we couldn’t confirm it. Check the task list before trying again, so you don’t add it twice.');
     s.users[s.user].draft.step = 'activity'; return s;
   }
   if (/try.*complet|show.*task|show.*result/.test(lower)) {
-    const s = exchange(state, text, { type: 'example' }, 'I added an illustrative before/after result to the canvas. This is the point where the real demo will show the native app’s actual task and execution evidence.');
+    const s = exchange(state, text, { type: 'example' }, 'Here’s an example of the follow-up being added. This preview uses sample tasks; your real task list hasn’t changed.');
     s.users[s.user].draft.step = 'activity'; return s;
   }
   if (/disable|turn.*off/.test(lower)) {
-    const s = exchange(state, text, { type: 'disable' }, 'This example is disabled for future events. Existing tasks and earlier effects are not undone.'); s.users[s.user].draft.step = 'activity'; return s;
+    const s = exchange(state, text, { type: 'disable' }, 'Turned off. Tasks already added stay in your list.'); s.users[s.user].draft.step = 'activity'; return s;
   }
   if (/roll.?back/.test(lower)) {
-    const s = exchange(state, text, { type: 'rollback' }, 'I restored the previous selection for future example events. Earlier effects are unchanged.'); s.users[s.user].draft.step = 'activity'; return s;
+    const s = exchange(state, text, { type: 'rollback' }, 'I returned to your previous setup. Tasks already added stay in your list.'); s.users[s.user].draft.step = 'activity'; return s;
   }
-  if (/cancel|stop/.test(lower)) return exchange(state, text, null, 'There is no in-flight operation in this scripted prototype. Your draft and conversation are retained. Real generation and simulation will need explicit cancellation states.');
-  if (/behavior|diagram|explain|why|rule/.test(lower)) return exchange(state, text, { type: 'step', step: 'behavior' }, 'I brought the behavior sketch back onto the canvas. It reads the completed task, checks the project and conditionally creates one task. We can change the choices without changing the active version.');
-  return exchange(state, text, null, 'This scripted prototype supports the task-completion example. Try asking me to show the behavior, prepare scenarios, test it, review it, or change the title using quotes. A real agent will clarify your own request rather than use these fixed routes.');
+  if (/cancel|stop/.test(lower)) return exchange(state, text, null, 'Nothing is running right now. Your conversation and changes are saved in this tab.');
+  if (/behavior|diagram|explain|why|rule|show me an example|change the task title|talk it through/.test(lower)) return exchange(state, text, { type: 'step', step: 'behavior' }, `When you finish a task in ${d.project}, this would add “${d.title}”. The preview shows an example. You can change the project or task name there, or tell me here.`);
+  return exchange(state, text, null, 'This preview has a few example conversations. Try “Show me an example”, “Try a few examples”, or ‘Call the task “Plan next step”’. Your request hasn’t changed the setup.');
 }
 
 function actOnCanvas(state, action) {
   if (['user', 'reset'].includes(action.type)) return transition(state, action);
   const d = state.users[state.user].draft;
   const descriptions = {
-    edit: [`On the canvas: use ${action.project ?? d.project} and title “${action.title ?? d.title}”.`, 'The draft reflects your choices. Prior approval is invalidated when behavior changes; the active version stays as it was.'],
+    edit: [`In the preview: use ${action.project ?? d.project} and call the task “${action.title ?? d.title}”.`, 'I updated the preview. Your current setup stays as it is until you check and turn on this change.'],
     expectation: [`On the canvas: for another project, expect ${action.value === 'create' ? 'a created task' : 'no changes'}.`, 'That is your expected outcome. Ask me to run the examples again so we can compare it with the behavior.'],
-    approve: [`I reviewed the behavior and expectations for revision ${d.revision} and clicked Approve.`, 'You approved this revision. Nothing has been activated yet. The canvas now offers a separate activation decision.'],
-    activate: [`Activate the reviewed prototype revision ${d.revision}.`, 'The reviewed example is selected for future events. We can inspect an illustrative task result, edit the draft or disable it; no real task was changed.'],
+    approve: [`I checked this change and its examples. This is what I want.`, 'Confirmed. You can turn it on when you’re ready. Your current setup hasn’t changed yet.'],
+    activate: [`Turn on the change I just confirmed.`, `It’s on in this preview. Future finished tasks in ${d.project} will get “${d.title}”. You can change this or turn it off any time. No real tasks were changed.`],
     provider: ['I toggled the prototype provider setup state.', 'This only changes the example setup state; no credentials are collected or provider called.'],
   };
   const [text, reply] = descriptions[action.type] ?? ['I used a canvas control.', 'The canvas now reflects that action.'];
@@ -180,9 +182,9 @@ export function holdCanvas(state) {
 }
 export function talk(state, text) {
   if (!String(text).trim()) return state;
-  if (/^run scenarios$/i.test(text.trim())) return operationAction(state, { type: 'start' });
+  if (/^(run scenarios|try a few examples)$/i.test(text.trim())) return operationAction(state, { type: 'start' });
   if (/^(pause|stop|cancel)( run)?$/i.test(text.trim())) return operationAction(state, { type: 'pause' });
-  if (/^resume( run)?$/i.test(text.trim())) return operationAction(state, { type: 'resume' });
+  if (/^(resume( run)?|continue)$/i.test(text.trim())) return operationAction(state, { type: 'resume' });
   const s = respond(state, text);
   const u = s.users[s.user];
   if (['running', 'paused', 'interrupted'].includes(u.operation?.status) && u.operation.key !== draftKey(u.draft)) u.operation.status = 'superseded';
@@ -193,7 +195,7 @@ export function canvasAction(state, action) {
   if (['approve', 'activate'].includes(action.type) && action.evidenceId != null) {
     const u = state.users[state.user], item = evidenceView(state);
     if (!item || item.id !== action.evidenceId || item.id !== u.evidence.at(-1).id || draftKey(item.draft) !== draftKey(u.draft)) {
-      return exchange(state, 'I tried to use an earlier review.', null, 'That review is no longer current. Open the latest proposal and review its evidence.');
+      return exchange(state, 'I tried to use an earlier review.', null, 'That review is no longer current. Open your latest changes and check their examples first.');
     }
   }
   if (action.type === 'user') {
@@ -215,28 +217,28 @@ export function operationAction(state, action) {
     return s;
   };
   if (action.type === 'start') {
-    if (!d.started) return message('Run scenarios', 'First, describe the behavior you want.');
+    if (!d.started) return message('Try a few examples', 'First, tell me what you’d like the app to do.');
     if (u.operation?.status === 'running') return s;
     u.operation = { id: (u.operation?.id ?? 0) + 1, owner: s.user, key: draftKey(d), status: 'running' };
     d.tested = d.approved = d.mismatch = false; d.error = '';
-    return message('Run scenarios', `Checking three scripted scenarios for draft r${d.revision}. You can keep talking or pause this run.`);
+    return message('Try a few examples', 'I’m trying three examples without changing your tasks. You can keep talking or pause.');
   }
   if (action.type === 'pause') {
-    if (u.operation?.status !== 'running') return message('Pause run', 'No run is in progress. Your draft and evidence are retained.');
+    if (u.operation?.status !== 'running') return message('Pause', 'Nothing is running. Your changes and earlier examples are saved.');
     u.operation.status = 'paused';
-    return message('Pause run', 'Run paused. No new result is available; your draft, conversation and earlier evidence are saved in this tab.');
+    return message('Pause', 'Paused. Your conversation and earlier examples are saved in this tab. Continue whenever you’re ready.');
   }
   if (action.type === 'resume') {
-    if (!['paused', 'interrupted'].includes(u.operation?.status) || u.operation.key !== draftKey(d)) return message('Resume run', 'That run cannot resume against this draft. Start a new run for the current revision.');
+    if (!['paused', 'interrupted'].includes(u.operation?.status) || u.operation.key !== draftKey(d)) return message('Continue', 'Your changes are different now. Let’s try the examples again with your latest choices.');
     u.operation.status = 'running'; u.operation.id++;
-    return message('Resume run', `Resuming the scripted check for draft r${d.revision}.`);
+    return message('Continue', `Continuing the examples for your latest changes.`);
   }
   if (action.type === 'finish') {
     const op = u.operation;
     if (!op || op.status !== 'running' || op.id !== action.id || op.owner !== action.owner || op.key !== draftKey(d)) return s;
     let result = transition(s, { type: 'validate' }); result = transition(result, { type: 'simulate' });
     result.users[s.user].operation.status = 'complete';
-    result.users[s.user].messages.push({ role: 'assistant', text: result.users[s.user].draft.mismatch ? 'One scenario differs from your expectation. The other-project case expects a new task, but this draft makes no change. Which result do you intend?' : 'All three scripted scenarios match. Review the behavior, scope and remaining limits before approving this revision.' });
+    result.users[s.user].messages.push({ role: 'assistant', text: result.users[s.user].draft.mismatch ? 'One example needs your decision. Should finishing a task in another project add a follow-up, or leave that project alone?' : 'All three examples do what you asked. Take a look at the results, then we can review what will change.' });
     return recordEvidence(result);
   }
   return s;
@@ -259,7 +261,7 @@ export function workingState() {
     s = canvasAction(s, { type: 'edit', title: user === 'Maya' ? 'Prepare next step' : 'Review next step' });
     const u = s.users[user];
     u.draft.expectation = 'create';
-    u.messages.push({ role: 'user', text: 'I want to change the follow-up. Does it also apply to completed tasks in another project?' }, { role: 'assistant', text: `The active version still creates “${u.active.title}”. This draft proposes “${u.draft.title}” in ${u.draft.project}. Should another project create a follow-up too, or make no change? We can compare that expectation with the draft.` });
+    u.messages.push({ role: 'user', text: 'I want to change the follow-up. Does it also apply to completed tasks in another project?' }, { role: 'assistant', text: `Your current setup still adds “${u.active.title}”. I’ve shown the change to “${u.draft.title}” beside our conversation. Should this happen only in ${u.draft.project}, or in other projects too?` });
     s = recordEvidence(s);
   }
   s.user = 'Maya';

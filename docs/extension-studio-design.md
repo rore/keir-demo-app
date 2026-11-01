@@ -1,10 +1,10 @@
 # Extension Studio: conversation and canvas
 
-Status: working-experience proposal for user review. Chat is the main interaction, with an application-owned canvas that supports the conversation. The first staged prototype was rejected; neither that wizard nor the later warm-serif treatment is an accepted visual direction.
+Status: business-user experience proposal for user review. Chat is the main interaction, with an application-owned canvas that supports the conversation. The first staged prototype was rejected; neither that wizard nor the later warm-serif treatment is an accepted visual direction.
 
 Run `node docs/extension-studio/serve.mjs` from the repository root and open `http://localhost:4179/`. No dependencies, Python or AI key are needed for this scripted prototype. Stop its task-owned loopback server with Ctrl+C. It serves only the HTML and state module; opening HTML directly may fail because it uses browser modules. `PORT` may select another available port without persistent environment changes.
 
-The [core design feature](https://github.com/rore/keir-core/blob/main/roadmap/features/extension-studio-design.md) owns progress. Core record `agent-workflow:extension-studio-working-experience` owns this increment, following `agent-workflow:extension-studio-prototype`. Full live authoring, provider integration and native guarantees remain future implementation.
+The [core design feature](https://github.com/rore/keir-core/blob/main/roadmap/features/extension-studio-design.md) owns progress. Core record `agent-workflow:extension-studio-business-experience` owns this increment, following `agent-workflow:extension-studio-working-experience`. Full live authoring, provider integration and native guarantees remain future implementation.
 
 ## Business-user design direction
 
@@ -50,7 +50,11 @@ Use outside work to understand design decisions, not to reproduce another produc
 
 Acceptance for the next prototype: a person without technical knowledge can explain what will change, recognize who is affected, correct an example, tell whether it is currently in use and stop or revise it. They should not need to learn Keir terminology or ask which engineering step comes next. Test this through an actual interaction, not a screenshot alone.
 
-The delivered working-experience prototype still exposes terms such as revision, evidence, scenario and activation. It is useful continuity/recovery groundwork, but does not yet satisfy this clarified customer-language direction. The brief above governs the next interaction and visual iteration; it does not claim that iteration is implemented or accepted.
+The business-user iteration applies this direction to the runnable prototype. The conversation takes more of the working area; supporting navigation is reduced to the current change. Body text is 15px, decisions and forms use 14–15px text, secondary information uses 12–13px, and visible keyboard focus is preserved. The canvas shows a completed task and the follow-up it would add. Project and task-name editing are available on request, with technical version/example identities inside optional detail.
+
+The agent asks about project scope and offers ordinary replies: “Only Launch,” “Try a few examples” and “Change the task title.” Examples compare “You wanted” with “In this example.” “This is what I want” confirms the exact reviewed change; “Turn this on” remains a separate action. Chat requests cannot bypass those controls. Requests for all projects explain the one-project prototype limit without silently changing intent.
+
+The current setup and proposed changes remain visibly distinct. Earlier examples preserve their original contents, unsent preview fields survive arriving results, and pause/continue retains the conversation. Narrow screens stack chat and preview with direct links between them. This is a design proposal ready for interaction review, not evidence of user acceptance or a live agent implementation.
 
 ## The interaction model
 
@@ -82,7 +86,7 @@ Leo's initial draft instead uses Operations and Plan next step. Sam has no selec
 ## Layout and visual direction
 
 - Keep a substantial conversation pane with persistent composer, readable agent/user turns and contextual suggested prompts. The chat is the starting point and remains available while canvas content changes.
-- Give the canvas enough space to explain behavior and compare examples. Its heading states what is being shown and which draft/revision it belongs to; selection status remains visible without becoming a progress stepper.
+- Give the canvas enough space to explain behavior and compare examples. Its heading states what is being shown; the current setup and proposed change stay distinct. Technical identities are available in optional detail.
 - Ground the screen in the native task app's project rail, selected item, user switcher and green actions. Use neutral working surfaces, compact sans-serif headings, readable body text, fine borders and restrained amber mismatch states. The populated conversation and actual work take priority over introductory copy or decoration. No hero, staged wizard or decorative dashboard.
 - Use labeled controls, visible keyboard focus, text status as well as color and clear action consequences. On narrow screens stack the conversation and latest canvas with obvious labels; do not hide conversation behind a required stage tab.
 - Keep technical IR/artifact details in optional inspection. Business users should understand conditions, effects, expectations and consequences without reading implementation details.
@@ -95,14 +99,14 @@ The prototype opens on Maya's existing completion follow-up. Active r1 creates *
 
 | Surface or state | Proposed behavior |
 | --- | --- |
-| Persistent identity | Header names the customization, example user and project. Active and draft versions remain visible while either pane scrolls. |
+| Persistent identity | Header names the customization, example user and project. Current setup and changes not yet in use remain visible while either pane scrolls. |
 | Conversation receipt | Behavior, scenario and review messages have evidence buttons. A button opens its saved draft, expectation, result and selection snapshot, not whatever is latest. |
 | Inspecting old evidence | Saved evidence is marked read-only. Earlier results cannot approve or activate the current draft. Return to the current proposal explicitly. |
-| Canvas attention | Hold this view pins its evidence. Focusing an editable canvas field also holds it, preserving unsent values. A new result appears as an offer; Open latest or Follow conversation changes the view. Sending canvas choices intentionally updates the draft and returns to its current view. |
+| Canvas attention | Keep this view pins its example. Focusing an editable canvas field also holds it, preserving unsent values. A new result appears as an offer; Show latest or Follow chat changes the view. Sending canvas choices intentionally updates the draft and returns to its current view. |
 | Scenario mismatch | The default r2 example expects a task in another project, while behavior only applies to Launch. User explicitly chooses no change or discusses different behavior. The correction appears in chat; the script never silently repairs the expectation. |
 | Exact review | Show change from active, trigger, owner, reads/writes, scenario evidence and remaining limits. Human approval and activation are separate controls. A stale review cannot apply to a changed proposal. |
-| Running / paused | Run scenarios takes a short scripted delay. Pause retains draft and earlier evidence. Resume starts a new operation identity; completion from the paused run is ignored. |
-| Reload during work | Running work becomes interrupted. Resume is explicit; no background side effects resume. Changed drafts supersede the old run. Results cannot cross example users. |
+| Running / paused | Try a few examples takes a short scripted delay. Pause retains changes and earlier examples. Continue starts a new operation identity; completion from the paused run is ignored. |
+| Reload during work | Running work becomes interrupted. Continue is explicit; no background side effects resume. Changed drafts supersede the old run. Results cannot cross example users. |
 | Narrow layout | Conversation and canvas stack, with direct links between them; the composer remains part of the conversation. No stage navigation is introduced. |
 
 This increment uses tab-local example storage, under a new key that leaves the earlier prototype's data intact. It demonstrates recovery of submitted work and paused operations; it does not provide durable server history, cross-device sync or production cancellation. Unsubmitted composer and canvas text is not durable across reloads. A production design must distinguish cancellation requested from confirmed stop and reconcile operations that may have completed externally.

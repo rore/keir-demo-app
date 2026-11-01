@@ -66,7 +66,7 @@ test('canvas edits return user input to chat and invalidate review', () => {
   let s = reviewed(talk(initialState(), 'Completion follow-up')); s = next(s, { type: 'activate' });
   s = canvasAction(s, { type: 'edit', title: 'New title' });
   assert.equal(s.users.Maya.draft.approved, false); assert.equal(s.users.Maya.draft.step, 'behavior');
-  assert.equal(s.users.Maya.active.title, 'Review completion'); assert.match(s.users.Maya.messages.at(-2).text, /canvas/);
+  assert.equal(s.users.Maya.active.title, 'Review completion'); assert.match(s.users.Maya.messages.at(-2).text, /preview/);
   assert.match(s.users.Maya.messages.at(-2).text, /New title/);
 });
 test('a chat request to activate brings up human review instead of self-approval', () => {
@@ -176,4 +176,44 @@ test('correcting a completed run does not leave a false interruption notice', ()
   assert.equal(s.users.Maya.draft.mismatch, false);
   s = canvasAction(s, { type:'user', user:'Leo' });
   assert.equal(s.users.Maya.operation.status, 'interrupted');
+});
+
+test('ordinary-language scope choice checks examples without changing the current setup', () => {
+  let s = talk(workingState(), 'Only Operations');
+  assert.equal(s.users.Maya.draft.project, 'Operations');
+  assert.equal(s.users.Maya.draft.expectation, 'skip');
+  assert.equal(s.users.Maya.draft.tested, true);
+  assert.equal(s.users.Maya.draft.approved, false);
+  assert.equal(s.users.Maya.active.project, 'Launch');
+  s = talk(s, 'Show me what will change');
+  assert.equal(s.users.Maya.draft.step, 'review');
+  s = talk(s, 'Turn this on');
+  assert.equal(s.users.Maya.draft.approved, false);
+  assert.equal(s.users.Maya.active.revision, 1);
+});
+
+test('visible conversation suggestions lead to examples, editable preview and human review', () => {
+  let s = talk(workingState(), 'Try a few examples');
+  assert.equal(s.users.Maya.operation.status, 'running');
+  s = talk(s, 'Pause');
+  assert.equal(s.users.Maya.operation.status, 'paused');
+  s = talk(s, 'Continue');
+  assert.equal(s.users.Maya.operation.status, 'running');
+  s = talk(s, 'Only Launch');
+  assert.equal(s.users.Maya.operation.status, 'complete');
+  for (const prompt of ['Show me an example', 'Change the task title', 'Talk it through']) {
+    s = talk(s, prompt);
+    assert.equal(s.users.Maya.draft.step, 'behavior');
+    assert.equal(s.users.Maya.draft.tested, true);
+  }
+  s = talk(s, 'Looks right');
+  assert.equal(s.users.Maya.draft.step, 'review');
+  assert.equal(s.users.Maya.draft.approved, false);
+});
+
+test('asking for all projects explains the preview limit without silently narrowing intent', () => {
+  const before = workingState(), after = talk(before, 'Other projects too');
+  assert.deepEqual(after.users.Maya.draft, before.users.Maya.draft);
+  assert.deepEqual(after.users.Maya.active, before.users.Maya.active);
+  assert.match(after.users.Maya.messages.at(-1).text, /one project at a time/);
 });
