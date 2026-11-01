@@ -137,3 +137,53 @@ test('authentication transitions serialize across tabs even when the first cooki
   await expect(page.getByText('The demo person changed in another tab. Choose a person to continue.')).toBeVisible();
   await screenshot(page, 'session-changed-desktop');
 });
+
+for (const nextTask of ['Refine the packaging sketches', 'Gather material references']) {
+  test(`delayed save cannot close a newer panel draft: ${nextTask}`, async ({ page, demo }) => {
+    await page.goto(demo.origin); await signIn(page, 'Maya');
+    let release, observed;
+    const gate = new Promise(resolve => { release = resolve; });
+    const intercepted = new Promise(resolve => { observed = resolve; });
+    await page.route('**/api/tasks/*', async route => {
+      if (route.request().method() !== 'PATCH') return route.continue();
+      const response = await route.fetch(); observed(); await gate; await route.fulfill({ response });
+    });
+    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+    await page.getByLabel('Task title', { exact: true }).fill('Saved first task');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await intercepted;
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    await page.getByRole('button', { name: nextTask, exact: true }).click();
+    await page.getByLabel('Task title', { exact: true }).fill('Newer unsaved draft');
+    const response = page.waitForResponse(response => response.request().method() === 'PATCH');
+    release(); await response;
+    await expect(page.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Newer unsaved draft');
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Saved first task', exact: true })).toBeVisible();
+  });
+}
+
+test('initial project list must finish before project creation becomes available', async ({ page, demo }) => {
+  await page.goto(demo.origin);
+  let release, observed;
+  const gate = new Promise(resolve => { release = resolve; });
+  const intercepted = new Promise(resolve => { observed = resolve; });
+  await page.route('**/api/projects', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch(); observed(); await gate; await route.fulfill({ response });
+  });
+  await page.getByRole('button', { name: 'Continue as Maya' }).click();
+  await intercepted;
+  try {
+    await expect(page.getByRole('button', { name: 'New project', exact: true })).toBeDisabled();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole('button', { name: 'Add project', exact: true })).toBeDisabled();
+  } finally { release(); }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await newProject(page, 'Newest project');
+  await expect(page.getByRole('button', { name: /Newest project$/ })).toHaveClass(/selected/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Newest project', exact: true })).toBeVisible();
+});

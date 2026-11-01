@@ -247,6 +247,7 @@ function Workspace({
   expired: () => void;
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsReady, setProjectsReady] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -262,6 +263,7 @@ function Workspace({
   const generation = useRef(0);
   const returnFocus = useRef<HTMLElement | null>(null);
   const detailRef = useRef<HTMLDialogElement>(null);
+  const detailInstance = useRef(0);
   const project = projects.find((item) => item.id === projectId);
   useEffect(
     () => () => {
@@ -296,6 +298,7 @@ function Workspace({
         if (!lifetime.current.signal.aborted) {
           setProjects(data);
           setProjectId(data[0]?.id ?? "");
+          setProjectsReady(true);
         }
       })
       .catch(handleError)
@@ -405,6 +408,7 @@ function Workspace({
     );
   }
   function closeDetail() {
+    detailInstance.current++;
     setDetail(null);
   }
   const open = tasks.filter((task) => task.status === "open");
@@ -428,6 +432,7 @@ function Workspace({
           className="task-open"
           onClick={(event) => {
             returnFocus.current = event.currentTarget;
+            detailInstance.current++;
             setDetail(task);
           }}
         >
@@ -449,6 +454,7 @@ function Workspace({
           <button
             className="icon-button"
             aria-label="New project"
+            disabled={!projectsReady}
             onClick={() => {
               setNewProject(true);
               setRename(false);
@@ -524,6 +530,7 @@ function Workspace({
             <button
               className="icon-button"
               aria-label="Add project"
+              disabled={!projectsReady}
               onClick={() => {
                 setNewProject(true);
                 setRename(false);
@@ -663,7 +670,11 @@ function Workspace({
             <div className="empty">
               <span aria-hidden="true">✳</span>
               <h2>Make a little room.</h2>
-              <button className="primary" onClick={() => setNewProject(true)}>
+              <button
+                className="primary"
+                disabled={!projectsReady}
+                onClick={() => setNewProject(true)}
+              >
                 Create your first project
               </button>
             </div>
@@ -696,7 +707,8 @@ function Workspace({
             busy={busy}
             error={error}
             close={closeDetail}
-            save={(title, notes) =>
+            save={(title, notes) => {
+              const instance = detailInstance.current;
               action(
                 () =>
                   request<Task>(`tasks/${detail.id}`, "PATCH", {
@@ -707,11 +719,11 @@ function Workspace({
                   setTasks((old) =>
                     old.map((item) => (item.id === saved.id ? saved : item)),
                   );
-                  setDetail(null);
+                  if (instance === detailInstance.current) closeDetail();
                   setNotice("Task saved.");
                 },
-              )
-            }
+              );
+            }}
           />
         )}
       </dialog>
