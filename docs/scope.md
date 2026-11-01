@@ -1,8 +1,8 @@
 # Application scope
 
-The task manager is a useful application and a reference consumer of `keir-core`. It owns the UI, task data, authentication/authorization, task DCM, real adapters, business scenarios and optional AI authoring and activation lifecycle.
+The task manager is a useful application and a reference consumer of `keir-core`. It owns the UI, task data, authentication/authorization, task DCM, real adapters, business scenarios, AI-driven extension creation UI and activation lifecycle.
 
-The app is a local web demonstration: visitors clone this repository, follow documented prerequisites/setup and open it in their browser. Normal startup must not require a sibling core checkout, hosted database, cloud account or AI credentials. Optional live AI setup is separate. Packaged core behavior is available; native app implementation remains unassigned until a bounded manager assignment.
+The app is a local web demonstration: visitors clone this repository, follow documented prerequisites/setup and open it in their browser. The complete extension-authoring experience requires the visitor to configure their own AI provider/model and credentials. Native tasks and already activated extensions remain usable without AI calls; this fallback does not replace the AI-driven creation UI. Local hosting needs no sibling core checkout or hosted database. Packaged core behavior is available; native app implementation remains unassigned until a bounded manager assignment.
 
 ## Experience and user scopes
 
@@ -27,15 +27,17 @@ The application uses the Node runtime. Core's Java runtime is also initial scope
 
 Add customer behaviors and host capabilities as implementation needs arise, through explicit approved DCM revisions. Exercise different hook/result paths to verify integration behavior. The product value is accepted; a frozen-catalog study, marginal-host-code benchmark or competitor comparison is not a prerequisite. CEL remains Keir's expression evaluator.
 
-Demonstrate the host integration assistant helping the app developer propose DCM/hooks/capability contracts and validation/evidence, with exact-revision host approval before publication. Core provides generic contracts and validators; the host owns this agent/tool integration. It need not be a separate chat product.
+Deliver the host-design guidance as a skill for the developer's own coding agent to propose DCM/hooks/capability contracts and validation/evidence, with exact-revision host approval before publication. The coding agent uses its existing model and authentication. Core provides generic contracts and validators; no second in-app host-design chat is required.
 
-Then demonstrate the distinct customer extension assistant using the approved scoped catalog: bounded generation/repair, artifact-derived previews, reviewed scenario expectations, immutable approval, activation, disable and rollback. Neither assistant can certify its own guarantees or approve its own publication/activation. Provider, credentials and spend limits are decided before live model calls.
+Then deliver the distinct in-app customer extension assistant using the approved scoped catalog: bounded generation/repair, artifact-derived previews, reviewed scenario expectations, immutable approval, activation, disable and rollback. Neither assistant can certify its own guarantees or approve its own publication/activation. The app operator supplies their own server-side provider credentials; seeded demo users do not receive or expose those keys.
+
+Qualify at least two provider/model configurations through the same authoring workflow, with required tool/structured-output capabilities, bounded cost, cancellation and clear setup/authentication errors. Evaluate a small adapter boundary or existing multi-provider library before selecting dependencies; do not promise every provider/model is interchangeable. Keep secrets in ignored local configuration/environment, out of browser bundles, fixtures, logs and exports. Document what is sent to the provider. Fast fake-provider tests cover regression; live compatibility checks use explicit opt-in, operator keys and spend limits.
 
 ## Two future walkthroughs
 
 `main` becomes the ready-configured host application: visitors run it locally, sign in as different demo users and explore their independent customer customizations. The scaffold is not configured or runnable yet.
 
-A future `pre-design-time` branch starts from the same native app before Keir host integration is completed. Visitors can ask their coding agent to inspect the domain and help define the DCM, extension points, capability bindings and verification. Host-owner review remains required; this is the developer persona, separate from the in-app customer authoring persona.
+A future `pre-design-time` branch starts from the same native app before Keir host integration is completed. Visitors load the host-design skill in their coding agent to inspect the domain and help define the DCM, extension points, capability bindings and verification. Host-owner review remains required; this is the developer persona, separate from the in-app customer authoring persona and its provider configuration.
 
 Create this branch/checkpoint once a useful native baseline exists. Back it with an immutable starting commit/tag, pin compatible core dependencies and document its scope, setup and deliberate refresh procedure. Verify that exact checkpoint; do not continually merge the finished integration into it. Treat it as a reproducible tutorial starting point rather than a second independently evolving app. Keep all planning and progress in the core roadmap's host-integration-assistant feature.
 
