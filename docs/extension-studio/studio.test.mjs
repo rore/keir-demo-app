@@ -217,3 +217,17 @@ test('asking for all projects explains the preview limit without silently narrow
   assert.deepEqual(after.users.Maya.active, before.users.Maya.active);
   assert.match(after.users.Maya.messages.at(-1).text, /one project at a time/);
 });
+
+test('turn-off phrases containing on within another word disable; turn-on only requests review', () => {
+  for (const phrase of ['Turn off this automation', 'Turn it off in Operations']) {
+    let s = talk(workingState(), phrase);
+    assert.equal(s.users.Maya.active.enabled, false, phrase);
+    assert.equal(s.users.Maya.draft.step, 'activity');
+    assert.equal(s.users.Maya.draft.error, '');
+    s = talk(s, 'Only Launch');
+    s = talk(s, 'Turn this on');
+    assert.equal(s.users.Maya.draft.step, 'review');
+    assert.equal(s.users.Maya.draft.approved, false);
+    assert.equal(s.users.Maya.active.enabled, false);
+  }
+});

@@ -110,7 +110,7 @@ function respond(state, text) {
     return exchange(s, text, { type: 'simulate' }, d.expectation === 'skip' ? 'The three examples do what you asked. A finished task here gets a follow-up. Other projects stay as they are, and a missing task adds nothing. Take a look at the results.' : 'One example needs your decision: should finishing a task in another project add a follow-up, or leave that project alone?');
   }
   if (/scenario|example cases/.test(lower)) return exchange(state, text, { type: 'validate' }, 'Here are three situations we can try without changing your tasks. Tell me if you’d want a different result.');
-  if (/review|approv|activat|looks right|turn.*on|what will change/.test(lower)) return exchange(state, text, { type: 'step', step: 'review' }, 'Here’s what will change. Check the summary and examples, then confirm that this is what you want. You’ll choose separately when to turn it on.');
+  if (/review|approv|activat|looks right|\bturn\b.*\bon\b|what will change/.test(lower)) return exchange(state, text, { type: 'step', step: 'review' }, 'Here’s what will change. Check the summary and examples, then confirm that this is what you want. You’ll choose separately when to turn it on.');
   if (/lost response|uncertain/.test(lower)) {
     const s = exchange(state, text, { type: 'unknown' }, 'The follow-up may have been added, but we couldn’t confirm it. Check the task list before trying again, so you don’t add it twice.');
     s.users[s.user].draft.step = 'activity'; return s;
