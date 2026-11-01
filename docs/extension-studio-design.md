@@ -6,6 +6,52 @@ Run `node docs/extension-studio/serve.mjs` from the repository root and open `ht
 
 The [core design feature](https://github.com/rore/keir-core/blob/main/roadmap/features/extension-studio-design.md) owns progress. Core record `agent-workflow:extension-studio-working-experience` owns this increment, following `agent-workflow:extension-studio-prototype`. Full live authoring, provider integration and native guarantees remain future implementation.
 
+## Business-user design direction
+
+The user is changing how their work gets done. Assume knowledge of their work and no software knowledge. The agent leads the conversation, handles the technical authoring/checking process and asks the person only for missing intent or a meaningful decision. The canvas supports that conversation with familiar application objects and concrete outcomes. A polished appearance alone does not meet this requirement.
+
+Read the [customer extension assistant guide](https://github.com/rore/keir-core/blob/main/docs/agents/extension-assistant.md) before designing the interaction. Its discovery, authoring, bounded repair, simulation and approval responsibilities belong behind the customer experience. The [host integration assistant](https://github.com/rore/keir-core/blob/main/docs/agents/host-integration-assistant.md) serves developers; its vocabulary and configuration tasks must not leak into Studio. Historical authoring diagrams explain the internal pipeline, not a mandatory user journey.
+
+- Lead with a useful question about the person's work. Do not require them to know the next technical step, write a complete prompt or choose from a workflow dashboard. Ask one focused question when its answer matters; let them change their mind in the same conversation.
+- Use the canvas when showing something is easier than describing it: a familiar task before and after, a choice between concrete outcomes, a short example or a summary of what will change. A flowchart is useful only when it improves understanding. Do not make the person operate a technical editor alongside the agent.
+- Show the proposed effect, who it affects and what remains unchanged. Explain exceptions through recognizable situations, such as a task from another project or a task that no longer exists.
+- Keep exact versions, evidence identities, compiler diagnostics and execution traces in secondary inspection. Their protections remain enforced even when their identifiers are absent from the main screen.
+- Use clear, respectful everyday language. Avoid engineering nouns, lengthy explanatory paragraphs and arbitrary status badges. Simplify the question before adding help text. Preserve distinctions between a preview, a change currently in use and a result that actually happened.
+- The agent proposes examples, checks the change and explains discrepancies. The person decides what should happen; the agent must not quietly change those expectations to make a check pass. Approval and turning on the change remain separate human decisions with understandable consequences.
+- Make failure useful: explain what happened, what is still safe and the next available action. For an uncertain result, say that the task may have been created and must be checked before trying again. Never turn uncertainty into success merely to simplify the wording.
+
+### Translate decisions, not just labels
+
+The following are proposed customer-facing expressions, not changes to the underlying lifecycle contract.
+
+| Internal concept | What the person should see or hear |
+| --- | --- |
+| Define trigger and scope | “Should this happen only for tasks in Launch?” |
+| Proposed behavior | A familiar completed task next to the follow-up that would be added: “When you finish a task in Launch, add ‘Review completion’.” |
+| Simulation | “Let's try a few examples without changing your tasks.” |
+| Scenario expectation | “If you finish a task in Operations, should anything happen?” |
+| Mismatch | “You wanted a follow-up here, but this change would leave the task list as it is. Which result do you want?” |
+| Draft versus active revision | “Your current setup is still on. These changes aren't in use yet.” |
+| Historical evidence | “Earlier example” with the original task and result; opening it does not apply it to the current proposal. |
+| Exact review | “Here's what will change” with the effect, affected people/projects, exceptions and any unchecked situations. |
+| Approval, then activation | “This is what I want,” followed by the separate decision “Turn this on.” |
+| Unsupported request | “The app can't do that yet,” followed by a supported alternative only if it preserves a useful part of the person's goal. |
+
+A representative exchange starts with “When I finish a task in Launch, add a task to review it.” The agent asks about any missing choice, then shows a recognizable task and its proposed follow-up. It asks whether a task in another project should behave differently, works through the answer, and explains the checked examples. The final decision summarizes the effect in the same language used in the original request. The person can inspect, correct or ask why throughout; these are conversational turns, not compulsory stages.
+
+### Visual research and application
+
+Use outside work to understand design decisions, not to reproduce another product's composition, branding or components. Develop Keir's visual direction around this audience and its task objects. Polish must include legibility, spacing, consistent controls, clear focus, responsive behavior, restrained motion and useful error/recovery states. No decorative AI motif, oversized introductory hero or generic collection of dashboard cards is justified by this task.
+
+- [Linear's interface refresh](https://linear.app/now/behind-the-latest-design-refresh): study how supporting navigation recedes and how unnecessary icons/separators are reduced. Apply the principle of attention hierarchy; do not copy Linear's interface.
+- [Apple's UI typography guidance](https://developer.apple.com/videos/play/wwdc2020/10175/): use type hierarchy, alignment and legibility to organize the work. Do not rely on oversized headings or tiny secondary text to manufacture contrast.
+- [NN/g on progressive disclosure](https://www.nngroup.com/articles/progressive-disclosure/): keep commonly needed decisions visible and less-used detail available on request. This is not a reason to bring back a staged wizard.
+- [DWP guidance on hint text](https://design-system.dwp.gov.uk/guidance/hint-text) and [Microsoft's guidance on user control](https://fluent2.microsoft.design/responsible-AI): improve the question itself, make actions understandable and let people correct the agent.
+
+Acceptance for the next prototype: a person without technical knowledge can explain what will change, recognize who is affected, correct an example, tell whether it is currently in use and stop or revise it. They should not need to learn Keir terminology or ask which engineering step comes next. Test this through an actual interaction, not a screenshot alone.
+
+The delivered working-experience prototype still exposes terms such as revision, evidence, scenario and activation. It is useful continuity/recovery groundwork, but does not yet satisfy this clarified customer-language direction. The brief above governs the next interaction and visual iteration; it does not claim that iteration is implemented or accepted.
+
 ## The interaction model
 
 **The user talks to an agent. The agent uses a canvas when UI helps the conversation.** The conversation stays continuous: explain a goal, answer a clarification, ask why, change a choice, explore examples, inspect outcomes and decide what to activate. The canvas is not a separate workflow to navigate or a sequence the user must complete.
