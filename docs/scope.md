@@ -12,6 +12,16 @@ The app is a local web demonstration: visitors clone this repository, follow doc
 - Demonstrate different programs at the same hook for different users; changing, disabling or rolling back one user's customization must leave the others intact. Customer authors may approve their own extensions where host policy permits; the AI agent cannot grant itself approval or publish the host catalog.
 - Persist local demo data across restarts and document a deliberate demo-data reset procedure. Keep runtime data and credentials out of tracked content; setup must use isolated project tooling.
 
+## Extension Studio experience
+
+The Extension Studio is the major demo experience and requires deliberate, detailed product, UI and interaction design before its UI is implemented. Maintain its UX specification, screen/state inventory and interactive prototype in this repo; track design and implementation in the core roadmap's existing owning features.
+
+The design must show the full journey: describe intent, clarify requirements, inspect proposed behavior, create/review test scenarios, simulate, understand results, approve an exact revision, activate, observe native app behavior and revise/disable/roll back. Define backtracking and recovery, not only a successful linear path. A business user should understand what runs, when, for whom, what it may change and what has actually been verified without writing code or inspecting IR.
+
+Specify conversation and structured review areas, information hierarchy, navigation, feedback and progress, draft versus active states, approval invalidation and scenario expectations. Cover setup, loading, empty states, unsupported requests, compiler repair, mismatches, provider failures, cancellation, reload/resume and switching users. Keep simulated evidence distinct from actual execution and preserve honest uncertainty.
+
+Review an interactive prototype with the user before implementing the Studio UI. Include a full successful customization, a recoverable failed attempt, two users with different customizations and visible before/after behavior in the task app. Review visual polish, accessibility and interaction continuity using representative content; label scripted prototype behavior. Implemented acceptance later requires real authoring/lifecycle/native evidence, fast regression/UI journeys and opt-in live-provider checks.
+
 ## First connected demonstration
 
 1. Deliver the polished local web flow with three demo logins, projects and native task create/edit/list/complete, working with extensions disabled and retained across restarts. Grow tags, priority, due dates and search alongside later integration work; completing every app feature is not a prerequisite to the first connected scenario.
