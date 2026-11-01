@@ -1,16 +1,20 @@
 // Scripted UX model only. No compiler, model provider, host service or real activation.
 export const people = ['Maya', 'Leo', 'Sam'];
 export function draft(project = 'Launch', title = 'Review completion') {
-  return { revision: 1, project, title, request: `When a task is completed in ${project}, create a task called “${title}”.`, validated: false, tested: false, mismatch: false, expectation: 'skip', approved: false, error: '', step: 'describe' };
+  return { revision: 1, project, title, request: `When a task is completed in ${project}, create a task called “${title}”.`, started: false, validated: false, tested: false, mismatch: false, expectation: 'skip', approved: false, error: '', step: 'describe' };
 }
 export function initialState() {
-  return { user: 'Maya', provider: true, users: Object.fromEntries(people.map(name => [name, { draft: draft(name === 'Leo' ? 'Operations' : 'Launch', name === 'Leo' ? 'Plan next step' : 'Review completion'), active: null, history: [], activity: [] }])) };
+  return { user: 'Maya', provider: true, users: Object.fromEntries(people.map(name => [name, { draft: draft(name === 'Leo' ? 'Operations' : 'Launch', name === 'Leo' ? 'Plan next step' : 'Review completion'), active: null, history: [], activity: [], messages: [{ role: 'assistant', text: 'What would you like to change about your task workflow? We can work it out together. I’ll use the canvas when a sketch, choice or example makes it easier to understand.' }] }])) };
 }
 export function transition(state, action) {
   const s = structuredClone(state);
   if (action.type === 'reset') return initialState();
   if (action.type === 'user') { if (people.includes(action.user)) s.user = action.user; return s; }
-  if (action.type === 'provider') { s.provider = !s.provider; return s; }
+  if (action.type === 'provider') {
+    s.provider = !s.provider;
+    if (s.provider) for (const u of Object.values(s.users)) if (u.draft.error.includes('provider')) u.draft.error = '';
+    return s;
+  }
   const u = s.users[s.user], d = u.draft;
   const fail = message => { d.error = message; return s; };
   d.error = '';
@@ -23,7 +27,7 @@ export function transition(state, action) {
     case 'generate':
       if (!s.provider) return fail('Connect your own AI provider to create an extension. This prototype only simulates that setup.');
       if (!String(action.request ?? '').trim()) return fail('Describe the behavior you want first.');
-      d.request = action.request; d.step = 'behavior'; d.validated = d.tested = d.approved = false;
+      d.request = action.request; d.started = true; d.step = 'behavior'; d.validated = d.tested = d.approved = false;
       break;
     case 'edit': {
       const project = action.project ?? d.project, title = action.title ?? d.title;
@@ -66,5 +70,76 @@ export function transition(state, action) {
     case 'revise': d.step = 'behavior'; break;
     default: return fail('Unsupported prototype action.');
   }
+  return s;
+}
+
+function exchange(state, text, action, reply) {
+  const s = action ? transition(state, action) : structuredClone(state);
+  const u = s.users[s.user];
+  u.messages.push({ role: 'user', text }, { role: 'assistant', text: u.draft.error || reply });
+  return s;
+}
+
+// These explicit routes illustrate a conversation; they do not interpret arbitrary requests with AI.
+export function talk(state, text) {
+  text = String(text).trim();
+  if (!text) return state;
+  const d = state.users[state.user].draft, lower = text.toLowerCase();
+  if (/schedule|every monday|every day/.test(lower)) return exchange(state, text, { type: 'unsupported' }, '');
+  if (!d.started) {
+    return exchange(state, text, { type: 'generate', request: text }, `Let’s make that concrete. I’ve sketched the supported task-completion example on the canvas. Should this apply to ${d.project}, and should the new task be called “${d.title}”? This prototype demonstrates that one pattern; confirm or change those choices.`);
+  }
+  const project = /\boperations\b/i.test(text) ? 'Operations' : /\blaunch\b/i.test(text) ? 'Launch' : null;
+  const title = text.match(/(?:call|title|name)[\s\S]*?["“]([^"”]+)["”]/i)?.[1] ?? text.match(/^title:\s*(.+)$/i)?.[1];
+  if ((project && /use|apply|instead|switch|project:/.test(lower)) || title) {
+    const s = exchange(state, text, { type: 'edit', project: project ?? d.project, title: title ?? d.title }, 'I updated the draft on the canvas. The active version is unchanged. We’ll check this revision again before it can replace anything.');
+    s.users[s.user].draft.step = 'behavior'; return s;
+  }
+  if (/fix.*expectation|expect.*no change/.test(lower)) {
+    let s = transition(state, { type: 'expectation', value: 'skip' }); s = transition(s, { type: 'validate' });
+    return exchange(s, text, { type: 'simulate' }, 'You changed the expected result to no changes. I reran the scripted examples; they now match. The canvas shows expected and observed outcomes side by side.');
+  }
+  if (/mismatch/.test(lower)) {
+    let s = transition(state, { type: 'expectation', value: 'create' }); s = transition(s, { type: 'validate' });
+    return exchange(s, text, { type: 'simulate' }, 'The outside-project example disagrees with the draft. I’ve highlighted it on the canvas. We should decide whether the behavior or your expectation needs changing; I won’t silently change your test.');
+  }
+  if (/test|simulate|run.*scenario/.test(lower)) {
+    const s = transition(state, { type: 'validate' });
+    return exchange(s, text, { type: 'simulate' }, d.expectation === 'skip' ? 'The three scripted examples match. On the canvas you can inspect what was expected and what happened, including the no-op and missing-task cases. What would you like to examine or change?' : 'There is a mismatch on the canvas. The draft skips other projects, but the expectation says to create a task. Which behavior do you intend?');
+  }
+  if (/scenario|example cases/.test(lower)) return exchange(state, text, { type: 'validate' }, 'I put three example scenarios on the canvas. Please inspect their expected outcomes; you can change an expectation there before asking me to run them.');
+  if (/review|approv|activat/.test(lower)) return exchange(state, text, { type: 'step', step: 'review' }, 'Here is the current revision and its evidence. The canvas has the explicit review controls. I can explain or revise it, but approval and activation are your decisions.');
+  if (/lost response|uncertain/.test(lower)) {
+    const s = exchange(state, text, { type: 'unknown' }, 'The canvas shows an uncertain result: the write may have happened. There is no blind retry action. A real integration would need host evidence to resolve it.');
+    s.users[s.user].draft.step = 'activity'; return s;
+  }
+  if (/try.*complet|show.*task|show.*result/.test(lower)) {
+    const s = exchange(state, text, { type: 'example' }, 'I added an illustrative before/after result to the canvas. This is the point where the real demo will show the native app’s actual task and execution evidence.');
+    s.users[s.user].draft.step = 'activity'; return s;
+  }
+  if (/disable|turn.*off/.test(lower)) {
+    const s = exchange(state, text, { type: 'disable' }, 'This example is disabled for future events. Existing tasks and earlier effects are not undone.'); s.users[s.user].draft.step = 'activity'; return s;
+  }
+  if (/roll.?back/.test(lower)) {
+    const s = exchange(state, text, { type: 'rollback' }, 'I restored the previous selection for future example events. Earlier effects are unchanged.'); s.users[s.user].draft.step = 'activity'; return s;
+  }
+  if (/cancel|stop/.test(lower)) return exchange(state, text, null, 'There is no in-flight operation in this scripted prototype. Your draft and conversation are retained. Real generation and simulation will need explicit cancellation states.');
+  if (/behavior|diagram|explain|why|rule/.test(lower)) return exchange(state, text, { type: 'step', step: 'behavior' }, 'I brought the behavior sketch back onto the canvas. It reads the completed task, checks the project and conditionally creates one task. We can change the choices without changing the active version.');
+  return exchange(state, text, null, 'This scripted prototype supports the task-completion example. Try asking me to show the behavior, prepare scenarios, test it, review it, or change the title using quotes. A real agent will clarify your own request rather than use these fixed routes.');
+}
+
+export function canvasAction(state, action) {
+  if (['user', 'reset'].includes(action.type)) return transition(state, action);
+  const d = state.users[state.user].draft;
+  const descriptions = {
+    edit: [`On the canvas: use ${action.project ?? d.project} and title “${action.title ?? d.title}”.`, 'The draft reflects your choices. Prior approval is invalidated when behavior changes; the active version stays as it was.'],
+    expectation: [`On the canvas: for another project, expect ${action.value === 'create' ? 'a created task' : 'no changes'}.`, 'That is your expected outcome. Ask me to run the examples again so we can compare it with the behavior.'],
+    approve: [`I reviewed the behavior and expectations for revision ${d.revision} and clicked Approve.`, 'You approved this revision. Nothing has been activated yet. The canvas now offers a separate activation decision.'],
+    activate: [`Activate the reviewed prototype revision ${d.revision}.`, 'The reviewed example is selected for future events. We can inspect an illustrative task result, edit the draft or disable it; no real task was changed.'],
+    provider: ['I toggled the prototype provider setup state.', 'This only changes the example setup state; no credentials are collected or provider called.'],
+  };
+  const [text, reply] = descriptions[action.type] ?? ['I used a canvas control.', 'The canvas now reflects that action.'];
+  const s = exchange(state, text, action, reply);
+  if (action.type === 'edit') s.users[s.user].draft.step = 'behavior';
   return s;
 }

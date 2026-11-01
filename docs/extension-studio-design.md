@@ -1,77 +1,82 @@
-# Extension Studio: first experience design
+# Extension Studio: conversation and canvas
 
-Status: initial interactive design for user review, not an implemented authoring service. Run `node docs/extension-studio/serve.mjs` from the repository root and open `http://localhost:4179/`. Stop this prototype server with Ctrl+C when finished. It serves only the [prototype](extension-studio/index.html) and its state module on loopback; no dependency installation, Python or AI key is needed. It uses browser modules; opening the HTML directly as a file may not work. `PORT` can select another available local port without persistent environment changes.
+Status: revised interaction proposal for user review. The user rejected the first staged prototype: chat is the main interaction, and a canvas supports the agent as it works. Earlier wizard screenshots and tests do not establish acceptance of this design.
 
-The [core roadmap design feature](https://github.com/rore/keir-core/blob/main/roadmap/features/extension-studio-design.md) owns progress. The core-owned `agent-workflow:extension-studio-prototype` record owns this implementation contribution. Neither document replaces the authoring/lifecycle contracts.
+Run `node docs/extension-studio/serve.mjs` from the repository root and open `http://localhost:4179/`. No dependencies, Python or AI key are needed for this scripted prototype. Stop its task-owned loopback server with Ctrl+C. It serves only the HTML and state module; opening HTML directly may fail because it uses browser modules. `PORT` may select another available port without persistent environment changes.
 
-## What the visitor should understand
+The [core design feature](https://github.com/rore/keir-core/blob/main/roadmap/features/extension-studio-design.md) owns progress; core record `agent-workflow:extension-studio-prototype` owns this contribution. Full live authoring, provider integration and native guarantees remain future implementation.
 
-An app exposes approved operations and a hook once. A customer describes a behavior, resolves ambiguities, inspects what was produced, checks scenarios and explicitly activates an exact revision. They can then see the resulting behavior in the same task application. AI assists authoring; compiler validation, simulation and host activation serve different purposes and remain visible.
+## The interaction model
 
-The Studio is the demo's centerpiece. Keep the task app useful and small, and spend deliberate design effort on the customer's understanding and control. A chat transcript alone cannot show the current behavior, expectations, active version and actual result reliably.
+**The user talks to an agent. The agent uses a canvas when UI helps the conversation.** The conversation stays continuous: explain a goal, answer a clarification, ask why, change a choice, explore examples, inspect outcomes and decide what to activate. The canvas is not a separate workflow to navigate or a sequence the user must complete.
 
-## Representative customization
+The agent selects a useful application-owned view for the current question: a behavior sketch, clarification controls, scenario editor, expected/observed comparison, trace, revision comparison or review card. Some questions need only a chat answer. Do not redraw or fill the canvas merely because another message arrived.
 
-Maya asks: “When a task is completed in Launch, create a task called Review completion.” The host supplies task/event facts and protected user scope; the extension owns the selected project and title. The shared catalog contains generic `tasks.get` and `tasks.create`; there is no follow-up-specific capability or hook-specific list of calls.
+Canvas interactions are also user inputs. Changing a project, editing an expectation or confirming a revision produces a visible receipt in the conversation, followed by the agent's explanation or next question. Chat and canvas operate on the same scoped draft/evidence; neither has a hidden second version of the customization.
 
-The source logic reads the completed task, checks the selected project, then conditionally creates one task. Other projects cause no change; a missing source causes a business rejection without a write. Source-owned project constants do not imply a new hook input. The example fits the current scalar, one-WRITE shape; actual real effects still require separately accepted core/native admission evidence.
+The agent controls presentation, not authority. Application-owned components render typed, validated content; a model does not execute arbitrary generated UI/code, bypass scope, rewrite expected outcomes or self-approve. The host still enforces exact compilation, simulation, human approval and activation boundaries.
 
-Leo's draft instead selects Operations and Plan next step. Sam begins without an active customization. Each user's state is separate in the prototype. This demonstrates the intended UX, not implemented authentication or isolation guarantees.
+## Representative conversation
 
-## Information architecture and visual direction
+1. Maya describes a task-completion follow-up in chat. The agent clarifies the project and new task title, bringing a behavior sketch and useful choice controls onto the canvas.
+2. Maya answers in chat or changes the canvas choices. Her input is reflected in the conversation; the sketch updates while previous discussion remains visible.
+3. Maya asks for examples. The agent presents editable scenario expectations. She can ask why a case matters, add/change an expectation or ask to run the examples without leaving the conversation.
+4. The agent shows the comparison on the canvas and explains the results in chat. If a scenario disagrees with the draft, they discuss whether intent, behavior or expectation needs changing. The agent does not silently fix the oracle.
+5. Maya asks to review. The agent brings the current revision and its evidence onto the canvas. Human approval and activation are explicit separate decisions, recorded back into chat. A request to activate never lets the model approve on her behalf.
+6. After activation, the conversation can bring actual task-app evidence onto the canvas. They can inspect an outcome, discuss an uncertain write, revise a draft, disable it or restore a previous selection. Earlier effects are not undone by changing selection.
 
-- Keep the surrounding task-app navigation visible to connect authoring with application behavior. A slim workspace rail and the current demo user anchor the context.
-- The Studio workspace has a primary interaction area and an always-visible behavior summary. Keep user scope, trigger, maximum effect and active revision visible while the draft changes.
-- Describe, Behavior, Test, Review and Activity organize information, not a one-way wizard. Users can revisit earlier steps; validation and evidence requirements control consequential actions.
-- Use warm off-white surfaces, forest-green actions, dark ink, fine borders, restrained rust warnings and editorial headings. Give the work clear hierarchy without gradients, decorative metrics or a generic dashboard grid.
-- Primary actions describe their consequence: Create a draft, Confirm & validate, Run scenarios, Approve this revision, Activate prototype revision. Approval and activation remain visibly separate.
-- Technical details are secondary. Business users should understand conditions and effects without IR. Production UI can disclose exact artifacts, traces and diagnostics on demand using maintained contracts.
+These are example exchanges, not mandatory navigation stages. A user can ask to revisit the diagram, compare alternatives or inspect a scenario at any point; current evidence gates control consequential actions.
 
-## Screen and interaction contract
+## Example semantics and ownership
 
-| Area/state | What is visible | Allowed transition and evidence |
+The scripted pattern is: when a task is completed in Launch, create a task titled Review completion. The host supplies event facts, protected user scope and generic `tasks.get`/`tasks.create`; the extension owns the project/title and conditional logic. Another project causes no change; a missing source causes business rejection without a write. No special follow-up capability or customer-specific hook input is introduced.
+
+Leo's initial draft instead uses Operations and Plan next step. Sam has no selected customization. The prototype retains separate conversation, draft and selection per example user in tab-local session storage. That illustrates the desired experience, not implemented identity isolation. Real effects still need separately qualified core/native admission evidence; simulation alone cannot certify them.
+
+## Layout and visual direction
+
+- Keep a substantial conversation pane with persistent composer, readable agent/user turns and contextual suggested prompts. The chat is the starting point and remains available while canvas content changes.
+- Give the canvas enough space to explain behavior and compare examples. Its heading states what is being shown and which draft/revision it belongs to; selection status remains visible without becoming a progress stepper.
+- Use warm off-white surfaces, forest-green actions, dark ink, restrained rust warnings, fine borders and editorial headings. Share a vocabulary with the native task app, not an early production component API.
+- Use labeled controls, visible keyboard focus, text status as well as color and clear action consequences. On narrow screens stack the conversation and latest canvas with obvious labels; do not hide conversation behind a required stage tab.
+- Keep technical IR/artifact details in optional inspection. Business users should understand conditions, effects, expectations and consequences without reading implementation details.
+
+## Canvas and conversation contracts
+
+| Context | Canvas contribution | Conversation and state rules |
 | --- | --- | --- |
-| Provider setup | Connected/setup-needed status and clear local configuration guidance | Missing provider blocks new AI generation, not existing tasks or review. Prototype only toggles an example state; it never accepts keys. |
-| Describe | Customer request, retained intent and one concrete example | Generation prepares a proposed behavior, not an active extension. In this prototype free text is retained but only the single example is scripted; Behavior asks for explicit confirmation. |
-| Clarify/Behavior | Project/title choices, ordered actions, no-op and rejection boundaries | Editing behavior creates a new draft revision and invalidates validation, scenarios and approval. The current active snapshot stays unchanged. |
-| Unsupported request | Concrete unsupported requirement and explanation | Revise toward supported event-triggered behavior; never claim scheduling exists. Production repair preserves user requirements or asks before narrowing them. |
-| Test before run | Scenario inputs and independently selected expected outcomes | The user can deliberately choose an incorrect outside-project expectation. No real host operations occur during simulation. |
-| Test matched | Expected/observed comparison per scenario and evidence limitations | Review becomes available only after current validation and matched scenarios. Passing examples is not a proof of all behavior or native guarantees. |
-| Test mismatch | Expected versus observed difference and both resolution paths | The user decides whether intent/behavior or expectation changes. Changing expectations invalidates prior approval and requires another run; no silent oracle rewriting. |
-| Review | Behavior, selected scope, draft revision, scenario evidence and explicit confirmations | Approve this exact revision only after reviewing both behavior and expectations. Approval alone does not activate anything. |
-| Approved | Clear approved-but-not-active state | Activate explicitly. Production must bind source/artifact/model/scenario/authority identities, not the prototype's revision number alone. |
-| Activity | Exact active revision, illustrative task outcome and earlier events | A completed example event shows what a created task would look like. Production must replace the illustrative feed with actual host evidence. |
-| Unknown result | Lost response and explicit uncertainty | No blind retry action. A task may exist; real host records and reconciliation are needed. |
-| Revised draft | New draft alongside unchanged active selection | Review/retest before replacing the active revision. Old approved evidence is not reused after relevant changes. |
-| Disabled/rollback | Changed future selection plus retained prior activity | Neither action undoes tasks/effects or changes in-flight admissions. Rollback needs a previous reviewed selection. |
-| User switch/resume | New user's draft, active revision and activity | Prototype changes remain tab-local and survive reload where session storage is available. Production must enforce scope in services and ignore stale client responses, not just switch UI objects. |
+| Initial request | Calm empty canvas or a relevant starting illustration | Invite the user's goal in chat; no preconfigured rule is presented as already understood or active. |
+| Clarification | Choice/form only when it improves the question | Both chat answers and canvas edits enter the same conversation. Explain proposed assumptions before accepting them. |
+| Proposed behavior | Trigger/condition/action sketch and boundaries | Preserve original intent alongside the current proposal; explain unsupported requirements rather than quietly narrowing them. |
+| Scenario design | Inputs and independently reviewed expectations | Canvas edits are explicit user changes, never an agent's silent rewrite of expected results. |
+| Simulation result | Expected/observed comparison, mismatch detail or trace | Explain findings in chat; retain the evidence's exact draft/scenario identity. Simulation is not an actual mutation or proof of native guarantees. |
+| Draft revision | Current behavior or difference from active revision | Edits invalidate affected validation/tests/approval, not the active snapshot. Old conversation references must not imply old evidence applies to the new revision. |
+| Review request | Exact-revision evidence and human confirmation controls | Agent may request review; human actions bind the host-selected exact identity. Approval alone is not activation. |
+| Outcome discussion | Actual native result, trace or explicitly illustrative prototype feed | Distinguish completed, no-op, business rejection, failed, limited and uncertain outcomes. Unknown effect is not safe to retry blindly. |
+| Disable/rollback | Selected version and future-admission consequences | Preserve prior effects and admitted snapshots; neither operation undoes earlier changes. |
+| Provider setup/failure | Configuration help or recoverable error when useful | Never ask for secrets in chat. Keep credentials server-side; preserve drafts/history while setup or budget problems are resolved. |
+| Interrupted work | Last valid draft/evidence and pending-operation status | Explain what stopped versus what may still have completed. Retain conversation and avoid silently resuming side effects. |
+| User switch | New user's own conversation/canvas/selection | Clear drafts in the composer; host enforces scope and rejects stale results. Do not reuse another customer's conversation or approval. |
 
 ## Prototype review tour
 
-1. As Maya, inspect the request and create a draft. Confirm the project/title and the three proposed actions. Validate it.
-2. Inspect the three scenario expectations and run them. Change the outside-project expectation to Create a task, rerun and inspect the mismatch. Choose the intended expectation yourself and rerun.
-3. Review revision 1, confirm behavior and expectations, approve it, then separately activate it. Try a completed event and inspect the explicitly illustrative task result.
-4. Explore a lost response. Confirm that UNKNOWN is not presented as no effect or safe to retry.
-5. Edit the draft title. Confirm the previous active revision remains intact and the draft needs fresh validation, scenarios and approval. Activate the second revision, then roll back the selection and disable it.
-6. Switch to Leo, create a different customization at the same hook and return to Maya. Confirm each retains its own draft/selection. Sam has no enabled customization.
-7. Toggle provider setup-needed and attempt generation. Explore an unsupported scheduling request. Reload to inspect tab-local resume. No real key, request, activation or mutation occurs.
+Start from Reset. Send the suggested completion-follow-up request, discuss the choices, and inspect the behavior canvas. Ask Show me some scenarios, then Test it. Ask for a mismatch and decide how to resolve it; the canvas expectation selector also sends a visible user input to the chat.
 
-## Accessibility, responsive behavior and recovery
+Ask Review this revision. Confirm the current behavior and expectations on the canvas, approve, then separately activate the prototype revision. Ask Try a completed task and Explore a lost response to inspect illustrative outcomes. Ask Show the behavior, change the title using quotes, retest/review and activate a second revision, then ask to roll back or disable it. Switch users and resume each conversation independently.
 
-Use native labeled controls, keyboard focus indicators, a named journey navigation, disabled actions with accompanying explanations and an alert region for errors. Communicate statuses in text as well as color. At narrow widths the rail compacts and the behavior summary follows the main interaction; avoid hidden consequential state or clipped action controls. Validate actual keyboard flow, contrast, overflow and representative desktop/mobile screens before claiming these qualities.
+Everything is scripted. The small route set supports one representative pattern, not arbitrary natural-language interpretation. Suggested prompts expose that limitation. The real agent must clarify a visitor's actual request through host-owned tools rather than rely on these routes. No provider, compiler, real approval or native task mutation runs here.
 
-The production design must additionally specify generation/compilation/simulation progress, cancellation, provider timeout/auth/rate-limit/budget errors, editable clarification turns and durable draft recovery. Never replace a deliberate decision with an indefinite spinner. Preserve the last valid draft; explain whether an operation stopped and whether earlier effects may have occurred. This first prototype has immediate scripted transitions and setup/unsupported/mismatch/uncertain examples; asynchronous provider/cancellation and complete interrupted-session interactions remain design work, not implemented claims.
+## What needs detailed design next
 
-## Production seams and verification
+- Clarification turns, interruptions and alternatives: how the agent checks its understanding and makes assumptions visible without over-questioning.
+- Canvas update/continuity: preserve useful views, refer to earlier evidence and show revision changes without distracting redraws. Historic references must open correctly identified snapshots, not silently show latest data.
+- Progress/cancellation/provider errors: use actual operation states, keep chat usable and explain what can still finish. The prototype's immediate scripted transitions are not this implementation.
+- Recovery and persistence: durable conversations/drafts, reload during an operation, retrying safe authoring operations and preserving independent scenario expectations.
+- Exact approval interaction: resolve how conversational requests and explicit canvas confirmations identify the precise current proposal, especially after intervening edits or user switches.
+- User review of the actual conversation/canvas layout, density, mobile presentation, control feedback and before/after task evidence. This proposal remains unapproved until that review.
 
-Host services own scoped catalog discovery, source validation/compilation, scenario execution, immutable evidence/approval, active bindings, revocation and runtime evidence. The model receives bounded tools; it cannot self-approve, publish a catalog or bypass host authorization. Provider credentials remain on the local app server. The same authoring workflow will be qualified against selected providers/models; the prototype is not that qualification.
+## Verification and production seams
 
-Keep fast pure interaction regressions separate from native service tests and actual browser journeys. `node --test docs/extension-studio/studio.test.mjs` checks approval prerequisites, edit invalidation, mismatch recovery, per-user prototype state, rollback, absent provider and honest unknown outcomes. These tests protect the prototype's state transitions only. Production acceptance also needs native scope/persistence tests, exact core artifacts, actual authoring/lifecycle tools and separate opt-in live-provider checks.
+`node --test docs/extension-studio/studio.test.mjs` checks the bounded prototype model, including continuous chat/canvas state, user scope, approval prerequisites, edit invalidation, mismatch recovery, rollback, provider absence and uncertainty; it also checks the allowlisted local launcher. Inspect actual browser behavior and desktop/narrow layouts, not only source or screenshots. Previous staged-prototype checks remain historical evidence only.
 
-## Review decisions still open
-
-- Does the conversation plus persistent behavior summary explain the system clearly enough? Decide whether conversation should remain visible through Test/Review and how much history to show.
-- Review the visual direction, screen density and mobile ordering in the actual prototype. It is a proposal, not a user-approved design.
-- Define the first live AI clarification/repair interaction and asynchronous/cancellation states; this prototype deliberately supports one scripted customization.
-- Decide how actual task-app results link back to the approved revision without exposing unnecessary technical details.
-- Review all recovery paths and exact approval boundaries before implementing the production Studio UI. The full design feature remains active until these decisions and user feedback are resolved.
+Production host services own scoped discovery, compilation, simulation, immutable evidence/approval, selection, revocation and native outcomes. The agent uses bounded authoring tools; a canvas renderer does not add new runtime capabilities. The complete demo uses operator-supplied server-side provider/model credentials and qualified multi-provider support. Real acceptance also requires native persistence/isolation, exact core artifacts, fast regression/UI journeys and separate opt-in live-provider checks.

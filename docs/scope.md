@@ -14,7 +14,9 @@ The app is a local web demonstration: visitors clone this repository, follow doc
 
 ## Extension Studio experience
 
-The Extension Studio is the major demo experience and requires deliberate, detailed product, UI and interaction design before its UI is implemented. Maintain its UX specification, screen/state inventory and interactive prototype in this repo; track design and implementation in the core roadmap's existing owning features.
+The Extension Studio is the major demo experience: an agent chat is the primary interaction, with a contextual canvas showing useful UI as the agent works. The agent can visualize behavior, ask a structured clarification, present scenarios or compare results while the conversation continues. Canvas interactions feed explicit user input back into chat. This is not a staged wizard or workflow dashboard; application-owned components render the canvas, not arbitrary generated code.
+
+This requires deliberate, detailed product, UI and interaction design before its production UI is implemented. Maintain its UX specification, screen/state inventory and interactive prototype in this repo; track design and implementation in the core roadmap's existing owning features. Agent-directed presentation never grants publication, approval or activation authority.
 
 The design must show the full journey: describe intent, clarify requirements, inspect proposed behavior, create/review test scenarios, simulate, understand results, approve an exact revision, activate, observe native app behavior and revise/disable/roll back. Define backtracking and recovery, not only a successful linear path. A business user should understand what runs, when, for whom, what it may change and what has actually been verified without writing code or inspecting IR.
 

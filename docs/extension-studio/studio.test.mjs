@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, transition as next } from './studio.mjs';
+import { initialState, transition as next, talk, canvasAction } from './studio.mjs';
 import { prototypeServer } from './serve.mjs';
 function reviewed(s = initialState()) { s = next(s, { type: 'validate' }); s = next(s, { type: 'simulate' }); return next(s, { type: 'approve', behavior: true, scenarios: true }); }
 test('activation requires current validation, simulation and explicit review', () => {
@@ -51,4 +51,35 @@ test('local prototype server exposes only its two public assets', async t => {
   const script = await fetch(root + '/studio.mjs'); assert.equal(script.status, 200); assert.match(script.headers.get('content-type'), /javascript/);
   assert.equal((await fetch(root + '/README.md')).status, 404);
   assert.equal((await fetch(root, { method: 'POST' })).status, 405);
+});
+test('chat introduces a contextual canvas without approving or activating anything', () => {
+  const s = talk(initialState(), 'When I complete a task, create a follow-up.');
+  assert.equal(s.users.Maya.draft.step, 'behavior'); assert.equal(s.users.Maya.messages.length, 3);
+  assert.equal(s.users.Maya.messages[1].role, 'user'); assert.equal(s.users.Maya.active, null); assert.equal(s.users.Maya.draft.approved, false);
+});
+test('conversation can revisit behavior while retaining prior tests and messages', () => {
+  let s = talk(initialState(), 'A completion follow-up'); s = talk(s, 'Show some scenarios'); s = talk(s, 'Test it');
+  assert.equal(s.users.Maya.draft.tested, true); s = talk(s, 'Explain the behavior in Launch');
+  assert.equal(s.users.Maya.draft.step, 'behavior'); assert.equal(s.users.Maya.draft.tested, true); assert.equal(s.users.Maya.messages.length, 9);
+});
+test('canvas edits return user input to chat and invalidate review', () => {
+  let s = reviewed(talk(initialState(), 'Completion follow-up')); s = next(s, { type: 'activate' });
+  s = canvasAction(s, { type: 'edit', title: 'New title' });
+  assert.equal(s.users.Maya.draft.approved, false); assert.equal(s.users.Maya.draft.step, 'behavior');
+  assert.equal(s.users.Maya.active.title, 'Review completion'); assert.match(s.users.Maya.messages.at(-2).text, /canvas/);
+  assert.match(s.users.Maya.messages.at(-2).text, /New title/);
+});
+test('a chat request to activate brings up human review instead of self-approval', () => {
+  const s = talk(reviewed(talk(initialState(), 'Completion follow-up')), 'Activate it');
+  assert.equal(s.users.Maya.draft.step, 'review'); assert.equal(s.users.Maya.active, null);
+});
+test('chat and canvas history remain scoped when changing demo users', () => {
+  let s = talk(initialState(), 'Maya request'); const maya = structuredClone(s.users.Maya);
+  s = canvasAction(s, { type: 'user', user: 'Leo' }); s = talk(s, 'Leo request');
+  assert.deepEqual(s.users.Maya, maya); assert.equal(s.users.Leo.messages[1].text, 'Leo request');
+});
+test('restoring example setup clears a stale missing-provider error', () => {
+  let s = canvasAction(initialState(), { type: 'provider' }); s = talk(s, 'Create a completion follow-up');
+  assert.match(s.users.Maya.draft.error, /provider/); s = canvasAction(s, { type: 'provider' });
+  assert.equal(s.provider, true); assert.equal(s.users.Maya.draft.error, '');
 });
