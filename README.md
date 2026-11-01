@@ -42,6 +42,12 @@ npm run test:e2e
 
 Native regression uses temporary data. Browser setup downloads separate test Chromium **inside `.tools/playwright/`** without changing installed browsers/profiles. Browser journeys own their servers, ports and databases; they never reuse an operator app. After browser setup, `npm run test:all` runs both suites. See [test details](tests/README.md).
 
+## Extension Studio design prototype
+
+The Studio is being designed as **agent chat with a contextual canvas**. You can review the separate scripted prototype with `node docs/extension-studio/serve.mjs`, then open [the prototype](http://localhost:4179/). See the [interaction proposal](docs/extension-studio-design.md).
+
+This prototype makes no provider calls or real task changes. The complete AI extension-creation UI remains future work and will use the runner's own server-side provider configuration and credentials.
+
 ## Project boundaries
 
 | Path | Responsibility |
