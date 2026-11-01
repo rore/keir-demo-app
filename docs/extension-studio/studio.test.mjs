@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, transition as next, talk, canvasAction } from './studio.mjs';
+import { initialState, transition as next, talk, canvasAction, workingState, evidenceView, inspectEvidence, followConversation, holdCanvas, operationAction, restoreSession } from './studio.mjs';
 import { prototypeServer } from './serve.mjs';
 function reviewed(s = initialState()) { s = next(s, { type: 'validate' }); s = next(s, { type: 'simulate' }); return next(s, { type: 'approve', behavior: true, scenarios: true }); }
 test('activation requires current validation, simulation and explicit review', () => {
@@ -82,4 +82,98 @@ test('restoring example setup clears a stale missing-provider error', () => {
   let s = canvasAction(initialState(), { type: 'provider' }); s = talk(s, 'Create a completion follow-up');
   assert.match(s.users.Maya.draft.error, /provider/); s = canvasAction(s, { type: 'provider' });
   assert.equal(s.provider, true); assert.equal(s.users.Maya.draft.error, '');
+});
+
+test('saved evidence reopens the exact draft and results after later edits', () => {
+  let s = talk(talk(initialState(), 'Completion follow-up'), 'Test it');
+  const result = structuredClone(evidenceView(s));
+  s = canvasAction(s, { type: 'edit', title: 'A later title' });
+  s = inspectEvidence(s, result.id);
+  assert.deepEqual(evidenceView(s), result);
+  assert.equal(s.users.Maya.draft.title, 'A later title');
+  assert.equal(evidenceView(s).draft.title, 'Review completion');
+  assert.equal(evidenceView(s).active, null);
+});
+test('held canvas offers new evidence without replacing the inspected snapshot', () => {
+  let s = holdCanvas(workingState());
+  const held = structuredClone(evidenceView(s));
+  s = talk(s, 'Test it');
+  assert.deepEqual(evidenceView(s), held);
+  assert.equal(s.users.Maya.pendingEvidence, s.users.Maya.evidence.at(-1).id);
+  s = followConversation(s);
+  assert.equal(evidenceView(s).draft.mismatch, true);
+  assert.equal(s.users.Maya.pendingEvidence, null);
+  assert.equal(s.users.Maya.held, false);
+});
+test('historical review cannot approve or activate a later proposal', () => {
+  let s = talk(talk(talk(initialState(), 'Follow-up'), 'Test it'), 'Review this revision');
+  const oldId = evidenceView(s).id;
+  s = canvasAction(s, { type:'edit', title:'Changed' });
+  s = talk(s, 'Test it');
+  s = inspectEvidence(s, oldId);
+  s = canvasAction(s, { type:'approve', behavior:true, scenarios:true, evidenceId:oldId });
+  assert.equal(s.users.Maya.draft.approved, false);
+  s = canvasAction(s, { type:'activate', evidenceId:oldId });
+  assert.equal(s.users.Maya.active, null);
+  assert.match(s.users.Maya.messages.at(-1).text, /no longer current/);
+});
+test('current exact review approves separately from activation', () => {
+  let s = talk(workingState(), 'For another project, expect no change');
+  s = talk(s, 'Review this revision');
+  s = canvasAction(s, { type:'approve', behavior:true, scenarios:true, evidenceId:evidenceView(s).id });
+  assert.equal(s.users.Maya.active.revision, 1);
+  assert.equal(s.users.Maya.draft.approved, true);
+  s = canvasAction(s, { type:'activate', evidenceId:evidenceView(s).id });
+  assert.equal(s.users.Maya.active.revision, 2);
+});
+test('paused run ignores late completion and resumes with a fresh operation identity', () => {
+  let s = operationAction(workingState(), { type:'start' });
+  const first = s.users.Maya.operation.id;
+  s = operationAction(s, { type:'pause' });
+  const paused = structuredClone(s);
+  s = operationAction(s, { type:'finish', id:first, owner:'Maya' });
+  assert.deepEqual(s, paused);
+  s = operationAction(s, { type:'resume' });
+  assert.notEqual(s.users.Maya.operation.id, first);
+  s = operationAction(s, { type:'finish', id:s.users.Maya.operation.id, owner:'Maya' });
+  assert.equal(s.users.Maya.operation.status, 'complete');
+  assert.equal(evidenceView(s).draft.mismatch, true);
+  assert.equal(s.users.Maya.active.revision, 1);
+});
+test('reload marks running work interrupted and keeps draft, evidence and ownership', () => {
+  const running = operationAction(workingState(), { type:'start' });
+  const resumed = restoreSession(JSON.parse(JSON.stringify(running)));
+  assert.equal(resumed.users.Maya.operation.status, 'interrupted');
+  assert.deepEqual(resumed.users.Maya.draft, running.users.Maya.draft);
+  assert.deepEqual(resumed.users.Maya.evidence, running.users.Maya.evidence);
+  assert.equal(operationAction(resumed, { type:'resume' }).users.Maya.operation.status, 'running');
+});
+test('late results cannot cross users or apply to changed drafts', () => {
+  let s = operationAction(workingState(), { type:'start' });
+  const id = s.users.Maya.operation.id;
+  s = canvasAction(s, { type:'user', user:'Leo' });
+  assert.deepEqual(operationAction(s, { type:'finish', id, owner:'Maya' }), s);
+  s = canvasAction(s, { type:'user', user:'Maya' });
+  s = canvasAction(s, { type:'edit', title:'Different draft' });
+  assert.equal(s.users.Maya.operation.status, 'superseded');
+  assert.deepEqual(operationAction(s, { type:'finish', id, owner:'Maya' }), s);
+});
+test('populated proposal has distinct user histories and an empty first-use user', () => {
+  const s = workingState();
+  assert.equal(s.users.Maya.active.title, 'Review completion');
+  assert.equal(s.users.Maya.draft.title, 'Prepare next step');
+  assert.equal(s.users.Leo.draft.project, 'Operations');
+  assert.equal(s.users.Sam.active, null);
+  assert.equal(s.users.Sam.draft.started, false);
+});
+test('correcting a completed run does not leave a false interruption notice', () => {
+  let s = operationAction(workingState(), { type:'start' });
+  s = operationAction(s, { type:'finish', id:s.users.Maya.operation.id, owner:'Maya' });
+  s = talk(s, 'For another project, expect no change');
+  assert.equal(s.users.Maya.operation.status, 'complete');
+  assert.equal(s.users.Maya.draft.tested, true);
+  s = operationAction(s, { type:'start' });
+  assert.equal(s.users.Maya.draft.mismatch, false);
+  s = canvasAction(s, { type:'user', user:'Leo' });
+  assert.equal(s.users.Maya.operation.status, 'interrupted');
 });

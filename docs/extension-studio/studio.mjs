@@ -81,7 +81,7 @@ function exchange(state, text, action, reply) {
 }
 
 // These explicit routes illustrate a conversation; they do not interpret arbitrary requests with AI.
-export function talk(state, text) {
+function respond(state, text) {
   text = String(text).trim();
   if (!text) return state;
   const d = state.users[state.user].draft, lower = text.toLowerCase();
@@ -128,7 +128,7 @@ export function talk(state, text) {
   return exchange(state, text, null, 'This scripted prototype supports the task-completion example. Try asking me to show the behavior, prepare scenarios, test it, review it, or change the title using quotes. A real agent will clarify your own request rather than use these fixed routes.');
 }
 
-export function canvasAction(state, action) {
+function actOnCanvas(state, action) {
   if (['user', 'reset'].includes(action.type)) return transition(state, action);
   const d = state.users[state.user].draft;
   const descriptions = {
@@ -141,5 +141,127 @@ export function canvasAction(state, action) {
   const [text, reply] = descriptions[action.type] ?? ['I used a canvas control.', 'The canvas now reflects that action.'];
   const s = exchange(state, text, action, reply);
   if (action.type === 'edit') s.users[s.user].draft.step = 'behavior';
+  return s;
+}
+
+// Snapshots keep old chat receipts honest when the working draft changes.
+export function draftKey(d) {
+  return JSON.stringify([d.revision, d.project, d.title, d.expectation]);
+}
+function recordEvidence(state) {
+  const u = state.users[state.user];
+  u.evidence ??= [];
+  const item = { id: u.evidence.length + 1, owner: state.user, draft: structuredClone(u.draft), active: structuredClone(u.active), activity: structuredClone(u.activity) };
+  u.evidence.push(item);
+  if (u.messages.at(-1)?.role === 'assistant') u.messages.at(-1).evidenceId = item.id;
+  if (u.held) u.pendingEvidence = item.id;
+  else { u.canvasId = item.id; u.pendingEvidence = null; }
+  return state;
+}
+export function evidenceView(state) {
+  const u = state.users[state.user];
+  return u.evidence?.find(item => item.id === u.canvasId) ?? null;
+}
+export function inspectEvidence(state, id) {
+  const s = structuredClone(state), u = s.users[s.user];
+  const item = u.evidence?.find(entry => entry.id === id);
+  if (!item) return s;
+  u.canvasId = id; u.held = true;
+  u.pendingEvidence = id === u.evidence.at(-1).id ? null : u.evidence.at(-1).id;
+  return s;
+}
+export function followConversation(state) {
+  const s = structuredClone(state), u = s.users[s.user];
+  u.held = false; u.pendingEvidence = null; u.canvasId = u.evidence?.at(-1)?.id;
+  return s;
+}
+export function holdCanvas(state) {
+  const s = structuredClone(state); s.users[s.user].held = true; return s;
+}
+export function talk(state, text) {
+  if (!String(text).trim()) return state;
+  if (/^run scenarios$/i.test(text.trim())) return operationAction(state, { type: 'start' });
+  if (/^(pause|stop|cancel)( run)?$/i.test(text.trim())) return operationAction(state, { type: 'pause' });
+  if (/^resume( run)?$/i.test(text.trim())) return operationAction(state, { type: 'resume' });
+  const s = respond(state, text);
+  const u = s.users[s.user];
+  if (['running', 'paused', 'interrupted'].includes(u.operation?.status) && u.operation.key !== draftKey(u.draft)) u.operation.status = 'superseded';
+  if (u.operation && (u.draft.tested || u.draft.mismatch)) u.operation.status = 'complete';
+  return recordEvidence(s);
+}
+export function canvasAction(state, action) {
+  if (['approve', 'activate'].includes(action.type) && action.evidenceId != null) {
+    const u = state.users[state.user], item = evidenceView(state);
+    if (!item || item.id !== action.evidenceId || item.id !== u.evidence.at(-1).id || draftKey(item.draft) !== draftKey(u.draft)) {
+      return exchange(state, 'I tried to use an earlier review.', null, 'That review is no longer current. Open the latest proposal and review its evidence.');
+    }
+  }
+  if (action.type === 'user') {
+    const s = structuredClone(state), op = s.users[s.user].operation;
+    if (action.user !== s.user && people.includes(action.user) && op?.status === 'running') op.status = 'interrupted';
+    return actOnCanvas(s, action);
+  }
+  if (action.type === 'reset') return actOnCanvas(state, action);
+  const s = actOnCanvas(followConversation(state), action), u = s.users[s.user];
+  if (['running', 'paused', 'interrupted'].includes(u.operation?.status) && u.operation.key !== draftKey(u.draft)) u.operation.status = 'superseded';
+  return recordEvidence(s);
+}
+
+export function operationAction(state, action) {
+  const s = structuredClone(state), u = s.users[s.user], d = u.draft;
+  const message = (input, reply) => {
+    if (input) u.messages.push({ role: 'user', text: input });
+    u.messages.push({ role: 'assistant', text: reply });
+    return s;
+  };
+  if (action.type === 'start') {
+    if (!d.started) return message('Run scenarios', 'First, describe the behavior you want.');
+    if (u.operation?.status === 'running') return s;
+    u.operation = { id: (u.operation?.id ?? 0) + 1, owner: s.user, key: draftKey(d), status: 'running' };
+    d.tested = d.approved = d.mismatch = false; d.error = '';
+    return message('Run scenarios', `Checking three scripted scenarios for draft r${d.revision}. You can keep talking or pause this run.`);
+  }
+  if (action.type === 'pause') {
+    if (u.operation?.status !== 'running') return message('Pause run', 'No run is in progress. Your draft and evidence are retained.');
+    u.operation.status = 'paused';
+    return message('Pause run', 'Run paused. No new result is available; your draft, conversation and earlier evidence are saved in this tab.');
+  }
+  if (action.type === 'resume') {
+    if (!['paused', 'interrupted'].includes(u.operation?.status) || u.operation.key !== draftKey(d)) return message('Resume run', 'That run cannot resume against this draft. Start a new run for the current revision.');
+    u.operation.status = 'running'; u.operation.id++;
+    return message('Resume run', `Resuming the scripted check for draft r${d.revision}.`);
+  }
+  if (action.type === 'finish') {
+    const op = u.operation;
+    if (!op || op.status !== 'running' || op.id !== action.id || op.owner !== action.owner || op.key !== draftKey(d)) return s;
+    let result = transition(s, { type: 'validate' }); result = transition(result, { type: 'simulate' });
+    result.users[s.user].operation.status = 'complete';
+    result.users[s.user].messages.push({ role: 'assistant', text: result.users[s.user].draft.mismatch ? 'One scenario differs from your expectation. The other-project case expects a new task, but this draft makes no change. Which result do you intend?' : 'All three scripted scenarios match. Review the behavior, scope and remaining limits before approving this revision.' });
+    return recordEvidence(result);
+  }
+  return s;
+}
+
+export function restoreSession(saved) {
+  const s = structuredClone(saved);
+  for (const u of Object.values(s.users)) if (u.operation?.status === 'running') u.operation.status = 'interrupted';
+  return s;
+}
+
+export function workingState() {
+  let s = initialState();
+  for (const user of ['Maya', 'Leo']) {
+    s.user = user;
+    s = talk(s, 'When I complete a task, create a follow-up.');
+    s = talk(s, 'Test it');
+    s = canvasAction(s, { type: 'approve', behavior: true, scenarios: true });
+    s = canvasAction(s, { type: 'activate' });
+    s = canvasAction(s, { type: 'edit', title: user === 'Maya' ? 'Prepare next step' : 'Review next step' });
+    const u = s.users[user];
+    u.draft.expectation = 'create';
+    u.messages.push({ role: 'user', text: 'I want to change the follow-up. Does it also apply to completed tasks in another project?' }, { role: 'assistant', text: `The active version still creates “${u.active.title}”. This draft proposes “${u.draft.title}” in ${u.draft.project}. Should another project create a follow-up too, or make no change? We can compare that expectation with the draft.` });
+    s = recordEvidence(s);
+  }
+  s.user = 'Maya';
   return s;
 }
