@@ -218,8 +218,8 @@ test('asking for all projects explains the preview limit without silently narrow
   assert.match(after.users.Maya.messages.at(-1).text, /one project at a time/);
 });
 
-test('turn-off phrases containing on within another word disable; turn-on only requests review', () => {
-  for (const phrase of ['Turn off this automation', 'Turn it off in Operations']) {
+test('explicit turn-off takes precedence over project-qualified on; turn-on only requests review', () => {
+  for (const phrase of ['Turn off this automation', 'Turn it off in Operations', 'Turn off the follow-up on Launch', 'Turn it off on Operations', 'Disable the follow-up on Launch']) {
     let s = talk(workingState(), phrase);
     assert.equal(s.users.Maya.active.enabled, false, phrase);
     assert.equal(s.users.Maya.draft.step, 'activity');
@@ -230,4 +230,17 @@ test('turn-off phrases containing on within another word disable; turn-on only r
     assert.equal(s.users.Maya.draft.approved, false);
     assert.equal(s.users.Maya.active.enabled, false);
   }
+});
+
+test('turn intent uses whole words rather than on/off substrings', () => {
+  const before = talk(workingState(), 'Only Launch');
+  for (const phrase of ['Turn office reminders', 'Turn onboarding reminders', 'Return it off', 'Disablement']) {
+    const after = talk(before, phrase);
+    assert.deepEqual(after.users.Maya.active, before.users.Maya.active, phrase);
+    assert.deepEqual(after.users.Maya.draft, before.users.Maya.draft, phrase);
+  }
+  const after = talk(before, 'Turn office reminders on');
+  assert.equal(after.users.Maya.draft.step, 'review');
+  assert.equal(after.users.Maya.draft.approved, false);
+  assert.deepEqual(after.users.Maya.active, before.users.Maya.active);
 });

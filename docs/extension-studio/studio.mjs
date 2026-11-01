@@ -96,6 +96,9 @@ function respond(state, text) {
     const s = exchange(state, text, { type: 'edit', project: project ?? d.project, title: title ?? d.title }, 'I updated the preview. Your current setup hasn’t changed. Let’s try a few examples before you turn this change on.');
     s.users[s.user].draft.step = 'behavior'; return s;
   }
+  if (/\bdisable\b|\bturn\b.*\boff\b/.test(lower)) {
+    const s = exchange(state, text, { type: 'disable' }, 'Turned off. Tasks already added stay in your list.'); s.users[s.user].draft.step = 'activity'; return s;
+  }
   if (/fix.*expectation|expect.*no change|^only (launch|operations)[.!]?$/.test(lower)) {
     let s = /^only /i.test(text) && project ? transition(state, { type: 'edit', project }) : state;
     s = transition(s, { type: 'expectation', value: 'skip' }); s = transition(s, { type: 'validate' });
@@ -118,9 +121,6 @@ function respond(state, text) {
   if (/try.*complet|show.*task|show.*result/.test(lower)) {
     const s = exchange(state, text, { type: 'example' }, 'Here’s an example of the follow-up being added. This preview uses sample tasks; your real task list hasn’t changed.');
     s.users[s.user].draft.step = 'activity'; return s;
-  }
-  if (/disable|turn.*off/.test(lower)) {
-    const s = exchange(state, text, { type: 'disable' }, 'Turned off. Tasks already added stay in your list.'); s.users[s.user].draft.step = 'activity'; return s;
   }
   if (/roll.?back/.test(lower)) {
     const s = exchange(state, text, { type: 'rollback' }, 'I returned to your previous setup. Tasks already added stay in your list.'); s.users[s.user].draft.step = 'activity'; return s;
