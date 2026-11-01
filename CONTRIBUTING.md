@@ -4,7 +4,7 @@ Start with [application scope](docs/scope.md). The project roadmap, including de
 
 Follow the [shared Agent Workflow process](https://github.com/rore/keir-core/blob/main/docs/internal/workflow/current-process.md) for code, mixed changes and governance work. Keep the task's Work Record in core and run its resolver/checker from the core checkout with the explicit task slug and fresh demo evidence. Record this repo's revision and tests there. Documentation-only edits under `docs/`, `README.md` or `CONTRIBUTING.md` are exempt. No second workflow installation or record copy belongs here.
 
-Keep local test data isolated from everyday data. No build commands or dependencies are configured yet; add reproducible setup and CI with the first executable application slice, without altering global tools.
+Keep local test data isolated from everyday data. Use the pinned setup/build/test commands in [README.md](README.md) and [tests/README.md](tests/README.md); do not alter global tools. CI exercises the native baseline. Preserve the maintained [native contract](docs/native-task-app-design.md), including rejection, session-race, reset and persistence checks.
 
 Follow the [shared testing guidelines](https://github.com/rore/keir-core/blob/main/docs/testing.md): fast default regression, explicit slow checks and measured coverage. Test real host authorization, persistence and adapter guarantees separately from simulation; keep demo-specific contract cases with their implementation.
 

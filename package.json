@@ -1,0 +1,32 @@
+{
+  "name": "keir-demo-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "24.14.1" },
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "start": "node src/server.mjs",
+    "seed": "node scripts/demo-data.mjs seed",
+    "reset": "node scripts/demo-data.mjs reset",
+    "test": "node --test tests/*.test.mjs",
+    "test:e2e": "node scripts/browser-tests.mjs test",
+    "test:browser:install": "node scripts/browser-tests.mjs install",
+    "test:all": "npm test && npm run test:e2e"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.5",
+    "@fastify/static": "10.1.8",
+    "fastify": "5.12.7",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  },
+  "overrides": { "@fastify/static": { "glob": "14.0.3" } }
+}

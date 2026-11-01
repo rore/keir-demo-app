@@ -1,22 +1,60 @@
 # Keir Demo App
 
-A planned polished local web task manager and reference integration for Keir. Visitors will clone this repository and run the app locally, signing in as one of three seeded demo users to explore independent customizations. Each user represents a SaaS customer's customization scope. The app defines extension points, approved task capabilities, permissions and real guarantees. Its AI-driven extension creation UI helps business users describe, generate, simulate and review customizations before activation. The complete authoring demo requires the visitor's own AI provider configuration and credentials; no private keys are shipped. Keir validates and executes the resulting extensions within the host-defined boundaries. Native task management and execution of already activated extensions remain available without AI calls.
+A small local task workspace: projects, tasks, notes and a satisfying completion flow. Sign in as Maya, Leo or Sam, three fictional demo people with independent data. Your work stays in a local SQLite database across restarts.
 
-**Status: initial project structure; no runnable application yet.**
+The native app needs no Keir, AI credentials, Java, hosted database or sibling repository. Keir integration and the Extension Studio are later work; this baseline executes no extensions and calls no AI provider. Demo sign-in is local impersonation, not production authentication or a private account.
+
+## Run locally
+
+Prerequisite: **Node.js 24.14.1** with npm. This is the qualified runtime; its `node:sqlite` API is experimental. Nothing here installs or upgrades global tools. Package versions are pinned in `package-lock.json`.
+
+From this repository:
+
+```sh
+npm ci
+npm run build
+npm start
+```
+
+Open the printed [local app address](http://127.0.0.1:3000). Use that exact host/port; `localhost` is a different origin and is rejected. If occupied, use `npm start -- --port 3001`. The app never stops another service.
+
+First start seeds the demo. Optional `npm run seed` preserves edits. One process owns `.data/`; another start/seed/reset fails safely. Use **Ctrl+C in the owning terminal** to stop normally. Restart requires sign-in; projects/tasks persist. Data, test browsers and local configuration are ignored by Git.
+
+## Deliberate reset
+
+Stop the app, then run:
+
+```sh
+npm run reset -- --confirm
+```
+
+Reset holds the startup lock and verifies a recoverable backup in `.data/backups/` before resetting data transactionally. Backup failure preserves the original; failed reset rolls back. Startup never resets existing data. Read [data lifecycle and recovery](docs/running.md) before restoring a backup or removing a stale lock.
+
+## Verify
+
+Build first, then:
+
+```sh
+npm test
+npm run test:browser:install
+npm run test:e2e
+```
+
+Native regression uses temporary data. Browser setup downloads separate test Chromium **inside `.tools/playwright/`** without changing installed browsers/profiles. Browser journeys own their servers, ports and databases; they never reuse an operator app. After browser setup, `npm run test:all` runs both suites. See [test details](tests/README.md).
+
+## Project boundaries
 
 | Path | Responsibility |
 | --- | --- |
-| [src/](src/README.md) | Task UI, services, persistence and host-owned authoring/activation |
-| [keir/](keir/README.md) | Task-domain model, extension sources and business scenarios |
-| [tests/](tests/README.md) | Application, adapter and integration verification |
-| [docs/](docs/scope.md) | Application scope and integration boundaries |
+| `src/data.mjs` | SQLite schema, exclusive lock, seed/reset and native services |
+| `src/app.mjs`, `src/server.mjs` | Same-origin API, sessions and local startup |
+| `src/web/` | React/TypeScript workspace and responsive styles |
+| `tests/` | Real persistence/API checks and browser journeys |
+| `docs/` | [Scope](docs/scope.md), [native contract](docs/native-task-app-design.md), local operation and future design |
+| `keir/` | Reserved extension material; no integration in this slice |
 
-The separate `keir-core` repository owns the Java compiler and both Java and Node runtimes. This app uses the Node runtime and invokes the Java compiler locally during authoring. It must consume pinned core packages; sibling source paths are not the normal installation model.
+React/Vite and Fastify provide the UI/server foundation. Native services and database constraints enforce validation and ownership. Auth transitions serialize across tabs; stale requests cannot adopt another person's scope. Reopening, deletion, tags, priority, dates, search and collaboration are outside this slice.
 
-Project plans, demo feature status and in-scope task Work Records are managed in `keir-core`. This repository retains application scope, implementation and tests. Follow the [shared workflow](https://github.com/rore/keir-core/blob/main/docs/internal/workflow/current-process.md) for code/mixed/governance work, with documentation-only exemptions and direct-main delivery; PRs are not required. Do not duplicate workflow installation or records here.
+[keir-core](https://github.com/rore/keir-core) owns the shared roadmap, framework, roles and Work Records. Future integration consumes packaged components. The planned pre-design-time walkthrough/checkpoint and host-design skill are not delivered; see [future walkthroughs](docs/scope.md#two-future-walkthroughs).
 
-Framework/UI, local storage, package coordinates and build commands are pending. The app is hosted locally without a hosted database or sibling core checkout. AI extension creation will use an operator-configured provider/model with server-side credentials; multiple providers will be qualified explicitly. Local hosting does not mean AI runs offline. No dependency installation is needed for this scaffold. See [contribution workflow](CONTRIBUTING.md).
-
-The future `main` experience will have Keir's host configuration ready to explore. A planned `pre-design-time` starting branch and host-design skill will let visitors use their own coding agent and its existing authentication to build that integration from the native app. This is separate from the app's AI extension creation UI. That branch and skill are not delivered yet; see [the two walkthroughs](docs/scope.md#two-future-walkthroughs).
-
-License selection and public release are pending. No open-source license grant is implied by this scaffold.
+License selection and public release are pending. No open-source license grant is implied.
