@@ -68,7 +68,7 @@ test('an actual already-produced unavailable advice receipt cannot overwrite a r
     await expect(page.getByText('Task advice is unavailable. Your task has not changed.', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Retain unsaved race edit');
     await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-    await expect(page.getByRole('status').filter({ hasText: 'This task is pending' })).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: 'Task advice: Pending' })).toBeVisible();
   } finally { release?.(); }
 });
 

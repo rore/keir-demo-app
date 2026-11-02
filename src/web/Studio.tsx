@@ -17,6 +17,7 @@ export type State = {
   evidenceHistory: { id: string; revisionId: string }[];
 };
 type Outcome = { classification: string; code?: string };
+type SavedSource = { revisionId: string; source: string; cases: string[]; suiteDigest: string | null };
 type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"; identity: object; passed: boolean; reports: {
   id: string; label: string; expected: Outcome;
   report: { status: string; native?: Outcome; consumption?: { status: string; code?: string }; mismatches: object[] };
@@ -46,6 +47,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [review, setReview] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [reviewSource, setReviewSource] = useState<(SavedSource & { ownerId: string; key: string }) | null>(null);
+  const [reviewError, setReviewError] = useState("");
   const [restore, setRestore] = useState("");
   const [lookup, setLookup] = useState("");
   const [text, setText] = useState("");
@@ -79,10 +82,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const serial = useRef(0);
   const callbacks = useRef({ request, changed, beforeSelectionChange });
   callbacks.current = { request, changed, beforeSelectionChange };
-  const reviewKey = state?.draft && state.evidence ? `${state.draft.id}/${state.draftVersion}/${state.evidence.id}` : "";
+  const reviewKey = state?.draft && state.evidence ? `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${state.evidence.id}` : "";
   const currentEvidence = !!state?.draft && evidence?.id === state.evidence?.id && evidence?.revisionId === state.draft.id;
   const canReview = trusted && currentEvidence && evidence?.passed && state?.evidence?.passed;
   const disabled = !!busy || !trusted;
+  const reviewReady = reviewed.current?.kind !== "authored" || !!reviewSource && reviewSource.key === review && reviewSource.ownerId === state?.owner.id && reviewSource.revisionId === state?.draft?.id && reviewSource.suiteDigest === state?.draft?.suiteDigest;
 
   function openPane(next?: "advice" | "results" | "review", invoker = document.activeElement) {
     const reading = ++readingRevision.current;
@@ -134,7 +138,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       canvasScroll.current = canvas.current.scrollTop;
     }
   }, [state]);
-  function openReview() {
+  async function openReview() {
+    if (locked.current) return;
     if (!canReview) {
       say("Open the current proposal's sample results first. A complete passing run is needed before you can approve it.");
       return;
@@ -142,8 +147,23 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setReview(reviewKey);
     reviewed.current = { owner: state!.owner.name, label: state!.draft!.label, revisionId: state!.draft!.id, evidenceId: evidence!.id, kind: state!.draft!.kind };
     openPane("review");
-    setConfirmed(false);
+    setConfirmed(false); setReviewSource(null); setReviewError("");
     say("Review the exact proposal and its sample results on the canvas. Only the separate Approve button records your approval; Use is a further decision.");
+    if (state!.draft!.kind !== "authored") return;
+    const target = { ownerId: state!.owner.id, revisionId: state!.draft!.id, suiteDigest: state!.draft!.suiteDigest, key: reviewKey };
+    locked.current = true;
+    const turn = ++serial.current;
+    setBusy("Opening exact saved source and examples…");
+    try {
+      const saved = await callbacks.current.request<SavedSource>(`extensions/revisions/${encodeURIComponent(target.revisionId)}`);
+      if (!mounted.current || serial.current !== turn) return;
+      if (saved.revisionId !== target.revisionId || !target.suiteDigest || saved.suiteDigest !== target.suiteDigest || typeof saved.source !== "string" || !saved.source.trim() || !Array.isArray(saved.cases) || !saved.cases.length || saved.cases.some(item => typeof item !== "string" || !item.trim())) throw new Error("Saved review mismatch");
+      setReviewSource({ ...saved, ownerId: target.ownerId, key: target.key });
+    } catch {
+      if (mounted.current && serial.current === turn) setReviewError("Exact saved source and examples could not be checked. Approval is unavailable. Your editor buffers have not changed.");
+    } finally {
+      if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
+    }
   }
   async function refresh(announce = false) {
     if (locked.current) return;
@@ -419,9 +439,17 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <span className="rs-kicker">For {reviewed.current.owner} only</span><h3>Review: {reviewed.current.label}{reviewed.current.kind !== "authored" && " for open tasks"}</h3>
             <p>{reviewed.current.kind === "authored" ? "Review this exact source and its independent expected examples. The run checks only those examples; unlisted behavior remains untested. This program cannot edit tasks." : "Completed tasks show Done. Missing, denied or unavailable reads show no advice. The sample run checks these situations; it does not certify every live task or change any task."}</p>
             <details><summary>Exact proposal and reviewed evidence</summary><p>Revision: {reviewed.current.revisionId}</p><p>Evidence: {reviewed.current.evidenceId}</p></details>
+            {reviewed.current.kind === "authored" && <>
+              <p>These read-only saved documents belong to the revision above. Developer editor buffers are separate and are not submitted by approval.</p>
+              {reviewReady && reviewSource && <>
+                <h4>Saved source</h4><pre aria-label="Saved source for approval">{reviewSource.source}</pre>
+                <section aria-label="Saved expected examples for approval"><h4>Saved independent expected examples</h4>{reviewSource.cases.map((item, index) => <pre key={index} aria-label={`Saved example ${index + 1} for approval`}>{item}</pre>)}</section>
+              </>}
+              {reviewError && <><p role="alert">{reviewError}</p><button disabled={disabled || !canReview || review !== reviewKey} onClick={() => void openReview()}>Reload exact saved source</button></>}
+            </>}
             {review !== reviewKey && <p>This earlier review cannot approve the current proposal. Open its latest run to review the current examples.</p>}
-            <label className="rs-confirm"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} disabled={disabled || !canReview || review !== reviewKey} /> I reviewed these sample results and want this advice for my tasks.</label>
-            <div className="rs-actions"><button className="rs-primary" disabled={disabled || !canReview || review !== reviewKey || !confirmed || state.approvedEvidenceId === evidence?.id}
+            <label className="rs-confirm"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} disabled={disabled || !canReview || review !== reviewKey || !reviewReady} /> I reviewed these sample results and want this advice for my tasks.</label>
+            <div className="rs-actions"><button className="rs-primary" disabled={disabled || !canReview || review !== reviewKey || !reviewReady || !confirmed || state.approvedEvidenceId === evidence?.id}
               onClick={() => void mutate("approve", { revisionId: state.draft!.id, draftVersion: state.draftVersion, evidenceId: evidence!.id }, "This exact advice is approved. It is not selected until you choose Use.")}>Approve this advice</button></div>
           </article>}
         </>}
