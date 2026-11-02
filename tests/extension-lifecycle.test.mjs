@@ -50,6 +50,31 @@ test('actual six-case evidence, separate approval/activation and named operator 
   assert.equal((await check()).classification, 'DONE');
 });
 
+test('approved evidence stays pinned when a later sample run becomes latest', async t => {
+  const { db, lifecycle } = setup(t);
+  assert.equal(lifecycle.state('maya').approvedEvidenceId, null);
+  const loaded = lifecycle.load('maya', { templateId: 'attention', draftVersion: 0 }, authorized);
+  assert.equal(loaded.approvedEvidenceId, null);
+  const input = { revisionId: loaded.draft.id, draftVersion: loaded.draftVersion };
+  const first = await lifecycle.simulate('maya', input, authorized);
+  lifecycle.approve('maya', { ...input, evidenceId: first.evidence.id }, authorized);
+  const second = await lifecycle.simulate('maya', input, authorized);
+  assert.notEqual(second.evidence.id, first.evidence.id);
+  assert.equal(second.approvedEvidenceId, first.evidence.id);
+  assert.equal(second.evidence.id, second.evidenceHistory[0].id);
+  assert.equal(lifecycle.state('maya').approvedEvidenceId, first.evidence.id);
+  assert.equal(lifecycle.state('leo').approvedEvidenceId, null);
+  const reapproved = lifecycle.approve('maya', { ...input, evidenceId: second.evidence.id }, authorized);
+  assert.equal(reapproved.approvedEvidenceId, second.evidence.id);
+  const operator = lifecycle.state('maya').selection.revision;
+  assert.equal(operator.provenance, 'operator');
+  db.prepare('UPDATE extension_states SET draft_id=? WHERE owner_id=?').run(operator.id, 'maya');
+  assert.equal(lifecycle.state('maya').approvedEvidenceId, null);
+  const replacement = lifecycle.load('maya', { templateId: 'pending', draftVersion: reapproved.draftVersion }, authorized);
+  assert.equal(replacement.approvedEvidenceId, null);
+  assert.throws(() => lifecycle.activate('maya', { ...input, generation: replacement.selection.generation }, authorized), { status: 409 });
+});
+
 test('both independently expected curated suites execute through the actual simulator', async t => {
   const { lifecycle } = setup(t);
   for (const template of ['pending', 'attention']) {
@@ -97,10 +122,12 @@ test('foreign IDs, session revocation, forged/dependency-mismatched evidence and
     const payload = JSON.parse(original); alter(payload);
     db.prepare('UPDATE extension_evidence SET payload=? WHERE id=?').run(JSON.stringify(payload), state.evidence.id);
     assert.equal(lifecycle.state('maya').approved, false);
+    assert.equal(lifecycle.state('maya').approvedEvidenceId, null);
     assert.throws(() => lifecycle.activate('maya', { ...input, generation: 1 }, authorized), { status: 409 });
   }
   db.prepare('UPDATE extension_evidence SET payload=? WHERE id=?').run(original, state.evidence.id);
   db.prepare("UPDATE extension_revisions SET identity='{}' WHERE id=?").run(input.revisionId);
+  assert.equal(lifecycle.state('maya').approvedEvidenceId, null);
   assert.throws(() => lifecycle.activate('maya', { ...input, generation: 1 }, authorized), { status: 409 });
 });
 

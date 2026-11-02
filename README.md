@@ -2,7 +2,7 @@
 
 A small local task workspace: projects, tasks, notes and a satisfying completion flow. Sign in as Maya, Leo or Sam, three fictional demo people with independent data. Your work stays in a local SQLite database across restarts.
 
-The shared app lockup shows **Daymark** with **A KEIR Demo** directly beneath it. Use **Tasks** for native work and **Customizations → Task advice** to open Studio directly. Try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut to the same Studio; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
+The shared app lockup shows **Daymark** with **A KEIR Demo** directly beneath it. Use **Tasks** for native work and **Customizations** to discover Task advice, start a nonmutating customization conversation, or reopen a saved item. Task advice is the working starting point; creating one from a free-form description is visibly marked **To be implemented**. Try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut to the same item; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
 
 ## Run locally
 
@@ -44,7 +44,7 @@ Native regression uses temporary data. Browser setup downloads separate test Chr
 
 ## Studio and its design reference
 
-The functional Studio shares Daymark's navigation and controls, with a white conversation and ivory advice sheet on slate. Desktop panes scroll separately; narrow or short screens switch between **Conversation** and **Preview**, retaining positions and unsent text. See the [implemented experience and design reference](docs/extension-studio-design.md).
+The functional Studio shares Daymark's navigation and controls. Conversation leads; proposal, latest-run, approved-run and management views open on demand and start closed. On wide screens the workspace can be resized; on phone-sized screens it uses a full-workspace view. View changes retain reading, input and width state. See the [implemented experience and design reference](docs/extension-studio-design.md).
 
 The earlier scripted prototype remains available with `node docs/extension-studio/serve.mjs` at [the prototype address](http://localhost:4179/); it is a separate future-authoring reference. The native app includes the real server-backed read-only Studio; see [review and select task advice](docs/read-extension-lifecycle.md). Complete AI extension creation remains future work and will use the runner's own server-side provider configuration and credentials.
 

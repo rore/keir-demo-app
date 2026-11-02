@@ -19,6 +19,11 @@ const test = base.extend({
 });
 const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
 async function openDetails(page) {
+  if (await studio(page).locator('.rs-preview').isHidden()) {
+    await studio(page).getByRole('button', { name: 'Manage', exact: true }).click();
+    await expect(studio(page).locator('.rs-tools')).toHaveJSProperty('open', true);
+    return;
+  }
   const collapsed = studio(page).locator('details.rs-tools:not([open]) > summary');
   if (await collapsed.count()) await collapsed.click();
 }
@@ -89,6 +94,7 @@ test('a late actual simulation receipt cannot enter a new owner workspace after 
     await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
     await expect(studio(page).getByRole('heading', { name: 'Sample run passed', exact: true })).toHaveCount(0);
+    await studio(page).getByRole('button', { name: 'View proposal', exact: true }).click();
     await expect(studio(page).getByRole('article', { name: 'Current advice' }).getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
   } finally { release?.(); await other.close(); }
 });

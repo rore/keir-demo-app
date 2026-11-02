@@ -21,6 +21,11 @@ const test = base.extend({
   },
 });
 async function openDetails(page) {
+  if (await studio(page).locator('.rs-preview').isHidden()) {
+    await studio(page).getByRole('button', { name: 'Manage', exact: true }).click();
+    await expect(studio(page).locator('.rs-tools')).toHaveJSProperty('open', true);
+    return;
+  }
   const collapsed = studio(page).locator('details.rs-tools:not([open]) > summary');
   if (await collapsed.count()) await collapsed.click();
 }
@@ -33,6 +38,7 @@ const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: 
 async function open(page) {
   await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
   await expect(studio(page).getByRole('button', { name: 'Needs attention for open tasks', exact: true })).toBeEnabled();
+  if (page.viewportSize().width > 1120 && page.viewportSize().height > 650) await studio(page).getByRole('button', { name: 'View proposal', exact: true }).click();
   expect(await studio(page).locator('.rs-composer').evaluate(form => form.getBoundingClientRect().height)).toBeLessThan(180);
   expect(await studio(page).locator('.rs-header').evaluate(header => header.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
 }
@@ -41,6 +47,7 @@ async function prepare(page, label = 'Needs attention') {
   await ui.getByRole('button', { name: `${label} for open tasks`, exact: true }).click();
   await expect(ui.getByRole('article', { name: 'Proposed advice' }).getByRole('heading', { name: label, exact: true })).toBeVisible();
   await ui.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+  await ui.getByRole('button', { name: 'Latest run', exact: true }).click();
   await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
   await expect(ui.getByRole('table').locator('tbody tr')).toHaveCount(6);
   await expect(ui.getByRole('cell', { name: /^Matches/ })).toHaveCount(6);
@@ -83,6 +90,7 @@ test('real sample review separates typed assent, approval and use; native edits 
   await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
   await ui.getByRole('button', { name: 'Approve this advice', exact: true }).click();
   await expect(ui.getByRole('button', { name: 'Use this advice for me', exact: true })).toBeEnabled();
+  await ui.getByRole('button', { name: 'View proposal', exact: true }).click();
   await expect(ui.getByRole('article', { name: 'Current advice' }).getByRole('heading', { name: 'Pending', exact: true })).toBeVisible();
   await ui.getByRole('button', { name: 'Use this advice for me', exact: true }).click();
   await expect(ui.getByRole('article', { name: 'Current advice' }).getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
@@ -114,14 +122,16 @@ test('lost activation response is read back before retry; historical evidence ca
   await page.route('**/api/extensions/activate', async route => { requests++; await route.fetch(); await route.abort('failed'); });
   await ui.getByRole('button', { name: 'Use this advice for me', exact: true }).click();
   await expect(ui.getByRole('status').filter({ hasText: 'Saved state reloaded' })).toBeVisible();
+  await ui.getByRole('button', { name: 'View proposal', exact: true }).click();
   await expect(ui.getByRole('article', { name: 'Current advice' }).getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
   expect(requests).toBe(1);
   await page.unroute('**/api/extensions/activate');
+  await ui.getByRole('button', { name: 'Change choice', exact: true }).click();
   await ui.getByRole('button', { name: 'Pending for open tasks', exact: true }).click();
   await ui.getByRole('button', { name: 'Sample results', exact: true }).click();
   await expect(ui.getByText('Saved sample run · Earlier proposal', { exact: true })).toBeVisible();
   await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
-  await ui.getByRole('button', { name: 'Reopen these sample results', exact: true }).click();
+  await ui.getByRole('button', { name: 'Review 6 examples', exact: true }).click();
   await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
   await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
   await expect(ui.getByRole('button', { name: 'Approve this advice', exact: true })).toHaveCount(0);
@@ -166,7 +176,7 @@ test('narrow Studio reviews a named operator restore and keeps it after server r
   await page.setViewportSize({ width: 390, height: 844 });
   await enter(page, demo.origin); await open(page);
   const ui = studio(page);
-  await ui.getByRole('button', { name: 'Preview', exact: true }).click();
+  await ui.getByRole('button', { name: 'View proposal', exact: true }).click();
   await openDetails(page);
   await ui.getByText('Manage saved advice', { exact: true }).click();
   await ui.getByRole('button', { name: 'Turn off my advice', exact: true }).click();
@@ -181,7 +191,7 @@ test('narrow Studio reviews a named operator restore and keeps it after server r
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await demo.restart();
   await enter(page, demo.origin); await open(page);
-  await studio(page).getByRole('button', { name: 'Preview', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'View proposal', exact: true }).click();
   await expect(studio(page).getByRole('article', { name: 'Current advice' }).getByRole('heading', { name: 'Pending', exact: true })).toBeVisible();
 });
 

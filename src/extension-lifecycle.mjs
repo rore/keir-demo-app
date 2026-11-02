@@ -105,6 +105,8 @@ export function createLifecycle(db, { runSimulation = runReadSimulation } = {}) 
       const state = draft(owner), active = selection(owner);
       const candidate = state.draft_id ? revision(owner, state.draft_id) : null;
       const latest = candidate && db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(owner, candidate.id);
+      const approval = candidate?.provenance === 'customer' && db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, candidate.id);
+      const approvedProof = approval && db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND id=?').get(owner, approval.evidence_id);
       const rows = db.prepare('SELECT id,generation,operation,revision_id AS revisionId FROM extension_history WHERE owner_id=? ORDER BY id DESC LIMIT 20').all(owner);
       const targets = db.prepare('SELECT r.* FROM extension_revisions r WHERE owner_id=? AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id) ORDER BY rowid DESC LIMIT 20').all(owner).filter(eligible);
       const evidenceHistory = db.prepare('SELECT id,revision_id AS revisionId FROM extension_evidence WHERE owner_id=? ORDER BY rowid DESC LIMIT 20').all(owner);
@@ -112,7 +114,8 @@ export function createLifecycle(db, { runSimulation = runReadSimulation } = {}) 
       return { owner: { id: owner, name: db.prepare('SELECT name FROM users WHERE id=?').get(owner).name },
         catalog: catalog.map(({ id, label, openCode }) => ({ id, label, openCode })), draftVersion: state.draft_version,
         draft: view(candidate), evidence: latest ? { id: latest.id, revisionId: candidate.id, passed: passing(candidate, latest) } : null,
-        approved: !!candidate && eligible(candidate), selection: { generation: active.generation, revision: view(selectedRow), eligible: !!selectedRow && eligible(selectedRow) },
+        approved: !!candidate && eligible(candidate), approvedEvidenceId: approvedProof && passing(candidate, approvedProof) ? approvedProof.id : null,
+        selection: { generation: active.generation, revision: view(selectedRow), eligible: !!selectedRow && eligible(selectedRow) },
         restoreTargets: targets.map(view), history: rows, evidenceHistory };
     },
     load(owner, input, authorize) {
