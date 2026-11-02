@@ -115,6 +115,14 @@
   .rs-results th, .rs-results td { padding-inline: 6px; }
 }
 @media (max-height: 500px) {
+  .read-studio.rs-review-open .rs-breadcrumb, .read-studio.rs-review-open .rs-canvas-tabs { display: none; }
+  .read-studio.rs-review-open .rs-header { padding: 4px 12px; }
+  .read-studio.rs-review-open .rs-header button { max-width: none; white-space: nowrap; font-size: 12px; padding: 4px 8px; }
+  .read-studio.rs-review-open .rs-status-summary { display: flex; min-height: 40px; gap: 8px; padding: 4px 12px; }
+  .read-studio.rs-review-open .rs-status-summary > div:first-child { flex-shrink: 1; }
+  .read-studio.rs-review-open .rs-summary-actions { padding: 0; overflow: visible; }
+  .read-studio.rs-review-open .rs-summary-actions > button:not(#use-task-advice) { display: none; }
+  .read-studio.rs-review-open .rs-close-review { margin: 4px 12px 0; padding: 4px 8px; font-size: 12px; }
   .rs-header { padding-block: 6px; }
   .read-studio .rs-header h1 { font-size: 18px; }
   .rs-breadcrumb { margin-bottom: 0; font-size: 11px; }

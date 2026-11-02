@@ -37,7 +37,7 @@ async function enter(page, origin) {
 const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
 async function open(page) {
   await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
-  await expect(studio(page).getByRole('button', { name: 'Needs attention for open tasks', exact: true })).toBeEnabled();
+  await expect(studio(page).getByRole('button', { name: 'View proposal', exact: true })).toBeEnabled();
   if (page.viewportSize().width > 1120 && page.viewportSize().height > 650) await studio(page).getByRole('button', { name: 'View proposal', exact: true }).click();
   expect(await studio(page).locator('.rs-composer').evaluate(form => form.getBoundingClientRect().height)).toBeLessThan(180);
   expect(await studio(page).locator('.rs-header').evaluate(header => header.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);

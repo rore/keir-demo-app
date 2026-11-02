@@ -54,7 +54,7 @@ async function overview(page) {
 async function openStudio(page, inspect = true) {
   await overview(page);
   await page.locator('#edit-task-advice').click();
-  await expect(ui(page).getByRole('button', { name: 'Pending for open tasks', exact: true })).toBeEnabled();
+  await expect(ui(page).getByRole('button', { name: 'View proposal', exact: true })).toBeEnabled();
   await expect(page.locator('dialog[open]')).toHaveCount(0);
   if (inspect && page.viewportSize().width > 1120 && page.viewportSize().height > 650) await ui(page).getByRole('button', { name: 'View proposal', exact: true }).click();
 }
@@ -213,6 +213,31 @@ test('approved run stays exact after a newer run and remount until explicit reap
   expect((await savedState(page)).selection.revision.templateId).toBe('pending');
 });
 
+for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }]) {
+test(`approved reentry ${viewport.width}x${viewport.height} resumes the saved decision with Use in view`, async ({ page, demo }) => {
+  await page.setViewportSize(viewport);
+  await enter(page, demo); await openStudio(page, false);
+  const studio = ui(page);
+  await choose(page, 'Needs attention');
+  await studio.getByRole('button', { name: 'Try on sample tasks' }).click();
+  await studio.getByRole('button', { name: 'Latest run', exact: true }).click();
+  await studio.getByRole('button', { name: 'Review this advice', exact: true }).click();
+  await studio.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
+  await studio.getByRole('button', { name: 'Approve this advice', exact: true }).click();
+  await expect(studio.getByRole('button', { name: 'Use this advice for me' })).toBeFocused();
+  await studio.getByRole('button', { name: 'Back to Customizations' }).click();
+  await page.locator('#edit-task-advice').click();
+  await expect(studio.getByRole('button', { name: 'View proposal' })).toBeEnabled();
+  await expect(studio.getByRole('button', { name: 'Use this advice for me' })).toBeInViewport();
+  await expect(studio.getByRole('log')).toContainText('is approved');
+  await expect(studio.getByRole('button', { name: 'Pending for open tasks' })).toHaveCount(0);
+  expect((await savedState(page)).selection.revision.templateId).toBe('pending');
+  await picture(page, `approved-resume-${viewport.width}x${viewport.height}`);
+  await studio.getByRole('button', { name: 'Use this advice for me' }).click();
+  await expect.poll(async () => (await savedState(page)).selection.revision.templateId).toBe('attention');
+});
+}
+
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 683, height: 384 }]) {
 test(`deliberate review ${viewport.width}x${viewport.height} retains evidence reading composer width and focus while closed`, async ({ page, demo }) => {
   await page.setViewportSize(viewport);
@@ -232,6 +257,13 @@ test(`deliberate review ${viewport.width}x${viewport.height} retains evidence re
   await latest.click();
   await expect(studio.getByRole('heading', { name: 'Sample run passed' })).toBeFocused();
   const divider = studio.getByRole('separator'), canvas = studio.locator('.rs-canvas');
+  if (viewport.height <= 500) {
+    const example = studio.getByRole('table').locator('tbody tr').first();
+    expect(await canvas.evaluate(node => node.clientHeight)).toBeGreaterThanOrEqual(await example.evaluate(node => node.getBoundingClientRect().height));
+    await example.scrollIntoViewIfNeeded();
+    await expect(example).toBeInViewport({ ratio: 1 });
+    await picture(page, `on-demand-example-${viewport.width}x${viewport.height}`);
+  }
   let width;
   if (viewport.width > 1120 && viewport.height > 650) {
     await divider.focus(); await divider.press('End');

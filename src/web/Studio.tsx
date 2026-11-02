@@ -55,8 +55,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [newMessages, setNewMessages] = useState(false);
   const [history, setHistory] = useState<History[]>([]);
   const [historyNext, setHistoryNext] = useState<number | null>(null);
-  const [messages, setMessages] = useState<Message[]>([{ id: 0, who: "Studio", text:
-    "How should an open task appear when you check its advice? Choose a prepared reply below." }]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const room = useRef<HTMLDivElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLElement>(null);
@@ -66,6 +65,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const followConversation = useRef(true);
   const readingRevision = useRef(0);
   const messageId = useRef(0);
+  const initialized = useRef(false);
   const focusUse = useRef(false);
   const [limits, setLimits] = useState({ min: 30, max: 70 });
   const mounted = useRef(false);
@@ -145,6 +145,18 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     void refresh();
     return () => { mounted.current = false; ++serial.current; locked.current = false; };
   }, []);
+  useEffect(() => {
+    if (entry !== "item" || !state || !trusted || initialized.current) return;
+    initialized.current = true;
+    const selected = state.selection.eligible && state.selection.revision?.id === state.draft?.id;
+    const text = state.draft ? state.approved
+      ? selected ? `${state.draft.label} is already in use. Open saved examples, change its choice or manage this customization.`
+        : `Your saved ${state.draft.label} choice is approved. Choose Use this advice for me when you are ready. Your current choice has not changed.`
+      : `Saved proposal: ${state.draft.label}. Continue with its sample examples or change the choice. Your current advice has not changed.`
+      : "When you check an open task, what should it say?";
+    setMessages([{ id: ++messageId.current, who: "Studio", text }]);
+    setChoices(!state.draft);
+  }, [entry, state, trusted]);
   useEffect(() => {
     const observer = new ResizeObserver(() => {
       const available = (room.current?.clientWidth ?? 900) - 14;
@@ -260,7 +272,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     say("When you check an open task, what should it say?");
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".rs-choices button")?.focus({ preventScroll: true }));
   }
-  return <section className="read-studio" aria-label="Advice Studio">
+  return <section className={`read-studio${reviewOpen ? " rs-review-open" : ""}`} aria-label="Advice Studio">
     <div className="sr-only" role="status">{busy || notice}</div>
     <header className="rs-header"><div><p className="rs-breadcrumb">Customizations{entry === "item" ? " / Task advice" : ""}</p><h1 id="studio-title" tabIndex={-1}>{entry === "start" ? "New customization" : "Task advice"} <span>Studio</span></h1></div>
       <button onClick={back} disabled={!!busy}>{backLabel}</button></header>
@@ -269,13 +281,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       <div><strong>{state.selection.revision ? state.selection.eligible ? `In use · ${state.selection.revision.label}` : "Unavailable" : "Off"}</strong>
         {state.draft && !selectedDraft && <span>{state.approved ? "Approved" : "Proposed"} · {state.draft.label}</span>}</div>
       <div className="rs-summary-actions">
-        <button id="studio-open-review" onClick={() => openPane("advice")}>View proposal</button>
-        {state.draft && <><button disabled={disabled} onClick={changeChoice}>Change choice</button>
-          <button className="rs-primary" disabled={!trusted} aria-disabled={disabled} onClick={() => void mutate("simulate", { revisionId: state.draft!.id, draftVersion: state.draftVersion }, "A new sample run was saved.")}>Try on sample tasks</button></>}
-        {state.approvedEvidenceId && <button disabled={!!busy} onClick={() => void showEvidence(state.approvedEvidenceId!)}>Approved run</button>}
-        {state.evidence && <button disabled={!!busy} onClick={() => void showEvidence(state.evidence!.id)}>Latest run</button>}
         {state.approved && state.draft && !selectedDraft && <button id="use-task-advice" className="rs-primary" disabled={disabled}
           onClick={() => void mutate("activate", { revisionId: state.draft!.id, draftVersion: state.draftVersion, generation: state.selection.generation }, "Your approved advice is now in use. Return to Tasks and check a saved task's advice to see it.", true)}>Use this advice for me</button>}
+        <button id="studio-open-review" onClick={() => openPane("advice")}>View proposal</button>
+        {state.draft && <><button disabled={disabled} onClick={changeChoice}>Change choice</button>
+          <button className={!state.approved && !state.evidence?.passed ? "rs-primary" : undefined} disabled={!trusted} aria-disabled={disabled} onClick={() => void mutate("simulate", { revisionId: state.draft!.id, draftVersion: state.draftVersion }, "A new sample run was saved.")}>Try on sample tasks</button></>}
+        {state.approvedEvidenceId && <button disabled={!!busy} onClick={() => void showEvidence(state.approvedEvidenceId!)}>Approved run</button>}
+        {state.evidence && <button className={!state.approved && state.evidence.passed ? "rs-primary" : undefined} disabled={!!busy} onClick={() => void showEvidence(state.evidence!.id)}>Latest run</button>}
         <button onClick={() => { openPane("advice"); requestAnimationFrame(() => { const details = document.querySelector<HTMLDetailsElement>(".rs-tools"); if (details) { details.open = true; details.querySelector("summary")?.focus(); } }); }}>Manage</button>
       </div>
     </div>}
