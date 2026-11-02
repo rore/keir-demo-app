@@ -993,6 +993,11 @@ p {
     display:none;
   }
 }
+@media (max-height: 500px) {
+  .workspace-top { min-height: 48px; padding-block: 4px; }
+  .mobile-destinations { padding-block: 4px; }
+  .mobile-destinations select { padding-block: 6px; }
+}
 @media(prefers-reduced-motion:reduce) {
   * {
     scroll-behavior:auto;

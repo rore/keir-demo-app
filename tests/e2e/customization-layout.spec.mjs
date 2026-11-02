@@ -42,7 +42,13 @@ async function picture(page, name) {
   await page.screenshot({ path: resolve('build/screens', `daymark-${name}.png`), fullPage: true });
 }
 async function scrollTop(locator) { return locator.evaluate(node => node.scrollTop); }
-async function wheel(page, locator, delta) { await locator.hover(); await page.mouse.wheel(0, delta); }
+async function wheel(page, locator, delta) {
+  const target = await locator.evaluate((node, amount) => Math.max(0, Math.min(node.scrollHeight - node.clientHeight, node.scrollTop + amount)), delta);
+  const box = await locator.boundingBox();
+  await locator.hover({ position: { x: 6, y: box.height / 2 } }); await page.mouse.wheel(0, delta);
+  // Scroll metrics round fractional pane heights differently by one pixel.
+  await expect.poll(async () => Math.abs(await scrollTop(locator) - target)).toBeLessThanOrEqual(1);
+}
 async function bounded(page) {
   expect(await page.evaluate(() => ({ x: document.documentElement.scrollWidth > innerWidth, y: scrollY, height: document.documentElement.scrollHeight, viewport: innerHeight })))
     .toEqual({ x: false, y: 0, height: page.viewportSize().height, viewport: page.viewportSize().height });
@@ -89,6 +95,8 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   await picture(page, 'studio-review');
   await ui(page).getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
   await ui(page).getByRole('button', { name: 'Approve this advice', exact: true }).click();
+  await expect(ui(page).getByRole('button', { name: 'Use this advice for me', exact: true })).toBeFocused();
+  await expect(ui(page).getByRole('button', { name: 'Use this advice for me', exact: true })).toBeInViewport();
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   const card = page.getByRole('article', { name: 'Task advice customization' });
   await expect(card).toContainText('Approved · awaiting use: Needs attention');
@@ -155,7 +163,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
   expect(await scrollTop(log)).toBe(0);
   await ui(page).getByText('Manage saved advice', { exact: true }).click();
   await ui(page).getByText('Selection history and exact identities', { exact: true }).click();
-  await wheel(page, canvas, 450); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(100);
+  await wheel(page, canvas, 120); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(50);
   expect(await scrollTop(log)).toBe(0);
   await canvas.focus(); const previewBefore = await scrollTop(canvas); await page.keyboard.press('PageDown');
   await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(previewBefore);
@@ -171,7 +179,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
   await bounded(page); await picture(page, 'studio-history-overflow');
 });
 
-for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }, { width: 360, height: 540 }]) {
+for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }, { width: 360, height: 540 }, { width: 683, height: 384 }]) {
   test(`narrow/short ${viewport.width}x${viewport.height} has direct entry, retained panes/composer and keyboard-reachable actions`, async ({ page, demo }) => {
     await page.setViewportSize(viewport); await enter(page, demo); await openStudio(page);
     const studio = ui(page), log = studio.getByRole('log'), composer = studio.getByLabel('Message to Studio');
@@ -185,6 +193,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
     await log.evaluate(node => node.scrollTop = 0); await wheel(page, log, 300);
     await expect.poll(() => scrollTop(log)).toBeGreaterThan(0);
     const logPosition = await scrollTop(log);
+    await picture(page, `studio-conversation-${viewport.width}x${viewport.height}`);
     await studio.getByRole('button', { name: 'Preview', exact: true }).click();
     await expect(studio.locator('.rs-chat')).toBeHidden();
     await studio.getByText('Manage saved advice', { exact: true }).click();
@@ -230,5 +239,45 @@ test('late overview and Studio reads cannot repopulate an abandoned destination 
     releaseStudio(); await page.unroute('**/api/extensions');
     await openStudio(page); await expect(ui(page).getByText('Advice for Leo', { exact: true })).toBeVisible();
     await expect(ui(page).getByRole('heading', { name: 'Pending', exact: true })).toHaveCount(0);
+  } finally { release?.(); }
+});
+
+test('a newly produced real sample run does not replace historical evidence being read', async ({ page, demo }) => {
+  await enter(page, demo); await openStudio(page);
+  const studio = ui(page);
+  await studio.getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
+  await studio.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+  await expect(studio.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
+  const original = await page.evaluate(async () => {
+    const session = await (await fetch('/api/session')).json();
+    return (await (await fetch('/api/extensions', { headers: { 'X-Session-Context': session.contextToken } })).json()).evidence.id;
+  });
+  await studio.getByRole('button', { name: 'Pending for open tasks', exact: true }).click();
+  let release, arrived, delivered;
+  const started = new Promise(resolve => { arrived = resolve; }), finished = new Promise(resolve => { delivered = resolve; });
+  await page.route('**/api/extensions/simulate', async route => {
+    const response = await route.fetch();
+    expect((await response.json()).evidence.id).not.toBe(original);
+    arrived(); await new Promise(resolve => { release = resolve; });
+    await route.fulfill({ response }); delivered();
+  });
+  try {
+    await studio.getByRole('button', { name: 'Try on sample tasks', exact: true }).click(); await started;
+    await studio.getByRole('button', { name: 'Sample results', exact: true }).click();
+    const results = studio.getByRole('article', { name: 'Sample results', exact: true });
+    const content = await results.getByRole('table').textContent();
+    await results.getByText('Saved run identity', { exact: true }).click();
+    await expect(results).toContainText(`Evidence: ${original}`);
+    const canvas = studio.locator('.rs-canvas'); await wheel(page, canvas, 400); const position = await scrollTop(canvas);
+    release(); await finished;
+    await expect(studio.getByRole('button', { name: 'Try on sample tasks', exact: true })).toHaveCount(0);
+    await expect(studio.getByRole('status')).toContainText('A new sample run was saved.');
+    expect(await results.getByRole('table').textContent()).toBe(content);
+    await expect(results).toContainText(`Evidence: ${original}`);
+    expect(await scrollTop(canvas)).toBe(position);
+    await studio.getByRole('button', { name: 'Advice', exact: true }).click();
+    await studio.getByRole('button', { name: 'Open current sample results', exact: true }).click();
+    await expect(results).toContainText('Saved sample run · Current proposal');
+    expect(await results.getByRole('table').textContent()).not.toBe(content);
   } finally { release?.(); }
 });

@@ -41,6 +41,10 @@
 .rs-canvas { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-wrap: anywhere; padding: 20px clamp(16px, 2vw, 28px) 30px; }
 .rs-canvas-tabs { display: flex; gap: 8px; padding: 12px 20px; border-bottom: 1px solid #b5c6ce; flex-shrink: 0; }
 .rs-canvas-tabs button[aria-pressed="true"], .rs-pane-tabs button[aria-pressed="true"] { background: var(--green); color: white; border-color: var(--green); }
+.read-studio .rs-canvas-tabs button[aria-pressed="true"]:hover, .read-studio .rs-pane-tabs button[aria-pressed="true"]:hover { background: #172c36; color: white; }
+.rs-approved { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.rs-approved h3 { margin-bottom: 4px; }
+.rs-approved > button { margin-top: 0; }
 .rs-pane-tabs { display: none; }
 .read-studio .rs-new-messages { margin: 0 24px; padding: 4px; font-size: 12px; }
 .rs-canvas-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 18px; }
@@ -72,6 +76,7 @@
 .rs-restore-confirm { border-top: 1px solid #d8d2c6; margin-top: 15px; padding-top: 15px; }
 .rs-restore-confirm button { margin-top: 12px; }
 .rs-lookup input { display: block; width: 100%; margin: 7px 0 10px; }
+.read-studio > .rs-error { flex-shrink: 0; margin: 0; padding: 8px 16px; }
 .rs-mobile-link { display: none; }
 @media (max-width: 1120px), (max-height: 650px) {
   .rs-room { display: flex; }
@@ -90,4 +95,15 @@
   .rs-chat-note { display: none; }
   .read-studio .rs-composer textarea { min-height: 36px; max-height: 64px; }
   .rs-results th, .rs-results td { padding-inline: 6px; }
+}
+@media (max-height: 500px) {
+  .rs-header { padding-block: 6px; }
+  .read-studio .rs-header h1 { font-size: 18px; }
+  .rs-breadcrumb { margin-bottom: 0; font-size: 11px; }
+  .rs-pane-tabs { padding-block: 4px; }
+  .rs-chat-head { display: none; }
+  .rs-choices { padding: 4px 12px; gap: 6px; }
+  .read-studio .rs-choices button { font-size: 13px; padding: 6px 8px; }
+  .read-studio .rs-composer { margin: 0 12px 8px; padding: 6px; }
+  .read-studio .rs-composer textarea { max-height: 38px; }
 }

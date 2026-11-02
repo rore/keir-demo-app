@@ -20,7 +20,7 @@ type Evidence = { id: string; revisionId: string; identity: object; passed: bool
   id: string; label: string; expected: Outcome;
   report: { status: string; native?: Outcome; consumption?: { status: string; code?: string }; mismatches: object[] };
 }[] };
-type Message = { who: "You" | "Studio"; text: string; evidenceId?: string };
+type Message = { id: number; who: "You" | "Studio"; text: string; evidenceId?: string };
 type Props = {
   request: <T>(path: string, method?: string, body?: object) => Promise<T>;
   changed: (generation: number) => void;
@@ -29,8 +29,7 @@ type Props = {
   backLabel: string;
 };
 const advice = (code?: string) => ({ PENDING: "Pending", NEEDS_ATTENTION: "Needs attention", DONE: "Done" })[code ?? ""] ?? code;
-const outcome = (value?: Outcome) => !value ? "No completed result" :
-  `${value.classification.replaceAll("_", " ").toLowerCase()}${value.code ? ` · ${advice(value.code)}` : ""}`;
+const expectedAdvice = (value: Outcome) => value.classification === "COMPLETED" ? advice(value.code) : "No advice";
 
 export default function Studio({ request, changed, beforeSelectionChange, back, backLabel }: Props) {
   const [state, setState] = useState<State | null>(null);
@@ -50,12 +49,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [newMessages, setNewMessages] = useState(false);
   const [history, setHistory] = useState<History[]>([]);
   const [historyNext, setHistoryNext] = useState<number | null>(null);
-  const [messages, setMessages] = useState<Message[]>([{ who: "Studio", text:
-    "How should an open task appear when you check its advice? Choose Pending or Needs attention below. Completed tasks will say Done. These are prepared choices; this Studio does not generate new rules or change your tasks." }]);
+  const [messages, setMessages] = useState<Message[]>([{ id: 0, who: "Studio", text:
+    "How should an open task appear when you check its advice? Choose a prepared reply below." }]);
   const room = useRef<HTMLDivElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
   const followConversation = useRef(true);
   const readingRevision = useRef(0);
+  const messageId = useRef(0);
+  const focusUse = useRef(false);
   const [limits, setLimits] = useState({ min: 30, max: 70 });
   const mounted = useRef(false);
   const locked = useRef(false);
@@ -68,7 +69,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const disabled = !!busy || !trusted;
 
   function say(text: string, who: Message["who"] = "Studio", evidenceId?: string) {
-    setMessages(old => [...old, { who, text, evidenceId }].slice(-40));
+    const id = ++messageId.current;
+    setMessages(old => [...old, { id, who, text, evidenceId }].slice(-40));
   }
   function apply(next: State) {
     setState(next);
@@ -88,14 +90,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setConfirmed(false);
     say("Review the exact proposal and its sample results on the canvas. Only the separate Approve button records your approval; Use is a further decision.");
   }
-  async function refresh() {
+  async function refresh(announce = false) {
     if (locked.current) return;
     locked.current = true;
     const turn = ++serial.current;
     setBusy("Checking saved advice…"); setError("");
     try {
       const next = await callbacks.current.request<State>("extensions");
-      if (mounted.current && serial.current === turn) { apply(next); setNotice("Showing saved server state."); }
+      if (mounted.current && serial.current === turn) { apply(next); setNotice(announce ? "Saved state checked." : ""); }
     } catch {
       if (mounted.current && serial.current === turn) { setTrusted(false); setError("Saved advice could not be checked. Reload saved state before making another change."); }
     } finally {
@@ -104,7 +106,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   useEffect(() => {
     mounted.current = true;
-    document.getElementById("studio-conversation")?.focus();
+    document.getElementById("studio-title")?.focus();
     void refresh();
     return () => { mounted.current = false; ++serial.current; locked.current = false; };
   }, []);
@@ -122,8 +124,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const log = chatEnd.current?.parentElement;
     if (log && followConversation.current) log.scrollTop = log.scrollHeight;
     else setNewMessages(true);
-  }, [messages.length]);
+  }, [messages]);
   useEffect(() => { if (review) document.getElementById("studio-review")?.focus(); }, [review]);
+  useEffect(() => {
+    if (!busy && focusUse.current) { focusUse.current = false; document.getElementById("use-task-advice")?.focus(); }
+  }, [busy]);
 
   async function mutate(operation: string, body: object, message: string, selection = false) {
     if (locked.current || !trusted) return;
@@ -136,6 +141,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (selection) callbacks.current.beforeSelectionChange();
       const next = await callbacks.current.request<State>(`extensions/${operation}`, "POST", body);
       if (!mounted.current || serial.current !== turn) return;
+      if (operation === "approve") focusUse.current = true;
       apply(next); say(message); setNotice(message);
       if (operation !== "simulate") setCanvasView("advice");
       if (operation === "simulate" && next.evidence) {
@@ -205,19 +211,21 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   function view(next: "advice" | "results" | "review") { readingRevision.current++; setCanvasView(next); }
   function showPane(next: "conversation" | "preview") { setPane(next); requestAnimationFrame(() => document.getElementById(next === "conversation" ? "studio-conversation" : "studio-canvas")?.focus({ preventScroll: true })); }
   return <section className="read-studio" aria-label="Advice Studio">
+    <div className="sr-only" role="status">{busy || notice}</div>
     <header className="rs-header"><div><p className="rs-breadcrumb">Customizations / Task advice</p><h1 id="studio-title" tabIndex={-1}>Task advice <span>Studio</span></h1></div>
       <button onClick={back} disabled={!!busy}>{backLabel}</button></header>
+    {error && <div role="alert" className="rs-error">{error} <button onClick={() => void refresh(true)} disabled={!!busy}>Retry</button></div>}
     <div className="rs-pane-tabs" aria-label="Studio views"><button aria-pressed={pane === "conversation"} onClick={() => showPane("conversation")}>Conversation</button><button aria-pressed={pane === "preview"} onClick={() => showPane("preview")}>Preview</button></div>
     <div className={`rs-room rs-show-${pane}`} ref={room} style={{ "--rs-chat": width } as CSSProperties}>
       <section className="rs-chat" aria-labelledby="studio-conversation">
-        <div className="rs-chat-head"><h2 id="studio-conversation" tabIndex={-1}>How should an open task appear?</h2>
+        <div className="rs-chat-head"><h2 id="studio-conversation" tabIndex={-1}>Conversation</h2>
           {state && <p>Advice for {state.owner.name}</p>}
           <p>Prepared choices across your projects. No tasks are changed.</p></div>
         <div className="rs-messages" tabIndex={0} role="log" aria-label="Studio conversation" aria-live="off" onScroll={event => {
           const log = event.currentTarget; followConversation.current = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
           if (followConversation.current) setNewMessages(false);
         }}>
-          {messages.map((message, i) => <article className={`rs-message ${message.who === "You" ? "rs-yours" : ""}`} key={i}>
+          {messages.map(message => <article className={`rs-message ${message.who === "You" ? "rs-yours" : ""}`} key={message.id}>
             <strong>{message.who}</strong><p>{message.text}</p>{message.evidenceId && <button disabled={!!busy} className="rs-link"
               onClick={() => void showEvidence(message.evidenceId!)}>Reopen these sample results</button>}
           </article>)}<div ref={chatEnd} />
@@ -229,7 +237,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         <form className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Studio</label>
           <textarea id="studio-message" maxLength={500} rows={2} value={text} onChange={e => setText(e.target.value)} placeholder="Ask to review this advice…" />
           <button disabled={disabled || !text.trim()}>Send</button></form>
-        <p className="rs-chat-note">Messages last while this Studio is open. Saved advice and sample results are held by the server.</p>
+        <p className="rs-chat-note">40 recent messages while Studio is open. Advice and sample results are saved.</p>
       </section>
       <div className="rs-divider" role="separator" tabIndex={0} aria-label="Resize conversation and advice" aria-orientation="vertical"
         aria-valuemin={limits.min} aria-valuemax={limits.max} aria-valuenow={width}
@@ -244,10 +252,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         <nav className="rs-canvas-tabs" aria-label="Advice views"><button aria-pressed={canvasView === "advice"} onClick={() => view("advice")}>Advice</button><button aria-pressed={canvasView === "results"} disabled={!evidence} onClick={() => view("results")}>Sample results</button>
           {review && review === reviewKey && canReview && <button aria-pressed={canvasView === "review"} onClick={() => view("review")}>Review</button>}</nav>
       <section id="studio-canvas" tabIndex={0} className="rs-canvas" aria-label="Advice and sample results" onScroll={() => { readingRevision.current++; }}>
-        {busy && <p role="status" className="rs-callout">{busy}</p>}
-        {error && <div role="alert" className="rs-error">{error} <button onClick={() => void refresh()} disabled={!!busy}>Retry</button></div>}
-        {notice && <p role="status" className="rs-callout">{notice}</p>}
+        {busy && <p className="rs-callout">{busy}</p>}
+        {notice && <p className="rs-callout">{notice}</p>}
         {state && <>
+          {state.approved && state.draft && !selectedDraft && <article className="rs-sheet rs-approved" aria-label="Approved advice"><div><h3>Approved: {state.draft.label}</h3>
+            <p>Ready for your decision to use it.</p></div><button id="use-task-advice" className="rs-primary" disabled={disabled}
+              onClick={() => void mutate("activate", { revisionId: state.draft!.id, draftVersion: state.draftVersion, generation: state.selection.generation }, "Your approved advice is now in use. Return to Tasks and check a saved task's advice to see it.", true)}>Use this advice for me</button></article>}
           <div className="rs-comparison rs-sheet" hidden={canvasView !== "advice"}>
             <article aria-label={state.selection.revision && !state.selection.eligible ? "Unavailable advice" : "In use advice"}>
               <span className="rs-kicker">{state.selection.revision && !state.selection.eligible ? "Unavailable selection" : "In use"}</span>
@@ -261,9 +271,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               <h3>{state.draft?.label ?? "Choose an open-task label"}</h3>
               <p>{state.draft ? `For your tasks: open → ${state.draft.label}; completed → Done. No task is edited.` : "Choose Pending or Needs attention in the conversation to prepare advice."}</p>
               {state.draft && <><p>{selectedDraft ? "This approved choice is in use." : state.approved ? "Approved. Use is a separate decision." : "This proposal is not approved."}</p>
-                <div className="rs-actions"><button disabled={disabled} onClick={() => void mutate("simulate", { revisionId: state.draft!.id, draftVersion: state.draftVersion }, "A new sample run was saved.")}>Try on sample tasks</button>
-                  {state.evidence && <button disabled={!!busy} onClick={() => void showEvidence(state.evidence!.id)}>Open current sample results</button>}
-                  <button disabled={disabled || !canReview} onClick={openReview}>Review this advice</button></div></>}
+                <div className="rs-actions"><button className={!state.evidence?.passed ? "rs-primary" : undefined} disabled={disabled} onClick={() => void mutate("simulate", { revisionId: state.draft!.id, draftVersion: state.draftVersion }, "A new sample run was saved.")}>Try on sample tasks</button>
+                  {state.evidence && <button className={!currentEvidence && !state.approved ? "rs-primary" : undefined} disabled={!!busy} onClick={() => void showEvidence(state.evidence!.id)}>Open current sample results</button>}
+                  {state.evidence && <button className={canReview && !state.approved ? "rs-primary" : undefined} disabled={disabled || !canReview} onClick={openReview}>Review this advice</button>}</div></>}
             </article>
           </div>
           {!!state.evidenceHistory.length && <details className="rs-sheet rs-secondary"><summary>Saved sample runs</summary>
@@ -278,12 +288,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <h3>{evidence.passed ? "Sample run passed" : "Sample run did not pass"}</h3>
             <p>These are synthetic sample tasks, not live task changes. Expected results were defined independently of this run.</p>
             <div className="rs-table-wrap"><table><caption>Expected and actual sample results</caption><thead><tr><th>Sample task</th><th>Expected</th><th>Actual</th></tr></thead>
-              <tbody>{evidence.reports.map(item => <tr key={item.id}><th scope="row">{item.label}</th><td>{outcome(item.expected)}</td>
-                <td><strong>{item.report.status === "PASS" ? "Matches" : item.report.status.replaceAll("_", " ")}</strong><br />{outcome(item.report.native)}
-                  {item.report.consumption && <small>{item.report.consumption.status === "DISPLAYED" ? `Shown: ${advice(item.report.consumption.code)}` : "Advice not displayed"}</small>}
-                  {!!item.report.mismatches?.length && <details><summary>Mismatch details</summary><pre>{JSON.stringify(item.report.mismatches, null, 2)}</pre></details>}</td></tr>)}</tbody></table></div>
+              <tbody>{evidence.reports.map(item => <tr key={item.id}><th scope="row">{item.label}</th><td>{expectedAdvice(item.expected)}</td>
+                <td><strong>{item.report.status === "PASS" ? "Matches" : "Check needs review"}</strong><br />
+                  {item.report.consumption?.status === "DISPLAYED" ? advice(item.report.consumption.code) : "No advice"}
+                  <details><summary>Technical run details</summary><pre>{JSON.stringify({ expected: item.expected, actual: item.report }, null, 2)}</pre></details></td></tr>)}</tbody></table></div>
             <details><summary>Saved run identity</summary><p>Evidence: {evidence.id}</p><p>Revision: {evidence.revisionId}</p><pre>{JSON.stringify(evidence.identity, null, 2)}</pre></details>
-            <div className="rs-actions"><button disabled={disabled || !canReview} onClick={openReview}>Review this advice</button><button onClick={() => view("advice")}>Back to advice</button></div>
+            <div className="rs-actions"><button className={canReview && !state.approved ? "rs-primary" : undefined} disabled={disabled || !canReview} onClick={openReview}>Review this advice</button><button onClick={() => view("advice")}>Back to advice</button></div>
           </article>}
           {review && review === reviewKey && canReview && <article hidden={canvasView !== "review"} id="studio-review" tabIndex={-1} className="rs-sheet rs-review" aria-label="Review exact advice">
             <span className="rs-kicker">For {state.owner.name} only</span><h3>Review: {state.draft!.label} for open tasks</h3>
@@ -293,9 +303,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <div className="rs-actions"><button className="rs-primary" disabled={disabled || !confirmed || state.approved}
               onClick={() => void mutate("approve", { revisionId: state.draft!.id, draftVersion: state.draftVersion, evidenceId: evidence!.id }, "This exact advice is approved. It is not selected until you choose Use.")}>Approve this advice</button></div>
           </article>}
-          {state.approved && state.draft && !selectedDraft && <article className="rs-sheet" aria-label="Approved advice"><h3>Approved: {state.draft.label}</h3>
-            <p>Your In use choice changes only when you choose this advice below.</p><button className="rs-primary" disabled={disabled}
-              onClick={() => void mutate("activate", { revisionId: state.draft!.id, draftVersion: state.draftVersion, generation: state.selection.generation }, "Your approved advice is now in use. Return to your task and check advice to see it.", true)}>Use this advice for me</button></article>}
           <details className="rs-sheet rs-secondary" aria-label="Manage saved advice"><summary>Manage saved advice</summary>
             <button disabled={disabled || !state.selection.revision} onClick={() => void mutate("disable", { generation: state.selection.generation }, "Your advice is off. Your tasks have not changed.", true)}>Turn off my advice</button>
           <h3>Return to an earlier choice</h3>
@@ -315,7 +322,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         <details className="rs-lookup"><summary>Open a saved sample run by ID</summary><form onSubmit={event => { event.preventDefault(); void showEvidence(lookup); }}>
           <label htmlFor="studio-evidence">Evidence ID for this person</label><input id="studio-evidence" maxLength={160} value={lookup} onChange={e => setLookup(e.target.value)} />
           <button disabled={!!busy || !lookup.trim()}>Open saved sample run</button></form></details>
-        <button className="rs-reload" onClick={() => void refresh()} disabled={!!busy}>Reload saved state</button>
+        <button className="rs-reload" onClick={() => void refresh(true)} disabled={!!busy}>Reload saved state</button>
       </section>
       </section>
     </div>

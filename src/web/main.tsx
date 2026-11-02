@@ -269,6 +269,8 @@ function Workspace({
   detailVisible.current = destination === "tasks" && !!detail;
   const resumeDetail = useRef(false);
   const destinationFocus = useRef<string | null>(null);
+  const taskScroller = useRef<HTMLElement>(null);
+  const taskScroll = useRef(0);
   const [notice, setNotice] = useState("");
   const lifetime = useRef(new AbortController());
   const generation = useRef(0);
@@ -337,7 +339,7 @@ function Workspace({
   }
   useEffect(() => {
     if (destinationFocus.current) {
-      document.getElementById(destinationFocus.current)?.focus();
+      document.getElementById(destinationFocus.current)?.focus({ preventScroll: true });
       destinationFocus.current = null;
     }
   }, [destination]);
@@ -363,6 +365,8 @@ function Workspace({
     setError("");
     setRename(false);
     setNotice("");
+    taskScroll.current = 0;
+    if (taskScroller.current) taskScroller.current.scrollTop = 0;
     if (!projectId) return;
     const abort = new AbortController();
     setLoading(true);
@@ -386,6 +390,7 @@ function Workspace({
     return () => abort.abort();
   }, [projectId]);
   useLayoutEffect(() => {
+    if (destination === "tasks" && taskScroller.current) taskScroller.current.scrollTop = taskScroll.current;
     if (detail && destination === "tasks") {
       detailRef.current?.showModal();
       if (resumeDetail.current) {
@@ -578,7 +583,8 @@ function Workspace({
           </select>
           <span>Powered by Keir</span>
         </nav>
-        <main className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}>
+        <main ref={taskScroller} className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}
+          onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
           <div className="mobile-projects">
             <label htmlFor="project-select">Project</label>
             <select

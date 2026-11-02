@@ -2,6 +2,8 @@
 
 Use Node 24.14.1, `npm ci`, `npm run build`, then `npm start`. One loopback process serves the built app and API. SQLite is experimental in this qualification runtime; these tests do not certify other runtimes or production operation.
 
+The browser title and host identity are Daymark, powered by Keir. Tasks and Customizations are normal destinations; narrow screens provide a labeled Destination selector and a project selector in Tasks. Studio's Conversation / Preview controls also appear on short screens. Navigation uses local view state; reloading returns to Tasks while server-held advice, drafts, approvals and history persist. Unsaved native fields survive view navigation within the current owner session, and are discarded on sign-out or owner switch. Package names, cookies, storage locations and startup commands retain their existing identifiers.
+
 ## Local data
 
 Default storage is `.data/app.sqlite`, protected by `.data/app.lock`. Optional `--data-dir <directory>` on start/seed/reset selects isolated storage, resolved relative to the current directory. Pass the same location to all commands. Data/backups may contain your task text; keep them private and out of Git. Seeded data contains no credentials.

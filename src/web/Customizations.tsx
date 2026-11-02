@@ -37,7 +37,7 @@ export default function Customizations({ request, changed, open, focusAction = f
           <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{selected ? inUse ? "In use" : "Unavailable" : "Off"}</span>
             {inUse ? `Open tasks: ${selected.label} · completed tasks: Done` : selected ? "Your saved choice cannot be validated. Tasks still work as usual." : "No advice is selected. Tasks still work as usual."}</p>
           {state.draft && <p className="draft-status">{selectedDraft ? "Current choice" : state.approved ? "Approved · awaiting use" : "Draft"}: {state.draft.label}</p>}
-          <small>Read-only advice for {state.owner.name}. Two prepared alternatives; one choice in use.</small>
+          <small>Read-only advice for {state.owner.name}. Two prepared alternatives.</small>
         </div>
         <button id="edit-task-advice" className="primary" onClick={open}>{state.draft && !state.approved ? "Continue draft" : selected || state.draft ? "Edit task advice" : "Set up task advice"}<span aria-hidden="true"> →</span></button>
       </article>}

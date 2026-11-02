@@ -1,5 +1,17 @@
 # Extension Studio: conversation and canvas
 
+## Current functional Daymark experience
+
+Daymark is the task app; Keir is secondary powered-by attribution. Persistent Tasks and Customizations destinations share the owner context, sans-serif controls, mineral backgrounds and blue-black actions. The Customizations overview exposes one real Task advice item, not an invented gallery. It distinguishes server-confirmed selection (In use, Off, Unavailable) from the current draft or approved choice awaiting use. These prepared read-only alternatives apply across the owner's projects.
+
+Studio is a destination in that shell, identified by Customizations / Task advice and a workspace bar. Its white conversation asks how an open task should appear; the ivory sheet on slate compares the selected behavior with a proposed value marked in ochre and text. Contextual Advice, Sample results and Review views retain exact server evidence. Explicit approval and subsequent Use remain separate. Saved runs, technical details and eligible recovery stay secondary. Off or unavailable selection never invents a current Done result.
+
+The signed-in shell is bounded to the viewport. Project navigation, main tasks/overview, conversation and canvas own their scroll regions; rail, owner controls and composer stay outside unrelated scrolling. Narrow or short screens expose Conversation / Preview rather than stacking two long panes. Pane positions, unsent messages and native quick-add/project drafts survive view changes. A quiet Manage task advice shortcut suspends the native dialog, retains title/notes, and returns to its exact invoking control; general entry returns to overview. Owner changes discard prior-owner state and pending responses. New replies preserve earlier reading position.
+
+This is a real manual lifecycle using existing compiled rules and actual simulator results. AI authoring, arbitrary source, multiple active advice rules and task effects remain unavailable. The sections below describe the earlier scripted future-authoring reference; they do not expand implemented capabilities. Delivery and rendered review evidence belongs to the core-owned `agent-workflow:demo-customization-experience` record.
+
+## Earlier prototype reference
+
 Working design baseline: the user accepted the revised chat-led, resizable canvas as a good starting point. Refine visuals and interactions as real functionality lands; no further standalone prototype pass is requested. This accepts the direction, not a finished production interaction contract.
 
 Run `node docs/extension-studio/serve.mjs` from the repository root and open `http://localhost:4179/`. No dependencies, Python or AI key are needed for this scripted prototype. Stop its task-owned loopback server with Ctrl+C. It serves only the HTML and state module; opening HTML directly may fail because it uses browser modules. `PORT` may select another available port without persistent environment changes.

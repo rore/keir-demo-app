@@ -1,8 +1,8 @@
-# Keir Demo App
+# Daymark · Keir Demo App
 
 A small local task workspace: projects, tasks, notes and a satisfying completion flow. Sign in as Maya, Leo or Sam, three fictional demo people with independent data. Your work stays in a local SQLite database across restarts.
 
-Task details include **Check task advice** and **Customize my advice**, powered by a pinned packaged Keir runtime. In Studio, try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
+Daymark is the working host-app identity, with secondary **Powered by Keir** attribution. Use **Tasks** for native work and **Customizations → Task advice** to open Studio directly. Try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut to the same Studio; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
 
 ## Run locally
 
@@ -42,11 +42,11 @@ npm run test:e2e
 
 Native regression uses temporary data. Browser setup downloads separate test Chromium **inside `.tools/playwright/`** without changing installed browsers/profiles. Browser journeys own their servers, ports and databases; they never reuse an operator app. After browser setup, `npm run test:all` runs both suites. See [test details](tests/README.md).
 
-## Extension Studio design prototype
+## Studio and its design reference
 
-The Studio is being designed as **agent chat with a contextual canvas**. You can review the separate scripted prototype with `node docs/extension-studio/serve.mjs`, then open [the prototype](http://localhost:4179/). See the [interaction proposal](docs/extension-studio-design.md).
+The functional Studio shares Daymark's navigation and controls, with a white conversation and ivory advice sheet on slate. Desktop panes scroll separately; narrow or short screens switch between **Conversation** and **Preview**, retaining positions and unsent text. See the [implemented experience and design reference](docs/extension-studio-design.md).
 
-This separate prototype makes no provider calls or real task changes. The native app now includes a real server-backed read-only Studio; see [review and select task advice](docs/read-extension-lifecycle.md). The complete AI extension-creation UI remains future work and will use the runner's own server-side provider configuration and credentials.
+The earlier scripted prototype remains available with `node docs/extension-studio/serve.mjs` at [the prototype address](http://localhost:4179/); it is a separate future-authoring reference. The native app includes the real server-backed read-only Studio; see [review and select task advice](docs/read-extension-lifecycle.md). Complete AI extension creation remains future work and will use the runner's own server-side provider configuration and credentials.
 
 ## Project boundaries
 

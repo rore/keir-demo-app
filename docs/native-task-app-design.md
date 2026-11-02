@@ -1,10 +1,10 @@
 # Native task app: first implementation contract
 
-Status: accepted technical/visual direction for the native slice; implementation and rendered verification remain pending. The core-owned `agent-workflow:native-task-app` record carries review and delivery evidence. This local demo is not a production identity platform.
+Status: implemented native baseline with the current Daymark presentation described below. The core-owned `agent-workflow:native-task-app` record carries native delivery evidence; `agent-workflow:demo-customization-experience` carries the shared-shell correction and rendered review. This local demo is not a production identity platform.
 
 ## Small application boundary
 
-Use React/TypeScript with Vite, a small same-origin Fastify API/static host and `node:sqlite` native services. No ORM, SSR, cloud database, generic transport framework or Studio implementation. Node 24.14.1 is the existing qualification runtime; its SQLite API is experimental and must be documented and tested, not described as stable or made a reason to upgrade installed tools. Pin actual qualified packages in the lockfile.
+Use React/TypeScript with Vite, a small same-origin Fastify API/static host and `node:sqlite` native services. No ORM, SSR, cloud database or generic transport framework. The later read-only Studio uses the same app shell and existing lifecycle API. Node 24.14.1 is the existing qualification runtime; its SQLite API is experimental and must be documented and tested, not described as stable or made a reason to upgrade installed tools. Pin actual qualified packages in the lockfile.
 
 Bind loopback only. Built startup serves the native app from one local process. Native app startup does not require AI, Java, a core sibling checkout or a browser download. Three explicitly fictional demo identities represent three independent customer scopes; use Maya, Leo and Sam for consistency with the separate Studio prototype.
 
@@ -27,7 +27,7 @@ Keep one ignored local database. Seed only on initial creation or explicit reset
 
 ## Native visual and interaction direction
 
-Use warm off-white paper, forest-green selection/actions, dark ink, restrained rust errors, fine borders and clear local typography. Keep the layout compact and useful: a project rail, clear current user/project context, task list with visible completed states, quick add and a task-detail panel. Avoid decorative metrics, gradients and unused navigation. The Studio prototype shares a visual vocabulary but does not dictate a production component API.
+Daymark uses white/mineral surfaces, dark ink, blue-black actions, restrained rust errors, fine borders and shared sans-serif typography. A persistent Tasks/Customizations rail and owner header surround independently scrolling content. Projects scroll inside their own rail section. Tasks retain visible completion, quick add and a native detail dialog. Studio shares controls and states, with a distinct slate workspace and ivory advice sheet. Avoid decorative metrics, gradients and unused navigation.
 
 Desktop should show project navigation and the task list together. On narrow screens use a clear project selector and full-width task/detail view; do not compress a desktop sidebar into unreadable columns. Use semantic labeled forms, visible keyboard focus, inline validation, accessible completion controls and predictable detail-panel close/return-focus behavior. User selection/sign-out must be visible. Review actual desktop/mobile screens for normal, empty, loading, field error, API failure and expired-session states before claiming polish.
 
