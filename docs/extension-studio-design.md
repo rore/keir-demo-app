@@ -1,8 +1,14 @@
 # Extension Studio: conversation and canvas
 
+## Product direction
+
+Daymark is a task app with customization as a normal workspace destination. Use the stacked host identity **Daymark** with **A KEIR Demo** immediately below it. A person can open **Customizations** to see their saved setups, start a new change, or return to review and manage an existing one.
+
+The next iteration follows [Designing and managing customizations in Daymark](studio-on-demand-review.md). **New customization** opens the intended authoring entry. Discovery leads to working starting points. Free-form creation is visibly marked **To be implemented** until Daymark can create a draft from a description. The first available starting point is task advice, with real sample checks, exact approval, separate activation and recovery. Within a selected customization, conversation leads and review opens on demand. This distinction lets the collection grow as Daymark gains capabilities.
+
 ## Current functional Daymark experience
 
-Daymark is the task app; Keir is secondary powered-by attribution. Persistent Tasks and Customizations destinations share the owner context, sans-serif controls, mineral backgrounds and blue-black actions. The Customizations overview exposes one real Task advice item, not an invented gallery. It distinguishes server-confirmed selection (In use, Off, Unavailable) from the current draft or approved choice awaiting use. These prepared read-only alternatives apply across the owner's projects.
+Persistent Tasks and Customizations destinations share the owner context, sans-serif controls, mineral backgrounds and blue-black actions. The delivered Customizations overview exposes one real Task advice item. It distinguishes server-confirmed selection (In use, Off, Unavailable) from the current draft or approved choice awaiting use. These prepared read-only alternatives apply across the owner's projects.
 
 Studio is a destination in that shell, identified by Customizations / Task advice and a workspace bar. Its white conversation asks how an open task should appear; the ivory sheet on slate compares Current advice (In use, Off or Unavailable) with a proposed value marked in ochre and text. Contextual Advice, Sample results and Review views retain exact server evidence. Explicit approval and subsequent Use remain separate. Saved runs, provenance, technical details, reload and eligible recovery are grouped under Details and recovery. Off or unavailable selection never invents a current Done result.
 

@@ -1,10 +1,36 @@
-# Studio with review on demand
+# Designing and managing customizations in Daymark
 
-Daymark's task-advice Studio opens in conversation. Put a bounded choice and its immediate consequence beside the question. Open the existing review surface when the person asks to inspect examples, resolve a discrepancy, or decide whether to approve an exact proposal. This is the working design for the next functional iteration. We will evaluate it with real Daymark workflows as they land.
+The product starts with a person who wants Daymark to work differently. They can discover available starting points, describe the change, check what it would do, decide when to use it, and return later to manage it. **Customizations** is the front door. **Studio** is the workspace for making or revising one change. Task advice is the first working customization in that journey.
 
-## Maya's first change
+## Destinations and entry
 
-Maya opens **Customizations → Task advice**. Above the conversation, a compact summary reads **In use · Pending**. It stays visible when the conversation scrolls. The transcript has a comfortable reading width even when it has the whole workspace.
+Keep **Daymark** as the host name with **A KEIR Demo** on the line below it. The same host navigation and person selector frame Tasks, Customizations and Studio.
+
+| Surface | Question it answers | Behavior for the next iteration |
+| --- | --- | --- |
+| **Customizations** | “What have I changed, and what is in use?” | Show the person's known customizations with current status and a separate draft, when present. **New customization** is always discoverable after the owner context is established. Existing items offer **Open** or **Continue draft**. An empty collection explains how to start. Loading and failed reads have their own states. |
+| **New customization** | “Where can I start?” | Open a fresh Studio start view in conversation with **What would you like Daymark to do differently?** Offer **See available starting points** as an inline reply. Show **Create from a description · To be implemented** with a short explanation that free-form requests cannot yet be turned into a customization. The person can go back or use a supported starting point. Entering this view creates no record. |
+| **Available starting points** | “What can I configure today?” | Show the supported task-advice starting point: **Task advice** — “Choose the advice you see when you check a task.” If this person already has a setup, label the action **Open existing setup** or **Continue draft**. Otherwise use **Set up**. Both routes enter the same owner-scoped lifecycle. The two advice labels are answers inside that flow. |
+| **Studio for a customization** | “What would change?” | Name the selected customization in the heading. Open in readable chat with inline choices and one immediate consequence. Keep current and proposed status in a compact summary outside transcript scrolling. Open optional resizable review for examples and decisions that need inspection. |
+| **Return and manage** | “What is it doing now? Can I change it?” | Back returns to the invoking collection entry or the originating native task. From the item, revise its settings, inspect saved examples, turn it off or restore an eligible earlier choice. Show the person, outcome and consequences before a restore. Preserve the originating task's unsaved edits. |
+
+Use the current owner's saved selection, draft and retained lifecycle records to distinguish a known setup from a starting point that has never been configured. An off setup with retained history still belongs in the collection. An untouched starting point belongs in discovery. A prepared starting point and an existing setup may lead to the same item, but neither path creates a duplicate. Reuse the current read model for task advice. A second customization type can join this structure when the host actually supports it.
+
+## Availability and state
+
+| State | What the person sees | Permitted action |
+| --- | --- | --- |
+| Planned capability | **Create from a description · To be implemented.** “For now, choose an available starting point.” The reason is visible text, including on touch and to assistive technology. | The planned action is disabled. Keep discovery and return usable. Do not accept a request, simulate an assistant reply or claim a draft was saved. |
+| Supported and available | A working starting point or saved item with its owner-scoped status. | Set up, open or continue the existing item. Use server-offered choices. |
+| Off, draft or approved | **Off** or **In use** describes the current selection. **Proposed** or **Approved · Ready to use** describes the separate revision being considered. | Try the proposal, inspect actual results, approve the eligible revision, then separately choose **Use**. |
+| Working feature temporarily unavailable | **Unavailable** and the specific safe recovery action. During loading, say what is being checked. When a saved choice is ineligible, retain its identity for inspection. | Retry or refresh where supported. Gate consequential actions on trusted current state. An error must never appear as an empty collection or a planned feature. |
+| Earlier or stale result | Original situation, expected outcome and observed result, labelled as belonging to the earlier change. | Inspect or return to the current proposal. Earlier evidence cannot approve a new revision. |
+
+Show a planned control only where it explains the next real product action. One unavailable authoring path at the start is sufficient for this iteration. Add discovery items as they become usable. Use **Try on sample tasks**, approval and activation wherever the working lifecycle permits them today.
+
+## Working example: Maya changes task advice
+
+Maya opens her **Task advice** item from the collection, or reaches it through an available starting point. Above the conversation, a compact summary reads **In use · Pending**. It stays visible when the conversation scrolls. The transcript has a comfortable reading width even when it has the whole workspace.
 
 **Studio** asks “When you check an open task, what should it say?” The replies **Pending** and **Needs attention** appear directly below. Maya selects **Needs attention**. When the server saves the draft, her choice appears as her turn. Studio replies “An open task would say **Needs attention**. A completed task would still say **Done**.” The summary now reads **In use · Pending** and **Proposed · Needs attention**. The available action is **Try on sample tasks**.
 
@@ -41,10 +67,10 @@ Reuse the functional Studio controller, native overview, simulator, immutable ev
 
 An internal rendered walkthrough and focused browser checks provide the immediate acceptance evidence:
 
-1. Start with an active Pending choice. Select Needs attention, run the real samples and open, resize, close and reopen review. Verify the initial view is readable on its own and the chosen result survives the round trip.
-2. Approve, then leave and re-enter before using. The status still says Pending is in use. Activating explicitly updates the summary and native advice on a saved open task.
-3. Change the open-task choice after a run and reopen that earlier run. Verify its results and any explanation still describe the original choice, that prepared expectations carry no invented user attribution, and that the old run cannot approve the new proposal. Check a failed or stale result and the visible recovery action.
-4. Exercise Off with a separate draft, Unavailable, disable, restore, owner switch during an outstanding request, and return to an unsaved native task. Reuse existing lifecycle coverage where the affected path is already exercised.
-5. At desktop, phone and short/zoom-equivalent sizes, use keyboard alone to reach choices, review and the return action. Check transcript/preview scrolling, focus restoration and Send reachability.
+1. Enter Customizations from Tasks without opening a task. Compare a person with a saved setup and a person with none. Open **New customization**. Read the planned-authoring explanation using keyboard or touch, then discover **Task advice**. Backing out leaves the collection unchanged. From a person with a setup, discovery reopens that same item and draft.
+2. Choose **Needs attention** for an open task. Verify the choice and consequence appear together in chat while **In use · Pending** stays visible. Run the actual samples, then open, resize, close and reopen their results. Check focus, unsent input and reading position on desktop, phone and a short viewport. Completion of a check must not pull someone away from a different example.
+3. Inspect a result, then revise the choice and reopen the earlier run. Its explanation still fits its original revision. A prepared expectation carries no invented user attribution. A mismatch or stale result prevents approval and offers a route back to the current draft.
+4. Approve a current passing proposal, then leave and re-enter through the collection before using it. Confirm Pending remains in use and Needs attention is approved. Explicitly use it and check advice on a saved native task. Confirm the other person's selection is independent and that returning through the native task shortcut preserves unsaved task edits.
+5. Turn off a known setup, retain its draft and history, then inspect and restore an eligible prior choice. Verify Off, Unavailable, loading/error and To be implemented have distinct wording and actions. Switch people during an outstanding request and verify the old response cannot populate the new person's collection or Studio.
 
 Maya can understand the effect of one advice choice in the conversation. Open review when she needs to compare several outcomes or approve the exact change. Revisit the default when a real Daymark customization requires people to keep those outcomes visible while revising it.
