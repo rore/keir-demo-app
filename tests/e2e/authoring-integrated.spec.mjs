@@ -23,9 +23,13 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await page.getByLabel('Task title', { exact: true }).fill('Unsaved native title during offline authoring');
       await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
       const ui = studio(page), panel = authoring(page);
-      await expect(panel).toContainText(provider);
+      await expect(panel.getByText('Assistant connected', { exact: true })).toBeVisible();
+      await expect(panel).not.toContainText(provider);
       const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya'").get();
-      await ui.getByRole('button', { name: 'Manage', exact: true }).click();
+      await panel.getByRole('button', { name: 'Details', exact: true }).click();
+      const connection = ui.getByRole('region', { name: 'Assistant connection details', exact: true });
+      await expect(connection.getByText(`Provider: ${provider}`, { exact: true })).toBeVisible();
+      await expect(connection.getByText(`Model: ${provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5'}`, { exact: true })).toBeVisible();
       await ui.locator('.rs-developer > summary').click();
       await ui.getByLabel('Keir source (developer)', { exact: true }).fill('Keep this unsaved editor source');
       await ui.getByLabel('Example 1 JSON', { exact: true }).fill('Keep this unsaved expected example');
@@ -49,6 +53,13 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await send(page, 'Confirmed: OPEN means PENDING and COMPLETED means DONE. Use the independent synthetic cases.');
       await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
       await expect(panel.getByRole('button', { name: 'Open offered sample results', exact: true })).toBeEnabled();
+      if (provider === 'openai') {
+        await page.setViewportSize({ width: 683, height: 384 });
+        await expect(panel.getByRole('button', { name: 'Open offered sample results', exact: true })).toBeInViewport({ ratio: 1 });
+        mkdirSync(resolve('build/screens'), { recursive: true });
+        await page.screenshot({ path: resolve('build/screens', 'authoring-offer-short-finished.png'), fullPage: true });
+        await page.setViewportSize({ width: 1440, height: 1000 });
+      }
       expect(turns).toBe(2);
       expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification',
         'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
@@ -96,6 +107,13 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
       await expect(page.getByRole('status').filter({ hasText: 'Task advice: Pending' })).toBeVisible();
       const callCount = fixture.requests.length;
+      if (provider === 'openai') {
+        await page.setViewportSize({ width: 683, height: 384 });
+        await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+        await expect(panel.getByRole('button', { name: 'Open offered sample results', exact: true })).toBeInViewport({ ratio: 1 });
+        await page.screenshot({ path: resolve('build/screens', 'authoring-offer-short-reopened.png'), fullPage: true });
+        expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(2);
+      }
       await page.reload();
       await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
       expect((await read('authoring')).current.review.evidenceId).toBe(conversation.review.evidenceId);

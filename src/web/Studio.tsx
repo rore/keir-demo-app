@@ -154,6 +154,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       (target?.isConnected && target.getClientRects().length ? target : document.getElementById("studio-open-review"))?.focus({ preventScroll: true });
     });
   }
+  function openTools() {
+    openPane("advice");
+    requestAnimationFrame(() => {
+      const details = document.querySelector<HTMLDetailsElement>(".rs-tools");
+      if (details) { details.open = true; details.querySelector("summary")?.focus(); }
+    });
+  }
 
   function say(text: string, who: Message["who"] = "Studio", evidenceId?: string, exampleCount?: number) {
     const id = ++messageId.current;
@@ -426,7 +433,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (operation === "simulate" && next.evidence) {
         const proof = await callbacks.current.request<Evidence>(`extensions/evidence/${encodeURIComponent(next.evidence.id)}`);
         if (mounted.current && serial.current === turn) {
-          say(proof.passed ? `The sample run passed. Review ${proof.reports.length} examples when you are ready.`
+          say(proof.passed ? `The sample run passed. Review ${proof.reports.length} ${proof.reports.length === 1 ? "example" : "examples"} when you are ready.`
             : "This sample run did not pass. It cannot be approved or put in use.", "Studio", proof.id, proof.reports.length);
         }
       }
@@ -435,13 +442,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       setTrusted(false);
       const conflict = (failure as { status?: number })?.status === 409;
       if (preparing) setDiagnostics((failure as { diagnostics?: unknown[] }).diagnostics ?? null);
-      setError(preparing ? `${(failure as Error).name === "AbortError" ? "Preparation was interrupted; it may have reached the server." : (failure as Error).message} Checking saved state before retry.`
+      const preparationFailure = preparing ? (failure as Error).name === "AbortError" ? "Preparation was interrupted; it may have reached the server." : (failure as Error).message : "";
+      setError(preparing ? `${preparationFailure} Checking saved state before retry.`
         : conflict ? "The saved proposal or selection changed. Checking the server before you try again."
         : "The request did not finish here. It may have reached the server. Checking saved state before you try again.");
       try {
         const next = await callbacks.current.request<State>("extensions");
         if (mounted.current && serial.current === turn) {
           apply(next);
+          if (preparing) setError(`${preparationFailure} Saved state checked. Inspect the proposal before retrying.`);
           setNotice("Saved state reloaded. Check the proposal, approval and In use choice before making another request.");
         }
       } catch {
@@ -536,7 +545,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           <button className={!state.approved && !state.evidence?.passed ? "rs-primary" : undefined} disabled={!trusted || state.draft.kind === "authored" && !state.draft.suiteDigest} aria-disabled={disabled} onClick={() => void mutate("simulate", { revisionId: state.draft!.id, draftVersion: state.draftVersion }, "A new sample run was saved.")}>Try on sample tasks</button></>}
         {state.approvedEvidenceId && <button disabled={!!busy} onClick={() => void showEvidence(state.approvedEvidenceId!)}>Approved run</button>}
         {state.evidence && <button className={!state.approved && state.evidence.passed ? "rs-primary" : undefined} disabled={!!busy} onClick={() => void showEvidence(state.evidence!.id)}>Latest run</button>}
-        <button onClick={() => { openPane("advice"); requestAnimationFrame(() => { const details = document.querySelector<HTMLDetailsElement>(".rs-tools"); if (details) { details.open = true; details.querySelector("summary")?.focus(); } }); }}>Manage</button>
+        <button onClick={openTools}>Manage</button>
       </div>
     </div>}
     <div className={`rs-room rs-show-${pane}${reviewOpen ? "" : " rs-review-closed"}`} ref={room} style={{ "--rs-chat": Math.max(limits.min, Math.min(limits.max, width)) } as CSSProperties}>
@@ -545,18 +554,23 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {state && <p>{entry === "item" ? "Advice" : "Customizations"} for {state.owner.name}</p>}
           <p>{authoring?.availability.available ? "Describe read-only task advice. Review and Use remain separate decisions. No tasks are changed." : entry === "item" ? "Prepared choices across your projects. No tasks are changed." : "Choose an available starting point."}</p></div>
         <section className="rs-authoring" aria-label="AI authoring">
+          <div className="rs-authoring-heading">
+          <p>{authoring ? authoring.availability.available ? "Assistant connected" : authoringReason(authoring.availability.code) || "AI authoring is unavailable. Manual tools remain available." : "AI setup has not been confirmed. Prepared advice and manual source tools remain available."}</p>
           {activeAuthoring && <button className="rs-stop" disabled={!!busy || conversation?.status === "CANCELLING"} onClick={() => void stopAuthoring()}>{conversation?.status === "CANCELLING" ? "Stopping authoring…" : "Stop authoring"}</button>}
-          <p>{authoring ? authoring.availability.available ? `AI authoring · ${authoring.availability.provider} / ${authoring.availability.model}` : authoringReason(authoring.availability.code) || "AI authoring is unavailable. Manual tools remain available." : "AI setup has not been confirmed. Prepared advice and manual source tools remain available."}</p>
+          {conversation?.review && <button disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>Open offered sample results</button>}
+          {authoring?.availability.available && <button disabled={!!busy} onClick={openTools}>Details</button>}
+          </div>
+          <div className="rs-authoring-body">
           {authoring && authoring.conversations.length > 0 && <label>Saved authoring conversation<select aria-label="Saved authoring conversation" value={conversation?.id ?? ""} disabled={!!busy || activeAuthoring || !!pendingTurn}
             onChange={event => { if (event.target.value) void loadAuthoring(event.target.value); }}><option value="" disabled>Choose a saved conversation</option>{authoring.conversations.map((item, index) => <option key={item.id} value={item.id}>Conversation {index + 1} · {item.status.toLowerCase().replaceAll("_", " ")}</option>)}</select></label>}
           {conversation && <><p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>
-            {conversation.review && <button disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>Open offered sample results</button>}
             {!activeAuthoring && <button disabled={!!busy || !!pendingTurn || (authoring?.conversations.length ?? 0) >= 8} onClick={() => {
               setConversation(null); setMessages(old => old.filter(item => typeof item.id !== "string")); setObservationPaused(false); setAuthoringError("");
             }}>New conversation</button>}</>}
           {authoringError && <p role="alert">{authoringError}</p>}
           <button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring(conversation?.id ?? null)}>Check authoring status</button>
           {pendingTurn && retryTurn && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}
+          </div>
         </section>
         <div className="rs-messages" tabIndex={0} role="log" aria-label="Studio conversation" aria-live="off" onScroll={event => {
           const log = event.currentTarget; followConversation.current = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
@@ -573,7 +587,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {discovery && !state && <p role="status">{error ? "Available starting points could not be checked. Use Retry above." : "Checking available starting points…"}</p>}
           </article> : <>{messages.map(message => <article className={`rs-message ${message.who === "You" ? "rs-yours" : ""}`} key={message.id}>
             <strong>{message.who}</strong><p>{message.text}</p>{message.evidenceId && <button disabled={!!busy} className="rs-link"
-              onClick={() => void showEvidence(message.evidenceId!)}>Review {message.exampleCount} examples</button>}
+              onClick={() => void showEvidence(message.evidenceId!)}>Review {message.exampleCount} {message.exampleCount === 1 ? "example" : "examples"}</button>}
           </article>)}
           {choices && <div className="rs-choices" aria-label="Prepared advice choices">{state?.catalog.map(item => <button key={item.id} disabled={disabled}
             onClick={() => void mutate("draft", { templateId: item.id, draftVersion: state.draftVersion }, `Proposed: ${item.label} for open tasks. Your In use choice has not changed.`)}>{item.label} for open tasks</button>)}</div>}</>}
@@ -652,6 +666,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           </article>}
         </>}
         <details className="rs-sheet rs-tools"><summary>Details and recovery</summary>
+          {authoring?.availability.available && <section aria-label="Assistant connection details"><h3>Assistant connection</h3><p>Provider: {authoring.availability.provider}</p><p>Model: {authoring.availability.model}</p></section>}
           {state && <>
           {state.selection.revision && <p>Current choice provenance: {state.selection.revision.provenance === "operator" ? "Operator-provided starting choice" : "Your approved choice"}</p>}
           <details className="rs-developer" aria-label="Developer qualification"><summary>Developer qualification · authored source</summary>

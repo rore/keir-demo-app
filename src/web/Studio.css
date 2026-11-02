@@ -35,10 +35,13 @@
 .rs-chat-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .rs-chat-head h2 { font-size: 20px; line-height: 1.3; letter-spacing: -.02em; }
 .rs-chat-head p { color: #605d60; margin-top: 9px; font-size: 14px; }
-.rs-authoring { flex: none; padding: 10px 24px; border-bottom: 1px solid var(--line); background: #f4f7f7; font-size: 12px; max-height: 30%; overflow-y: auto; }
+.rs-authoring { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 0; max-height: 35%; border-bottom: 1px solid var(--line); background: #f4f7f7; font-size: 12px; }
+.rs-authoring-heading { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 24px; }
+.rs-authoring-heading > p { flex: 1; margin: 0; }
+.rs-authoring-body { min-height: 0; overflow-y: auto; padding: 0 24px 8px; }
 .rs-authoring p { margin: 0 0 6px; }
 .rs-authoring button { font-size: 12px; padding: 5px 8px; margin: 3px 6px 3px 0; }
-.rs-authoring .rs-stop { float: right; margin-top: 0; }
+.rs-authoring-heading button { margin: 0; }
 .rs-authoring label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rs-authoring select { width: auto; max-width: 100%; font-size: 12px; padding: 4px; }
 .rs-authoring [role="alert"] { color: #702d39; }

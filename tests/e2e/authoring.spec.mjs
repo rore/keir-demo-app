@@ -324,7 +324,8 @@ test('mount, reload, readback and New conversation never submit; saved messages 
   expect(calls.turns).toHaveLength(0);
 });
 
-for (const eligible of [false, true]) test(`an offered review preserves its actual evidence and host eligibility (${eligible})`, async ({ page, demo }) => {
+for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test(`an offered review preserves its actual evidence and host eligibility (${eligible}, ${width}px)`, async ({ page, demo }) => {
+  await page.setViewportSize({ width, height: width === 683 ? 384 : 1000 });
   const guide = readFileSync(new URL('../../docs/authored-extension-drafts.md', import.meta.url), 'utf8');
   const source = guide.match(/```yaml\r?\n([\s\S]*?)\r?\n```/)[1];
   const example = guide.match(/```json\r?\n([\s\S]*?)\r?\n```/)[1];
@@ -350,17 +351,38 @@ for (const eligible of [false, true]) test(`an offered review preserves its actu
       suiteDigest: suite.draft.suiteDigest, evidenceId: first.evidence.id, eligible },
   });
   offered.draft = { revisionId: suite.draft.id, draftVersion: suite.draftVersion, suiteDigest: suite.draft.suiteDigest };
-  await scriptAuthoring(page, { onRead: async (_calls, id) => id ? offered : { availability: available,
-    conversations: [{ id: offered.id, version: 1, status: offered.status, runId: offered.runId,
-      creationOperationId: 'offered-creation', operationId: offered.operation.id }], current: offered } });
+  let presented = width === 683 ? { ...offered, status: 'RUNNING', review: null, messages: [] } : offered;
+  await scriptAuthoring(page, { onRead: async (_calls, id) => {
+    if (id) { presented = offered; return offered; }
+    return { availability: available, conversations: [{ id: offered.id, version: 1, status: presented.status, runId: offered.runId,
+      creationOperationId: 'offered-creation', operationId: offered.operation.id }], current: presented };
+  } });
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
   const ui = studio(page);
   await expect(ui.getByText('Inspect the exact offered run.', { exact: true })).toBeVisible();
+  const heading = authoring(page).locator('.rs-authoring-heading');
+  await expect(heading).toContainText('Assistant connected');
+  await expect(heading).not.toContainText(available.provider);
+  await expect(heading).not.toContainText(available.model);
+  const offerButton = authoring(page).getByRole('button', { name: 'Open offered sample results', exact: true });
+  await expect(offerButton).toBeInViewport();
+  await expect(offerButton).toBeEnabled();
+  if (width === 683) {
+    await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
+    await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await expect(offerButton).toBeInViewport();
+    await expect(offerButton).toBeEnabled();
+  }
+  await authoring(page).getByRole('button', { name: 'Details', exact: true }).click();
+  const disclosure = ui.getByRole('region', { name: 'Assistant connection details', exact: true });
+  await expect(disclosure).toContainText(`Provider: ${available.provider}`);
+  await expect(disclosure).toContainText(`Model: ${available.model}`);
   await openDetails(page);
   await ui.locator('.rs-developer > summary').click();
   await ui.getByLabel('Keir source (developer)', { exact: true }).fill('Keep this unsaved source buffer');
   await ui.getByLabel('Example 1 JSON', { exact: true }).fill('Keep this unsaved example buffer');
+  if (width === 683) await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
   const requested = [];
   page.on('request', request => { const path = new URL(request.url()).pathname; if (path.startsWith('/api/extensions/evidence/')) requested.push(path.split('/').at(-1)); });
   await authoring(page).getByRole('button', { name: 'Open offered sample results', exact: true }).click();

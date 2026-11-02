@@ -279,6 +279,8 @@ for (const width of [1440, 390]) test(`real authored source, independent example
   await ui.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
   await ui.getByRole('button', { name: 'Latest run', exact: true }).click();
   await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
+  await expect(ui.getByText('Review 1 example', { exact: true })).toHaveCount(2);
+  await expect(ui.getByText('The sample run passed. Review 1 example when you are ready.', { exact: true })).toHaveCount(1);
   await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
   await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
   await ui.getByRole('button', { name: 'Approve this advice', exact: true }).click();
@@ -450,8 +452,11 @@ cancellation('developer Stop reaches real HTTP abort, closes the child, and read
   await seenRead;
   await expect.poll(() => controlled.closed).toBe(1);
   await expect(ui.getByRole('button', { name: 'Compile source', exact: true })).toBeDisabled();
+  await expect(ui.getByRole('alert').filter({ hasText: 'Checking saved state before retry.' })).toBeVisible();
   releaseRead();
   await expect(ui.getByRole('button', { name: 'Compile source', exact: true })).toBeEnabled();
+  await expect(ui.getByRole('alert').filter({ hasText: 'Saved state checked.' })).toBeVisible();
+  await expect(ui.getByRole('alert').filter({ hasText: 'Checking saved state before retry.' })).toHaveCount(0);
   expect(controlled.saved()).toBe(0);
   await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveValue('Cancellation transport fixture');
   await page.unroute('**/api/extensions');
