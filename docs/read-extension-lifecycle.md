@@ -10,6 +10,21 @@ Open a task and choose **Customize my advice**. Studio offers two prepared rules
 
 Typed assent can open review but never approves or activates a rule. A different proposal invalidates an old activation request even when the active generation is unchanged. Historical sample runs remain available for inspection; they cannot approve a different revision. Failed checks never become a default classification. Conflicts and uncertain mutation responses reload saved state before retry.
 
+## Evidence API meanings
+
+Each saved suite returns `reports[]` with a host-authored `expected` annotation and an actual simulator `report`. These fields have different types:
+
+| Field | Meaning |
+| --- | --- |
+| `expected.classification` | Expected native outcome category: `COMPLETED`, `BUSINESS_REJECTION` or `FAILED`; never a display receipt status. |
+| `expected.code` | On `COMPLETED`, the expected advisory value (`PENDING`, `NEEDS_ATTENTION` or `DONE`). On rejection/failure, the expected original native diagnostic code. This compact scenario annotation is not itself a consumer receipt. |
+| `report.native` | Actual bounded native summary from the simulator. Domain rejection codes are redacted to `NATIVE_ERROR`; the original codes are compared privately by the simulator. |
+| `report.consumption` | Actual safe receipt: `{status:"DISPLAYED",code:"PENDING"}` (or another allowed advisory code), or `{status:"NOT_DISPLAYED"}`. Native outcome categories never appear in `status`. |
+
+The independently authored case bytes separately pin `expect.outcome` and `expect.consumption`. For a successful case, the expected safe receipt is `DISPLAYED` with the expected advisory code; every rejection/failure case expects `NOT_DISPLAYED` without a code. The server validates actual `report.consumption` against that exact expected receipt, as well as native outcome, complete ordered suite membership and dependency identities. The canvas presents native expected/actual summaries and separately labels actual displayed advice or “Advice not displayed”; it does not compare a native category to a receipt status.
+
+The state DTO's `approved` boolean only controls presentation. Approval rechecks server-held owner, exact current draft/revision/version and complete eligible evidence in its committing transaction. Activation rechecks the current draft/version, eligible approval/evidence and expected selection generation before committing. Neither a client boolean nor a rendered PASS authorizes activation. Both curated rules read the saved task status; there is no customer project filter or follow-up creation control.
+
 ## Authority and persistence
 
 SQLite schema 2 holds owner-scoped immutable revision identities, exact suite evidence, approvals, current draft/version, selection generation and transition history. The server owns model/artifact/source/compiler/environment/package/adapter/consumer pins and suite/fixture/case identities. A browser can submit only curated template IDs, exact server record IDs and expected versions; client owners, bundles, PASS claims and authority overrides are rejected. Every approval records its actual owner/approver and exact evidence reference.
