@@ -191,6 +191,8 @@ test('authentication transitions serialize across tabs even when the first cooki
   await page.goto(demo.origin); await signIn(page, 'Maya');
   const second = await context.newPage(); await second.goto(demo.origin);
   await expect(second.getByLabel('Demo person')).toHaveValue('maya');
+  // Finish initial owner reads before the deliberately delayed cookie transition.
+  await expect(second.getByRole('button', { name: 'Gather material references', exact: true })).toBeVisible();
   let release, observed;
   const gate = new Promise(resolve => { release = resolve; });
   const intercepted = new Promise(resolve => { observed = resolve; });
