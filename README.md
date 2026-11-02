@@ -2,7 +2,7 @@
 
 A small local task workspace: projects, tasks, notes and a satisfying completion flow. Sign in as Maya, Leo or Sam, three fictional demo people with independent data. Your work stays in a local SQLite database across restarts.
 
-Daymark is the working host-app identity, with secondary **Powered by Keir** attribution. Use **Tasks** for native work and **Customizations → Task advice** to open Studio directly. Try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut to the same Studio; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
+The shared app lockup shows **Daymark** with **A KEIR Demo** directly beneath it. Use **Tasks** for native work and **Customizations → Task advice** to open Studio directly. Try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut to the same Studio; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
 
 ## Run locally
 

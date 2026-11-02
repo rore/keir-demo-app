@@ -18,6 +18,17 @@ const test = base.extend({
   },
 });
 const ui = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
+async function appLockup(page) {
+  const brand = page.locator('.brand').filter({ visible: true });
+  await expect(brand).toHaveCount(1);
+  await expect(brand.locator('.brand-name')).toHaveText('Daymark');
+  await expect(brand.locator('.brand-subline')).toHaveText('A KEIR Demo');
+  const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
+  expect(subline.y).toBeGreaterThanOrEqual(name.y + name.height);
+  expect(subline.y - name.y - name.height).toBeLessThan(8);
+  expect(Math.abs(subline.x - name.x)).toBeLessThanOrEqual(1);
+  await expect(page.getByText('Powered by Keir', { exact: true })).toHaveCount(0);
+}
 async function openDetails(page) {
   const collapsed = ui(page).locator('details.rs-tools:not([open]) > summary');
   if (await collapsed.count()) await collapsed.click();
@@ -46,6 +57,22 @@ async function picture(page, name) {
   await page.screenshot({ path: resolve('build/screens', `daymark-${name}.png`), fullPage: true });
 }
 async function scrollTop(locator) { return locator.evaluate(node => node.scrollTop); }
+async function pageDown(page, locator) {
+  await locator.focus();
+  const before = await scrollTop(locator);
+  // Arm on keydown so completion belongs to this key, not the preceding wheel.
+  const scroll = await locator.evaluateHandle(node => ({ ended: new Promise(resolve => {
+    node.addEventListener('keydown', () => {
+      node.addEventListener('scrollend', () => resolve(node.scrollTop), { once: true });
+    }, { once: true });
+  }) }));
+  try {
+    await page.keyboard.press('PageDown');
+    const position = await scroll.evaluate(state => state.ended);
+    expect(position).toBeGreaterThan(before);
+    return position;
+  } finally { await scroll.dispose(); }
+}
 async function wheel(page, locator, delta) {
   const target = await locator.evaluate((node, amount) => Math.max(0, Math.min(node.scrollHeight - node.clientHeight, node.scrollTop + amount)), delta);
   const box = await locator.boundingBox();
@@ -66,7 +93,7 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await page.getByLabel('New project name', { exact: true }).fill('Keep this project draft');
   await openStudio(page);
   await expect(page.locator('.project-link.selected')).toHaveCount(0);
-  await expect(page.getByText('Powered by Keir', { exact: true }).filter({ visible: true })).toHaveCount(1);
+  await appLockup(page);
   await expect(ui(page).getByRole('heading', { level: 1 })).toHaveText('Task advice Studio');
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   await expect(page.locator('#edit-task-advice')).toBeFocused();
@@ -89,8 +116,10 @@ test('normal navigation preserves native forms and returns to the actual overvie
 });
 
 test('overview reflects real draft, approved, selected, off and unavailable states without a task-specific entry', async ({ page, demo }) => {
-  await page.goto(demo.origin); await picture(page, 'welcome');
+  await page.goto(demo.origin); await appLockup(page); await picture(page, 'welcome');
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
+  await expect(page.getByRole('heading', { name: 'The spring collection', exact: true })).toBeVisible();
+  await appLockup(page);
   await picture(page, 'tasks');
   await openStudio(page); await picture(page, 'studio-current');
   await ui(page).getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
@@ -141,9 +170,7 @@ test('overflowing native projects and tasks scroll independently with stable nav
   await wheel(page, main, 600); await expect.poll(() => scrollTop(main)).toBeGreaterThan(200);
   await expect.poll(() => scrollTop(projects)).toBe(0);
   expect(await rail.boundingBox()).toEqual(geometry.rail); expect(await header.boundingBox()).toEqual(geometry.header);
-  await main.focus(); const before = await scrollTop(main); await page.keyboard.press('PageDown');
-  await expect.poll(() => scrollTop(main)).toBeGreaterThan(before);
-  const taskPosition = await scrollTop(main);
+  const taskPosition = await pageDown(page, main);
   await wheel(page, projects, 500); await expect.poll(() => scrollTop(projects)).toBeGreaterThan(200);
   expect(await scrollTop(main)).toBe(taskPosition);
   await projects.evaluate(node => node.scrollTop = node.scrollHeight); await wheel(page, projects, 600);
@@ -166,8 +193,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
   const geometry = { composer: await composer.boundingBox(), header: await header.boundingBox(), rail: await rail.boundingBox() };
   await wheel(page, log, 400); await expect.poll(() => scrollTop(log)).toBeGreaterThan(100);
   expect(await scrollTop(canvas)).toBe(0);
-  await log.focus(); const before = await scrollTop(log); await page.keyboard.press('PageDown');
-  await expect.poll(() => scrollTop(log)).toBeGreaterThan(before);
+  await pageDown(page, log);
   await log.evaluate(node => node.scrollTop = 0);
   await ui(page).getByLabel('Message to Studio').fill('A new message while reading earlier replies');
   await ui(page).getByRole('button', { name: 'Send', exact: true }).click();
@@ -178,8 +204,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
   await ui(page).getByText('Selection history and exact identities', { exact: true }).click();
   await wheel(page, canvas, 120); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(50);
   expect(await scrollTop(log)).toBe(0);
-  await canvas.focus(); const previewBefore = await scrollTop(canvas); await page.keyboard.press('PageDown');
-  await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(previewBefore);
+  await pageDown(page, canvas);
   await canvas.evaluate(node => node.scrollTop = node.scrollHeight); await wheel(page, canvas, 600);
   expect(await scrollTop(log)).toBe(0);
   expect(await composer.boundingBox()).toEqual(geometry.composer); expect(await header.boundingBox()).toEqual(geometry.header); expect(await rail.boundingBox()).toEqual(geometry.rail);
@@ -194,7 +219,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }, { width: 360, height: 540 }, { width: 683, height: 384 }]) {
   test(`narrow/short ${viewport.width}x${viewport.height} has direct entry, retained panes/composer and keyboard-reachable actions`, async ({ page, demo }) => {
-    await page.setViewportSize(viewport); await enter(page, demo); await openStudio(page);
+    await page.setViewportSize(viewport); await enter(page, demo); await openStudio(page); await appLockup(page);
     const studio = ui(page), log = studio.getByRole('log'), composer = studio.getByLabel('Message to Studio');
     await composer.fill('Keep this unsent message');
     const composerBox = await studio.locator('.rs-composer').boundingBox();

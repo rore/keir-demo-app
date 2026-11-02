@@ -55,11 +55,14 @@ async function api<T>(
 
 function Brand() {
   return (
-    <span className="brand" aria-label="Daymark">
+    <span className="brand" aria-label="Daymark, A KEIR Demo">
       <span className="brand-mark" aria-hidden="true">
         ✓
       </span>
-      Daymark
+      <span className="brand-copy">
+        <span className="brand-name">Daymark</span>
+        <span className="brand-subline">A KEIR Demo</span>
+      </span>
     </span>
   );
 }
@@ -219,7 +222,6 @@ function App() {
         </main>
         <footer className="welcome-footer">
           <span>Made for the work in front of you.</span>
-          <span>Powered by Keir</span>
         </footer>
       </div>
     );
@@ -544,7 +546,6 @@ function Workspace({
         </nav>
         <div className="rail-bottom">
           <span className="local-dot" aria-hidden="true" /> Saved on this device
-          <p>Powered by Keir</p>
         </div>
       </aside>
       <div className="workspace-body">
@@ -579,7 +580,6 @@ function Workspace({
           <select id="destination-select" value={destination === "tasks" ? "tasks" : "customizations"} onChange={event => navigate(event.target.value as "tasks" | "customizations")}>
             <option value="tasks">Tasks</option><option value="customizations">Customizations</option>
           </select>
-          <span>Powered by Keir</span>
         </nav>
         <main ref={taskScroller} className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}
           onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>

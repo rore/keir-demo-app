@@ -111,6 +111,23 @@ p {
   color:white;
   font-size:19px;
 }
+.brand-copy {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:2px;
+}
+.brand-name {
+  line-height:1.1;
+}
+.brand-subline {
+  font-size:11px;
+  line-height:1.2;
+  font-weight:500;
+  letter-spacing:.04em;
+  color:var(--muted);
+  white-space:nowrap;
+}
 .primary {
   display:inline-flex;
   justify-content:center;
@@ -844,6 +861,9 @@ p {
     width:23px;
     height:28px;
     font-size:16px;
+  }
+  .workspace-top .brand-subline {
+    font-size:10px;
   }
   .user-tools {
     gap:2px;
