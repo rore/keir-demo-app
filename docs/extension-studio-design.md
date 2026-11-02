@@ -1,6 +1,6 @@
 # Extension Studio: conversation and canvas
 
-The user reviewed the running Studio and endorsed the conversation as the main interface, with a canvas to illustrate the work. They requested a draggable divider, less clutter, a clearer distinction between the panes, simpler examples and a different palette. The revised presentation is ready for their next review.
+Working design baseline: the user accepted the revised chat-led, resizable canvas as a good starting point. Refine visuals and interactions as real functionality lands; no further standalone prototype pass is requested. This accepts the direction, not a finished production interaction contract.
 
 Run `node docs/extension-studio/serve.mjs` from the repository root and open `http://localhost:4179/`. No dependencies, Python or AI key are needed for this scripted prototype. Stop its task-owned loopback server with Ctrl+C. It serves only the HTML and state module; opening HTML directly may fail because it uses browser modules. `PORT` may select another available port without persistent environment changes.
 
@@ -147,7 +147,7 @@ Everything is scripted. The small route set supports one representative pattern,
 - Production progress/cancellation/provider errors: use actual host operation states, explain what can still finish, and distinguish late external completion from a confirmed stop. The prototype only delays a scripted result.
 - Recovery and persistence: durable conversations/drafts across devices, unsent text recovery, host reconciliation after reload, retrying safe authoring operations and preserving independent scenario expectations.
 - Exact approval interaction: resolve how conversational requests and explicit canvas confirmations identify the precise current proposal, especially after intervening edits or user switches.
-- Follow-up user review of the revised density, palette, adjustable layout, mobile presentation and clarity of the sample task sheet.
+- Refine density, palette, adjustable layout, mobile presentation and task evidence alongside each real workflow, using user feedback on that functionality.
 
 ## Verification and production seams
 
