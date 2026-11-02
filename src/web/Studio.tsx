@@ -259,13 +259,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <p>Ready for your decision to use it.</p></div><button id="use-task-advice" className="rs-primary" disabled={disabled}
               onClick={() => void mutate("activate", { revisionId: state.draft!.id, draftVersion: state.draftVersion, generation: state.selection.generation }, "Your approved advice is now in use. Return to Tasks and check a saved task's advice to see it.", true)}>Use this advice for me</button></article>}
           <div className="rs-comparison rs-sheet" hidden={canvasView !== "advice"}>
-            <article aria-label={state.selection.revision && !state.selection.eligible ? "Unavailable advice" : "In use advice"}>
-              <span className="rs-kicker">{state.selection.revision && !state.selection.eligible ? "Unavailable selection" : "In use"}</span>
+            <article aria-label="Current advice">
+              <span className="rs-kicker">Current advice</span><span className="state-badge">{state.selection.revision ? state.selection.eligible ? "In use" : "Unavailable" : "Off"}</span>
               <h3>{state.selection.revision ? state.selection.eligible ? state.selection.revision.label : "Advice is unavailable" : "Advice is off"}</h3>
               <p>{state.selection.revision ? state.selection.eligible ? `Open tasks: ${state.selection.revision.label}. Completed tasks: Done.`
                 : `Your saved ${state.selection.revision.label} choice could not be validated. Task advice is not displayed. Your tasks still work as usual.`
                 : "Task advice is not selected. Your tasks still work as usual."}</p>
-              {state.selection.revision && <small>{state.selection.revision.provenance === "operator" ? "Operator-provided starting choice" : "Your approved choice"}</small>}
             </article>
             <article hidden={selectedDraft} className="rs-proposed" aria-label="Proposed advice"><span className="rs-kicker">Proposed</span>
               <h3>{state.draft?.label ?? "Choose an open-task label"}</h3>
@@ -276,13 +275,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
                   {state.evidence && <button className={canReview && !state.approved ? "rs-primary" : undefined} disabled={disabled || !canReview} onClick={openReview}>Review this advice</button>}</div></>}
             </article>
           </div>
-          {!!state.evidenceHistory.length && <details className="rs-sheet rs-secondary"><summary>Saved sample runs</summary>
-            <p>Open a server-held run to inspect its original results. Earlier runs do not approve a new proposal.</p>
-            <ol>{state.evidenceHistory.map((item, index) => <li key={item.id}>
-              <button disabled={!!busy} onClick={() => void showEvidence(item.id)}>Open saved sample run {index + 1}</button>
-              <small>{item.id === state.evidence?.id ? "Current proposal" : "Earlier run"} · revision {item.revisionId}</small>
-            </li>)}</ol>
-          </details>}
           {evidence && <article hidden={canvasView !== "results"} className="rs-sheet rs-results" aria-label="Sample results">
             <span className="rs-kicker">Saved sample run · {currentEvidence ? "Current proposal" : "Earlier proposal"}</span>
             <h3>{evidence.passed ? "Sample run passed" : "Sample run did not pass"}</h3>
@@ -303,6 +295,17 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <div className="rs-actions"><button className="rs-primary" disabled={disabled || !confirmed || state.approved}
               onClick={() => void mutate("approve", { revisionId: state.draft!.id, draftVersion: state.draftVersion, evidenceId: evidence!.id }, "This exact advice is approved. It is not selected until you choose Use.")}>Approve this advice</button></div>
           </article>}
+        </>}
+        <details className="rs-sheet rs-tools"><summary>Details and recovery</summary>
+          {state && <>
+          {state.selection.revision && <p>Current choice provenance: {state.selection.revision.provenance === "operator" ? "Operator-provided starting choice" : "Your approved choice"}</p>}
+          {!!state.evidenceHistory.length && <details className="rs-sheet rs-secondary"><summary>Saved sample runs</summary>
+            <p>Open a server-held run to inspect its original results. Earlier runs do not approve a new proposal.</p>
+            <ol>{state.evidenceHistory.map((item, index) => <li key={item.id}>
+              <button disabled={!!busy} onClick={() => void showEvidence(item.id)}>Open saved sample run {index + 1}</button>
+              <small>{item.id === state.evidence?.id ? "Current proposal" : "Earlier run"} · revision {item.revisionId}</small>
+            </li>)}</ol>
+          </details>}
           <details className="rs-sheet rs-secondary" aria-label="Manage saved advice"><summary>Manage saved advice</summary>
             <button disabled={disabled || !state.selection.revision} onClick={() => void mutate("disable", { generation: state.selection.generation }, "Your advice is off. Your tasks have not changed.", true)}>Turn off my advice</button>
           <h3>Return to an earlier choice</h3>
@@ -323,6 +326,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           <label htmlFor="studio-evidence">Evidence ID for this person</label><input id="studio-evidence" maxLength={160} value={lookup} onChange={e => setLookup(e.target.value)} />
           <button disabled={!!busy || !lookup.trim()}>Open saved sample run</button></form></details>
         <button className="rs-reload" onClick={() => void refresh(true)} disabled={!!busy}>Reload saved state</button>
+        </details>
       </section>
       </section>
     </div>

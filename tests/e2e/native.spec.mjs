@@ -146,7 +146,7 @@ test('mobile, keyboard/detail focus, empty, validation and API error states', as
   await screenshot(page, 'tasks-mobile');
   const first = page.getByRole('button', { name: 'Gather material references', exact: true });
   await first.focus(); await page.keyboard.press('Enter');
-  await expect(page.getByRole('dialog', { name: 'One small step.' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Task details' })).toBeVisible();
   await page.keyboard.press('Escape'); await expect(first).toBeFocused();
   await first.click(); await page.getByLabel('Task title', { exact: true }).fill(' ');
   await page.getByRole('button', { name: 'Save changes' }).click();

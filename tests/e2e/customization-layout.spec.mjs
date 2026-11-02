@@ -18,6 +18,10 @@ const test = base.extend({
   },
 });
 const ui = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
+async function openDetails(page) {
+  const collapsed = ui(page).locator('details.rs-tools:not([open]) > summary');
+  if (await collapsed.count()) await collapsed.click();
+}
 async function enter(page, demo) {
   await page.goto(demo.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
@@ -61,10 +65,13 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('New project name', { exact: true }).fill('Keep this project draft');
   await openStudio(page);
+  await expect(page.locator('.project-link.selected')).toHaveCount(0);
+  await expect(page.getByText('Powered by Keir', { exact: true }).filter({ visible: true })).toHaveCount(1);
   await expect(ui(page).getByRole('heading', { level: 1 })).toHaveText('Task advice Studio');
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   await expect(page.locator('#edit-task-advice')).toBeFocused();
   await destination(page, 'Tasks');
+  await expect(page.locator('.project-link.selected')).toHaveCount(1);
   await expect(page.getByLabel('New task title')).toHaveValue('Keep my quick-add');
   await expect(page.getByLabel('New project name', { exact: true })).toHaveValue('Keep this project draft');
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
@@ -114,6 +121,11 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   await picture(page, 'overview-unavailable');
   await page.getByLabel('Demo person').selectOption('sam'); await overview(page);
   await expect(card).toContainText('Off');
+  await page.locator('#edit-task-advice').click();
+  const current = ui(page).getByRole('article', { name: 'Current advice', exact: true });
+  await expect(current).toContainText('Off');
+  await expect(current.getByText('In use', { exact: true })).toHaveCount(0);
+  await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   await expect(card).not.toContainText('Done');
   await picture(page, 'overview-off');
 });
@@ -161,6 +173,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
   await ui(page).getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui(page).getByRole('button', { name: 'New messages ↓', exact: true })).toBeVisible();
   expect(await scrollTop(log)).toBe(0);
+  await openDetails(page);
   await ui(page).getByText('Manage saved advice', { exact: true }).click();
   await ui(page).getByText('Selection history and exact identities', { exact: true }).click();
   await wheel(page, canvas, 120); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(50);
@@ -196,6 +209,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
     await picture(page, `studio-conversation-${viewport.width}x${viewport.height}`);
     await studio.getByRole('button', { name: 'Preview', exact: true }).click();
     await expect(studio.locator('.rs-chat')).toBeHidden();
+    await openDetails(page);
     await studio.getByText('Manage saved advice', { exact: true }).click();
     await studio.getByText('Selection history and exact identities', { exact: true }).click();
     const canvas = studio.locator('.rs-canvas'); await wheel(page, canvas, 300);
@@ -204,6 +218,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
     await expect(composer).toHaveValue('Keep this unsent message'); expect(await scrollTop(log)).toBe(logPosition);
     await studio.getByRole('button', { name: 'Preview', exact: true }).click(); expect(await scrollTop(canvas)).toBe(canvasPosition);
     await canvas.focus(); await page.keyboard.press('PageDown');
+    await openDetails(page);
     await studio.getByRole('button', { name: 'Reload saved state', exact: true }).focus();
     await page.keyboard.press('Tab');
     await bounded(page); await picture(page, `studio-${viewport.width}x${viewport.height}`);
@@ -234,6 +249,7 @@ test('late overview and Studio reads cannot repopulate an abandoned destination 
     let releaseStudio, arrivedStudio;
     const studioStarted = new Promise(resolve => { arrivedStudio = resolve; });
     await page.route('**/api/extensions', async route => { const response = await route.fetch(); arrivedStudio(); await new Promise(resolve => { releaseStudio = resolve; }); try { await route.fulfill({ response }); } catch {} });
+    await openDetails(page);
     await ui(page).getByRole('button', { name: 'Reload saved state', exact: true }).click(); await studioStarted;
     await destination(page, 'Tasks'); await page.getByLabel('Demo person').selectOption('leo');
     releaseStudio(); await page.unroute('**/api/extensions');

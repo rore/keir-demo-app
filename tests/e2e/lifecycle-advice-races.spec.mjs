@@ -18,6 +18,10 @@ const test = base.extend({
   },
 });
 const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
+async function openDetails(page) {
+  const collapsed = studio(page).locator('details.rs-tools:not([open]) > summary');
+  if (await collapsed.count()) await collapsed.click();
+}
 async function enter(page, origin) {
   await page.goto(origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
@@ -28,6 +32,7 @@ async function enter(page, origin) {
 
 test('an actual already-produced unavailable advice receipt cannot overwrite a restored selection or unsaved edit', async ({ page, demo }) => {
   await enter(page, demo.origin);
+  await openDetails(page);
   await studio(page).getByText('Manage saved advice', { exact: true }).click();
     await studio(page).getByRole('button', { name: 'Turn off my advice', exact: true }).click();
   await expect(studio(page).getByRole('heading', { name: 'Advice is off', exact: true })).toBeVisible();
@@ -45,12 +50,13 @@ test('an actual already-produced unavailable advice receipt cannot overwrite a r
   try {
     await page.getByRole('button', { name: 'Check task advice', exact: true }).click(); await started;
     await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await openDetails(page);
     await studio(page).getByText('Manage saved advice', { exact: true }).click();
     const select = studio(page).getByLabel('Previously in use');
     const option = select.locator('option').filter({ hasText: 'Pending · operator starting choice' });
     await select.selectOption(await option.getAttribute('value'));
     await studio(page).getByRole('button', { name: 'Restore Pending for me', exact: true }).click();
-    await expect(studio(page).getByRole('article', { name: 'In use advice' }).getByRole('heading', { name: 'Pending', exact: true })).toBeVisible();
+    await expect(studio(page).getByRole('article', { name: 'Current advice' }).getByRole('heading', { name: 'Pending', exact: true })).toBeVisible();
     await studio(page).getByRole('button', { name: 'Back to my task', exact: true }).click();
     release(); await finished;
     await page.unroute('**/api/tasks/*/advice');
@@ -83,6 +89,6 @@ test('a late actual simulation receipt cannot enter a new owner workspace after 
     await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
     await expect(studio(page).getByRole('heading', { name: 'Sample run passed', exact: true })).toHaveCount(0);
-    await expect(studio(page).getByRole('article', { name: 'In use advice' }).getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
+    await expect(studio(page).getByRole('article', { name: 'Current advice' }).getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
   } finally { release?.(); await other.close(); }
 });

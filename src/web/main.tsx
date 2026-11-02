@@ -153,16 +153,14 @@ function App() {
         </header>
         <main className="welcome-main">
           <div className="welcome-copy">
-            <p className="eyebrow">A LITTLE ROOM FOR GOOD WORK</p>
+            <p className="eyebrow">PROJECTS AND TASKS</p>
             <h1>
-              Less noise.
+              Your tasks.
               <br />
-              More <em>done.</em>
+              A clear <em>next step.</em>
             </h1>
             <p className="intro">
-              A thoughtful place for projects, small steps,
-              <br className="desktop-break" /> and the satisfying feeling of
-              finishing.
+              A local space for projects, tasks and notes.
             </p>
             <div className="paper-note">
               <span aria-hidden="true">✓</span>
@@ -174,8 +172,8 @@ function App() {
             </div>
           </div>
           <section className="people-card" aria-labelledby="welcome-title">
-            <span className="section-number">01 / COME ON IN</span>
-            <h2 id="welcome-title">Make yourself at home.</h2>
+            <span className="section-number">START HERE</span>
+            <h2 id="welcome-title">Choose a demo person.</h2>
             <p>
               Choose a fictional demo person.
               <br />
@@ -534,7 +532,7 @@ function Workspace({
           {projects.map((item, index) => (
             <button
               key={item.id}
-              className={`project-link ${item.id === projectId ? "selected" : ""}`}
+              className={`project-link ${destination === "tasks" && item.id === projectId ? "selected" : ""}`}
               onClick={() => { setProjectId(item.id); navigate("tasks"); }}
             >
               <span aria-hidden="true" className="project-symbol">
@@ -751,7 +749,6 @@ function Workspace({
               <span className="local-dot" aria-hidden="true" />
               Local demo · read-only task advice
             </span>
-            <span>Powered by Keir</span>
           </footer>
         </main>
         {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} open={() => openStudio("overview")} focusAction={destinationFocus.current === "edit-task-advice"} />}
@@ -868,7 +865,6 @@ function TaskDetail({
       }}
     >
       <div className="detail-top">
-        <span className="eyebrow">A CLOSER LOOK</span>
         <button
           type="button"
           className="icon-button"
@@ -878,7 +874,7 @@ function TaskDetail({
           ×
         </button>
       </div>
-      <h2 id="detail-title">One small step.</h2>
+      <h2 id="detail-title">Task details</h2>
       <span className={`status-label ${task.status}`}>
         {task.status === "completed" ? "✓ Completed" : "○ Up next"}
       </span>

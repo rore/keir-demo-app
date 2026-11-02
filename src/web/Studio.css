@@ -45,6 +45,8 @@
 .rs-approved { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
 .rs-approved h3 { margin-bottom: 4px; }
 .rs-approved > button { margin-top: 0; }
+.rs-tools .rs-secondary { background: transparent; border: 0; box-shadow: none; padding: 0; margin-top: 16px; }
+.rs-tools > p { margin-top: 12px; }
 .rs-pane-tabs { display: none; }
 .read-studio .rs-new-messages { margin: 0 24px; padding: 4px; font-size: 12px; }
 .rs-canvas-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 18px; }
