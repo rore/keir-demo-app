@@ -207,7 +207,9 @@ test('authentication transitions serialize across tabs even when the first cooki
   await expect(second.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam');
   await expect(second.getByRole('heading', { level: 1, name: 'A quieter workspace' })).toBeVisible();
   expect(await second.evaluate(async () => (await (await fetch('/api/session')).json()).user.id)).toBe('sam');
-  await expect(page.getByText('The demo person changed in another tab. Choose a person to continue.')).toBeVisible();
+  // Revoked initial reads and the cross-tab notification may report expiry in either order.
+  await expect(page.getByRole('alert')).toContainText(/changed in another tab|session changed/);
+  await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveCount(0);
   await screenshot(page, 'session-changed-desktop');
 });
 
