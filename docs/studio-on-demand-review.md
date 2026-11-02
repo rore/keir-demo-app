@@ -22,6 +22,12 @@ If Maya leaves after approving, reopening Studio brings her back to the saved st
 | Revisit | Earlier replies are receipts. **Reopen these examples** opens the original evidence, even after the draft has changed. Superseded choices and approvals cannot change the current draft. | Label earlier evidence clearly. Offer **Return to current proposal**. Current evidence and approval remain server-bound. |
 | Check a real task or manage | A short receipt after activation points to **Check task advice** in the native task. | Keep disable, named restore, history and recovery under their existing management affordance, reachable from the status summary even when review is closed. Preserve the native task's saved status and unsaved edits. |
 
+## Explain the example in place
+
+Lead each sample row with the situation and the advice Daymark actually showed. Keep the expected outcome visible for comparison. If the result needs explanation, put one sentence beside that row. For example, when the saved completed-task sample shows **Done**, the note can read “The proposed change applies only to open tasks.” The note explains the scope of the saved proposal. A failed or unexpected result still shows the difference between expected and actual advice.
+
+Use “You chose …” only when a recorded choice by that person is linked to the proposal revision behind the sample. A prepared expectation can be labelled **Expected**. If the saved evidence does not establish who supplied it, use neutral wording or omit the note. Reopening an earlier run uses its own evidence and revision, even if Maya has since made a different choice.
+
 ## Opening, closing and returning
 
 - Tall and wide screens open review as the existing resizable pane. On phones and short screens the same review occupies the available workspace, with a clear **Back to conversation** control. A hidden pane and splitter are outside the focus order.
@@ -37,7 +43,7 @@ An internal rendered walkthrough and focused browser checks provide the immediat
 
 1. Start with an active Pending choice. Select Needs attention, run the real samples and open, resize, close and reopen review. Verify the initial view is readable on its own and the chosen result survives the round trip.
 2. Approve, then leave and re-enter before using. The status still says Pending is in use. Activating explicitly updates the summary and native advice on a saved open task.
-3. Change the proposal after a run. Reopen the old result, verify which change it belonged to, and verify that it cannot approve the new proposal. Check a failed or stale result and the visible recovery action.
+3. Change the open-task choice after a run and reopen that earlier run. Verify its results and any explanation still describe the original choice, that prepared expectations carry no invented user attribution, and that the old run cannot approve the new proposal. Check a failed or stale result and the visible recovery action.
 4. Exercise Off with a separate draft, Unavailable, disable, restore, owner switch during an outstanding request, and return to an unsaved native task. Reuse existing lifecycle coverage where the affected path is already exercised.
 5. At desktop, phone and short/zoom-equivalent sizes, use keyboard alone to reach choices, review and the return action. Check transcript/preview scrolling, focus restoration and Send reachability.
 
