@@ -6,17 +6,22 @@ import { resolve } from 'node:path';
 import { AppError, USERS, taskService } from './data.mjs';
 import { createTaskRead } from './task-read.mjs';
 import { createLifecycle } from './extension-lifecycle.mjs';
+import { loadHost } from './extension-catalog.mjs';
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
 
-export async function createApp({ db, origin, staticRoot = resolve('dist') }) {
+export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler }) {
   const url = new URL(origin);
   const app = Fastify({ logger: false, bodyLimit: 24 * 1024, requestTimeout: 10_000, connectionTimeout: 10_000, ajv: { customOptions: { removeAdditional: false } } });
   const sessions = new Map();
   const anonymousContext = nonce();
   const service = taskService(db);
-  const lifecycle = createLifecycle(db);
+  if (compiler === undefined) {
+    try { const { createCompiler } = await import('./compiler.mjs'); compiler = createCompiler({ modelBytes: loadHost().dcmBytes, javaExecutable: process.env.KEIR_JAVA_BIN }); }
+    catch { /* Missing compiler assets never prevent native or stored advice startup. */ }
+  }
+  const lifecycle = createLifecycle(db, { compiler });
   const taskAdvice = createTaskRead({ getTask: service.getTask, lifecycle });
   await app.register(cookie);
   app.decorateRequest('scope', null);
@@ -47,7 +52,10 @@ export async function createApp({ db, origin, staticRoot = resolve('dist') }) {
   });
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof AppError ? error.status : error.statusCode ?? 500;
-    reply.code(status).send({ message: status >= 500 ? 'Something could not be saved. Please try again.' : error.message });
+    const diagnostics = error instanceof AppError && Array.isArray(error.diagnostics)
+      && Buffer.byteLength(JSON.stringify(error.diagnostics)) <= 16384 ? error.diagnostics : undefined;
+    reply.code(status).send({ message: status >= 500 && !(error instanceof AppError) ? 'Something could not be saved. Please try again.' : error.message,
+      ...(diagnostics ? { diagnostics } : {}) });
   });
   app.get('/api/session', request => {
     const session = current(request);
@@ -78,6 +86,11 @@ export async function createApp({ db, origin, staticRoot = resolve('dist') }) {
   const noQuery = request => { if (Object.keys(request.query).length) throw new AppError(400, 'This advice request takes no query fields.'); };
   app.get('/api/extensions', request => { noQuery(request); return lifecycleResponse(lifecycle.state(authorize(request).userId)); });
   app.get('/api/extensions/evidence/:id', request => { noQuery(request); return lifecycleResponse(lifecycle.evidence(authorize(request).userId, request.params.id)); });
+  app.get('/api/extensions/revisions/:id', request => {
+    noQuery(request); const value = lifecycle.source(authorize(request).userId, request.params.id);
+    if (Buffer.byteLength(JSON.stringify(value)) > 1048576) throw new AppError(413, 'Source response exceeds the host limit.');
+    return value;
+  });
   app.get('/api/extensions/history', request => {
     if (Object.keys(request.query).some(key => key !== 'before') || request.query.before !== undefined && !/^[1-9][0-9]{0,15}$/.test(request.query.before)) throw new AppError(400, 'Use a valid history cursor.');
     const before = request.query.before === undefined ? undefined : Number(request.query.before);
@@ -86,16 +99,37 @@ export async function createApp({ db, origin, staticRoot = resolve('dist') }) {
   });
   const operations = { draft: ['templateId', 'draftVersion'], simulate: ['revisionId', 'draftVersion'], approve: ['revisionId', 'draftVersion', 'evidenceId'],
     activate: ['revisionId', 'draftVersion', 'generation'], disable: ['generation'], rollback: ['revisionId', 'generation'] };
-  for (const [operation, fields] of Object.entries(operations)) app.post(`/api/extensions/${operation}`, async request => {
+  async function withSignal(request, reply, action) {
+    const abort = new AbortController();
+    const disconnected = () => { if (!reply.raw.writableFinished) abort.abort(); };
+    request.raw.once('aborted', disconnected); reply.raw.once('close', disconnected);
+    if (request.raw.aborted || reply.raw.destroyed) abort.abort();
+    try { return await action(abort.signal); }
+    finally { request.raw.removeListener('aborted', disconnected); reply.raw.removeListener('close', disconnected); }
+  }
+  for (const [operation, fields] of Object.entries(operations)) app.post(`/api/extensions/${operation}`, async (request, reply) => {
     const session = authorize(request), input = request.body;
     noQuery(request);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== fields.length
         || !fields.every(field => Object.hasOwn(input, field) && (['draftVersion', 'generation'].includes(field)
           ? Number.isSafeInteger(input[field]) && input[field] >= 0 : typeof input[field] === 'string' && /^[A-Za-z0-9-]{1,128}$/.test(input[field]))))
       throw new AppError(400, 'Use only the supported advice fields.');
-    const result = await lifecycle[operation === 'draft' ? 'load' : operation](session.userId, input, () => authorize(request));
+    const result = await withSignal(request, reply, signal => lifecycle[operation === 'draft' ? 'load' : operation](session.userId, input, () => authorize(request), { signal }));
     authorize(request);
     return lifecycleResponse(result);
+  });
+  for (const operation of ['compile', 'scenarios']) app.post(`/api/extensions/${operation}`, { bodyLimit: 1048576 }, async (request, reply) => {
+    const session = authorize(request), input = request.body;
+    noQuery(request);
+    const fields = operation === 'compile' ? ['source', 'draftVersion'] : ['revisionId', 'cases', 'draftVersion'];
+    const allowed = operation === 'compile' ? [...fields, 'label'] : fields;
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(field => !allowed.includes(field))
+        || fields.some(field => !Object.hasOwn(input, field)) || !Number.isSafeInteger(input.draftVersion) || input.draftVersion < 0
+        || operation === 'scenarios' && (typeof input.revisionId !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(input.revisionId)))
+      throw new AppError(400, 'Use only the supported preparation fields.');
+    const result = await withSignal(request, reply, signal => lifecycle[operation === 'compile' ? 'compile' : 'proposeScenarios'](
+      session.userId, input, () => authorize(request), { signal }));
+    authorize(request); return lifecycleResponse(result);
   });
   app.post('/api/projects', (request, reply) => { const result = service.createProject(authorize(request).userId, request.body); reply.code(201); return result; });
   app.patch('/api/projects/:id', request => service.renameProject(authorize(request).userId, request.params.id, request.body));

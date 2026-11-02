@@ -91,6 +91,14 @@
 .rs-restore-confirm button { margin-top: 12px; }
 .rs-lookup input { display: block; width: 100%; margin: 7px 0 10px; }
 .read-studio > .rs-error { flex-shrink: 0; margin: 0; padding: 8px 16px; }
+.rs-preparation { flex: none; padding: 8px 16px; background: #f6ebcf; font-size: 13px; }
+.rs-preparation button { margin-left: 12px; }
+.rs-developer { border-top: 1px solid var(--line); padding-top: 12px; }
+.rs-developer label { display: block; margin-top: 14px; font-weight: 600; }
+.rs-developer input, .rs-developer .rs-code { display: block; width: 100%; max-width: 100%; padding: 9px; border: 1px solid #a8b8bf; border-radius: 4px; background: #fff; }
+.rs-developer .rs-code { min-height: 140px; max-height: 280px; resize: vertical; font: 12px/1.5 monospace; white-space: pre; }
+.rs-developer > button, .rs-case-editor > button { margin-top: 9px; }
+.rs-developer h3 { margin-top: 22px; }
 .rs-mobile-link { display: none; }
 @media (max-width: 1120px), (max-height: 650px) {
   .rs-status-summary { display: block; padding: 7px 16px; }

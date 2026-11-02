@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { bindModel, prepareProgram, invokeProgram, ENVIRONMENT } from '@keir/runtime-node';
-import { loadCatalog } from './extension-catalog.mjs';
+import { hostBindings } from './extension-catalog.mjs';
 
 const consumer = Object.freeze({ id: 'demo.taskadvice', version: '1', kind: 'DISPLAY' });
 const unavailable = () => ({ status: 'NOT_DISPLAYED', message: 'Task advice is unavailable. Your task has not changed.' });
@@ -23,19 +23,14 @@ export function loadTaskReadBundle() {
       { bytes: load(`${user}.json`), digest: selection.programs[user].digest }])) };
 }
 
-// The host owns this finite catalog. Request fields cannot choose programs, scope or identity.
-export function createTaskRead({ getTask, bundle, mode = 'real', lifecycle }) {
+// The host resolves exact revisions. Request fields cannot choose programs, scope or identity.
+export function createTaskRead({ getTask, bundle, mode = 'real', lifecycle, clock: suppliedClock }) {
   const selections = new Map();
   let active = 0;
-  try {
-    bundle ??= loadTaskReadBundle();
-    const configurations = lifecycle ? ['maya', 'leo', 'sam'].flatMap(userId => loadCatalog().map(item => ({ userId,
-      key: `${userId}:${item.id}`, program: { bytes: item.artifactBytes, digest: item.pins.artifactDigest } })))
-      : ['maya', 'leo'].map(userId => ({ userId, key: userId, program: bundle.programs[userId] }));
-    for (const { userId, key, program } of configurations) {
+  function prepare(userId, key, program, model) {
       const scope = `demo.task-advice:${userId}`;
-      const binding = bindModel(bundle.dcm, { scope, modelRef: { domainId: 'demo.tasks', domainVersion: '1',
-        format: 'keir-dcm/read-2', digest: bundle.modelDigest, descriptorRecipe: 'keir-record-descriptors/1' },
+      const binding = bindModel(model.dcm, { scope, modelRef: { domainId: 'demo.tasks', domainVersion: '1',
+        format: 'keir-dcm/read-2', digest: model.modelDigest, descriptorRecipe: 'keir-record-descriptors/1' },
       profile: 'keir-read/2', environment: ENVIRONMENT, mode }, {
         'tasks.get': { version: '1', mode, invoke: async (args, protectedArgs, remainingMs) => {
           const call = calls.getStore();
@@ -52,26 +47,44 @@ export function createTaskRead({ getTask, bundle, mode = 'real', lifecycle }) {
           return { kind: 'SUCCESS', value: { id: task.id, status: task.status === 'open' ? 'OPEN' : 'COMPLETED' } };
         } },
       });
-      if (binding.diagnostic) continue;
+      if (binding.diagnostic) return null;
       const selected = prepareProgram(program.bytes, binding.boundModel, { expectedArtifactDigest: program.digest,
-        expectedDcmDigest: bundle.modelDigest, entrypoint: 'ClassifyTask', consumer, compiler: bundle.compiler,
+        expectedDcmDigest: model.modelDigest, entrypoint: 'ClassifyTask', consumer, compiler: model.compiler,
         environment: ENVIRONMENT, mode });
-      if (!selected.diagnostic) selections.set(key, Object.freeze({ scope, prepared: selected.prepared }));
+      if (selected.diagnostic) return null;
+      const result = Object.freeze({ scope, prepared: selected.prepared, bindings: hostBindings(program.bytes, userId) });
+      selections.set(key, result);
+      if (selections.size > 16) selections.delete(selections.keys().next().value);
+      return result;
+  }
+  try {
+    if (!lifecycle) {
+      bundle ??= loadTaskReadBundle();
+      for (const userId of ['maya', 'leo']) prepare(userId, userId, bundle.programs[userId], bundle);
     }
   } catch { /* An invalid deployment disables advice; native tasks remain usable. */ }
   return async ({ userId, taskId, authorize }) => {
     let captured;
     try { captured = lifecycle?.capture(userId); } catch { return unavailable(); }
-    const key = lifecycle ? `${userId}:${captured?.template.id}` : userId;
-    const selected = selections.get(key);
+    const item = captured?.template;
+    if (lifecycle && !item) return unavailable();
+    const key = lifecycle ? `${userId}:${captured.revisionId}:${item.identity}` : userId;
+    let selected = selections.get(key);
+    if (lifecycle) {
+      try {
+        if (selected) { selections.delete(key); selections.set(key, selected); }
+        else selected = prepare(userId, key, { bytes: item.artifactBytes, digest: item.pins.artifactDigest },
+          { dcm: item.dcmBytes, modelDigest: item.pins.modelDigest, compiler: item.pins.compiler });
+      } catch { return unavailable(); }
+    }
     if (!selected || active >= 8 || typeof taskId !== 'string' || !taskId || Buffer.byteLength(taskId) > 256) return unavailable();
-    const current = () => selections.get(key) === selected && (!lifecycle || lifecycle.current(captured)) && authorize() === true;
+    const current = () => (lifecycle ? lifecycle.current(captured) : selections.get(key) === selected) && authorize() === true;
     active++;
     try {
       if (!current()) return unavailable();
-      const clock = { nowMs: () => Math.floor(performance.now()) };
+      const clock = suppliedClock ?? { nowMs: () => Math.floor(performance.now()) };
       const outcome = await calls.run({ userId, authorize: current }, () => invokeProgram(selected.prepared, { taskId }, {
-        scope: selected.scope, bindings: { actorId: userId }, deadline: { clock, expiresAtMs: clock.nowMs() + 1000 },
+        scope: selected.scope, bindings: selected.bindings, deadline: { clock, expiresAtMs: clock.nowMs() + 1000 },
         authorize: request => current() && request.entrypoint === 'ClassifyTask'
           && (record(request, ['entrypoint']) || record(request, ['entrypoint', 'capability', 'version'])
             && request.capability === 'tasks.get' && request.version === '1'),

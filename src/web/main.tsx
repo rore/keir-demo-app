@@ -21,6 +21,7 @@ class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    public diagnostics?: unknown[],
   ) {
     super(message);
   }
@@ -49,6 +50,7 @@ async function api<T>(
     throw new ApiError(
       data.message ?? "The request could not be completed.",
       response.status,
+      Array.isArray(data.diagnostics) ? data.diagnostics : undefined,
     );
   return data;
 }
@@ -317,8 +319,9 @@ function Workspace({
     body?: object,
     signal = lifetime.current.signal,
   ) => api<T>(path, session.contextToken, method, body, signal);
-  async function studioRequest<T>(path: string, method?: string, body?: object) {
-    try { return await request<T>(path, method, body); }
+  async function studioRequest<T>(path: string, method?: string, body?: object, signal?: AbortSignal) {
+    const scopedSignal = signal ? AbortSignal.any([lifetime.current.signal, signal]) : lifetime.current.signal;
+    try { return await request<T>(path, method, body, scopedSignal); }
     catch (error) { if (error instanceof ApiError && error.status === 401) handleError(error); throw error; }
   }
   function navigate(next: "tasks" | "customizations") {
