@@ -1,10 +1,10 @@
 # Extension Studio: conversation and canvas
 
-Status: business-user experience proposal for user review. Chat is the main interaction, with an application-owned canvas that supports the conversation. The first staged prototype was rejected; neither that wizard nor the later warm-serif treatment is an accepted visual direction.
+The user reviewed the running Studio and endorsed the conversation as the main interface, with a canvas to illustrate the work. They requested a draggable divider, less clutter, a clearer distinction between the panes, simpler examples and a different palette. The revised presentation is ready for their next review.
 
 Run `node docs/extension-studio/serve.mjs` from the repository root and open `http://localhost:4179/`. No dependencies, Python or AI key are needed for this scripted prototype. Stop its task-owned loopback server with Ctrl+C. It serves only the HTML and state module; opening HTML directly may fail because it uses browser modules. `PORT` may select another available port without persistent environment changes.
 
-The [core design feature](https://github.com/rore/keir-core/blob/main/roadmap/features/extension-studio-design.md) owns progress. Core record `agent-workflow:extension-studio-business-experience` owns this increment, following `agent-workflow:extension-studio-working-experience`. Full live authoring, provider integration and native guarantees remain future implementation.
+The [core design feature](https://github.com/rore/keir-core/blob/main/roadmap/features/extension-studio-design.md) owns progress. Core record `agent-workflow:extension-studio-preview-clarity` tracks this revision to the business-user proposal. The prototype uses scripted conversation and sample tasks.
 
 ## Business-user design direction
 
@@ -50,7 +50,7 @@ Use outside work to understand design decisions, not to reproduce another produc
 
 Acceptance for the next prototype: a person without technical knowledge can explain what will change, recognize who is affected, correct an example, tell whether it is currently in use and stop or revise it. They should not need to learn Keir terminology or ask which engineering step comes next. Test this through an actual interaction, not a screenshot alone.
 
-The business-user iteration applies this direction to the runnable prototype. The conversation takes more of the working area; supporting navigation is reduced to the current change. Body text is 15px, decisions and forms use 14–15px text, secondary information uses 12–13px, and visible keyboard focus is preserved. The canvas shows a completed task and the follow-up it would add. Project and task-name editing are available on request, with technical version/example identities inside optional detail.
+The conversation opens on the current question. Earlier turns and their saved previews are available under Earlier messages. A single header identifies Studio and the sample user. The canvas shows a completed task and the follow-up it would add together on one task sheet. Example results state what happened, and expanding a result reveals what the user wanted.
 
 The agent asks about project scope and offers ordinary replies: “Only Launch,” “Try a few examples” and “Change the task title.” Examples compare “You wanted” with “In this example.” “This is what I want” confirms the exact reviewed change; “Turn this on” remains a separate action. Chat requests cannot bypass those controls. Requests for all projects explain the one-project prototype limit without silently changing intent.
 
@@ -87,8 +87,8 @@ Leo's initial draft instead uses Operations and Plan next step. Sam has no selec
 
 - Keep a substantial conversation pane with persistent composer, readable agent/user turns and contextual suggested prompts. The chat is the starting point and remains available while canvas content changes.
 - Give the canvas enough space to explain behavior and compare examples. Its heading states what is being shown; the current setup and proposed change stay distinct. Technical identities are available in optional detail.
-- Ground the screen in the native task app's project rail, selected item, user switcher and green actions. Use neutral working surfaces, compact sans-serif headings, readable body text, fine borders and restrained amber mismatch states. The populated conversation and actual work take priority over introductory copy or decoration. No hero, staged wizard or decorative dashboard.
-- Use labeled controls, visible keyboard focus, text status as well as color and clear action consequences. On narrow screens stack the conversation and latest canvas with obvious labels; do not hide conversation behind a required stage tab.
+- Use a charcoal app frame, a white conversation, and an ivory task sheet on a slate-grey work surface. Reserve oxblood for actions and mustard for the proposed new task. Text labels and task marks convey the same meaning as color.
+- On desktop, drag the divider to set the conversation width. Keyboard users can focus the separator, adjust with the left and right arrows, or jump to a limit with Home or End. Each pane retains at least 320 pixels. This tab remembers the width after refresh. At 820 pixels and below, the conversation and preview stack with links between them.
 - Keep technical IR/artifact details in optional inspection. Business users should understand conditions, effects, expectations and consequences without reading implementation details.
 
 ## Working-experience proposal
@@ -147,7 +147,7 @@ Everything is scripted. The small route set supports one representative pattern,
 - Production progress/cancellation/provider errors: use actual host operation states, explain what can still finish, and distinguish late external completion from a confirmed stop. The prototype only delays a scripted result.
 - Recovery and persistence: durable conversations/drafts across devices, unsent text recovery, host reconciliation after reload, retrying safe authoring operations and preserving independent scenario expectations.
 - Exact approval interaction: resolve how conversational requests and explicit canvas confirmations identify the precise current proposal, especially after intervening edits or user switches.
-- User review of the actual conversation/canvas layout, density, mobile presentation, control feedback and before/after task evidence. This proposal remains unapproved until that review.
+- Follow-up user review of the revised density, palette, adjustable layout, mobile presentation and clarity of the sample task sheet.
 
 ## Verification and production seams
 
