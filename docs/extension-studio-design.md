@@ -2,7 +2,7 @@
 
 ## Current functional Daymark experience
 
-Daymark is the task app; Keir is secondary powered-by attribution. Persistent Tasks and Customizations destinations share the owner context, sans-serif controls, mineral backgrounds and blue-black actions. The Customizations overview exposes one real Task advice item, not an invented gallery. It distinguishes server-confirmed selection (In use, Off, Unavailable) from the current draft or approved choice awaiting use. These prepared read-only alternatives apply across the owner's projects.
+Daymark is the task app. Its shared lockup places A KEIR Demo directly below the name on welcome, desktop navigation and the narrow header. Persistent Tasks and Customizations destinations share the owner context, sans-serif controls, mineral backgrounds and blue-black actions. The Customizations overview exposes one real Task advice item, not an invented gallery. It distinguishes server-confirmed selection (In use, Off, Unavailable) from the current draft or approved choice awaiting use. These prepared read-only alternatives apply across the owner's projects.
 
 Studio is a destination in that shell, identified by Customizations / Task advice and a workspace bar. Its white conversation asks how an open task should appear; the ivory sheet on slate compares Current advice (In use, Off or Unavailable) with a proposed value marked in ochre and text. Contextual Advice, Sample results and Review views retain exact server evidence. Explicit approval and subsequent Use remain separate. Saved runs, provenance, technical details, reload and eligible recovery are grouped under Details and recovery. Off or unavailable selection never invents a current Done result.
 

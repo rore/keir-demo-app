@@ -18,6 +18,17 @@ const test = base.extend({
   },
 });
 const ui = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
+async function appLockup(page) {
+  const brand = page.locator('.brand').filter({ visible: true });
+  await expect(brand).toHaveCount(1);
+  await expect(brand.locator('.brand-name')).toHaveText('Daymark');
+  await expect(brand.locator('.brand-subline')).toHaveText('A KEIR Demo');
+  const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
+  expect(subline.y).toBeGreaterThanOrEqual(name.y + name.height);
+  expect(subline.y - name.y - name.height).toBeLessThan(8);
+  expect(Math.abs(subline.x - name.x)).toBeLessThanOrEqual(1);
+  await expect(page.getByText('Powered by Keir', { exact: true })).toHaveCount(0);
+}
 async function openDetails(page) {
   const collapsed = ui(page).locator('details.rs-tools:not([open]) > summary');
   if (await collapsed.count()) await collapsed.click();
@@ -82,7 +93,7 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await page.getByLabel('New project name', { exact: true }).fill('Keep this project draft');
   await openStudio(page);
   await expect(page.locator('.project-link.selected')).toHaveCount(0);
-  await expect(page.getByText('Powered by Keir', { exact: true }).filter({ visible: true })).toHaveCount(1);
+  await appLockup(page);
   await expect(ui(page).getByRole('heading', { level: 1 })).toHaveText('Task advice Studio');
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   await expect(page.locator('#edit-task-advice')).toBeFocused();
@@ -105,8 +116,10 @@ test('normal navigation preserves native forms and returns to the actual overvie
 });
 
 test('overview reflects real draft, approved, selected, off and unavailable states without a task-specific entry', async ({ page, demo }) => {
-  await page.goto(demo.origin); await picture(page, 'welcome');
+  await page.goto(demo.origin); await appLockup(page); await picture(page, 'welcome');
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
+  await expect(page.getByRole('heading', { name: 'The spring collection', exact: true })).toBeVisible();
+  await appLockup(page);
   await picture(page, 'tasks');
   await openStudio(page); await picture(page, 'studio-current');
   await ui(page).getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
@@ -206,7 +219,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }, { width: 360, height: 540 }, { width: 683, height: 384 }]) {
   test(`narrow/short ${viewport.width}x${viewport.height} has direct entry, retained panes/composer and keyboard-reachable actions`, async ({ page, demo }) => {
-    await page.setViewportSize(viewport); await enter(page, demo); await openStudio(page);
+    await page.setViewportSize(viewport); await enter(page, demo); await openStudio(page); await appLockup(page);
     const studio = ui(page), log = studio.getByRole('log'), composer = studio.getByLabel('Message to Studio');
     await composer.fill('Keep this unsent message');
     const composerBox = await studio.locator('.rs-composer').boundingBox();
