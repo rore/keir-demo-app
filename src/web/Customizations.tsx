@@ -37,12 +37,12 @@ export default function Customizations({ request, changed, open, focusAction = "
         <div className="customization-icon" aria-hidden="true">✓</div>
         <div className="customization-copy"><h2>Task advice</h2><p>Choose what you see when you check an open task.</p>
           <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{selected ? inUse ? "In use" : "Unavailable" : "Off"}</span>
-            {inUse ? `Open tasks: ${selected.label} · completed tasks: Done` : selected ? "Your saved choice cannot be validated. Tasks still work as usual." : "No advice is selected. Tasks still work as usual."}</p>
+            {inUse ? selected.kind === "authored" ? `${selected.label} · reviewed authored examples` : `Open tasks: ${selected.label} · completed tasks: Done` : selected ? "Your saved choice cannot be validated. Tasks still work as usual." : "No advice is selected. Tasks still work as usual."}</p>
           {state.draft && <p className="draft-status">{selectedDraft ? "Current choice" : state.approved ? "Approved · awaiting use" : "Draft"}: {state.draft.label}</p>}
-          <small>Read-only advice for {state.owner.name}. Two prepared alternatives.</small>
+          <small>Read-only advice for {state.owner.name}. {selected?.kind === "authored" || state.draft?.kind === "authored" ? "Authored program and independent examples." : "Two prepared alternatives."}</small>
         </div>
         <button id="edit-task-advice" className="primary" onClick={() => open()}>{state.draft && !state.approved ? "Continue draft" : "Open"}<span aria-hidden="true"> →</span></button>
       </article>}
-    <p className="customization-note">Studio helps you compare sample results, approve a proposal, then choose whether to use it. It does not generate rules or change your tasks.</p>
+    <p className="customization-note">Studio helps you compare sample results, approve a proposal, then choose whether to use it. AI generation is not available; no task is changed.</p>
   </main>;
 }

@@ -4,7 +4,7 @@ import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync
 import { resolve, join } from 'node:path';
 import { loadCatalog } from './extension-catalog.mjs';
 
-const lifecycleTables = ['extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections', 'extension_states', 'extension_revisions'];
+const lifecycleTables = ['extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections', 'extension_states', 'extension_authored', 'extension_revisions'];
 function seedLifecycle(db) {
   let catalog = [];
   try { catalog = loadCatalog(); } catch { /* Invalid deployment leaves native tasks usable with no advice. */ }
@@ -40,6 +40,18 @@ function migrateLifecycle(db) {
     `);
     seedLifecycle(db);
     db.exec('PRAGMA user_version = 2');
+  });
+}
+
+function migrateAuthored(db) {
+  transaction(db, () => {
+    db.exec(`CREATE TABLE extension_authored(
+      revision_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, label TEXT NOT NULL CHECK(length(label) BETWEEN 1 AND 80),
+      source BLOB NOT NULL CHECK(length(source) BETWEEN 1 AND 65536),
+      artifact BLOB NOT NULL CHECK(length(artifact) BETWEEN 1 AND 1048576),
+      suite TEXT CHECK(suite IS NULL OR length(CAST(suite AS BLOB))<=131072),
+      FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
+      PRAGMA user_version = 3;`);
   });
 }
 
@@ -126,8 +138,9 @@ export function openData(path) {
         `);
         seedRows(db);
       });
-    } else if (![1, 2].includes(version)) throw new Error('Unsupported database version; no data was reset.');
-    if (version !== 2) migrateLifecycle(db);
+    } else if (![1, 2, 3].includes(version)) throw new Error('Unsupported database version; no data was reset.');
+    if (version < 2) migrateLifecycle(db);
+    if (version < 3) migrateAuthored(db);
     return db;
   } catch (error) { db.close(); throw error; }
 }
