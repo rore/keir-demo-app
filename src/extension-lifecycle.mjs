@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { runReadSimulation } from '@keir/runtime-node/read-simulation';
 import { AppError, notFound, transaction } from './data.mjs';
 import { loadCatalog, digest, json, consumer, hook } from './extension-catalog.mjs';
@@ -132,9 +133,10 @@ export function createLifecycle(db, { runSimulation = runReadSimulation } = {}) 
         const reports = [];
         for (const example of simulationCases(item.id)) {
           authorize();
+          const clock = { nowMs: () => Math.floor(performance.now()) };
           const report = await runSimulation({ dcmBytes: item.dcmBytes, artifactBytes: item.artifactBytes, modelDigest: item.pins.modelDigest,
             artifactDigest: item.pins.artifactDigest, compiler: item.pins.compiler, entrypoint: hook, consumer }, {
-            scope: `demo.task-advice:${owner}`, bindings: { actorId: owner }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 },
+            scope: `demo.task-advice:${owner}`, bindings: { actorId: owner }, deadline: { clock, expiresAtMs: clock.nowMs() + 1000 },
             authorize: () => { authorize(); return example.id !== 'host-denied'; }, allowedReceipts,
             consume: outcome => outcome.classification === 'COMPLETED' ? { status: 'DISPLAYED', code: outcome.result.classification } : { status: 'NOT_DISPLAYED' },
             responseCheck: (capability, args, response) => capability === 'tasks.get' && (response.kind !== 'SUCCESS' || response.value.id === args.taskId),

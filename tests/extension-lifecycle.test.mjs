@@ -215,3 +215,28 @@ test('source names never determine authority; a third owner can select either cu
   const read = createTaskRead({ getTask: service.getTask, lifecycle });
   assert.equal((await read({ userId: 'sam', taskId: tasks.find(task => task.status === 'open').id, authorize: () => true })).classification, 'NEEDS_ATTENTION');
 });
+
+test('actual simulator rejects an overdue synchronous authorization and gives later cases fresh checked deadlines', async t => {
+  let delayed = false;
+  const { lifecycle } = setup(t, { runSimulation: (selection, fixture, bytes) => {
+    const original = fixture.authorize;
+    return runReadSimulation(selection, { ...fixture, authorize: request => {
+      if (!delayed) {
+        delayed = true;
+        // Exercise non-preemptible synchronous work past the actual one-second host deadline.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100);
+      }
+      return original(request);
+    } }, bytes);
+  } });
+  let state = lifecycle.load('maya', { templateId: 'attention', draftVersion: 0 }, authorized);
+  const input = { revisionId: state.draft.id, draftVersion: state.draftVersion };
+  state = await lifecycle.simulate('maya', input, authorized);
+  const evidence = lifecycle.evidence('maya', state.evidence.id);
+  assert.deepEqual(evidence.reports[0].report.native, { classification: 'LIMIT_EXCEEDED', code: 'BUDGET_EXCEEDED' });
+  assert.equal(state.evidence.passed, false);
+  assert.throws(() => lifecycle.approve('maya', { ...input, evidenceId: evidence.id }, authorized), { status: 409 });
+  assert.ok(evidence.reports.slice(1).every(item => item.report.status === 'PASS'), 'Each later case gets a fresh deadline');
+  state = await lifecycle.simulate('maya', input, authorized);
+  assert.equal(state.evidence.passed, true, 'The slot is released after actual settlement');
+});
