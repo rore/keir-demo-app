@@ -753,6 +753,8 @@ p {
 .customizations-main h1 {
   margin-bottom:12px;
 }
+.customization-start { margin: 20px 0; }
+.customization-empty { margin-block: 20px; max-width: 60ch; }
 .page-intro {
   color:var(--muted);
   max-width:60ch;

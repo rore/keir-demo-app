@@ -30,6 +30,11 @@ async function appLockup(page) {
   await expect(page.getByText('Powered by Keir', { exact: true })).toHaveCount(0);
 }
 async function openDetails(page) {
+  if (await ui(page).locator('.rs-preview').isHidden()) {
+    await ui(page).getByRole('button', { name: 'Manage', exact: true }).click();
+    await expect(ui(page).locator('.rs-tools')).toHaveJSProperty('open', true);
+    return;
+  }
   const collapsed = ui(page).locator('details.rs-tools:not([open]) > summary');
   if (await collapsed.count()) await collapsed.click();
 }
@@ -46,15 +51,21 @@ async function overview(page) {
   await destination(page, 'Customizations');
   await expect(page.getByRole('article', { name: 'Task advice customization' })).toBeVisible();
 }
-async function openStudio(page) {
+async function openStudio(page, inspect = true) {
   await overview(page);
   await page.locator('#edit-task-advice').click();
-  await expect(ui(page).getByRole('button', { name: 'Pending for open tasks', exact: true })).toBeEnabled();
+  await expect(ui(page).getByRole('button', { name: 'View proposal', exact: true })).toBeEnabled();
   await expect(page.locator('dialog[open]')).toHaveCount(0);
+  if (inspect && page.viewportSize().width > 1120 && page.viewportSize().height > 650) await ui(page).getByRole('button', { name: 'View proposal', exact: true }).click();
 }
 async function picture(page, name) {
   mkdirSync(resolve('build/screens'), { recursive: true });
   await page.screenshot({ path: resolve('build/screens', `daymark-${name}.png`), fullPage: true });
+}
+async function choose(page, label) {
+  const choice = ui(page).getByRole('button', { name: `${label} for open tasks`, exact: true });
+  if (!await choice.count()) await ui(page).getByRole('button', { name: 'Change choice', exact: true }).click();
+  await choice.click();
 }
 async function scrollTop(locator) { return locator.evaluate(node => node.scrollTop); }
 async function pageDown(page, locator) {
@@ -83,6 +94,201 @@ async function wheel(page, locator, delta) {
 async function bounded(page) {
   expect(await page.evaluate(() => ({ x: document.documentElement.scrollWidth > innerWidth, y: scrollY, height: document.documentElement.scrollHeight, viewport: innerHeight })))
     .toEqual({ x: false, y: 0, height: page.viewportSize().height, viewport: page.viewportSize().height });
+}
+
+async function savedState(page) {
+  return page.evaluate(async () => {
+    const session = await (await fetch('/api/session')).json();
+    return (await fetch('/api/extensions', { headers: { 'X-Session-Context': session.contextToken } })).json();
+  });
+}
+
+test('general start is nonmutating and distinguishes untouched from off setups with history', async ({ page, demo }) => {
+  await page.goto(demo.origin);
+  await page.getByRole('button', { name: 'Continue as Sam' }).click();
+  await destination(page, 'Customizations');
+  await expect(page.getByText('You have no saved customizations.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('article', { name: 'Task advice customization' })).toHaveCount(0);
+  const before = await savedState(page);
+  let mutations = 0;
+  page.on('request', request => { if (request.method() === 'POST' && request.url().includes('/api/extensions/')) mutations++; });
+  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await expect(ui(page).getByRole('heading', { name: 'What would you like Daymark to do differently?' })).toBeVisible();
+  const planned = ui(page).getByRole('button', { name: 'Create from a description · To be implemented' });
+  await expect(planned).toBeDisabled();
+  await expect(planned).toHaveAccessibleDescription(/Free-form requests cannot yet/);
+  await expect(ui(page).getByLabel('Message to Studio')).toBeDisabled();
+  await picture(page, 'general-start');
+  await ui(page).getByRole('button', { name: 'See available starting points' }).click();
+  await picture(page, 'general-discovery');
+  await ui(page).getByRole('button', { name: 'Set up', exact: true }).click();
+  await expect(ui(page).getByRole('button', { name: 'Pending for open tasks' })).toBeEnabled();
+  expect(await savedState(page)).toEqual(before);
+  expect(mutations).toBe(0);
+  await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
+  await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeFocused();
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('maya');
+  await openStudio(page);
+  await ui(page).getByRole('button', { name: 'Manage', exact: true }).click();
+  await ui(page).getByText('Manage saved advice', { exact: true }).click();
+  await ui(page).getByRole('button', { name: 'Turn off my advice' }).click();
+  const off = await savedState(page);
+  expect(off.draft).toBeNull(); expect(off.history.length).toBeGreaterThan(0);
+  await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
+  await expect(page.getByRole('article', { name: 'Task advice customization' })).toContainText('Off');
+  await picture(page, 'general-off');
+  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'See available starting points' }).click();
+  await ui(page).getByRole('button', { name: 'Set up', exact: true }).click();
+  expect(await savedState(page)).toEqual(off);
+});
+
+test('discovery resumes the same setup and draft while failed reads stay distinct from empty', async ({ page, demo }) => {
+  await enter(page, demo); await overview(page);
+  const initial = await savedState(page);
+  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'See available starting points' }).click();
+  await ui(page).getByRole('button', { name: 'Open existing setup', exact: true }).click();
+  expect(await savedState(page)).toEqual(initial);
+  await choose(page, 'Needs attention');
+  await expect(ui(page).getByRole('log')).toContainText('An open task would say Needs attention.');
+  const draft = await savedState(page);
+  await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
+  await expect(page.locator('#edit-task-advice')).toContainText('Continue draft');
+  await destination(page, 'Tasks');
+  await page.route('**/api/extensions', route => route.abort('failed'));
+  await destination(page, 'Customizations');
+  await expect(page.getByRole('alert')).toContainText('Customizations could not be checked');
+  await expect(page.getByText('You have no saved customizations.', { exact: false })).toHaveCount(0);
+  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'See available starting points' }).click();
+  await expect(ui(page).getByRole('status').filter({ hasText: 'Available starting points could not be checked.' })).toBeVisible();
+  await page.unroute('**/api/extensions');
+  await ui(page).getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(ui(page).getByRole('button', { name: 'Continue draft', exact: true })).toBeEnabled();
+  await picture(page, 'discovery-continue');
+  await ui(page).getByRole('button', { name: 'Continue draft', exact: true }).click();
+  expect(await savedState(page)).toEqual(draft);
+});
+
+test('approved run stays exact after a newer run and remount until explicit reapproval', async ({ page, demo }) => {
+  await enter(page, demo); await openStudio(page, false);
+  const studio = ui(page);
+  await studio.getByRole('button', { name: 'Needs attention for open tasks' }).click();
+  await expect(studio.getByRole('log')).toContainText('An open task would say Needs attention. A completed task would still say Done.');
+  await picture(page, 'conversation-default');
+  await studio.getByRole('button', { name: 'Try on sample tasks' }).click();
+  await expect(studio.getByRole('button', { name: 'Latest run', exact: true })).toBeEnabled();
+  await expect(studio.locator('.rs-preview')).toBeHidden();
+  await studio.getByRole('button', { name: 'Latest run', exact: true }).click();
+  await studio.getByRole('button', { name: 'Review this advice', exact: true }).click();
+  await studio.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
+  await studio.getByRole('button', { name: 'Approve this advice', exact: true }).click();
+  await expect(studio.getByRole('button', { name: 'Use this advice for me' })).toBeFocused();
+  const approved = await savedState(page);
+  const a = approved.approvedEvidenceId;
+  expect(a).toBe(approved.evidence.id);
+  await studio.getByRole('button', { name: 'Back to conversation' }).click();
+  await studio.getByRole('button', { name: 'Try on sample tasks' }).click();
+  await expect.poll(async () => (await savedState(page)).evidence.id).not.toBe(a);
+  await expect(studio.getByRole('button', { name: 'Latest run', exact: true })).toBeEnabled();
+  const b = (await savedState(page)).evidence.id;
+  expect((await savedState(page)).approvedEvidenceId).toBe(a);
+  await page.reload(); await openStudio(page, false);
+  await studio.getByRole('button', { name: 'Approved run', exact: true }).click();
+  const results = studio.getByRole('article', { name: 'Sample results', exact: true });
+  await results.getByText('Saved run identity', { exact: true }).click();
+  await expect(results).toContainText(`Evidence: ${a}`);
+  await expect(results.getByText('Approved run', { exact: true })).toBeVisible();
+  await studio.getByRole('button', { name: 'Latest run', exact: true }).click();
+  await expect(results).toContainText(`Evidence: ${b}`);
+  await expect(results.getByText('Latest run', { exact: true })).toBeVisible();
+  await expect(results.getByText('Approved run', { exact: true })).toHaveCount(0);
+  await picture(page, 'approved-latest');
+  await studio.getByRole('button', { name: 'Review this advice', exact: true }).click();
+  await studio.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
+  await expect(studio.getByRole('button', { name: 'Approve this advice', exact: true })).toBeEnabled();
+  await studio.getByRole('button', { name: 'Approve this advice', exact: true }).click();
+  await expect.poll(async () => (await savedState(page)).approvedEvidenceId).toBe(b);
+  expect((await savedState(page)).selection.revision.templateId).toBe('pending');
+});
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }]) {
+test(`approved reentry ${viewport.width}x${viewport.height} resumes the saved decision with Use in view`, async ({ page, demo }) => {
+  await page.setViewportSize(viewport);
+  await enter(page, demo); await openStudio(page, false);
+  const studio = ui(page);
+  await choose(page, 'Needs attention');
+  await studio.getByRole('button', { name: 'Try on sample tasks' }).click();
+  await studio.getByRole('button', { name: 'Latest run', exact: true }).click();
+  await studio.getByRole('button', { name: 'Review this advice', exact: true }).click();
+  await studio.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
+  await studio.getByRole('button', { name: 'Approve this advice', exact: true }).click();
+  await expect(studio.getByRole('button', { name: 'Use this advice for me' })).toBeFocused();
+  await studio.getByRole('button', { name: 'Back to Customizations' }).click();
+  await page.locator('#edit-task-advice').click();
+  await expect(studio.getByRole('button', { name: 'View proposal' })).toBeEnabled();
+  await expect(studio.getByRole('button', { name: 'Use this advice for me' })).toBeInViewport();
+  await expect(studio.getByRole('log')).toContainText('is approved');
+  await expect(studio.getByRole('button', { name: 'Pending for open tasks' })).toHaveCount(0);
+  expect((await savedState(page)).selection.revision.templateId).toBe('pending');
+  await picture(page, `approved-resume-${viewport.width}x${viewport.height}`);
+  await studio.getByRole('button', { name: 'Use this advice for me' }).click();
+  await expect.poll(async () => (await savedState(page)).selection.revision.templateId).toBe('attention');
+});
+}
+
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 683, height: 384 }]) {
+test(`deliberate review ${viewport.width}x${viewport.height} retains evidence reading composer width and focus while closed`, async ({ page, demo }) => {
+  await page.setViewportSize(viewport);
+  await enter(page, demo); await openStudio(page, false);
+  const studio = ui(page), composer = studio.getByLabel('Message to Studio');
+  await expect(studio.locator('.rs-preview')).toBeHidden();
+  await expect(studio.getByRole('separator')).toHaveCount(0);
+  await studio.getByRole('button', { name: 'Needs attention for open tasks' }).click();
+  await composer.fill('Keep this unsent thought');
+  const run = studio.getByRole('button', { name: 'Try on sample tasks' });
+  await run.click();
+  await expect(studio.getByRole('button', { name: 'Latest run', exact: true })).toBeEnabled();
+  await expect(run).toBeFocused();
+  await expect(studio.getByRole('log').getByRole('button', { name: 'Review 6 examples', exact: true })).toBeEnabled();
+  await expect(studio.locator('.rs-preview')).toBeHidden();
+  const latest = studio.getByRole('button', { name: 'Latest run', exact: true });
+  await latest.click();
+  await expect(studio.getByRole('heading', { name: 'Sample run passed' })).toBeFocused();
+  const divider = studio.getByRole('separator'), canvas = studio.locator('.rs-canvas');
+  if (viewport.height <= 500) {
+    const example = studio.getByRole('table').locator('tbody tr').first();
+    expect(await canvas.evaluate(node => node.clientHeight)).toBeGreaterThanOrEqual(await example.evaluate(node => node.getBoundingClientRect().height));
+    await example.scrollIntoViewIfNeeded();
+    await expect(example).toBeInViewport({ ratio: 1 });
+    await picture(page, `on-demand-example-${viewport.width}x${viewport.height}`);
+  }
+  let width;
+  if (viewport.width > 1120 && viewport.height > 650) {
+    await divider.focus(); await divider.press('End');
+    width = await divider.getAttribute('aria-valuenow');
+  } else await expect(divider).toHaveCount(0);
+  await wheel(page, canvas, 220);
+  const position = await scrollTop(canvas), id = (await savedState(page)).evidence.id;
+  await studio.getByRole('button', { name: 'Back to conversation' }).click();
+  await expect(latest).toBeFocused();
+  await expect(studio.locator('.rs-preview')).toBeHidden();
+  await expect(studio.getByRole('separator')).toHaveCount(0);
+  await page.keyboard.press('Tab');
+  expect(await page.evaluate(() => !!document.activeElement?.closest('.rs-preview'))).toBe(false);
+  await latest.click();
+  await expect(studio.locator('.rs-preview')).toBeVisible();
+  await expect(studio.getByRole('heading', { name: 'Sample run passed' })).toBeFocused();
+  await expect.poll(() => scrollTop(canvas)).toBe(position);
+  if (width) await expect(divider).toHaveAttribute('aria-valuenow', width);
+  await expect(composer).toHaveValue('Keep this unsent thought');
+  await studio.getByText('Saved run identity', { exact: true }).click();
+  await expect(studio.getByRole('article', { name: 'Sample results' })).toContainText(`Evidence: ${id}`);
+  await expect(studio.getByText('The proposed change applies only to open tasks.')).toBeVisible();
+  await bounded(page);
+  await picture(page, `on-demand-results-${viewport.width}x${viewport.height}`);
+});
 }
 
 test('normal navigation preserves native forms and returns to the actual overview or detail invoker', async ({ page, demo }) => {
@@ -122,9 +328,10 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   await appLockup(page);
   await picture(page, 'tasks');
   await openStudio(page); await picture(page, 'studio-current');
-  await ui(page).getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
+  await choose(page, 'Needs attention');
   await picture(page, 'studio-draft');
   await ui(page).getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'Latest run', exact: true }).click();
   await expect(ui(page).getByRole('table').locator('tbody tr')).toHaveCount(6);
   await picture(page, 'studio-results');
   await ui(page).getByRole('button', { name: 'Review this advice', exact: true }).click();
@@ -148,14 +355,17 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   await expect(card).toContainText('Unavailable');
   await expect(card).not.toContainText('completed tasks: Done');
   await picture(page, 'overview-unavailable');
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam'); await overview(page);
-  await expect(card).toContainText('Off');
-  await page.locator('#edit-task-advice').click();
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam'); await destination(page, 'Customizations');
+  await expect(card).toHaveCount(0);
+  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'See available starting points', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'Set up', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'View proposal', exact: true }).click();
   const current = ui(page).getByRole('article', { name: 'Current advice', exact: true });
   await expect(current).toContainText('Off');
   await expect(current.getByText('In use', { exact: true })).toHaveCount(0);
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
-  await expect(card).not.toContainText('Done');
+  await expect(card).toHaveCount(0);
   await picture(page, 'overview-off');
 });
 
@@ -232,16 +442,16 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
     await expect.poll(() => scrollTop(log)).toBeGreaterThan(0);
     const logPosition = await scrollTop(log);
     await picture(page, `studio-conversation-${viewport.width}x${viewport.height}`);
-    await studio.getByRole('button', { name: 'Preview', exact: true }).click();
+    await studio.getByRole('button', { name: 'View proposal', exact: true }).click();
     await expect(studio.locator('.rs-chat')).toBeHidden();
     await openDetails(page);
     await studio.getByText('Manage saved advice', { exact: true }).click();
     await studio.getByText('Selection history and exact identities', { exact: true }).click();
     const canvas = studio.locator('.rs-canvas'); await wheel(page, canvas, 300);
     await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(0); const canvasPosition = await scrollTop(canvas);
-    await studio.getByRole('button', { name: 'Conversation', exact: true }).click();
+    await studio.getByRole('button', { name: 'Back to conversation', exact: true }).click();
     await expect(composer).toHaveValue('Keep this unsent message'); expect(await scrollTop(log)).toBe(logPosition);
-    await studio.getByRole('button', { name: 'Preview', exact: true }).click(); expect(await scrollTop(canvas)).toBe(canvasPosition);
+    await studio.getByRole('button', { name: 'View proposal', exact: true }).click(); expect(await scrollTop(canvas)).toBe(canvasPosition);
     await canvas.focus(); await page.keyboard.press('PageDown');
     await openDetails(page);
     await studio.getByRole('button', { name: 'Reload saved state', exact: true }).focus();
@@ -286,17 +496,20 @@ test('late overview and Studio reads cannot repopulate an abandoned destination 
 test('a newly produced real sample run does not replace historical evidence being read', async ({ page, demo }) => {
   await enter(page, demo); await openStudio(page);
   const studio = ui(page);
-  await studio.getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
+  await choose(page, 'Needs attention');
   await studio.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+  await studio.getByRole('button', { name: 'Latest run', exact: true }).click();
   await expect(studio.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
   const original = await page.evaluate(async () => {
     const session = await (await fetch('/api/session')).json();
     return (await (await fetch('/api/extensions', { headers: { 'X-Session-Context': session.contextToken } })).json()).evidence.id;
   });
-  await studio.getByRole('button', { name: 'Pending for open tasks', exact: true }).click();
+  await choose(page, 'Pending');
+  let simulationRequests = 0;
   let release, arrived, delivered;
   const started = new Promise(resolve => { arrived = resolve; }), finished = new Promise(resolve => { delivered = resolve; });
   await page.route('**/api/extensions/simulate', async route => {
+    simulationRequests++;
     const response = await route.fetch();
     expect((await response.json()).evidence.id).not.toBe(original);
     arrived(); await new Promise(resolve => { release = resolve; });
@@ -310,8 +523,11 @@ test('a newly produced real sample run does not replace historical evidence bein
     await results.getByText('Saved run identity', { exact: true }).click();
     await expect(results).toContainText(`Evidence: ${original}`);
     const canvas = studio.locator('.rs-canvas'); await wheel(page, canvas, 400); const position = await scrollTop(canvas);
+    await expect(studio.getByRole('button', { name: 'Try on sample tasks', exact: true })).toHaveAttribute('aria-disabled', 'true');
+    await studio.getByRole('button', { name: 'Try on sample tasks', exact: true }).click({ force: true });
+    expect(simulationRequests).toBe(1);
     release(); await finished;
-    await expect(studio.getByRole('button', { name: 'Try on sample tasks', exact: true })).toHaveCount(0);
+    await expect(studio.getByRole('button', { name: 'Try on sample tasks', exact: true })).toHaveAttribute('aria-disabled', 'false');
     await expect(studio.getByRole('status')).toContainText('A new sample run was saved.');
     expect(await results.getByRole('table').textContent()).toBe(content);
     await expect(results).toContainText(`Evidence: ${original}`);
@@ -327,8 +543,9 @@ for (const operation of ['draft', 'approve']) {
   test(`an already-produced ${operation} response preserves explicitly selected sample reading`, async ({ page, demo }) => {
     await enter(page, demo); await openStudio(page);
     const studio = ui(page);
-    await studio.getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
+    await choose(page, 'Needs attention');
     await studio.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+    await studio.getByRole('button', { name: 'Latest run', exact: true }).click();
     await expect(studio.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
     const original = await page.evaluate(async () => {
       const session = await (await fetch('/api/session')).json();
@@ -357,7 +574,8 @@ for (const operation of ['draft', 'approve']) {
       await route.fulfill({ response }); delivered();
     });
     try {
-      await studio.getByRole('button', { name: operation === 'draft' ? 'Pending for open tasks' : 'Approve this advice', exact: true }).click();
+      if (operation === 'draft') await choose(page, 'Pending');
+      else await studio.getByRole('button', { name: 'Approve this advice', exact: true }).click();
       await started;
       const tab = studio.getByRole('button', { name: 'Sample results', exact: true });
       await tab.click();
@@ -371,7 +589,7 @@ for (const operation of ['draft', 'approve']) {
       await expect(anchor).toBeInViewport();
       const position = (await anchor.boundingBox()).y;
       release(); await finished;
-      await expect(studio.getByRole('button', { name: 'Pending for open tasks', exact: true })).toBeEnabled();
+      await expect(studio.getByRole('button', { name: 'Change choice', exact: true })).toBeEnabled();
       await expect(tab).toHaveAttribute('aria-pressed', 'true');
       await expect(results).toBeVisible();
       await expect(results).toContainText(`Evidence: ${original.evidence.id}`);

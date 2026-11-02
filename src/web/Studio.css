@@ -2,6 +2,7 @@
 .read-studio button { border: 1px solid #c5c1c0; background: #fff; border-radius: 5px; padding: 7px 12px; font-size: 14px; }
 .read-studio button:hover:not(:disabled) { background: #f0edeb; }
 .read-studio button:disabled { opacity: .55; }
+.read-studio button[aria-disabled="true"] { opacity: .55; cursor: wait; }
 .read-studio h1 { font-size: clamp(22px, 2.3vw, 30px); line-height: 1.25; letter-spacing: -.035em; }
 .read-studio .rs-canvas-heading h2 { font: 600 21px/1.35 Inter, "Segoe UI", Arial, sans-serif; margin: 0; letter-spacing: -.02em; }
 .read-studio h3 { font-size: 18px; margin: 0 0 10px; line-height: 1.35; }
@@ -19,6 +20,17 @@
 .read-studio .rs-header button { background: transparent; color: inherit; border-color: #89818a; }
 .read-studio .rs-header button:hover:not(:disabled) { background: #494449; }
 .rs-room { display: grid; grid-template-columns: minmax(0, calc((100% - 14px) * var(--rs-chat, 52) / 100)) 14px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.read-studio [hidden] { display: none !important; }
+.rs-room.rs-review-closed { grid-template-columns: minmax(0, 1fr); }
+.rs-review-closed .rs-chat { width: 100%; max-width: 800px; margin-inline: auto; }
+.rs-status-summary { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--line); background: #f4f7f7; }
+.rs-status-summary > div:first-child { display: flex; flex-direction: column; flex-shrink: 0; font-size: 13px; }
+.rs-summary-actions { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.read-studio .rs-summary-actions button { padding: 5px 8px; font-size: 12px; }
+.read-studio .rs-close-review { align-self: flex-start; flex: none; margin: 8px 20px 0; }
+.rs-start h2 { margin: 6px 0 20px; font-size: 24px; line-height: 1.35; }
+.rs-start > button { display: block; margin: 12px 0; }
+.rs-start section { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 18px; }
 .rs-chat { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fff; }
 .rs-chat-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .rs-chat-head h2 { font-size: 20px; line-height: 1.3; letter-spacing: -.02em; }
@@ -30,7 +42,7 @@
 .rs-yours { margin-left: auto; background: #f3f1ef; border-radius: 10px 10px 2px 10px; padding: 10px 15px; max-width: 88%; }
 .rs-yours > strong { color: #605d60; }
 .read-studio .rs-link { color: #702d39; border: 0; border-bottom: 1px solid #ba9a9c; padding: 3px 0; background: transparent; margin-top: 8px; }
-.rs-choices { display: flex; flex-shrink: 0; flex-wrap: wrap; gap: 8px; padding: 10px 24px; }
+.rs-choices { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .read-studio .rs-composer { display: flex; flex-direction: row; flex: none; min-height: 0; gap: 10px; align-items: flex-end; margin: 0 24px 10px; padding: 10px; border: 1px solid #a8b8bf; border-radius: 7px; }
 .read-studio .rs-composer textarea { flex: 1; width: 100%; min-width: 0; min-height: 45px; max-height: 110px; resize: vertical; border: 0; padding: 4px; margin: 0; background: #fff; font-size: 14px; }
 .rs-chat-note { padding: 0 24px 14px; color: var(--muted); font-size: 12px; flex-shrink: 0; }
@@ -81,6 +93,10 @@
 .read-studio > .rs-error { flex-shrink: 0; margin: 0; padding: 8px 16px; }
 .rs-mobile-link { display: none; }
 @media (max-width: 1120px), (max-height: 650px) {
+  .rs-status-summary { display: block; padding: 7px 16px; }
+  .rs-status-summary > div:first-child { flex-direction: row; flex-wrap: wrap; gap: 4px 16px; }
+  .rs-summary-actions { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; padding-top: 6px; }
+  .rs-summary-actions button { flex-shrink: 0; }
   .rs-room { display: flex; }
   .rs-chat, .rs-preview { flex: 1; }
   .rs-show-conversation .rs-preview, .rs-show-preview .rs-chat { display: none; }
@@ -99,6 +115,14 @@
   .rs-results th, .rs-results td { padding-inline: 6px; }
 }
 @media (max-height: 500px) {
+  .read-studio.rs-review-open .rs-breadcrumb, .read-studio.rs-review-open .rs-canvas-tabs { display: none; }
+  .read-studio.rs-review-open .rs-header { padding: 4px 12px; }
+  .read-studio.rs-review-open .rs-header button { max-width: none; white-space: nowrap; font-size: 12px; padding: 4px 8px; }
+  .read-studio.rs-review-open .rs-status-summary { display: flex; min-height: 40px; gap: 8px; padding: 4px 12px; }
+  .read-studio.rs-review-open .rs-status-summary > div:first-child { flex-shrink: 1; }
+  .read-studio.rs-review-open .rs-summary-actions { padding: 0; overflow: visible; }
+  .read-studio.rs-review-open .rs-summary-actions > button:not(#use-task-advice) { display: none; }
+  .read-studio.rs-review-open .rs-close-review { margin: 4px 12px 0; padding: 4px 8px; font-size: 12px; }
   .rs-header { padding-block: 6px; }
   .read-studio .rs-header h1 { font-size: 18px; }
   .rs-breadcrumb { margin-bottom: 0; font-size: 11px; }

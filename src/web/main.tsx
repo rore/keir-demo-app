@@ -265,6 +265,7 @@ function Workspace({
   const [draft, setDraft] = useState({ title: "", notes: "" });
   const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">("tasks");
   const [studioOrigin, setStudioOrigin] = useState<"detail" | "overview">("overview");
+  const [studioStart, setStudioStart] = useState(false);
   const detailVisible = useRef(false);
   detailVisible.current = destination === "tasks" && !!detail;
   const resumeDetail = useRef(false);
@@ -324,8 +325,9 @@ function Workspace({
     destinationFocus.current = next === "tasks" ? "tasks-heading" : "customizations-heading";
     setDestination(next);
   }
-  function openStudio(origin: "detail" | "overview") {
+  function openStudio(origin: "detail" | "overview", start = false) {
     setStudioOrigin(origin);
+    setStudioStart(start);
     setDestination("studio");
   }
   function returnFromStudio() {
@@ -333,7 +335,7 @@ function Workspace({
       resumeDetail.current = true;
       setDestination("tasks");
     } else {
-      destinationFocus.current = "edit-task-advice";
+      destinationFocus.current = studioStart ? "new-customization" : "edit-task-advice";
       setDestination("customizations");
     }
   }
@@ -751,9 +753,9 @@ function Workspace({
             </span>
           </footer>
         </main>
-        {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} open={() => openStudio("overview")} focusAction={destinationFocus.current === "edit-task-advice"} />}
+        {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} open={start => openStudio("overview", start)} focusAction={destinationFocus.current ?? ""} />}
         {destination === "studio" && <main className="studio-main"><Studio request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
-          back={returnFromStudio} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
+          start={studioStart} back={returnFromStudio} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
       </div>
       <dialog
         ref={detailRef}
