@@ -21,6 +21,7 @@ class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    public diagnostics?: unknown[],
   ) {
     super(message);
   }
@@ -49,6 +50,7 @@ async function api<T>(
     throw new ApiError(
       data.message ?? "The request could not be completed.",
       response.status,
+      Array.isArray(data.diagnostics) ? data.diagnostics : undefined,
     );
   return data;
 }
@@ -317,8 +319,9 @@ function Workspace({
     body?: object,
     signal = lifetime.current.signal,
   ) => api<T>(path, session.contextToken, method, body, signal);
-  async function studioRequest<T>(path: string, method?: string, body?: object) {
-    try { return await request<T>(path, method, body); }
+  async function studioRequest<T>(path: string, method?: string, body?: object, signal?: AbortSignal) {
+    const scopedSignal = signal ? AbortSignal.any([lifetime.current.signal, signal]) : lifetime.current.signal;
+    try { return await request<T>(path, method, body, scopedSignal); }
     catch (error) { if (error instanceof ApiError && error.status === 401) handleError(error); throw error; }
   }
   function navigate(next: "tasks" | "customizations") {
@@ -921,8 +924,8 @@ function TaskDetail({
         <button id="manage-task-advice" type="button" className="quiet-button" disabled={busy} onClick={manage}>Manage task advice</button>
         <p className="muted">Checks the saved task status using your configured rule. Advice does not change tasks.</p>
         {advice && <p role="status">{advice.status === "NOT_DISPLAYED" ? advice.message : {
-          DONE: "All done. This task is completed.", PENDING: "Still open. This task is pending.",
-          NEEDS_ATTENTION: "Still open. This task needs attention.",
+          DONE: "Task advice: Done", PENDING: "Task advice: Pending",
+          NEEDS_ATTENTION: "Task advice: Needs attention",
         }[advice.classification]}</p>}
       </section>
       <div className="detail-actions">

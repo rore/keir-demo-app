@@ -1,0 +1,65 @@
+{
+  "schema": "keir-demo-compiler-distribution/1",
+  "compiler": "keir-compiler-java/0.1.0-SNAPSHOT",
+  "profile": "keir-read/2",
+  "artifact": {
+    "file": "keir-compiler-java-0.1.0-SNAPSHOT-cli.jar",
+    "sha256": "sha256:9196102bfac620fa038ca6e562c5ebb12e71350042722a9dcf20d5969d84c469",
+    "bytes": 8814077
+  },
+  "source": {
+    "repository": "https://github.com/rore/keir-core",
+    "recorded_producer_revision": "0e7d44c05c188631892278fc838f3d89146fe028",
+    "source_and_build_poms_equivalent_at": "6f5b9e4438bc18064150eb08cbcbbe258f3727e5"
+  },
+  "java": {
+    "bytecode_minimum": 21,
+    "class_major": 65,
+    "qualified_runtime": "SapMachine 21.0.12+8-LTS"
+  },
+  "dependencies": {
+    "count": 19,
+    "metadata": "compiler-NOTICES.txt",
+    "preserved_original_notice_count": 5
+  },
+  "rebuild": {
+    "source_revision": "6f5b9e4438bc18064150eb08cbcbbe258f3727e5",
+    "maven": "3.10.0",
+    "output_timestamp": 1793644494,
+    "sha256": "sha256:bbb6590990ed5103feff214637005e6d2dfa3917ff38098a692d4ed7ffd8b0e4",
+    "two_fresh_builds_byte_identical": true,
+    "matches_original_all_uncompressed_entry_payloads": true,
+    "original_zip_timestamp_differences": 27,
+    "command": "mvn -o -B -ntp -Dmaven.repo.local=<cached-repository> -Dmaven.test.skip=true -Dproject.build.outputTimestamp=1793644494 -Dstyle.color=never -pl compiler-java -am package",
+    "build_times_seconds": [
+      9.162,
+      11.449
+    ],
+    "compiler_plugin": "3.14.1",
+    "shade_plugin": "3.6.1",
+    "jar_plugin": "3.5.1"
+  },
+  "qualification": {
+    "cases": 7,
+    "first_process_ms": 498.459,
+    "profile_input_bytes_each": 65536,
+    "artifact_stdout_cap_bytes": 1048576,
+    "probe_stderr_cap_bytes": 16384,
+    "probe_timeout_seconds": 10,
+    "heap_probe": "-Xmx128m",
+    "not_hard_process_containment": true,
+    "fresh_process_not_cold_os_cache": true,
+    "oversized_diagnostic_probe": {
+      "source_bytes": 20452,
+      "stderr_bytes": 20098,
+      "exit": 1,
+      "code": "FIELD_UNKNOWN",
+      "requires_whole_tool_output_failure_at_16KiB": true
+    }
+  },
+  "release": {
+    "qualified_use_scope": "User-authorized internal demo consumption. No repository visibility or public package release change is part of this qualification.",
+    "project_license_context": "Repository README: license selection and public release are pending; no open-source license grant is implied. This is not an internal-consumption approval gate.",
+    "third_party_materials": "Preserve the declared dependency metadata and available original license/notice payloads; normal third-party terms remain applicable."
+  }
+}

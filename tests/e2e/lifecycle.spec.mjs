@@ -1,9 +1,13 @@
 import { test as base, expect } from '@playwright/test';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { start } from '../../src/server.mjs';
+import { createApp } from '../../src/app.mjs';
+import { openData } from '../../src/data.mjs';
+import { loadCatalog } from '../../src/extension-catalog.mjs';
+import { spawn } from 'node:child_process';
 
 const test = base.extend({
   demo: async ({}, use) => {
@@ -99,20 +103,20 @@ test('real sample review separates typed assent, approval and use; native edits 
   await expect(page.getByRole('button', { name: 'Manage task advice', exact: true })).toBeFocused();
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved lifecycle title');
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'This task needs attention' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Needs attention' })).toBeVisible();
   await open(page);
   await openDetails(page);
   await ui.getByText('Manage saved advice', { exact: true }).click();
   await ui.getByRole('button', { name: 'Turn off my advice', exact: true }).click();
   await expect(ui.getByRole('heading', { name: 'Advice is off', exact: true })).toBeVisible();
   await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'This task needs attention' })).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Needs attention' })).toHaveCount(0);
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved lifecycle title');
   await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'This task needs attention' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Needs attention' })).toBeVisible();
 });
 
 test('lost activation response is read back before retry; historical evidence cannot approve a new draft', async ({ page, demo }) => {
@@ -167,7 +171,7 @@ test('a real already-produced advice response cannot return after a Studio selec
     await studio(page).getByRole('button', { name: 'Back to my task', exact: true }).click();
     release(); await finished;
     await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toBeEnabled();
-    await expect(page.getByRole('status').filter({ hasText: 'This task is pending' })).toHaveCount(0);
+    await expect(page.getByRole('status').filter({ hasText: 'Task advice: Pending' })).toHaveCount(0);
     await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this edit');
   } finally { release?.(); }
 });
@@ -231,4 +235,239 @@ test('an ineligible saved selection is unavailable and can be turned off', async
   await ui.getByText('Manage saved advice', { exact: true }).click();
   await ui.getByRole('button', { name: 'Turn off my advice', exact: true }).click();
   await expect(ui.getByRole('heading', { name: 'Advice is off', exact: true })).toBeVisible();
+});
+
+const authoredProgram = JSON.stringify({ language: 'keir/v0', domain: { id: 'demo.tasks', version: '1',
+  fingerprint: JSON.parse(readFileSync(new URL('../../extensions/task-read/selection.json', import.meta.url))).modelDigest },
+  entrypoint: 'ClassifyTask', name: 'third-program', steps: [{ id: 'readTask', call: 'tasks.get', args: { taskId: { cel: 'input.taskId' } } }],
+  return: { record: { classification: { cel: 'readTask.status == "COMPLETED" ? "PENDING" : "DONE"' } } } });
+const expectedExample = code => JSON.stringify({ format: 'keir-read-simulation/1', id: 'open', input: { taskId: 'sample-task' },
+  stubs: [{ step: 'readTask', capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' },
+    response: { kind: 'SUCCESS', value: { id: 'sample-task', status: 'OPEN' } } }],
+  expect: { calls: [{ step: 'readTask', capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' } }],
+    outcome: { classification: 'COMPLETED', result: { classification: code } }, consumption: { status: 'DISPLAYED', code } } });
+
+async function developer(page) {
+  await openDetails(page);
+  const summary = studio(page).locator('.rs-developer > summary');
+  if (!await studio(page).locator('.rs-developer').evaluate(node => node.open)) await summary.click();
+  return studio(page).locator('.rs-developer');
+}
+
+for (const width of [1440, 390]) test(`real authored source, independent examples and saved-task activation ${width}`, async ({ page, demo }) => {
+  await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+  await enter(page, demo.origin);
+  await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved authored title');
+  await open(page); await developer(page);
+  const ui = studio(page);
+  await ui.getByLabel('Program label', { exact: true }).fill('Different task advice');
+  await ui.getByLabel('Keir source (developer)', { exact: true }).fill(authoredProgram);
+  await ui.getByRole('button', { name: 'Compile source', exact: true }).click();
+  await expect(ui.getByText('Saved source is waiting for independent examples.', { exact: true })).toBeVisible();
+  await expect(ui.getByRole('button', { name: 'Try on sample tasks', exact: true })).toBeDisabled();
+  await ui.getByLabel('Example 1 JSON', { exact: true }).fill(expectedExample('PENDING'));
+  await ui.getByRole('button', { name: 'Save expected examples', exact: true }).click();
+  await expect(ui.getByRole('button', { name: 'Try on sample tasks', exact: true })).toBeEnabled();
+  await ui.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+  await ui.getByRole('button', { name: 'Latest run', exact: true }).click();
+  await expect(ui.getByRole('heading', { name: 'Sample run did not pass', exact: true })).toBeVisible();
+  await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
+  await developer(page);
+  await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveValue(authoredProgram);
+  await ui.getByLabel('Example 1 JSON', { exact: true }).fill(expectedExample('DONE'));
+  await ui.getByRole('button', { name: 'Save expected examples', exact: true }).click();
+  await ui.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+  await ui.getByRole('button', { name: 'Latest run', exact: true }).click();
+  await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
+  await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
+  await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
+  await ui.getByRole('button', { name: 'Approve this advice', exact: true }).click();
+  await expect(ui.getByText('In use · Pending', { exact: true })).toHaveCount(1);
+  await ui.getByRole('button', { name: 'Use this advice for me', exact: true }).click();
+  await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
+  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved authored title');
+  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Done' })).toBeVisible();
+  await expect(page.locator('.status-label.open')).toHaveText('○ Up next');
+  await expect(page.locator('.status-label.completed')).toHaveCount(0);
+  await demo.restart();
+  await enter(page, demo.origin);
+  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Done' })).toBeVisible();
+  await expect(page.locator('.status-label.open')).toHaveText('○ Up next');
+  await page.getByRole('button', { name: 'Close task details', exact: true }).click();
+  await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+  await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
+  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Needs attention' })).toBeVisible();
+});
+
+async function authoredReady(page, origin) {
+  await enter(page, origin); await open(page); await developer(page);
+  const ui = studio(page);
+  await ui.getByLabel('Keir source (developer)', { exact: true }).fill(authoredProgram);
+  await ui.getByRole('button', { name: 'Compile source', exact: true }).click();
+  await expect(ui.getByText('Saved source is waiting for independent examples.', { exact: true })).toBeVisible();
+  await ui.getByLabel('Example 1 JSON', { exact: true }).fill(expectedExample('DONE'));
+  await ui.getByRole('button', { name: 'Save expected examples', exact: true }).click();
+  await ui.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+  await ui.getByRole('button', { name: 'Latest run', exact: true }).click();
+  await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
+  return ui;
+}
+
+async function savedLifecycle(page, origin) {
+  const { contextToken } = await (await page.request.get(`${origin}/api/session`)).json();
+  const response = await page.request.get(`${origin}/api/extensions`, { headers: { 'x-session-context': contextToken } });
+  expect(response.ok()).toBe(true);
+  return response.json();
+}
+
+test('exact authored review shows saved A, preserves unsaved B, and reloads A after re-entry', async ({ page, demo }) => {
+  const ui = await authoredReady(page, demo.origin);
+  const saved = await savedLifecycle(page, demo.origin);
+  const sourceB = authoredProgram.replace('third-program', 'unsaved-program-B'), casesB = expectedExample('PENDING');
+  await developer(page);
+  await ui.getByLabel('Keir source (developer)', { exact: true }).fill(sourceB);
+  await ui.getByLabel('Example 1 JSON', { exact: true }).fill(casesB);
+  await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
+  await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(authoredProgram);
+  await expect(ui.getByLabel('Saved example 1 for approval', { exact: true })).toHaveText(expectedExample('DONE'));
+  await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveValue(sourceB);
+  await expect(ui.getByLabel('Example 1 JSON', { exact: true })).toHaveValue(casesB);
+  await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
+  await ui.getByRole('button', { name: 'Approve this advice', exact: true }).click();
+  await expect(ui.getByRole('button', { name: 'Use this advice for me', exact: true })).toBeEnabled();
+  const approved = await savedLifecycle(page, demo.origin);
+  expect(approved.draft.id).toBe(saved.draft.id);
+  expect(approved.approvedEvidenceId).toBe(saved.evidence.id);
+  await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
+  await open(page); await developer(page);
+  await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveValue('');
+  await expect(ui.getByLabel('Example 1 JSON', { exact: true })).toHaveValue('');
+  await ui.getByRole('button', { name: 'Latest run', exact: true }).click();
+  await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
+  await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
+  await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(authoredProgram);
+  await expect(ui.getByLabel('Saved example 1 for approval', { exact: true })).toHaveText(expectedExample('DONE'));
+  await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveValue('');
+  await expect(ui.getByLabel('Example 1 JSON', { exact: true })).toHaveValue('');
+});
+
+test('exact authored review fails closed on unavailable or mismatched saved documents and can retry', async ({ page, demo }) => {
+  const ui = await authoredReady(page, demo.origin);
+  let mode = 'unavailable';
+  await page.route('**/api/extensions/revisions/*', async route => {
+    if (mode === 'unavailable') return route.fulfill({ status: 503, json: { message: 'Unavailable' } });
+    const response = await route.fetch(), saved = await response.json();
+    await route.fulfill({ response, json: mode === 'revision' ? { ...saved, revisionId: 'wrong-revision' } : mode === 'suite' ? { ...saved, suiteDigest: 'wrong-suite' } : saved });
+  });
+  await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
+  for (const next of ['revision', 'suite', 'valid']) {
+    await expect(ui.getByRole('alert').filter({ hasText: 'Exact saved source and examples could not be checked' })).toBeVisible();
+    await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toBeDisabled();
+    await expect(ui.getByRole('button', { name: 'Approve this advice', exact: true })).toBeDisabled();
+    await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveCount(0);
+    mode = next;
+    await ui.getByRole('button', { name: 'Reload exact saved source', exact: true }).click();
+  }
+  await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(authoredProgram);
+  await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
+  await expect(ui.getByRole('button', { name: 'Approve this advice', exact: true })).toBeEnabled();
+  expect((await savedLifecycle(page, demo.origin)).approved).toBe(false);
+});
+
+test('a held exact-source review cannot enter a different owner or a re-entered workspace', async ({ page, context, demo }) => {
+  const ui = await authoredReady(page, demo.origin);
+  let release, arrived, delivered;
+  const started = new Promise(resolve => { arrived = resolve; });
+  const finished = new Promise(resolve => { delivered = resolve; });
+  await page.route('**/api/extensions/revisions/*', async route => {
+    const response = await route.fetch();
+    arrived(); await new Promise(resolve => { release = resolve; });
+    try { await route.fulfill({ response }); } catch { /* Workspace replacement aborts the old read. */ }
+    delivered();
+  });
+  const other = await context.newPage();
+  try {
+    await ui.getByRole('button', { name: 'Review this advice', exact: true }).click(); await started;
+    await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toBeDisabled();
+    await other.goto(demo.origin); await other.getByLabel('Demo person', { exact: true }).selectOption('leo');
+    await expect(page.getByRole('button', { name: 'Continue as Leo' })).toBeVisible();
+    await page.getByRole('button', { name: 'Continue as Leo' }).click();
+    await page.getByLabel('Demo person', { exact: true }).selectOption('maya');
+    await page.getByRole('button', { name: 'Gather material references', exact: true }).click(); await open(page);
+    release(); await finished; await page.unroute('**/api/extensions/revisions/*');
+    await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveCount(0);
+    await expect(ui.getByRole('button', { name: 'Approve this advice', exact: true })).toHaveCount(0);
+    await ui.getByRole('button', { name: 'Latest run', exact: true }).click();
+    await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
+    await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
+    await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(authoredProgram);
+    await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).not.toBeChecked();
+  } finally { release?.(); await other.close(); }
+});
+
+const cancellation = base.extend({
+  controlled: async ({}, use) => {
+    const directory = mkdtempSync(join(tmpdir(), 'keir-author-cancel-')), db = openData(join(directory, 'app.sqlite'));
+    const reservation = createServer();
+    await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
+    const port = reservation.address().port;
+    await new Promise(resolve => reservation.close(resolve));
+    const origin = `http://127.0.0.1:${port}`;
+    let mode = 'hold', started, child, closed = 0, compilations = 0;
+    const begun = new Promise(resolve => { started = resolve; });
+    const app = await createApp({ db, origin, compiler: { compile: async (_, { signal }) => {
+      compilations++;
+      if (mode === 'immediate') return { artifact: loadCatalog()[0].artifactBytes, diagnostics: [] };
+      // Real owned child tests HTTP/AbortSignal settlement; actual JAR behavior is covered separately.
+      return new Promise((resolve, reject) => {
+        child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
+        const stop = () => child.kill();
+        signal.addEventListener('abort', stop, { once: true });
+        child.once('spawn', () => { started(); if (signal.aborted) stop(); });
+        child.once('error', reject);
+        child.once('close', () => { closed++; signal.removeEventListener('abort', stop); reject(Object.assign(new Error('Cancelled fixture'), { status: 499 })); });
+      });
+    } } });
+    await app.listen({ host: '127.0.0.1', port });
+    try { await use({ origin, begun, get closed() { return closed; }, get compilations() { return compilations; },
+      immediate() { mode = 'immediate'; }, saved: () => db.prepare("SELECT draft_version FROM extension_states WHERE owner_id='maya'").get().draft_version }); }
+    finally { if (child && child.exitCode === null && child.signalCode === null) child.kill(); await app.close(); db.close(); rmSync(directory, { recursive: true }); }
+  },
+});
+
+cancellation('developer Stop reaches real HTTP abort, closes the child, and reads back before retry or after-commit claims', async ({ page, controlled }) => {
+  await enter(page, controlled.origin); await open(page); await developer(page);
+  const ui = studio(page);
+  await ui.getByLabel('Keir source (developer)', { exact: true }).fill('Cancellation transport fixture');
+  await ui.getByRole('button', { name: 'Compile source', exact: true }).click(); await controlled.begun;
+  let releaseRead, readStarted;
+  const readGate = new Promise(resolve => { releaseRead = resolve; }), seenRead = new Promise(resolve => { readStarted = resolve; });
+  await page.route('**/api/extensions', async route => { const response = await route.fetch(); readStarted(); await readGate; await route.fulfill({ response }); });
+  await ui.getByRole('button', { name: 'Stop preparation', exact: true }).click();
+  await seenRead;
+  await expect.poll(() => controlled.closed).toBe(1);
+  await expect(ui.getByRole('button', { name: 'Compile source', exact: true })).toBeDisabled();
+  releaseRead();
+  await expect(ui.getByRole('button', { name: 'Compile source', exact: true })).toBeEnabled();
+  expect(controlled.saved()).toBe(0);
+  await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveValue('Cancellation transport fixture');
+  await page.unroute('**/api/extensions');
+
+  controlled.immediate();
+  let committed, releaseResponse;
+  const saved = new Promise(resolve => { committed = resolve; }), responseGate = new Promise(resolve => { releaseResponse = resolve; });
+  await page.route('**/api/extensions/compile', async route => {
+    const response = await route.fetch(); committed(); await responseGate; await route.fulfill({ response }).catch(() => {});
+  });
+  await ui.getByRole('button', { name: 'Compile source', exact: true }).click(); await saved;
+  expect(controlled.saved()).toBe(1);
+  await ui.getByRole('button', { name: 'Stop preparation', exact: true }).click();
+  await expect(ui.getByRole('button', { name: 'Compile source', exact: true })).toBeEnabled();
+  await expect(ui.getByText('Saved source is waiting for independent examples.', { exact: true })).toBeVisible();
+  expect(controlled.compilations).toBe(2);
+  expect(controlled.saved()).toBe(1);
+  releaseResponse();
 });

@@ -1,5 +1,5 @@
 import { test as base, expect } from '@playwright/test';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
@@ -539,7 +539,7 @@ test('a newly produced real sample run does not replace historical evidence bein
   } finally { release?.(); }
 });
 
-for (const operation of ['draft', 'approve']) {
+for (const operation of ['draft', 'approve', 'compile']) {
   test(`an already-produced ${operation} response preserves explicitly selected sample reading`, async ({ page, demo }) => {
     await enter(page, demo); await openStudio(page);
     const studio = ui(page);
@@ -561,7 +561,7 @@ for (const operation of ['draft', 'approve']) {
       const response = await route.fetch();
       const saved = await response.json();
       expect(saved.selection.generation).toBe(original.selection.generation);
-      if (operation === 'draft') {
+      if (operation !== 'approve') {
         expect(saved.draft.id).not.toBe(original.draft.id);
         expect(saved.draftVersion).toBe(original.draftVersion + 1);
         expect(saved.approved).toBe(false);
@@ -575,7 +575,13 @@ for (const operation of ['draft', 'approve']) {
     });
     try {
       if (operation === 'draft') await choose(page, 'Pending');
-      else await studio.getByRole('button', { name: 'Approve this advice', exact: true }).click();
+      else if (operation === 'approve') await studio.getByRole('button', { name: 'Approve this advice', exact: true }).click();
+      else {
+        await studio.getByRole('button', { name: 'Manage', exact: true }).click();
+        await studio.getByText('Developer qualification · authored source', { exact: true }).click();
+        await studio.getByLabel('Keir source (developer)', { exact: true }).fill(readFileSync(new URL('../../extensions/task-read/leo.yaml', import.meta.url), 'utf8'));
+        await studio.getByRole('button', { name: 'Compile source', exact: true }).click();
+      }
       await started;
       const tab = studio.getByRole('button', { name: 'Sample results', exact: true });
       await tab.click();
@@ -597,7 +603,7 @@ for (const operation of ['draft', 'approve']) {
       await expect(canvas).toBeFocused();
       expect(await scrollTop(canvas)).toBeGreaterThan(0);
       expect(Math.abs((await anchor.boundingBox()).y - position)).toBeLessThanOrEqual(1);
-      if (operation === 'draft') {
+      if (operation !== 'approve') {
         await expect(results).toContainText('Earlier proposal');
         await expect(results.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
       }

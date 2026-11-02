@@ -4,6 +4,11 @@ import { openData, taskService } from '../src/data.mjs';
 import { createLifecycle, simulationCases } from '../src/extension-lifecycle.mjs';
 import { createTaskRead } from '../src/task-read.mjs';
 import { runReadSimulation } from '@keir/runtime-node/read-simulation';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadHost, loadCatalog, digest } from '../src/extension-catalog.mjs';
+import { createApp } from '../src/app.mjs';
 
 const authorized = () => {};
 const denied = () => { throw Object.assign(new Error('Session changed'), { status: 401 }); };
@@ -266,4 +271,179 @@ test('actual simulator rejects an overdue synchronous authorization and gives la
   assert.ok(evidence.reports.slice(1).every(item => item.report.status === 'PASS'), 'Each later case gets a fresh deadline');
   state = await lifecycle.simulate('maya', input, authorized);
   assert.equal(state.evidence.passed, true, 'The slot is released after actual settlement');
+});
+
+const authoredSource = (steps = ['readTask']) => JSON.stringify({ language: 'keir/v0',
+  domain: { id: 'demo.tasks', version: '1', fingerprint: loadHost().pins.modelDigest }, entrypoint: 'ClassifyTask', name: 'authored-third',
+  steps: steps.length ? steps.map(id => ({ id, call: 'tasks.get', args: { taskId: { cel: 'input.taskId' } } }))
+    : [{ id: 'constant', let: { cel: 'true' } }],
+  return: { record: { classification: { cel: steps.length ? `${steps.at(-1)}.status == "COMPLETED" ? "PENDING" : "DONE"` : 'constant ? "DONE" : "PENDING"' } } } });
+const authoredCase = (id, status, code, steps = ['readTask']) => JSON.stringify({ format: 'keir-read-simulation/1', id, input: { taskId: 'sample-task' },
+  stubs: steps.map(step => ({ step, capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' },
+    response: { kind: 'SUCCESS', value: { id: 'sample-task', status } } })),
+  expect: { calls: steps.map(step => ({ step, capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' } })),
+    outcome: { classification: 'COMPLETED', result: { classification: code } }, consumption: { status: 'DISPLAYED', code } } });
+const currentInput = state => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
+
+test('real third-source compilation, independent suite edits and exact A/B approval/use survive restart', async t => {
+  const { createCompiler } = await import('../src/compiler.mjs');
+  const directory = mkdtempSync(join(tmpdir(), 'keir-authored-'));
+  let db = openData(join(directory, 'app.sqlite'));
+  t.after(() => { db.close(); rmSync(directory, { recursive: true }); });
+  let lifecycle = createLifecycle(db, { compiler: createCompiler({ modelBytes: loadHost().dcmBytes }) });
+  const leo = lifecycle.state('leo'), nativeRows = db.prepare('SELECT * FROM tasks ORDER BY id').all();
+  const duplicateSource = authoredSource().replace('"language":"keir/v0"', '"language":"keir/v0","language":"keir/v0"');
+  await assert.rejects(lifecycle.compile('maya', { source: duplicateSource, draftVersion: 0 }, authorized), { status: 422 });
+  assert.equal(lifecycle.state('maya').draftVersion, 0);
+  let state = await lifecycle.compile('maya', { source: authoredSource(), label: 'Different task advice', draftVersion: 0 }, authorized);
+  assert.equal(state.draft.suiteDigest, null);
+  assert.equal(state.draft.pins.rawSourceDigest, digest(Buffer.from(authoredSource())));
+  assert.notEqual(state.draft.pins.rawSourceDigest, state.draft.pins.compiledSourceDigest);
+  const sourceId = state.draft.id;
+  await assert.rejects(lifecycle.simulate('maya', currentInput(state), authorized), { status: 409 });
+  state = await lifecycle.proposeScenarios('maya', { ...currentInput(state), cases: [authoredCase('open', 'OPEN', 'PENDING')] }, authorized);
+  assert.notEqual(state.draft.id, sourceId);
+  state = await lifecycle.simulate('maya', currentInput(state), authorized);
+  assert.equal(state.evidence.passed, false, 'Actual newly compiled behavior mismatches the independently wrong expectation');
+  assert.throws(() => lifecycle.approve('maya', { ...currentInput(state), evidenceId: state.evidence.id }, authorized), { status: 409 });
+  state = await lifecycle.proposeScenarios('maya', { ...currentInput(state), cases: [authoredCase('open', 'OPEN', 'DONE')] }, authorized);
+  state = await lifecycle.simulate('maya', currentInput(state), authorized);
+  assert.equal(state.evidence.passed, true);
+  const a = state.draft, ea = state.evidence.id;
+  state = lifecycle.approve('maya', { ...currentInput(state), evidenceId: ea }, authorized);
+  assert.equal(state.selection.revision.templateId, 'pending');
+  state = lifecycle.activate('maya', { ...currentInput(state), generation: state.selection.generation }, authorized);
+  while (state.selection.generation < 7) state = lifecycle.rollback('maya', { revisionId: a.id, generation: state.selection.generation }, authorized);
+  assert.equal(state.selection.generation, 7);
+  const task = taskService(db).listTasks('maya', taskService(db).listProjects('maya')[0].id).find(row => row.status === 'open');
+  assert.equal((await createTaskRead({ getTask: taskService(db).getTask, lifecycle })({ userId: 'maya', taskId: task.id, authorize: () => true })).classification, 'DONE');
+
+  state = await lifecycle.proposeScenarios('maya', { ...currentInput(state), cases: [authoredCase('open', 'OPEN', 'DONE'), authoredCase('completed', 'COMPLETED', 'PENDING')] }, authorized);
+  const b = state.draft;
+  assert.notEqual(b.id, a.id); assert.equal(b.pins.artifactDigest, a.pins.artifactDigest); assert.notEqual(b.suiteDigest, a.suiteDigest);
+  assert.equal(state.approved, false); assert.equal(state.approvedEvidenceId, null);
+  assert.equal(state.selection.revision.id, a.id); assert.equal(state.selection.eligible, true); assert.equal(state.selection.generation, 7);
+  assert.throws(() => lifecycle.approve('maya', { ...currentInput(state), evidenceId: ea }, authorized), { status: 409 });
+  state = await lifecycle.simulate('maya', currentInput(state), authorized);
+  const eb = state.evidence.id;
+  state = lifecycle.approve('maya', { ...currentInput(state), evidenceId: eb }, authorized);
+  assert.equal(state.selection.revision.id, a.id); assert.equal(state.selection.generation, 7);
+  db.close(); db = openData(join(directory, 'app.sqlite')); lifecycle = createLifecycle(db);
+  state = lifecycle.state('maya');
+  assert.equal(state.draft.id, b.id); assert.equal(state.approvedEvidenceId, eb); assert.equal(state.selection.revision.id, a.id);
+  assert.equal(lifecycle.evidence('maya', ea).passed, true);
+  state = lifecycle.activate('maya', { ...currentInput(state), generation: 7 }, authorized);
+  assert.equal(state.selection.generation, 8); assert.equal(state.selection.revision.id, b.id);
+  assert.ok(state.restoreTargets.some(row => row.id === a.id));
+  state = lifecycle.rollback('maya', { revisionId: a.id, generation: 8 }, authorized);
+  assert.equal(state.selection.revision.id, a.id);
+  assert.deepEqual(lifecycle.state('leo'), leo);
+  assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), nativeRows);
+});
+
+test('actual compiled zero-call and renamed repeated-read programs use exact bindings and ordered independent cases', async t => {
+  const { createCompiler } = await import('../src/compiler.mjs');
+  const { db, service } = setup(t);
+  const lifecycle = createLifecycle(db, { compiler: createCompiler({ modelBytes: loadHost().dcmBytes }) });
+  for (const steps of [[], ['firstTask', 'secondTask']]) {
+    let state = lifecycle.state('maya');
+    state = await lifecycle.compile('maya', { source: authoredSource(steps), draftVersion: state.draftVersion }, authorized);
+    state = await lifecycle.proposeScenarios('maya', { ...currentInput(state), cases: [authoredCase('normal', 'OPEN', 'DONE', steps)] }, authorized);
+    state = await lifecycle.simulate('maya', currentInput(state), authorized);
+    assert.equal(state.evidence.passed, true, `${steps.length} calls pass the actual simulator`);
+    state = lifecycle.approve('maya', { ...currentInput(state), evidenceId: state.evidence.id }, authorized);
+    state = lifecycle.activate('maya', { ...currentInput(state), generation: state.selection.generation }, authorized);
+    let calls = 0;
+    const read = createTaskRead({ lifecycle, getTask: (...args) => { calls++; return service.getTask(...args); } });
+    const task = service.listTasks('maya', service.listProjects('maya')[0].id).find(row => row.status === 'open');
+    assert.equal((await read({ userId: 'maya', taskId: task.id, authorize: () => true })).classification, 'DONE');
+    assert.equal(calls, steps.length);
+    const proof = lifecycle.evidence('maya', state.evidence.id);
+    const item = lifecycle.capture('maya').template;
+    const denied = await runReadSimulation({ dcmBytes: item.dcmBytes, artifactBytes: item.artifactBytes, modelDigest: item.pins.modelDigest,
+      artifactDigest: item.pins.artifactDigest, compiler: item.pins.compiler, entrypoint: 'ClassifyTask', consumer: { id: 'demo.taskadvice', version: '1', kind: 'DISPLAY' } },
+      { scope: 'demo.task-advice:maya', bindings: steps.length ? { actorId: 'maya' } : {}, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 },
+        authorize: () => false, consume: () => ({ status: 'NOT_DISPLAYED' }), allowedReceipts: [{ status: 'NOT_DISPLAYED' }] },
+      Buffer.from(JSON.stringify({ format: 'keir-read-simulation/1', id: 'entryDenied', input: { taskId: task.id }, stubs: [],
+        expect: { calls: [], outcome: { classification: 'FAILED', error: { code: 'AUTHORITY_DENIED', path: '' } }, consumption: { status: 'NOT_DISPLAYED' } } })));
+    assert.equal(denied.status, 'PASS');
+    assert.equal(proof.passed, true);
+    if (steps.length) {
+      const firstCall = { step: steps[0], capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' } };
+      const rejectedCase = JSON.stringify({ format: 'keir-read-simulation/1', id: 'normalMissing', input: { taskId: 'sample-task' },
+        stubs: [{ ...firstCall, response: { kind: 'BUSINESS_REJECTION', code: 'TASK_NOT_FOUND' } }],
+        expect: { calls: [firstCall], outcome: { classification: 'BUSINESS_REJECTION', error: { code: 'TASK_NOT_FOUND', path: '/steps/0' } }, consumption: { status: 'NOT_DISPLAYED' } } });
+      state = await lifecycle.proposeScenarios('maya', { ...currentInput(state), cases: [rejectedCase] }, authorized);
+      state = await lifecycle.simulate('maya', currentInput(state), authorized);
+      assert.equal(state.evidence.passed, true, 'Intended business rejection under permitted entry needs no forced success case');
+      assert.equal(lifecycle.approve('maya', { ...currentInput(state), evidenceId: state.evidence.id }, authorized).approved, true);
+    }
+  }
+});
+
+test('authored quota/tamper checks retain snapshots and LRU eviction cannot revoke an unchanged in-flight selection', async t => {
+  const artifact = loadCatalog().find(row => row.id === 'attention').artifactBytes;
+  const { db, service } = setup(t);
+  const lifecycle = createLifecycle(db, { compiler: { compile: async () => ({ artifact, diagnostics: [] }) } });
+  async function choose(owner) {
+    let state = lifecycle.state(owner);
+    if (state.draft?.kind !== 'authored') state = await lifecycle.compile(owner, { source: 'API fixture, not compiler qualification', draftVersion: state.draftVersion }, authorized);
+    state = await lifecycle.proposeScenarios(owner, { ...currentInput(state), cases: [simulationCases('attention')[0].bytes.toString()] }, authorized);
+    state = await lifecycle.simulate(owner, currentInput(state), authorized);
+    state = lifecycle.approve(owner, { ...currentInput(state), evidenceId: state.evidence.id }, authorized);
+    return lifecycle.activate(owner, { ...currentInput(state), generation: state.selection.generation }, authorized);
+  }
+  await choose('maya');
+  let release, entered;
+  const reached = new Promise(resolve => { entered = resolve; });
+  const read = createTaskRead({ lifecycle, clock: { nowMs: () => 0 }, getTask: async (owner, id) => {
+    if (owner === 'maya') { entered(); await new Promise(resolve => { release = resolve; }); }
+    return { id, status: 'open' };
+  } });
+  const pending = read({ userId: 'maya', taskId: 'held-task', authorize: () => true });
+  await reached;
+  for (let n = 0; n < 17; n++) { await choose('leo'); assert.equal((await read({ userId: 'leo', taskId: 'other-task', authorize: () => true })).classification, 'NEEDS_ATTENTION'); }
+  release(); assert.equal((await pending).classification, 'NEEDS_ATTENTION');
+  const state = lifecycle.state('maya'), saved = db.prepare('SELECT * FROM extension_authored WHERE revision_id=?').get(state.draft.id);
+  for (const field of ['source', 'artifact', 'suite']) {
+    db.prepare(`UPDATE extension_authored SET ${field}=? WHERE revision_id=?`).run(field === 'suite' ? '[]' : Buffer.from('changed'), state.draft.id);
+    assert.equal(lifecycle.state('maya').selection.eligible, false);
+    db.prepare(`UPDATE extension_authored SET ${field}=? WHERE revision_id=?`).run(saved[field], state.draft.id);
+  }
+  while (db.prepare("SELECT count(*) n FROM extension_authored WHERE owner_id='leo'").get().n < 32) await choose('leo');
+  const before = lifecycle.state('leo');
+  await assert.rejects(lifecycle.compile('leo', { source: 'quota', draftVersion: before.draftVersion }, authorized), { status: 409 });
+  assert.equal(lifecycle.state('leo').selection.revision.id, before.selection.revision.id);
+  assert.equal(db.prepare("SELECT count(*) n FROM extension_authored WHERE owner_id='leo'").get().n, 32);
+  assert.ok(service.listProjects('maya').length);
+});
+
+test('app startup and stored authored advice work when the compile-only Java executable is unavailable', async t => {
+  const { createCompiler } = await import('../src/compiler.mjs');
+  const db = openData(':memory:'), compiler = createCompiler({ modelBytes: loadHost().dcmBytes });
+  const directory = mkdtempSync(join(tmpdir(), 'keir-missing-java-'));
+  const prior = process.env.KEIR_JAVA_BIN;
+  let app;
+  t.after(async () => { await app?.close(); db.close(); rmSync(directory, { recursive: true }); if (prior === undefined) delete process.env.KEIR_JAVA_BIN; else process.env.KEIR_JAVA_BIN = prior; });
+  const lifecycle = createLifecycle(db, { compiler });
+  let state = await lifecycle.compile('maya', { source: authoredSource([]), draftVersion: 0 }, authorized);
+  state = await lifecycle.proposeScenarios('maya', { ...currentInput(state), cases: [authoredCase('normal', 'OPEN', 'DONE', [])] }, authorized);
+  state = await lifecycle.simulate('maya', currentInput(state), authorized);
+  lifecycle.approve('maya', { ...currentInput(state), evidenceId: state.evidence.id }, authorized);
+  lifecycle.activate('maya', { ...currentInput(state), generation: state.selection.generation }, authorized);
+  process.env.KEIR_JAVA_BIN = join(directory, 'missing-java');
+  const origin = 'http://127.0.0.1:32124';
+  app = await createApp({ db, origin });
+  const bootstrap = (await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:32124' } })).json();
+  const loggedIn = await app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:32124', origin, 'content-type': 'application/json',
+    'x-session-context': bootstrap.contextToken }, payload: { userId: 'maya' } });
+  const headers = { host: '127.0.0.1:32124', origin, 'content-type': 'application/json', cookie: loggedIn.headers['set-cookie'].split(';')[0], 'x-session-context': loggedIn.json().contextToken };
+  const task = taskService(db).listTasks('maya', taskService(db).listProjects('maya')[0].id)[0];
+  assert.equal((await app.inject({ url: '/api/projects', headers })).statusCode, 200);
+  const advice = await app.inject({ method: 'POST', url: `/api/tasks/${task.id}/advice`, headers, payload: {} });
+  assert.equal(advice.json().classification, 'DONE');
+  const saved = lifecycle.state('maya');
+  assert.equal((await app.inject({ method: 'POST', url: '/api/extensions/compile', headers,
+    payload: { source: authoredSource([]), draftVersion: saved.draftVersion } })).statusCode, 503);
+  assert.equal(lifecycle.state('maya').selection.revision.id, saved.selection.revision.id);
 });
