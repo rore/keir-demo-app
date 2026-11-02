@@ -38,7 +38,9 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
   function content(row) { return db.prepare('SELECT * FROM extension_authored WHERE owner_id=? AND revision_id=?').get(row.owner_id, row.id); }
   function authoredPins(value) {
     if (!host) throw new Error('Host unavailable');
-    const artifact = admitArtifact(value.artifact, host);
+    // Status reads verify host-owned byte pins; compile, simulation and live preparation perform native admission.
+    const artifact = JSON.parse(Buffer.from(value.artifact).toString('utf8'));
+    if (!/^sha256:[0-9a-f]{64}$/.test(artifact.sourceDigest)) throw new Error('Invalid source identity');
     return { ...host.pins, rawSourceDigest: digest(value.source), compiledSourceDigest: artifact.sourceDigest,
       artifactDigest: digest(value.artifact), suiteDigest: value.suite === null ? null : digest(value.suite), fixture: authoredFixture };
   }
@@ -211,7 +213,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         error.diagnostics = result.diagnostics; throw error;
       }
       const value = { label: label.trim(), source: Buffer.from(input.source), artifact: Buffer.from(result.artifact), suite: null };
-      try { authoredPins(value); } catch { throw new AppError(422, 'The compiled program does not match the host contract.'); }
+      try { admitArtifact(value.artifact, host); authoredPins(value); } catch { throw new AppError(422, 'The compiled program does not match the host contract.'); }
       commit(owner, authorize, () => {
         abort(signal); if (draft(owner).draft_version !== input.draftVersion) conflict(); saveAuthored(owner, value);
       }); return api.state(owner);

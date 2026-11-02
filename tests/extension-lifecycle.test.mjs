@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadHost, loadCatalog, digest } from '../src/extension-catalog.mjs';
+import { createApp } from '../src/app.mjs';
 
 const authorized = () => {};
 const denied = () => { throw Object.assign(new Error('Session changed'), { status: 401 }); };
@@ -415,4 +416,34 @@ test('authored quota/tamper checks retain snapshots and LRU eviction cannot revo
   assert.equal(lifecycle.state('leo').selection.revision.id, before.selection.revision.id);
   assert.equal(db.prepare("SELECT count(*) n FROM extension_authored WHERE owner_id='leo'").get().n, 32);
   assert.ok(service.listProjects('maya').length);
+});
+
+test('app startup and stored authored advice work when the compile-only Java executable is unavailable', async t => {
+  const { createCompiler } = await import('../src/compiler.mjs');
+  const db = openData(':memory:'), compiler = createCompiler({ modelBytes: loadHost().dcmBytes });
+  const directory = mkdtempSync(join(tmpdir(), 'keir-missing-java-'));
+  const prior = process.env.KEIR_JAVA_BIN;
+  let app;
+  t.after(async () => { await app?.close(); db.close(); rmSync(directory, { recursive: true }); if (prior === undefined) delete process.env.KEIR_JAVA_BIN; else process.env.KEIR_JAVA_BIN = prior; });
+  const lifecycle = createLifecycle(db, { compiler });
+  let state = await lifecycle.compile('maya', { source: authoredSource([]), draftVersion: 0 }, authorized);
+  state = await lifecycle.proposeScenarios('maya', { ...currentInput(state), cases: [authoredCase('normal', 'OPEN', 'DONE', [])] }, authorized);
+  state = await lifecycle.simulate('maya', currentInput(state), authorized);
+  lifecycle.approve('maya', { ...currentInput(state), evidenceId: state.evidence.id }, authorized);
+  lifecycle.activate('maya', { ...currentInput(state), generation: state.selection.generation }, authorized);
+  process.env.KEIR_JAVA_BIN = join(directory, 'missing-java');
+  const origin = 'http://127.0.0.1:32124';
+  app = await createApp({ db, origin });
+  const bootstrap = (await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:32124' } })).json();
+  const loggedIn = await app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:32124', origin, 'content-type': 'application/json',
+    'x-session-context': bootstrap.contextToken }, payload: { userId: 'maya' } });
+  const headers = { host: '127.0.0.1:32124', origin, 'content-type': 'application/json', cookie: loggedIn.headers['set-cookie'].split(';')[0], 'x-session-context': loggedIn.json().contextToken };
+  const task = taskService(db).listTasks('maya', taskService(db).listProjects('maya')[0].id)[0];
+  assert.equal((await app.inject({ url: '/api/projects', headers })).statusCode, 200);
+  const advice = await app.inject({ method: 'POST', url: `/api/tasks/${task.id}/advice`, headers, payload: {} });
+  assert.equal(advice.json().classification, 'DONE');
+  const saved = lifecycle.state('maya');
+  assert.equal((await app.inject({ method: 'POST', url: '/api/extensions/compile', headers,
+    payload: { source: authoredSource([]), draftVersion: saved.draftVersion } })).statusCode, 503);
+  assert.equal(lifecycle.state('maya').selection.revision.id, saved.selection.revision.id);
 });

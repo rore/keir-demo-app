@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import "./Studio.css";
 
 type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: object; provenance: "operator" | "customer" };
@@ -65,6 +65,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const chatEnd = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLElement>(null);
   const canvasScroll = useRef(0);
+  const readingAnchor = useRef<{ element: HTMLElement; top: number; revision: number } | null>(null);
   const reviewInvoker = useRef<HTMLElement | null>(null);
   const reviewed = useRef<{ owner: string; label: string; revisionId: string; evidenceId: string; kind?: string } | null>(null);
   const followConversation = useRef(true);
@@ -112,6 +113,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setMessages(old => [...old, { id, who, text, evidenceId, exampleCount }].slice(-40));
   }
   function apply(next: State) {
+    const bounds = canvas.current?.getBoundingClientRect();
+    const anchor = bounds && bounds.height > 0 && Array.from(canvas.current!.querySelectorAll<HTMLElement>("tbody tr")).find(row => {
+      const rect = row.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
+    });
+    readingAnchor.current = anchor ? { element: anchor, top: anchor.getBoundingClientRect().top, revision: readingRevision.current } : null;
     setState(next);
     setTrusted(true);
     setRestore("");
@@ -119,6 +125,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setHistoryNext(next.history.length === 20 ? next.history.at(-1)!.id : null);
     callbacks.current.changed(next.selection.generation);
   }
+  useLayoutEffect(() => {
+    const anchor = readingAnchor.current;
+    readingAnchor.current = null;
+    if (anchor && anchor.revision === readingRevision.current && anchor.element.isConnected && canvas.current) {
+      // Saved-state labels may change above the row being inspected after an awaited response.
+      canvas.current.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top;
+      canvasScroll.current = canvas.current.scrollTop;
+    }
+  }, [state]);
   function openReview() {
     if (!canReview) {
       say("Open the current proposal's sample results first. A complete passing run is needed before you can approve it.");

@@ -15,7 +15,7 @@ The panel retains typed buffers during ordinary Studio review navigation. Loadin
 
 ## Example source
 
-This small example reads the saved task and maps a completed task to `PENDING`, otherwise to `DONE`. It is illustrative source, not evidence that a particular compiler build has been qualified. The domain fingerprint matches the host model shipped with the prepared rules.
+This example reads the saved task and maps a completed task to `PENDING`, otherwise to `DONE`. The domain fingerprint matches the host model shipped with the prepared rules.
 
 ```yaml
 language: keir/v0
@@ -36,7 +36,7 @@ return:
 
 ## Independently written example
 
-The following case independently expects an open task to produce `DONE`. The example's step name, adapter response, expected call, native result, and displayed receipt must match the authored program and host contract. It is input for the native simulator, not a compiler result or successful qualification claim.
+The following independently written case expects an open task to produce `DONE`. Its step name, adapter response, expected call, native result and displayed receipt match the example source and host contract. The source and this case are checked together through the packaged compiler and native simulator.
 
 ```json
 {
@@ -86,7 +86,7 @@ Source and scenario documents remain JSON strings through request parsing, prese
 ## Resource and evidence limits
 
 - Each owner can retain at most 32 authored revisions. Both source-only drafts and suite revisions use a slot; no old revision is silently deleted.
-- The planned compiler wrapper allows one active job without a queue, with a 10-second deadline and 256 MiB Java heap setting. These controls do not constitute an OS sandbox or hard whole-process memory containment. The packaged helper and cold-start behavior still require independent qualification; a visible Studio panel alone does not mean compilation is available.
+- The compiler wrapper allows one active job without a queue, with a 10-second deadline and 256 MiB Java heap setting. These controls do not constitute an OS sandbox or hard whole-process memory containment. Exact compiler provenance, byte identity and qualified Java are recorded in `vendor/compiler-provenance.json`; the app verifies its distribution before each compile.
 - The prepared executable cache is capped at 16 entries. Live reads retain their eight-active-invocation ceiling and one-second checked deadline.
 - Scenario cases are independent expectations. A finite passing suite covers only its listed cases; it does not certify all program behavior or production adapter guarantees.
 - The server runs the native simulator against the exact stored artifact and case strings. Every case must pass for evidence to be eligible for approval. An incorrect expectation blocks approval; corrected examples require a new revision and new evidence.

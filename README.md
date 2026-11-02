@@ -8,6 +8,8 @@ The shared app lockup shows **Daymark** with **A KEIR Demo** directly beneath it
 
 Prerequisite: **Node.js 24.14.1** with npm. This is the qualified runtime; its `node:sqlite` API is experimental. Nothing here installs or upgrades global tools. Package versions are pinned in `package-lock.json`.
 
+Manual source compilation additionally requires **Java 21** and the independently pinned compiler shipped in `vendor/`. The server uses its existing `JAVA_HOME` or `PATH`, with optional trusted process setting `KEIR_JAVA_BIN` for an existing executable. Native tasks and saved advice work without Java. See [authored drafts](docs/authored-extension-drafts.md) for the developer qualification flow and limits.
+
 From this repository:
 
 ```sh
@@ -32,7 +34,7 @@ Reset holds the startup lock and verifies a recoverable backup in `.data/backups
 
 ## Verify
 
-Build first, then:
+The full authoring regression requires Java 21; it does not install Java or change global settings. Build first, then run:
 
 ```sh
 npm test
