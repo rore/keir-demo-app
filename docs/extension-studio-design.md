@@ -51,14 +51,14 @@ The following are proposed customer-facing expressions, not changes to the under
 
 A representative exchange starts with “When I finish a task in Launch, add a task to review it.” The agent asks about any missing choice, then shows a recognizable task and its proposed follow-up. It asks whether a task in another project should behave differently, works through the answer, and explains the checked examples. The final decision summarizes the effect in the same language used in the original request. The person can inspect, correct or ask why throughout; these are conversational turns, not compulsory stages.
 
-### Visual research and application
+### Visual decisions
 
-Use outside work to understand design decisions, not to reproduce another product's composition, branding or components. Develop Keir's visual direction around this audience and its task objects. Polish must include legibility, spacing, consistent controls, clear focus, responsive behavior, restrained motion and useful error/recovery states. No decorative AI motif, oversized introductory hero or generic collection of dashboard cards is justified by this task.
+Describe features and designs in Daymark and Keir terms. Keep external product and company names, comparisons and source links in separate research notes.
 
-- [Linear's interface refresh](https://linear.app/now/behind-the-latest-design-refresh): study how supporting navigation recedes and how unnecessary icons/separators are reduced. Apply the principle of attention hierarchy; do not copy Linear's interface.
-- [Apple's UI typography guidance](https://developer.apple.com/videos/play/wwdc2020/10175/): use type hierarchy, alignment and legibility to organize the work. Do not rely on oversized headings or tiny secondary text to manufacture contrast.
-- [NN/g on progressive disclosure](https://www.nngroup.com/articles/progressive-disclosure/): keep commonly needed decisions visible and less-used detail available on request. This is not a reason to bring back a staged wizard.
-- [DWP guidance on hint text](https://design-system.dwp.gov.uk/guidance/hint-text) and [Microsoft's guidance on user control](https://fluent2.microsoft.design/responsible-AI): improve the question itself, make actions understandable and let people correct the agent.
+- Give the current task and the person's next decision the most space. Keep navigation quiet.
+- Use readable type, alignment and spacing to distinguish a question, its answer and the proposed change.
+- Keep common decisions visible. Put history and technical details within reach when someone needs them.
+- Ask one clear question. Let people correct a choice and see how it changes the result.
 
 Acceptance for the next prototype: a person without technical knowledge can explain what will change, recognize who is affected, correct an example, tell whether it is currently in use and stop or revise it. They should not need to learn Keir terminology or ask which engineering step comes next. Test this through an actual interaction, not a screenshot alone.
 
