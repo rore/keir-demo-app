@@ -1,7 +1,8 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import "./styles.css";
 import Studio from "./Studio";
+import Customizations from "./Customizations";
 
 type User = { id: string; name: string; description?: string };
 type Session = { user: User | null; contextToken: string; users?: User[] };
@@ -54,11 +55,11 @@ async function api<T>(
 
 function Brand() {
   return (
-    <span className="brand" aria-label="Keir">
+    <span className="brand" aria-label="Daymark">
       <span className="brand-mark" aria-hidden="true">
-        k
+        ✓
       </span>
-      keir<span className="brand-dot">.</span>
+      Daymark
     </span>
   );
 }
@@ -220,7 +221,7 @@ function App() {
         </main>
         <footer className="welcome-footer">
           <span>Made for the work in front of you.</span>
-          <span>KEIR / NATIVE TASKS</span>
+          <span>Powered by Keir</span>
         </footer>
       </div>
     );
@@ -261,6 +262,13 @@ function Workspace({
   const [rename, setRename] = useState(false);
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<Task | null>(null);
+  const [draft, setDraft] = useState({ title: "", notes: "" });
+  const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">("tasks");
+  const [studioOrigin, setStudioOrigin] = useState<"detail" | "overview">("overview");
+  const detailVisible = useRef(false);
+  detailVisible.current = destination === "tasks" && !!detail;
+  const resumeDetail = useRef(false);
+  const destinationFocus = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
   const lifetime = useRef(new AbortController());
   const generation = useRef(0);
@@ -306,6 +314,33 @@ function Workspace({
     body?: object,
     signal = lifetime.current.signal,
   ) => api<T>(path, session.contextToken, method, body, signal);
+  async function studioRequest<T>(path: string, method?: string, body?: object) {
+    try { return await request<T>(path, method, body); }
+    catch (error) { if (error instanceof ApiError && error.status === 401) handleError(error); throw error; }
+  }
+  function navigate(next: "tasks" | "customizations") {
+    destinationFocus.current = next === "tasks" ? "tasks-heading" : "customizations-heading";
+    setDestination(next);
+  }
+  function openStudio(origin: "detail" | "overview") {
+    setStudioOrigin(origin);
+    setDestination("studio");
+  }
+  function returnFromStudio() {
+    if (studioOrigin === "detail" && detail && tasks.some(task => task.id === detail.id)) {
+      resumeDetail.current = true;
+      setDestination("tasks");
+    } else {
+      destinationFocus.current = "edit-task-advice";
+      setDestination("customizations");
+    }
+  }
+  useEffect(() => {
+    if (destinationFocus.current) {
+      document.getElementById(destinationFocus.current)?.focus();
+      destinationFocus.current = null;
+    }
+  }, [destination]);
   useEffect(() => {
     request<Project[]>("projects")
       .then((data) => {
@@ -350,13 +385,19 @@ function Workspace({
       });
     return () => abort.abort();
   }, [projectId]);
-  useEffect(() => {
-    if (detail) detailRef.current?.showModal();
+  useLayoutEffect(() => {
+    if (detail && destination === "tasks") {
+      detailRef.current?.showModal();
+      if (resumeDetail.current) {
+        document.getElementById("manage-task-advice")?.focus();
+        resumeDetail.current = false;
+      }
+    }
     else {
       detailRef.current?.close();
-      returnFocus.current?.focus();
+      if (destination === "tasks") returnFocus.current?.focus();
     }
-  }, [detail?.id]);
+  }, [detail?.id, destination]);
   async function action<T>(
     operation: () => Promise<T>,
     success: (data: T) => void,
@@ -447,6 +488,7 @@ function Workspace({
           onClick={(event) => {
             returnFocus.current = event.currentTarget;
             detailInstance.current++;
+            setDraft({ title: task.title, notes: task.notes });
             setDetail(task);
           }}
         >
@@ -463,6 +505,10 @@ function Workspace({
     <div className="workspace">
       <aside className="rail">
         <Brand />
+        <nav className="destinations" aria-label="Main navigation">
+          <button aria-current={destination === "tasks" ? "page" : undefined} onClick={() => navigate("tasks")}>Tasks</button>
+          <button aria-current={destination !== "tasks" ? "page" : undefined} onClick={() => navigate("customizations")}>Customizations</button>
+        </nav>
         <div className="rail-heading">
           <span className="eyebrow">YOUR PROJECTS</span>
           <button
@@ -473,6 +519,7 @@ function Workspace({
               setNewProject(true);
               setRename(false);
               setProjectName("");
+              navigate("tasks");
             }}
           >
             +
@@ -483,7 +530,7 @@ function Workspace({
             <button
               key={item.id}
               className={`project-link ${item.id === projectId ? "selected" : ""}`}
-              onClick={() => setProjectId(item.id)}
+              onClick={() => { setProjectId(item.id); navigate("tasks"); }}
             >
               <span aria-hidden="true" className="project-symbol">
                 {String(index + 1).padStart(2, "0")}
@@ -494,16 +541,13 @@ function Workspace({
         </nav>
         <div className="rail-bottom">
           <span className="local-dot" aria-hidden="true" /> Saved on this device
-          <p>
-            A clear space.
-            <br />
-            One thing at a time.
-          </p>
+          <p>Powered by Keir</p>
         </div>
       </aside>
       <div className="workspace-body">
         <header className="workspace-top">
-          <span className="eyebrow">A LITTLE ROOM FOR GOOD WORK</span>
+          <span className="desktop-context">{destination === "tasks" ? "Tasks" : "Customizations"}</span>
+          <span className="mobile-brand"><Brand /></span>
           <div className="user-tools">
             <span className="small-avatar" aria-hidden="true">
               {session.user.name[0]}
@@ -527,13 +571,20 @@ function Workspace({
             </button>
           </div>
         </header>
-        <main className="task-main">
+        <nav className="mobile-destinations" aria-label="Mobile navigation">
+          <label className="sr-only" htmlFor="destination-select">Destination</label>
+          <select id="destination-select" value={destination === "tasks" ? "tasks" : "customizations"} onChange={event => navigate(event.target.value as "tasks" | "customizations")}>
+            <option value="tasks">Tasks</option><option value="customizations">Customizations</option>
+          </select>
+          <span>Powered by Keir</span>
+        </nav>
+        <main className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}>
           <div className="mobile-projects">
             <label htmlFor="project-select">Project</label>
             <select
               id="project-select"
               value={projectId}
-              onChange={(event) => setProjectId(event.target.value)}
+              onChange={(event) => { setProjectId(event.target.value); navigate("tasks"); }}
             >
               {projects.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -554,11 +605,8 @@ function Workspace({
               +
             </button>
           </div>
-          <p className="eyebrow greeting">
-            YOUR SPACE, {session.user.name.toUpperCase()}
-          </p>
           <div className="project-title">
-            <h1>{project?.name ?? "A fresh start"}</h1>
+            <h1 id="tasks-heading" tabIndex={-1}>{project?.name ?? "Tasks"}</h1>
             {project && (
               <button
                 className="quiet-button"
@@ -574,7 +622,7 @@ function Workspace({
           </div>
           <p className="project-subtitle">
             {project
-              ? "Small steps make room for bigger things."
+              ? "Your tasks in this project."
               : "Start a project. Give your next idea a place to land."}
           </p>
           {(newProject || rename) && (
@@ -652,7 +700,6 @@ function Workspace({
                 <h2>
                   Up next <span>{open.length}</span>
                 </h2>
-                <span className="eyebrow">ONE STEP AT A TIME</span>
               </div>
               {open.length ? (
                 <ul className="task-list">{open.map(taskRow)}</ul>
@@ -698,9 +745,12 @@ function Workspace({
               <span className="local-dot" aria-hidden="true" />
               Local demo · read-only task advice
             </span>
-            <span>Good work takes its own time.</span>
+            <span>Powered by Keir</span>
           </footer>
         </main>
+        {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} open={() => openStudio("overview")} focusAction={destinationFocus.current === "edit-task-advice"} />}
+        {destination === "studio" && <main className="studio-main"><Studio request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
+          back={returnFromStudio} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
       </div>
       <dialog
         ref={detailRef}
@@ -711,23 +761,20 @@ function Workspace({
           closeDetail();
         }}
         onClose={() => {
-          if (detail) closeDetail();
+          if (detailVisible.current && !detailRef.current?.open) closeDetail();
         }}
       >
         {detail && (
           <TaskDetail
             key={detail.id}
             task={detail}
+            draft={draft}
+            setDraft={setDraft}
+            manage={() => openStudio("detail")}
             busy={busy}
             error={error}
             close={closeDetail}
             adviceEpoch={lifecycleEpoch}
-            studioRequest={async <T,>(path: string, method?: string, body?: object) => {
-              try { return await request<T>(path, method, body); }
-              catch (error) { if (error instanceof ApiError && error.status === 401) handleError(error); throw error; }
-            }}
-            beforeSelectionChange={beforeSelectionChange}
-            reconcileSelection={reconcileSelection}
             check={async () => {
               const instance = detailInstance.current, current = generation.current, epoch = adviceEpoch.current;
               const fresh = () => !lifetime.current.signal.aborted && current === generation.current && instance === detailInstance.current && epoch === adviceEpoch.current;
@@ -767,33 +814,30 @@ function Workspace({
 
 function TaskDetail({
   task,
+  draft,
+  setDraft,
+  manage,
   busy,
   error,
   close,
   check,
   adviceEpoch,
-  studioRequest,
-  beforeSelectionChange,
-  reconcileSelection,
   save,
 }: {
   task: Task;
+  draft: { title: string; notes: string };
+  setDraft: (draft: { title: string; notes: string }) => void;
+  manage: () => void;
   busy: boolean;
   error: string;
   close: () => void;
   check: () => Promise<Advice | undefined>;
   adviceEpoch: number;
-  studioRequest: <T>(path: string, method?: string, body?: object) => Promise<T>;
-  beforeSelectionChange: () => void;
-  reconcileSelection: (generation: number) => void;
   save: (title: string, notes: string) => void;
 }) {
-  const [title, setTitle] = useState(task.title);
-  const [notes, setNotes] = useState(task.notes);
+  const { title, notes } = draft;
   const [advice, setAdvice] = useState<Advice | null>(null);
   const [checking, setChecking] = useState(false);
-  const [studioOpen, setStudioOpen] = useState(false);
-  useEffect(() => { if (!studioOpen) document.getElementById('edit-title')?.focus(); }, [studioOpen]);
   const pendingAdvice = useRef(0);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
@@ -812,7 +856,6 @@ function TaskDetail({
   return (
     <>
     <form
-      className={studioOpen ? "native-detail-hidden" : undefined}
       onSubmit={(event) => {
         event.preventDefault();
         save(title, notes);
@@ -838,7 +881,7 @@ function TaskDetail({
         id="edit-title"
         autoFocus
         value={title}
-        onChange={(event) => setTitle(event.target.value)}
+        onChange={(event) => setDraft({ ...draft, title: event.target.value })}
         maxLength={120}
         required
       />
@@ -848,7 +891,7 @@ function TaskDetail({
       <textarea
         id="edit-notes"
         value={notes}
-        onChange={(event) => setNotes(event.target.value)}
+        onChange={(event) => setDraft({ ...draft, notes: event.target.value })}
         maxLength={4000}
         placeholder="A thought, a reference, a place to begin…"
         rows={7}
@@ -871,7 +914,7 @@ function TaskDetail({
         <button type="button" className="quiet-button" disabled={busy || checking} onClick={checkTask}>
           {checking ? "Checking task…" : "Check task advice"}
         </button>
-        <button type="button" className="quiet-button" disabled={busy} onClick={() => setStudioOpen(true)}>Customize my advice</button>
+        <button id="manage-task-advice" type="button" className="quiet-button" disabled={busy} onClick={manage}>Manage task advice</button>
         <p className="muted">Checks the saved task status using your configured rule. Advice does not change tasks.</p>
         {advice && <p role="status">{advice.status === "NOT_DISPLAYED" ? advice.message : {
           DONE: "All done. This task is completed.", PENDING: "Still open. This task is pending.",
@@ -887,8 +930,6 @@ function TaskDetail({
         </button>
       </div>
     </form>
-    {studioOpen && <div className="studio-container"><Studio request={studioRequest} changed={reconcileSelection}
-      beforeSelectionChange={beforeSelectionChange} back={() => setStudioOpen(false)} /></div>}
     </>
   );
 }

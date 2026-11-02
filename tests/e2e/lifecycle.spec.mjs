@@ -27,7 +27,7 @@ async function enter(page, origin) {
 }
 const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
 async function open(page) {
-  await page.getByRole('button', { name: 'Customize my advice', exact: true }).click();
+  await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
   await expect(studio(page).getByRole('button', { name: 'Needs attention for open tasks', exact: true })).toBeEnabled();
   expect(await studio(page).locator('.rs-composer').evaluate(form => form.getBoundingClientRect().height)).toBeLessThan(180);
   expect(await studio(page).locator('.rs-header').evaluate(header => header.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
@@ -45,6 +45,7 @@ async function approve(page) {
   const ui = studio(page);
   await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
   await expect(ui.getByRole('button', { name: 'Approve this advice', exact: true })).toBeDisabled();
+  await ui.getByRole('button', { name: 'Review', exact: true }).click();
   await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
   await ui.getByRole('button', { name: 'Approve this advice', exact: true }).click();
   await expect(ui.getByRole('button', { name: 'Use this advice for me', exact: true })).toBeEnabled();
@@ -52,7 +53,6 @@ async function approve(page) {
 async function picture(page, name) {
   mkdirSync(resolve('build/screens'), { recursive: true });
   await studio(page).evaluate(node => {
-    node.closest('dialog').scrollTop = 0;
     node.querySelector('.rs-canvas').scrollTop = 0;
   });
   if (page.viewportSize().width > 760) {
@@ -73,7 +73,9 @@ test('real sample review separates typed assent, approval and use; native edits 
   await expect(ui.getByText('For Maya only', { exact: true })).toBeVisible();
   await expect(ui.getByRole('button', { name: 'Approve this advice', exact: true })).toBeDisabled();
   await expect(ui.getByRole('button', { name: 'Use this advice for me', exact: true })).toHaveCount(0);
+  await ui.getByRole('button', { name: 'Advice', exact: true }).click();
   await expect(ui.getByRole('article', { name: 'In use advice' }).getByRole('heading', { name: 'Pending', exact: true })).toBeVisible();
+  await ui.getByRole('button', { name: 'Review', exact: true }).click();
   await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
   await ui.getByRole('button', { name: 'Approve this advice', exact: true }).click();
   await expect(ui.getByRole('button', { name: 'Use this advice for me', exact: true })).toBeEnabled();
@@ -82,11 +84,12 @@ test('real sample review separates typed assent, approval and use; native edits 
   await expect(ui.getByRole('article', { name: 'In use advice' }).getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
   await picture(page, 'read-lifecycle-desktop');
   await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
-  await expect(page.getByLabel('Task title', { exact: true })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Manage task advice', exact: true })).toBeFocused();
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved lifecycle title');
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'This task needs attention' })).toBeVisible();
   await open(page);
+  await ui.getByText('Manage saved advice', { exact: true }).click();
   await ui.getByRole('button', { name: 'Turn off my advice', exact: true }).click();
   await expect(ui.getByRole('heading', { name: 'Advice is off', exact: true })).toBeVisible();
   await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
@@ -110,6 +113,7 @@ test('lost activation response is read back before retry; historical evidence ca
   expect(requests).toBe(1);
   await page.unroute('**/api/extensions/activate');
   await ui.getByRole('button', { name: 'Pending for open tasks', exact: true }).click();
+  await ui.getByRole('button', { name: 'Sample results', exact: true }).click();
   await expect(ui.getByText('Saved sample run · Earlier proposal', { exact: true })).toBeVisible();
   await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
   await ui.getByRole('button', { name: 'Reopen these sample results', exact: true }).click();
@@ -140,6 +144,7 @@ test('a real already-produced advice response cannot return after a Studio selec
   try {
     await page.getByRole('button', { name: 'Check task advice', exact: true }).click(); await started;
     await open(page);
+    await studio(page).getByText('Manage saved advice', { exact: true }).click();
     await studio(page).getByRole('button', { name: 'Turn off my advice', exact: true }).click();
     await expect(studio(page).getByRole('heading', { name: 'Advice is off', exact: true })).toBeVisible();
     await studio(page).getByRole('button', { name: 'Back to my task', exact: true }).click();
@@ -154,6 +159,8 @@ test('narrow Studio reviews a named operator restore and keeps it after server r
   await page.setViewportSize({ width: 390, height: 844 });
   await enter(page, demo.origin); await open(page);
   const ui = studio(page);
+  await ui.getByRole('button', { name: 'Preview', exact: true }).click();
+  await ui.getByText('Manage saved advice', { exact: true }).click();
   await ui.getByRole('button', { name: 'Turn off my advice', exact: true }).click();
   await expect(ui.getByRole('heading', { name: 'Advice is off', exact: true })).toBeVisible();
   const option = ui.getByLabel('Previously in use').locator('option').filter({ hasText: 'Pending · operator starting choice' });
@@ -166,6 +173,7 @@ test('narrow Studio reviews a named operator restore and keeps it after server r
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await demo.restart();
   await enter(page, demo.origin); await open(page);
+  await studio(page).getByRole('button', { name: 'Preview', exact: true }).click();
   await expect(studio(page).getByRole('article', { name: 'In use advice' }).getByRole('heading', { name: 'Pending', exact: true })).toBeVisible();
 });
 
@@ -201,6 +209,7 @@ test('an ineligible saved selection is unavailable and can be turned off', async
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Task advice is unavailable' })).toBeVisible();
   await open(page);
+  await ui.getByText('Manage saved advice', { exact: true }).click();
   await ui.getByRole('button', { name: 'Turn off my advice', exact: true }).click();
   await expect(ui.getByRole('heading', { name: 'Advice is off', exact: true })).toBeVisible();
 });
