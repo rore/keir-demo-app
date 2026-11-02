@@ -6,11 +6,15 @@ import { createAuthoringState, runAuthoringTurn } from '../src/authoring-agent.m
 
 // The operator's isolated host fixture must wire the actual packaged compiler and simulator.
 // Fake transport tests qualify this harness, not real provider compatibility or the application.
-export async function checkAuthoringProvider({ live = false, env = process.env, host, context, inputs, fetchImpl } = {}) {
+export async function checkAuthoringProvider({ live = false, env = process.env, host, context, inputs, fetchImpl, runCheck } = {}) {
   if (!live) return { status: 'NOT_RUN', code: 'LIVE_OPT_IN_REQUIRED' };
-  if (!host || !context || !Array.isArray(inputs) || !inputs.length || inputs.length > 8) return { status: 'NOT_RUN', code: 'HOST_FIXTURE_REQUIRED' };
+  if ((!host || !context) && typeof runCheck !== 'function' || !Array.isArray(inputs) || !inputs.length || inputs.length > 8) return { status: 'NOT_RUN', code: 'HOST_FIXTURE_REQUIRED' };
   const config = readAuthoringConfig(env);
   if (config.status !== 'ready') return { status: 'NOT_RUN', code: config.code };
+  if (runCheck) {
+    try { return await runCheck({ config, inputs, fetchImpl }); }
+    catch { return { status: 'BLOCKED', code: 'QUALIFICATION_FAILED' }; }
+  }
   const bound = { ...context, budget: context.budget ?? { remainingMicros: config.maxMicros } };
   try {
     const state = createAuthoringState(bound);

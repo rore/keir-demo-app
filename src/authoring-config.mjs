@@ -1,6 +1,6 @@
 const tariffs = {
   openai: { model: 'gpt-5.6-terra', input: 2, output: 12, key: 'OPENAI_API_KEY' },
-  anthropic: { model: 'claude-haiku-5-5', input: 0.10, output: 0.50, key: 'ANTHROPIC_API_KEY' }
+  anthropic: { model: 'claude-haiku-5-5', input: 0.50, output: 2.50, key: 'ANTHROPIC_API_KEY' }
 };
 
 const unavailable = code => Object.freeze({ status: 'unavailable', code });

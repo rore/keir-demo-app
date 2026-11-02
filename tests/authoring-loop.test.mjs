@@ -1,17 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { openData } from '../src/data.mjs';
+import { createLifecycle } from '../src/extension-lifecycle.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { createAuthoringProvider } from '../src/authoring-provider.mjs';
 import { createAuthoringState, runAuthoringTurn } from '../src/authoring-agent.mjs';
 import { checkAuthoringProvider } from '../scripts/check-authoring-provider.mjs';
+import { createQualificationHost } from '../scripts/authoring-qualification-host.mjs';
 
 const hash = digit => 'sha256:' + digit.repeat(64);
 const env = provider => ({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
   KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-openai-key', ANTHROPIC_API_KEY: 'synthetic-anthropic-key' });
 const source = '{"format":"keir/v0","independent":"synthetic source bytes"}';
-const cases = [{ format: 'keir-read-simulation/1', id: 'independent', input: { taskId: 'sample' }, stubs: [],
-  expect: { calls: [], outcome: { classification: 'COMPLETED', result: { classification: 'PENDING' } }, consumption: { status: 'DISPLAYED', code: 'PENDING' } } }];
+const cases = [JSON.stringify({ format: 'keir-read-simulation/1', id: 'independent', input: { taskId: 'sample' }, stubs: [],
+  expect: { calls: [], outcome: { classification: 'COMPLETED', result: { classification: 'PENDING' } }, consumption: { status: 'DISPLAYED', code: 'PENDING' } } })];
 function scenario(providerName, { clarify = true, wrong = false } = {}) {
   const requests = [], events = [];
   const selection = { revisionId: 'approvedA', generation: 7, evidenceId: 'EA' };
@@ -21,7 +25,7 @@ function scenario(providerName, { clarify = true, wrong = false } = {}) {
     ['discover_catalog', {}], ...(clarify ? [['ask_clarification', { question: 'Which classification should open tasks show?' }]] : []),
     ['compile_draft', { sourceJson: 'invalid candidate', expectedDraftVersion: 0 }],
     ['compile_draft', { sourceJson: source, expectedDraftVersion: 0 }],
-    ['propose_scenarios', { revisionId: 'compiledB', casesJson: JSON.stringify(cases), expectedDraftVersion: 1 }],
+    ['propose_scenarios', { revisionId: 'compiledB', cases, expectedDraftVersion: 1 }],
     ['simulate_draft', { revisionId: 'reviewB', expectedDraftVersion: 2 }],
     ['offer_review', { summary: 'Review the independent synthetic case; other inputs are untested.' }],
   ];
@@ -52,20 +56,20 @@ function scenario(providerName, { clarify = true, wrong = false } = {}) {
       if (bytes.toString() !== source) return { diagnostics: [{ code: 'SOURCE_INVALID', path: '/source' }] };
       compiled = true; current = { revisionId: 'compiledB', draftVersion: 1, suiteDigest: null }; return { ...current };
     },
-    proposeScenarios: (id, bytes, expected) => {
+    proposeScenarios: (id, originals, expected) => {
       assert.equal(compiled, true); assert.equal(id, 'compiledB'); assert.equal(expected, 1);
-      assert.deepEqual(JSON.parse(bytes), cases); events.push(['scenarios', id]);
+      assert.deepEqual(originals, cases); assert.notEqual(originals, cases); events.push(['scenarios', id]);
       current = { revisionId: 'reviewB', draftVersion: 2, suiteDigest: hash('1') }; return { ...current };
     },
     simulate: (id, expected) => {
       assert.equal(id, 'reviewB'); assert.equal(expected, 2); events.push(['simulate', id]);
-      return { ...current, evidenceId: 'EB', summary: { statuses: [wrong ? 'MISMATCH' : 'PASS'] } };
+      return { ...current, evidenceId: 'EB', simulationSuiteIdentity: hash('2'), summary: { statuses: [wrong ? 'MISMATCH' : 'PASS'] } };
     },
-    readEvidence: () => ({ ...current, evidenceId: 'EB', eligible: !wrong, summary: { statuses: [wrong ? 'MISMATCH' : 'PASS'] } }),
+    readEvidence: () => ({ ...current, evidenceId: 'EB', simulationSuiteIdentity: hash('2'), eligible: !wrong, summary: { statuses: [wrong ? 'MISMATCH' : 'PASS'] } }),
   };
   const config = readAuthoringConfig(env(providerName));
   const context = { ownerId: 'synthetic-owner', sessionId: 'synthetic-session', conversationId: 'synthetic-conversation', runId: 'synthetic-run',
-    current: () => true, budget: { remainingMicros: config.maxMicros } };
+    current: () => true, checkpoint: () => {}, budget: { remainingMicros: config.maxMicros } };
   return { provider: createAuthoringProvider(config, { fetchImpl }), host, context, requests, selection, events, fetchImpl };
 }
 
@@ -112,4 +116,41 @@ test('opt-in harness returns only bounded identity/counters and requires configu
   assert.equal(JSON.stringify(result).includes('opaque'), false);
   const unavailable = await checkAuthoringProvider({ live: true, env: {}, ...scenario('openai'), inputs: [{ id: 'request', text: 'No config.' }] });
   assert.deepEqual(unavailable, { status: 'NOT_RUN', code: 'AI_NOT_CONFIGURED' });
+});
+
+test('project qualification fixture uses isolated durable service and remains inert without opt-in', async () => {
+  let requests = 0;
+  const fixture = createQualificationHost();
+  const options = { ...fixture, env: env('openai'), fetchImpl: async () => {
+    requests++;
+    return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', role: 'assistant',
+      content: [{ type: 'output_text', text: 'No review was produced.' }] }], usage: { input_tokens: 1, output_tokens: 1 } }),
+    { headers: { 'content-type': 'application/json' } });
+  } };
+  assert.equal((await checkAuthoringProvider(options)).status, 'NOT_RUN');
+  assert.equal(requests, 0);
+  const result = await checkAuthoringProvider({ ...options, live: true });
+  assert.equal(result.status, 'IDLE'); assert.equal(result.counts.calls, 1);
+  assert.equal(result.usage.reservedMicros, 319488); assert.equal(requests, 1);
+  assert.equal(Object.hasOwn(result, 'review'), false);
+  assert.equal(JSON.stringify(result).includes('synthetic-openai-key'), false);
+});
+
+test('qualification examples pass the actual permitted authored simulator independently of provider output', async () => {
+  const fixture = createQualificationHost();
+  const cases = JSON.parse(fixture.inputs[0].text.split('Independent cases: ')[1]);
+  assert.equal(cases.length, 5);
+  assert.equal(cases.some(value => JSON.parse(value).id === 'host-denied'), false);
+  const db = openData(':memory:');
+  try {
+    // Packaging/compilation is covered separately; this checks the fixture's independent truth.
+    const compiler = { compile: async () => ({ artifact: readFileSync(new URL('../extensions/task-read/maya.json', import.meta.url)), diagnostics: [] }) };
+    const lifecycle = createLifecycle(db, { compiler });
+    let draft = await lifecycle.compile('sam', { source: readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8'), draftVersion: 0 }, () => {});
+    draft = await lifecycle.proposeScenarios('sam', { revisionId: draft.revisionId, cases, draftVersion: draft.draftVersion }, () => {});
+    draft = await lifecycle.simulate('sam', { revisionId: draft.revisionId, draftVersion: draft.draftVersion }, () => {});
+    const proof = lifecycle.evidence('sam', draft.evidence.id);
+    assert.equal(proof.passed, true);
+    assert.deepEqual(proof.reports.map(item => item.report.status), Array(5).fill('PASS'));
+  } finally { db.close(); }
 });

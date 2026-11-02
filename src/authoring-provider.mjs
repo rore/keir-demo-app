@@ -38,7 +38,7 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
         if (combined.aborted) fail(abortCode());
         throw error;
       });
-      let reader, response;
+      let reader, response, fetching, reading;
       activeRequests++;
       try {
         if (typeof instructions !== 'string' || !Array.isArray(tools)
@@ -70,7 +70,7 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
         }
         const encoded = JSON.stringify(body);
         if (Buffer.byteLength(encoded) > maxBytes) fail('BYTE_LIMIT');
-        try { response = await wait(fetchImpl(url, { method: 'POST', headers, body: encoded, redirect: 'error', signal: combined })); }
+        try { response = await wait(fetching = Promise.resolve(fetchImpl(url, { method: 'POST', headers, body: encoded, redirect: 'error', signal: combined }))); }
         catch (error) { if (error instanceof AuthoringError) throw error; fail('PROVIDER_UNAVAILABLE'); }
         if ([401, 403].includes(response.status)) fail('CREDENTIALS_INVALID');
         if (response.status === 429) fail('PROVIDER_RATE_LIMIT');
@@ -83,7 +83,7 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
         if (!reader) fail('PROVIDER_RESPONSE_INVALID');
         const chunks = []; let size = 0;
         for (;;) {
-          const { done, value } = await wait(reader.read());
+          const { done, value } = await wait(reading = Promise.resolve(reader.read()));
           if (done) break;
           if (!(value instanceof Uint8Array)) fail('PROVIDER_RESPONSE_INVALID');
           size += value.byteLength;
@@ -138,9 +138,13 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
         if (error instanceof AuthoringError) throw error;
         fail('PROVIDER_RESPONSE_INVALID');
       } finally {
-        // Do not wait indefinitely for a broken stream's cancellation hook.
-        if (reader) void reader.cancel().catch(() => {});
-        else if (response?.body) void response.body.cancel().catch(() => {});
+        // Retain the slot until aborted transport and late response cleanup actually settle.
+        if (!response && fetching) { try { response = await fetching; } catch { /* Fetch closed without a response. */ } }
+        try {
+          if (reader) await reader.cancel();
+          else if (response?.body) await response.body.cancel();
+        } catch { /* Cancellation failure is still settled. */ }
+        if (reading) { try { await reading; } catch { /* The reader closed with an error. */ } }
         activeRequests--;
       }
     },

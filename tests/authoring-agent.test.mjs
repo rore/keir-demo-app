@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AUTHORING_TOOLS, createAuthoringState, runAuthoringTurn } from '../src/authoring-agent.mjs';
+import { AuthoringError } from '../src/authoring-provider.mjs';
 
 const suite = 'sha256:' + '1'.repeat(64);
 const call = (name, args = {}, id) => ({ name, arguments: args, ...(id && { id }) });
 function fixture(steps = [], initial = {}) {
   const context = { ownerId: 'owner', sessionId: 'session', conversationId: 'conversation', runId: 'run',
-    budget: { remainingMicros: 1000 }, current: () => true };
+    budget: { remainingMicros: 1000 }, current: () => true, checkpoint: () => {} };
   const state = createAuthoringState(context);
   let draft = { revisionId: null, draftVersion: 0, suiteDigest: null, ...initial };
   let next = 0;
@@ -21,8 +22,8 @@ function fixture(steps = [], initial = {}) {
       draft = { revisionId: 'revision' + ++next, draftVersion: expected + 1, suiteDigest: null };
       return { ...draft };
     },
-    proposeScenarios: (revision, bytes, expected) => {
-      events.push(['scenarios', revision, JSON.parse(bytes), expected]);
+    proposeScenarios: (revision, cases, expected) => {
+      events.push(['scenarios', revision, cases, expected]);
       assert.equal(revision, draft.revisionId); assert.equal(expected, draft.draftVersion);
       draft = { revisionId: 'revision' + ++next, draftVersion: expected + 1, suiteDigest: suite };
       return { ...draft };
@@ -49,7 +50,7 @@ test('real loop compiles, repairs, replaces scenarios, consumes returned IDs and
   const f = fixture([
     call('discover_catalog'), call('compile_draft', { sourceJson: 'bad', expectedDraftVersion: 0 }),
     call('compile_draft', { sourceJson: '{"program":"independent"}', expectedDraftVersion: 0 }),
-    call('propose_scenarios', { revisionId: 'revision1', casesJson: '[{"id":"independent-expectation"}]', expectedDraftVersion: 1 }),
+    call('propose_scenarios', { revisionId: 'revision1', cases: ['{"id":"independent-expectation"}'], expectedDraftVersion: 1 }),
     call('simulate_draft', { revisionId: 'revision2', expectedDraftVersion: 2 }),
     call('offer_review', { summary: 'Review the exact tested cases and untested limits.' }),
   ]);
@@ -58,7 +59,7 @@ test('real loop compiles, repairs, replaces scenarios, consumes returned IDs and
   assert.deepEqual(result.review, { revisionId: 'revision2', draftVersion: 2, suiteDigest: suite,
     evidenceId: 'evidence', eligible: true, summary: { statuses: ['PASS'] } });
   assert.deepEqual(f.events, ['discover', ['compile', 'bad', 0], ['compile', '{"program":"independent"}', 0],
-    ['scenarios', 'revision1', [{ id: 'independent-expectation' }], 1], ['simulate', 'revision2', 2], 'readEvidence']);
+    ['scenarios', 'revision1', ['{"id":"independent-expectation"}'], 1], ['simulate', 'revision2', 2], 'readEvidence']);
   assert.equal(f.state.handles.draftVersion, 2, 'simulation/review never advance version');
   assert.equal(f.context.budget.remainingMicros, 940);
   assert.deepEqual(JSON.parse(f.requests[2].toolResult.output).result.diagnostics, [{ code: 'SOURCE_INVALID', path: '/source' }]);
@@ -83,7 +84,7 @@ test('forbidden tools, extra authority and fake evidence arguments never reach h
   for (const item of [call('approve', { revisionId: 'forged' }),
     call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0, ownerId: 'other' }),
     call('offer_review', { summary: 'Approved!', evidenceId: 'forged' }),
-    call('propose_scenarios', { revisionId: 'other', casesJson: '[]', expectedDraftVersion: 0 })]) {
+    call('propose_scenarios', { revisionId: 'other', cases: [], expectedDraftVersion: 0 })]) {
     const f = fixture([item]);
     assert.equal((await f.run()).status, 'IDLE');
     assert.deepEqual(f.events, []);
@@ -93,7 +94,7 @@ test('forbidden tools, extra authority and fake evidence arguments never reach h
 
 test('old source ID after suite replacement is rejected; absent suite cannot simulate', async () => {
   const f = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 }),
-    call('propose_scenarios', { revisionId: 'revision1', casesJson: '[{"id":"case"}]', expectedDraftVersion: 1 }),
+    call('propose_scenarios', { revisionId: 'revision1', cases: ['{"id":"case"}'], expectedDraftVersion: 1 }),
     call('simulate_draft', { revisionId: 'revision1', expectedDraftVersion: 1 })]);
   assert.equal((await f.run()).status, 'IDLE');
   assert.equal(f.events.filter(item => item[0] === 'simulate').length, 0);
@@ -179,11 +180,12 @@ test('live context is revalidated after every kind of host await', async () => {
   for (const [method, item] of [
     ['readDraft', call('discover_catalog')], ['discover', call('discover_catalog')],
     ['compile', call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 1 })],
-    ['proposeScenarios', call('propose_scenarios', { revisionId: 'ready', casesJson: '[{}]', expectedDraftVersion: 1 })],
+    ['proposeScenarios', call('propose_scenarios', { revisionId: 'ready', cases: ['{}'], expectedDraftVersion: 1 })],
     ['simulate', call('simulate_draft', { revisionId: 'ready', expectedDraftVersion: 1 })],
     ['readEvidence', call('offer_review', { summary: 'Review.' })],
   ]) {
     const f = fixture([item], ready);
+    f.state.evidenceHandle = { ...ready, evidenceId: 'evidence' };
     f.host[method] = async () => { f.context.current = () => false; return { ...ready }; };
     const result = await f.run();
     assert.equal(result.code, 'STALE_CONTEXT', method); assert.equal(result.status, 'BLOCKED', method);
@@ -201,11 +203,246 @@ test('active deadline bounds a stuck host await and no subsequent work is dispat
 test('source/case byte limits and malformed Unicode reject before host mutation', async () => {
   const items = [call('compile_draft', { sourceJson: 'x'.repeat(16385), expectedDraftVersion: 0 }),
     call('compile_draft', { sourceJson: '\ud800', expectedDraftVersion: 0 }),
-    call('propose_scenarios', { revisionId: 'compiled', casesJson: JSON.stringify(Array(9).fill({})), expectedDraftVersion: 1 }),
-    call('propose_scenarios', { revisionId: 'compiled', casesJson: JSON.stringify([{ text: 'x'.repeat(49152) }]), expectedDraftVersion: 1 })];
+    ...[Array(9).fill('{}'), ['x'.repeat(65537)], ['x'.repeat(49152)], ['\ud800'], [' '], [{}], []].map(cases =>
+      call('propose_scenarios', { revisionId: 'compiled', cases, expectedDraftVersion: 1 }))];
   for (const item of items) {
     const f = fixture([item], { revisionId: 'compiled', draftVersion: item.arguments.expectedDraftVersion, suiteDigest: null });
     assert.equal((await f.run()).status, 'IDLE'); assert.deepEqual(f.events, []);
     assert.equal(JSON.parse(f.requests[1].toolResult.output).code, 'INVALID_TOOL_ARGUMENTS');
   }
+});
+
+test('case schema is closed and original malformed JSON strings reach native admission unchanged', async () => {
+  const schema = AUTHORING_TOOLS.find(tool => tool.name === 'propose_scenarios').parameters;
+  assert.deepEqual(schema.required, ['revisionId', 'cases', 'expectedDraftVersion']);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.properties.cases, { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 });
+  const cases = [' {"id":"first","id":"second"} ', '{"id":"\\ud800"}', 'not JSON'];
+  const f = fixture([call('propose_scenarios', { revisionId: 'compiled', cases, expectedDraftVersion: 1 })],
+    { revisionId: 'compiled', draftVersion: 1 });
+  f.host.proposeScenarios = (revision, originals, expected) => {
+    assert.equal(revision, 'compiled'); assert.equal(expected, 1);
+    assert.deepEqual(originals, cases); assert.notEqual(originals, cases);
+    originals.pop();
+    throw new AuthoringError('INVALID_TOOL_ARGUMENTS');
+  };
+  assert.equal((await f.run()).status, 'IDLE');
+  assert.equal(cases.length, 3, 'host receives an independent array of the exact original strings');
+  assert.deepEqual(JSON.parse(f.requests[1].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
+});
+
+test('synchronous admission precedes the first await and each dispatch/result precedes the next effect', async () => {
+  const f = fixture([call('discover_catalog')]);
+  assert.deepEqual({ ordinal: f.state.dispatchOrdinal, inFlight: f.state.inFlight, checkpoint: f.state.checkpoint,
+    lastResult: f.state.lastResult, evidence: f.state.evidenceHandle },
+  { ordinal: 0, inFlight: null, checkpoint: null, lastResult: null, evidence: null });
+  const order = [], snapshots = [];
+  f.context.checkpoint = state => {
+    const record = state.checkpoint;
+    order.push([record.phase, record.kind, record.ordinal, record.outcome]);
+    snapshots.push(structuredClone(state));
+    if (record.phase === 'DISPATCH') assert.deepEqual(state.inFlight,
+      { ordinal: record.ordinal, kind: record.kind, ...(record.callId && { callId: record.callId }) });
+    if (record.phase === 'RESULT') assert.equal(state.inFlight, null);
+  };
+  const complete = f.provider.complete;
+  f.provider.complete = request => { order.push('HTTP'); return complete(request); };
+  const discover = f.host.discover;
+  f.host.discover = () => { order.push('HOST'); return discover(); };
+  const running = f.run();
+  assert.deepEqual(order, [['ADMIT', undefined, undefined, undefined]]);
+  assert.equal(f.state.version, 1); assert.deepEqual(f.state.inputIds, ['input1']);
+  assert.equal(f.state.counts.inputs, 1); assert.equal(f.state.status, 'RUNNING');
+  const result = await running;
+  assert.deepEqual(order, [
+    ['ADMIT', undefined, undefined, undefined], ['DISPATCH', 'provider', 1, undefined], 'HTTP',
+    ['RESULT', 'provider', 1, 'SUCCESS'], ['DISPATCH', 'tool', 2, undefined], 'HOST',
+    ['RESULT', 'tool', 2, 'SUCCESS'], ['DISPATCH', 'provider', 3, undefined], 'HTTP',
+    ['RESULT', 'provider', 3, 'SUCCESS'], ['TERMINAL', undefined, undefined, undefined],
+  ]);
+  assert.equal(snapshots[1].counts.calls, 1); assert.equal(snapshots[1].usage.reservedMicros, 10);
+  assert.equal(snapshots[2].continuation.provider, 'fake');
+  assert.equal(JSON.parse(snapshots[4].pending.output).ok, true);
+  assert.deepEqual(snapshots.at(-1).lastResult, result); assert.equal(snapshots.at(-1).status, result.status);
+  assert.ok(snapshots.every((state, index) => !index || state.activeMs >= snapshots[index - 1].activeMs));
+});
+
+test('checkpoint is mandatory and a thenable admission never dispatches or leaks rejection', async () => {
+  const missing = fixture(); delete missing.context.checkpoint;
+  assert.deepEqual(await missing.run(), { status: 'BLOCKED', code: 'CONFIG_INVALID' });
+  assert.equal(missing.state.counts.inputs, 0); assert.equal(missing.requests.length, 0);
+  for (const thenable of [() => Promise.reject(new Error('private checkpoint failure')),
+    () => ({ then: (_resolve, reject) => reject(new Error('private thenable failure')) })]) {
+    const f = fixture();
+    f.context.checkpoint = state => state.checkpoint.phase === 'ADMIT' ? thenable() : undefined;
+    assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'TOOL_FAILED' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.requests.length, 0); assert.equal(f.context.budget.remainingMicros, 1000);
+  }
+});
+
+test('rejected admission preserves its blocker without attempting a terminal checkpoint', async () => {
+  const f = fixture(), phases = [];
+  f.context.checkpoint = state => { phases.push(state.checkpoint.phase); throw new AuthoringError('CONVERSATION_LIMIT'); };
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'CONVERSATION_LIMIT' });
+  assert.deepEqual(phases, ['ADMIT']); assert.equal(f.requests.length, 0);
+  assert.equal((await fixture().run()).status, 'IDLE', 'admission refusal releases the in-process scope');
+});
+
+test('pre-HTTP checkpoint failure retains unknown holds and refunds only verified rollback', async () => {
+  for (const rolledBack of [false, true]) {
+    const f = fixture();
+    f.context.checkpoint = state => {
+      if (state.checkpoint.phase !== 'DISPATCH') return;
+      const error = new AuthoringError('SPEND_LIMIT');
+      if (rolledBack) error.checkpointRolledBack = true;
+      throw error;
+    };
+    assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'SPEND_LIMIT' });
+    assert.equal(f.requests.length, 0); assert.equal(f.state.counts.calls, 1);
+    assert.equal(f.context.budget.remainingMicros, rolledBack ? 1000 : 990);
+    assert.equal(f.state.usage.reservedMicros, rolledBack ? 0 : 10);
+  }
+  const asynchronous = fixture();
+  asynchronous.context.checkpoint = state => state.checkpoint.phase === 'DISPATCH'
+    ? Promise.reject(new Error('private commit outcome')) : undefined;
+  assert.deepEqual(await asynchronous.run(), { status: 'BLOCKED', code: 'TOOL_FAILED' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(asynchronous.requests.length, 0); assert.equal(asynchronous.context.budget.remainingMicros, 990);
+});
+
+test('result checkpoint failure prevents tool dispatch and subsequent provider work', async () => {
+  for (const kind of ['provider', 'tool']) {
+    const f = fixture([call('discover_catalog')]);
+    const records = [];
+    f.context.checkpoint = state => {
+      records.push({ ...state.checkpoint });
+      if (state.checkpoint.phase === 'RESULT' && state.checkpoint.kind === kind) throw new Error('private COMMIT outcome');
+    };
+    assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'TOOL_FAILED' });
+    assert.equal(f.requests.length, 1); assert.equal(f.events.length, kind === 'tool' ? 1 : 0);
+    assert.equal(f.state.inFlight.kind, kind);
+    assert.equal(records.filter(record => record.phase === 'RESULT' && record.kind === kind).length, 1);
+    assert.equal(records.at(-1).phase, 'TERMINAL');
+    assert.deepEqual(f.state.lastResult, { status: 'BLOCKED', code: 'TOOL_FAILED' });
+  }
+  const refused = fixture([call('discover_catalog')]);
+  refused.context.checkpoint = state => {
+    if (state.checkpoint.phase === 'DISPATCH' && state.checkpoint.kind === 'tool') throw new Error('private dispatch failure');
+  };
+  assert.deepEqual(await refused.run(), { status: 'BLOCKED', code: 'TOOL_FAILED' });
+  assert.deepEqual(refused.events, []); assert.equal(refused.requests.length, 1);
+});
+
+test('tool-specific quotas are durable before the callback and invalid attempts cannot bypass them', async () => {
+  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
+  for (const [item, quota] of [
+    [call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 1 }), 'compiles'],
+    [call('simulate_draft', { revisionId: 'ready', expectedDraftVersion: 1 }), 'simulations'],
+    [call('ask_clarification', { question: 'Question?' }), 'clarifications'],
+  ]) {
+    const f = fixture([item], ready); let counted;
+    f.context.checkpoint = state => {
+      if (state.checkpoint.phase === 'DISPATCH' && state.checkpoint.kind === 'tool') counted = state.counts[quota];
+    };
+    assert.notEqual((await f.run()).status, 'BLOCKED');
+    assert.equal(counted, 1, quota);
+  }
+  const invalid = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0, forbidden: true })]);
+  assert.equal((await invalid.run()).status, 'IDLE'); assert.equal(invalid.state.counts.compiles, 1);
+  assert.deepEqual(invalid.events, []);
+});
+
+test('tool argument rejection is checkpointed before another provider and dispatch errors stay unknown', async () => {
+  const invalid = fixture([call('discover_catalog', { injected: true })]); const rejected = [];
+  invalid.context.checkpoint = state => { rejected.push(structuredClone(state)); };
+  assert.equal((await invalid.run()).status, 'IDLE');
+  const rejection = rejected.find(state => state.checkpoint.outcome === 'REJECTED');
+  assert.deepEqual(rejection.checkpoint, { phase: 'RESULT', kind: 'tool', ordinal: 2, callId: 'call1', outcome: 'REJECTED' });
+  assert.equal(JSON.parse(rejection.pending.output).code, 'INVALID_TOOL_ARGUMENTS');
+  assert.deepEqual(invalid.events, []);
+  for (const kind of ['provider', 'tool']) {
+    const f = fixture([call('discover_catalog')]); const records = [];
+    f.context.checkpoint = state => { records.push({ ...state.checkpoint }); };
+    if (kind === 'provider') f.provider.complete = () => { throw new Error('private provider failure'); };
+    else f.host.discover = () => { throw new Error('private host failure'); };
+    assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'TOOL_FAILED' });
+    assert.deepEqual(records.find(record => record.outcome === 'UNKNOWN'),
+      { phase: 'RESULT', kind, ordinal: kind === 'provider' ? 1 : 2, ...(kind === 'tool' && { callId: 'call1' }), outcome: 'UNKNOWN' });
+    assert.equal(f.state.inFlight, null); assert.equal(f.context.budget.remainingMicros, 990);
+  }
+});
+
+test('terminal checkpoint failure cannot expose clarification or review success', async () => {
+  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
+  for (const item of [call('ask_clarification', { question: 'Question?' }), call('offer_review', { summary: 'Review.' })]) {
+    const f = fixture([item], ready);
+    f.state.evidenceHandle = { ...ready, evidenceId: 'evidence' };
+    f.context.checkpoint = state => { if (state.checkpoint.phase === 'TERMINAL') throw new Error('private terminal failure'); };
+    assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'TOOL_FAILED' });
+    assert.deepEqual(f.state.lastResult, { status: 'BLOCKED', code: 'TOOL_FAILED' });
+    assert.equal(f.requests.length, 1);
+  }
+});
+
+test('cancellation between checkpoint and execution prevents callbacks and outward success', async () => {
+  for (const [phase, kind] of [['DISPATCH', 'provider'], ['DISPATCH', 'tool'], ['RESULT', 'tool']]) {
+    const f = fixture([call('ask_clarification', { question: 'Question?' })]); const controller = new AbortController();
+    f.context.checkpoint = state => {
+      if (state.checkpoint.phase === phase && state.checkpoint.kind === kind) controller.abort();
+    };
+    assert.deepEqual(await f.run({ signal: controller.signal }), { status: 'CANCELLED', code: 'CANCELLED' });
+    assert.equal(f.requests.length, kind === 'provider' ? 0 : 1);
+    assert.deepEqual(f.state.lastResult, { status: 'CANCELLED', code: 'CANCELLED' });
+  }
+});
+
+test('review uses the simulation result proof and rejects a later pointer or changed derived identity', async () => {
+  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
+  const simulationSuiteIdentity = 'sha256:' + '2'.repeat(64);
+  for (const changed of [{ evidenceId: 'later' }, { simulationSuiteIdentity: suite }, { suiteDigest: simulationSuiteIdentity }]) {
+    const f = fixture([call('simulate_draft', { revisionId: 'ready', expectedDraftVersion: 1 }), call('offer_review', { summary: 'Review.' })], ready);
+    const saved = { ...ready, evidenceId: 'first', simulationSuiteIdentity };
+    f.host.simulate = () => ({ ...saved, summary: { statuses: ['PASS'] } });
+    f.host.readEvidence = () => ({ ...saved, eligible: true, ...changed });
+    let persisted;
+    f.context.checkpoint = state => {
+      if (state.checkpoint.phase === 'RESULT' && state.checkpoint.ordinal === 2) persisted = structuredClone(state.evidenceHandle);
+    };
+    const result = await f.run();
+    assert.deepEqual(result, { status: 'BLOCKED', code: 'HOST_RESULT_INVALID' });
+    assert.deepEqual(persisted, saved); assert.deepEqual(f.state.evidenceHandle, saved);
+    assert.equal(JSON.parse(f.requests[1].toolResult.output).result.evidenceId, 'first');
+  }
+  const missing = fixture([call('offer_review', { summary: 'Review.' })], ready);
+  assert.equal((await missing.run()).code, 'HOST_RESULT_INVALID'); assert.deepEqual(missing.events, []);
+});
+
+test('source and suite replacement clear prior exact proof and review before their result checkpoint', async () => {
+  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
+  for (const item of [call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 1 }),
+    call('propose_scenarios', { revisionId: 'ready', cases: ['{}'], expectedDraftVersion: 1 })]) {
+    const f = fixture([item], ready);
+    f.state.evidenceHandle = { ...ready, evidenceId: 'old' };
+    f.state.lastResult = { status: 'REVIEW_AVAILABLE', review: { ...ready, evidenceId: 'old', eligible: true } };
+    let resultState;
+    f.context.checkpoint = state => {
+      if (state.checkpoint.phase === 'RESULT' && state.checkpoint.kind === 'tool') resultState = structuredClone(state);
+    };
+    assert.equal((await f.run()).status, 'IDLE');
+    assert.equal(resultState.evidenceHandle, null); assert.equal(resultState.lastResult, null);
+    assert.equal(resultState.handles.draftVersion, 2);
+  }
+});
+
+test('a changed run identity is never overwritten by an old loop terminal or time update', async () => {
+  const f = fixture();
+  f.provider.complete = () => {
+    f.state.runId = f.context.runId = 'new-run'; f.state.status = 'RUNNING';
+    f.state.lastResult = { status: 'IDLE', message: 'New run owns this state.' };
+    return { calls: [], text: 'Old result', continuation: {}, usage: { inputTokens: 1, outputTokens: 1 } };
+  };
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'STALE_CONTEXT' });
+  assert.equal(f.state.status, 'RUNNING');
+  assert.deepEqual(f.state.lastResult, { status: 'IDLE', message: 'New run owns this state.' });
 });

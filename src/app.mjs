@@ -7,11 +7,12 @@ import { AppError, USERS, taskService } from './data.mjs';
 import { createTaskRead } from './task-read.mjs';
 import { createLifecycle } from './extension-lifecycle.mjs';
 import { loadHost } from './extension-catalog.mjs';
+import { createAuthoringService, AUTHORING_CODES } from './authoring-service.mjs';
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
 
-export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler }) {
+export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler, authoring = {} }) {
   const url = new URL(origin);
   const app = Fastify({ logger: false, bodyLimit: 24 * 1024, requestTimeout: 10_000, connectionTimeout: 10_000, ajv: { customOptions: { removeAdditional: false } } });
   const sessions = new Map();
@@ -22,6 +23,8 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     catch { /* Missing compiler assets never prevent native or stored advice startup. */ }
   }
   const lifecycle = createLifecycle(db, { compiler });
+  const ai = createAuthoringService({ db, lifecycle, ...authoring });
+  app.addHook('onClose', () => ai.close());
   const taskAdvice = createTaskRead({ getTask: service.getTask, lifecycle });
   await app.register(cookie);
   app.decorateRequest('scope', null);
@@ -55,7 +58,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     const diagnostics = error instanceof AppError && Array.isArray(error.diagnostics)
       && Buffer.byteLength(JSON.stringify(error.diagnostics)) <= 16384 ? error.diagnostics : undefined;
     reply.code(status).send({ message: status >= 500 && !(error instanceof AppError) ? 'Something could not be saved. Please try again.' : error.message,
-      ...(diagnostics ? { diagnostics } : {}) });
+      ...(diagnostics ? { diagnostics } : {}), ...(AUTHORING_CODES.includes(error.code) ? { code: error.code } : {}) });
   });
   app.get('/api/session', request => {
     const session = current(request);
@@ -67,14 +70,16 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     const prior = authContext(request);
     if (!request.body || Object.keys(request.body).length !== 1 || !USERS.some(user => user.id === request.body.userId)) throw new AppError(400, 'Choose one of the three demo people.');
     const id = nonce(), userId = request.body.userId, contextToken = nonce();
-    if (prior) sessions.delete(request.cookies[COOKIE]);
-    sessions.set(id, { userId, contextToken });
+    if (prior) { sessions.delete(request.cookies[COOKIE]); ai.invalidateSession(prior.authoringEpoch); }
+    sessions.set(id, { userId, contextToken, authoringEpoch: nonce() });
     reply.setCookie(COOKIE, id, { path: '/', httpOnly: true, sameSite: 'strict' });
     return { user: { id: userId, name: USERS.find(user => user.id === userId).name }, contextToken };
   });
   app.delete('/api/session', (request, reply) => {
     authContext(request);
+    const prior = current(request);
     sessions.delete(request.cookies[COOKIE]);
+    if (prior) ai.invalidateSession(prior.authoringEpoch);
     reply.clearCookie(COOKIE, { path: '/', httpOnly: true, sameSite: 'strict' });
     return { user: null, contextToken: anonymousContext };
   });
@@ -84,6 +89,21 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     return value;
   };
   const noQuery = request => { if (Object.keys(request.query).length) throw new AppError(400, 'This advice request takes no query fields.'); };
+  function authoringLease(request) {
+    const session = authorize(request);
+    return { sessionId: session.authoringEpoch, current: () => { try { return authorize(request) === session; } catch { return false; } } };
+  }
+  app.get('/api/authoring', request => { noQuery(request); return lifecycleResponse(ai.list(authorize(request).userId)); });
+  app.get('/api/authoring/conversations/:id', request => { noQuery(request); return lifecycleResponse(ai.read(authorize(request).userId, request.params.id)); });
+  app.post('/api/authoring/turn', { bodyLimit: 65536 }, async (request, reply) => {
+    noQuery(request); const session = authorize(request), lease = authoringLease(request);
+    const result = await ai.turn(session.userId, request.body, lease); authorize(request);
+    reply.code(202); return lifecycleResponse(result);
+  });
+  app.post('/api/authoring/conversations/:id/cancel', (request, reply) => {
+    noQuery(request); const session = authorize(request);
+    return lifecycleResponse(ai.cancel(session.userId, request.params.id, request.body, authoringLease(request)));
+  });
   app.get('/api/extensions', request => { noQuery(request); return lifecycleResponse(lifecycle.state(authorize(request).userId)); });
   app.get('/api/extensions/evidence/:id', request => { noQuery(request); return lifecycleResponse(lifecycle.evidence(authorize(request).userId, request.params.id)); });
   app.get('/api/extensions/revisions/:id', request => {

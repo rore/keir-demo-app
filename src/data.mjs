@@ -55,6 +55,25 @@ function migrateAuthored(db) {
   });
 }
 
+function migrateAuthoring(db) {
+  transaction(db, () => {
+    db.exec(`
+      CREATE TABLE authoring_budget(id INTEGER PRIMARY KEY CHECK(id=1),
+        reserved_micros INTEGER NOT NULL CHECK(reserved_micros BETWEEN 0 AND 9007199254740991)) STRICT;
+      INSERT INTO authoring_budget VALUES (1, 0);
+      CREATE TABLE authoring_conversations(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
+        creation_operation_id TEXT NOT NULL, version INTEGER NOT NULL CHECK(version BETWEEN 0 AND 9007199254740991),
+        run_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('IDLE','RUNNING','CANCELLING','AWAITING_USER','REVIEW_AVAILABLE','CANCELLED','BLOCKED','INTERRUPTED')),
+        cancel_requested INTEGER NOT NULL CHECK(cancel_requested IN (0,1)), updated_at INTEGER NOT NULL CHECK(updated_at>=0),
+        state TEXT NOT NULL, operations TEXT NOT NULL, view TEXT NOT NULL, UNIQUE(id,owner_id), UNIQUE(owner_id,creation_operation_id),
+        CHECK(length(CAST(state AS BLOB))+length(CAST(operations AS BLOB))+length(CAST(view AS BLOB))<=262144),
+        CHECK(length(CAST(view AS BLOB))<=131072), CHECK(length(CAST(operations AS BLOB))<=16384)) STRICT;
+      CREATE INDEX authoring_conversations_owner ON authoring_conversations(owner_id,updated_at);
+      PRAGMA user_version = 4;
+    `);
+  });
+}
+
 export const USERS = [
   { id: 'maya', name: 'Maya', description: 'A small design practice', project: 'The spring collection', tasks: ['Gather material references', 'Refine the packaging sketches', 'Send the first concept'] },
   { id: 'leo', name: 'Leo', description: 'Good things, made together', project: 'Neighbourhood workshop', tasks: ['Plan the Saturday session', 'Check the tool cupboard', 'Share the workshop notes'] },
@@ -138,9 +157,10 @@ export function openData(path) {
         `);
         seedRows(db);
       });
-    } else if (![1, 2, 3].includes(version)) throw new Error('Unsupported database version; no data was reset.');
+    } else if (![1, 2, 3, 4].includes(version)) throw new Error('Unsupported database version; no data was reset.');
     if (version < 2) migrateLifecycle(db);
     if (version < 3) migrateAuthored(db);
+    if (version < 4) migrateAuthoring(db);
     return db;
   } catch (error) { db.close(); throw error; }
 }
@@ -158,12 +178,13 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
     const copy = new DatabaseSync(backupPath, { readOnly: true });
     try {
       if (copy.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || copy.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Backup verification failed; original data retained.');
-      for (const table of ['users', 'projects', 'tasks', ...lifecycleTables]) {
+      for (const table of ['users', 'projects', 'tasks', ...lifecycleTables, 'authoring_conversations', 'authoring_budget']) {
         const sql = `SELECT * FROM ${table} ORDER BY rowid`;
         if (JSON.stringify(copy.prepare(sql).all()) !== JSON.stringify(db.prepare(sql).all())) throw new Error('Backup differs; original data retained.');
       }
     } finally { copy.close(); }
     transaction(db, () => {
+      db.exec('DELETE FROM authoring_conversations');
       for (const table of lifecycleTables) db.exec(`DELETE FROM ${table}`);
       db.exec('DELETE FROM tasks; DELETE FROM projects; DELETE FROM users;');
       seedRows(db);

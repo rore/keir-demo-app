@@ -11,7 +11,7 @@ test('accepts supported tariffs with exact microdollar caps and hidden credentia
   const original = process.env.KEIR_AI_PROVIDER;
   const cases = [
     [valid('openai', 'gpt-5.6-terra', '1.234567', 'OPENAI_API_KEY'), 1_234_567, 319488],
-    [valid('anthropic', 'claude-haiku-5-5', '0.01', 'ANTHROPIC_API_KEY'), 10_000, 15565]
+    [valid('anthropic', 'claude-haiku-5-5', '0.01', 'ANTHROPIC_API_KEY'), 10_000, 77_824]
   ];
   for (const [env, maxMicros, reserveMicros] of cases) {
     const config = readAuthoringConfig(env);
@@ -23,6 +23,16 @@ test('accepts supported tariffs with exact microdollar caps and hidden credentia
     assert.equal(inspect(config).includes('secret-value'), false);
   }
   assert.equal(process.env.KEIR_AI_PROVIDER, original);
+});
+
+test('Haiku reservation covers reachable input tariff tiers', () => {
+  const config = readAuthoringConfig(valid('anthropic', 'claude-haiku-5-5', '0.08', 'ANTHROPIC_API_KEY'));
+  for (const [inputTokens, expectedMicros] of [[100_000, 12_048], [100_001, 60_241], [135_168, 77_824]]) {
+    const [inputRate, outputRate] = inputTokens <= 100_000 ? [0.10, 0.50] : [0.50, 2.50];
+    const requiredMicros = Math.ceil(inputTokens * inputRate + 4096 * outputRate);
+    assert.equal(requiredMicros, expectedMicros);
+    assert.equal(config.reserveMicros >= requiredMicros, true, `${inputTokens} input tokens`);
+  }
 });
 
 test('missing provider does not read credential getters', () => {
