@@ -11,7 +11,7 @@ test('repository archive, lock integrity and installed package bytes match recor
   assert.equal(lock.packages['node_modules/@keir/runtime-node'].integrity, provenance.integrity);
   assert.equal(lock.packages['node_modules/@keir/runtime-node'].resolved, `file:vendor/${provenance.archive}`);
   assert.deepEqual(provenance.files.map(file => file.path).sort(),
-    ['README.md', 'package.json', 'src/canonical.js', 'src/cel.js', 'src/index.js', 'src/model.js', 'src/validation.js']);
+    ['README.md', 'package.json', 'src/canonical.js', 'src/cel.js', 'src/index.js', 'src/model.js', 'src/read-simulation.js', 'src/validation.js']);
   for (const file of provenance.files) assert.equal('sha256:' + hash('sha256',
     readFileSync(`node_modules/@keir/runtime-node/${file.path}`), 'hex'), file.sha256, file.path);
 });

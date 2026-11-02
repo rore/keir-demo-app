@@ -8,6 +8,7 @@ Build with `npm run build`. `npm test` uses Node's runner with real temporary SQ
 - `startup.test.mjs`: test-owned startup/second-server/reset contention, private-path rejection, CLI startup and deliberate stale-lock refusal.
 - `distribution.test.mjs`: repository archive/lock integrity and installed runtime file identity.
 - `task-read.test.mjs`, `task-read-api.test.mjs`: installed-package real SQLite reads, different customer programs, exact-artifact simulation parity, pins/resource/result/authority failures and session-isolated advice endpoints.
+- `extension-lifecycle.test.mjs`, `lifecycle-api.test.mjs`, `lifecycle-persistence.test.mjs`: actual six-case evidence, approval/selection history, stale/foreign/current authority, bounds, generation races, isolated upgrade/reopen/reset/backup and native advice integration.
 
 Tests own temporary paths and loopback servers, never an operator app. No sleeps or live provider calls. SQLite's experimental warning is expected on Node 24.14.1 and is not suppressed.
 
@@ -15,4 +16,6 @@ Tests own temporary paths and loopback servers, never an operator app. No sleeps
 
 The task-advice journeys also cover preserved edits, open/completed status, failures clearing old advice and pending results across close/reopen or user switching. Select them with `npm run test:e2e -- --grep "task advice"`.
 
-Keep default regression fast, measure duration and investigate regressions. Browser download is separate from warm execution. CI builds and runs both suites. Dynamic activation, production identity qualification and live-provider checks belong to later slices; these tests claim none of those guarantees.
+The separate `lifecycle.spec.mjs` journeys exercise real sample review, explicit approval/use, uncertain mutation readback, historical evidence, native edits, already-produced late advice, named restore and restart. Studio has no AI or arbitrary source-authoring service.
+
+Keep default regression fast, measure duration and investigate regressions. Browser download is separate from warm execution. CI builds and runs both suites. Production identity qualification and live-provider checks belong to later slices; these tests claim none of those guarantees.

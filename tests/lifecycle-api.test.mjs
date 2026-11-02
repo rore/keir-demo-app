@@ -1,0 +1,44 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { openData } from '../src/data.mjs';
+import { createApp } from '../src/app.mjs';
+
+test('scoped lifecycle API enforces exact shapes, session, draft/selection versions and real evidence', async t => {
+  const db = openData(':memory:'), origin = 'http://127.0.0.1:32123';
+  const app = await createApp({ db, origin }); t.after(async () => { await app.close(); db.close(); });
+  let auth = {};
+  const call = (url, body, headers = {}) => app.inject({ url: '/api/' + url, method: body === undefined ? 'GET' : 'POST',
+    headers: { host: '127.0.0.1:32123', origin, 'content-type': 'application/json', ...auth, ...headers }, ...(body === undefined ? {} : { payload: body }) });
+  const bootstrap = (await call('session')).json();
+  const login = await call('session', { userId: 'maya' }, { 'x-session-context': bootstrap.contextToken });
+  auth = { cookie: login.headers['set-cookie'].split(';')[0], 'x-session-context': login.json().contextToken };
+  const initial = (await call('extensions')).json();
+  assert.equal((await call('extensions?owner=leo')).statusCode, 400);
+  for (const bad of [{ templateId: 'attention', draftVersion: 0, owner: 'leo' }, { templateId: '../leo.json', draftVersion: 0 }, [], { templateId: 'attention', draftVersion: -1 }])
+    assert.equal((await call('extensions/draft', bad)).statusCode, 400);
+  assert.equal((await call('extensions/draft', { templateId: 'attention', draftVersion: 0 }, { origin: 'http://invalid.local' })).statusCode, 403);
+  let state = (await call('extensions/draft', { templateId: 'attention', draftVersion: 0 })).json();
+  const input = { revisionId: state.draft.id, draftVersion: state.draftVersion };
+  assert.equal((await call('extensions/approve', { ...input, evidenceId: 'forged' })).statusCode, 404);
+  const proofResponse = await call('extensions/simulate', input);
+  assert.equal(proofResponse.statusCode, 200); state = proofResponse.json();
+  assert.equal(state.evidence.passed, true);
+  assert.equal((await call(`extensions/evidence/${state.evidence.id}`)).json().reports.length, 6);
+  assert.equal((await call('extensions/activate', { ...input, generation: initial.selection.generation })).statusCode, 409);
+  assert.equal((await call('extensions/approve', { ...input, evidenceId: state.evidence.id, passed: true })).statusCode, 400);
+  state = (await call('extensions/approve', { ...input, evidenceId: state.evidence.id })).json();
+  assert.equal(state.approved, true);
+  const requests = await Promise.all([call('extensions/activate', { ...input, generation: 1 }), call('extensions/disable', { generation: 1 })]);
+  assert.deepEqual(requests.map(response => response.statusCode).sort(), [200, 409]);
+  assert.equal((await call('extensions/history?before=-1')).statusCode, 400);
+  assert.equal((await call('extensions/history?owner=leo')).statusCode, 400);
+  const proofId = state.evidence.id;
+  const prior = { ...auth }, switched = await call('session', { userId: 'leo' });
+  auth = { cookie: switched.headers['set-cookie'].split(';')[0], 'x-session-context': switched.json().contextToken };
+  assert.equal((await call(`extensions/evidence/${proofId}`)).statusCode, 404);
+  assert.equal((await call('extensions/rollback', { revisionId: initial.selection.revision.id, generation: 1 })).statusCode, 404);
+  assert.equal((await call('extensions', undefined, prior)).statusCode, 401);
+  assert.equal((await call('extensions')).json().selection.generation, 1);
+  db.prepare("UPDATE extension_revisions SET identity=? WHERE owner_id='leo'").run(JSON.stringify({ invalid: 'x'.repeat(263000) }));
+  assert.equal((await call('extensions')).statusCode, 413, 'Oversized state is rejected rather than silently truncated');
+});

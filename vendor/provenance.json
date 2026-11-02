@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/rore/keir-core",
-  "revision": "0e7d44c05c188631892278fc838f3d89146fe028",
+  "revision": "8e8f3c744c70dc4773ea212ed55a7b11e0b12555",
   "archive": "keir-runtime-node-0.0.0.tgz",
-  "integrity": "sha512-Pam19YXTWZ2KzHQBZC+m826kadpSsc+niyY/C7z1wFjY/qQWgOmRWJBXPKs5eL+f4XPr30A/k92QPisE2rnswQ==",
+  "integrity": "sha512-ivHYd6S8DjnrI513PZYMsshR+XxtDRs0Fqbw3TVnMHL+rSP8S0jI4cdfAP4C9UXlGVf9d81h/QORaJdyW1ebLg==",
   "files": [
     {
       "path": "README.md",
@@ -10,7 +10,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "sha256:6b92af89e6d2c9c776d57d203990531a2e7e73b53a55fbbfe71d60266f2bfcad"
+      "sha256": "sha256:8c5be127a3e0bc53225cd9ef7204463862cd06a5c862c7624fcc9f23399620ac"
     },
     {
       "path": "src/canonical.js",
@@ -27,6 +27,10 @@
     {
       "path": "src/model.js",
       "sha256": "sha256:c7f8b81ef69c0b5294e9aefd2d0fac774f2608e24a5ff09d7bd7254b11d12ffc"
+    },
+    {
+      "path": "src/read-simulation.js",
+      "sha256": "sha256:6eb28d1fd0722610e244d0b40e4db03295e9a4b3078328b1b44c9ec707885227"
     },
     {
       "path": "src/validation.js",

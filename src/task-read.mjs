@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { bindModel, prepareProgram, invokeProgram, ENVIRONMENT } from '@keir/runtime-node';
+import { loadCatalog } from './extension-catalog.mjs';
 
 const consumer = Object.freeze({ id: 'demo.taskadvice', version: '1', kind: 'DISPLAY' });
 const unavailable = () => ({ status: 'NOT_DISPLAYED', message: 'Task advice is unavailable. Your task has not changed.' });
@@ -23,14 +24,16 @@ export function loadTaskReadBundle() {
 }
 
 // The host owns this finite catalog. Request fields cannot choose programs, scope or identity.
-export function createTaskRead({ getTask, bundle, mode = 'real' }) {
+export function createTaskRead({ getTask, bundle, mode = 'real', lifecycle }) {
   const selections = new Map();
   let active = 0;
   try {
     bundle ??= loadTaskReadBundle();
-    for (const userId of ['maya', 'leo']) {
+    const configurations = lifecycle ? ['maya', 'leo', 'sam'].flatMap(userId => loadCatalog().map(item => ({ userId,
+      key: `${userId}:${item.id}`, program: { bytes: item.artifactBytes, digest: item.pins.artifactDigest } })))
+      : ['maya', 'leo'].map(userId => ({ userId, key: userId, program: bundle.programs[userId] }));
+    for (const { userId, key, program } of configurations) {
       const scope = `demo.task-advice:${userId}`;
-      const program = bundle.programs[userId];
       const binding = bindModel(bundle.dcm, { scope, modelRef: { domainId: 'demo.tasks', domainVersion: '1',
         format: 'keir-dcm/read-2', digest: bundle.modelDigest, descriptorRecipe: 'keir-record-descriptors/1' },
       profile: 'keir-read/2', environment: ENVIRONMENT, mode }, {
@@ -53,13 +56,16 @@ export function createTaskRead({ getTask, bundle, mode = 'real' }) {
       const selected = prepareProgram(program.bytes, binding.boundModel, { expectedArtifactDigest: program.digest,
         expectedDcmDigest: bundle.modelDigest, entrypoint: 'ClassifyTask', consumer, compiler: bundle.compiler,
         environment: ENVIRONMENT, mode });
-      if (!selected.diagnostic) selections.set(userId, Object.freeze({ scope, prepared: selected.prepared }));
+      if (!selected.diagnostic) selections.set(key, Object.freeze({ scope, prepared: selected.prepared }));
     }
   } catch { /* An invalid deployment disables advice; native tasks remain usable. */ }
   return async ({ userId, taskId, authorize }) => {
-    const selected = selections.get(userId);
+    let captured;
+    try { captured = lifecycle?.capture(userId); } catch { return unavailable(); }
+    const key = lifecycle ? `${userId}:${captured?.template.id}` : userId;
+    const selected = selections.get(key);
     if (!selected || active >= 8 || typeof taskId !== 'string' || !taskId || Buffer.byteLength(taskId) > 256) return unavailable();
-    const current = () => selections.get(userId) === selected && authorize() === true;
+    const current = () => selections.get(key) === selected && (!lifecycle || lifecycle.current(captured)) && authorize() === true;
     active++;
     try {
       if (!current()) return unavailable();

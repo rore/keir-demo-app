@@ -2,7 +2,7 @@
 
 A small local task workspace: projects, tasks, notes and a satisfying completion flow. Sign in as Maya, Leo or Sam, three fictional demo people with independent data. Your work stays in a local SQLite database across restarts.
 
-Task details include an optional **Check task advice** action, powered by a pinned packaged Keir runtime. Maya and Leo have different source-authored rules; Sam has no configured rule. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
+Task details include **Check task advice** and **Customize my advice**, powered by a pinned packaged Keir runtime. In Studio, try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
 
 ## Run locally
 
@@ -46,7 +46,7 @@ Native regression uses temporary data. Browser setup downloads separate test Chr
 
 The Studio is being designed as **agent chat with a contextual canvas**. You can review the separate scripted prototype with `node docs/extension-studio/serve.mjs`, then open [the prototype](http://localhost:4179/). See the [interaction proposal](docs/extension-studio-design.md).
 
-This prototype makes no provider calls or real task changes. The complete AI extension-creation UI remains future work and will use the runner's own server-side provider configuration and credentials.
+This separate prototype makes no provider calls or real task changes. The native app now includes a real server-backed read-only Studio; see [review and select task advice](docs/read-extension-lifecycle.md). The complete AI extension-creation UI remains future work and will use the runner's own server-side provider configuration and credentials.
 
 ## Project boundaries
 
@@ -56,6 +56,7 @@ This prototype makes no provider calls or real task changes. The complete AI ext
 | `src/app.mjs`, `src/server.mjs` | Same-origin API, sessions and local startup |
 | `src/web/` | React/TypeScript workspace and responsive styles |
 | `src/task-read.mjs`, `extensions/task-read/`, `vendor/` | Scoped read adapter, trusted programs/model and integrity-pinned runtime package |
+| `src/extension-lifecycle.mjs`, `src/extension-catalog.mjs` | Persisted review/approval/selection and shared curated dependency identities |
 | `tests/` | Real persistence/API checks and browser journeys |
 | `docs/` | [Scope](docs/scope.md), [native contract](docs/native-task-app-design.md), local operation and future design |
 | `keir/` | Earlier extension material; current runnable reads are under `extensions/task-read/` |

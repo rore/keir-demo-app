@@ -1016,6 +1016,8 @@ p {
 .person small {
   font-size: 11px;
 }
+.native-detail-hidden { display: none !important; }
+dialog.detail:has(.studio-container) { width: min(1280px, 98vw); max-width: 98vw; padding: 0; }
 @media (max-width: 760px) {
   .task-open {
     font-size: 13px;

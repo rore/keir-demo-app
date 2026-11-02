@@ -2,6 +2,46 @@ import { DatabaseSync, backup } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { loadCatalog } from './extension-catalog.mjs';
+
+const lifecycleTables = ['extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections', 'extension_states', 'extension_revisions'];
+function seedLifecycle(db) {
+  let catalog = [];
+  try { catalog = loadCatalog(); } catch { /* Invalid deployment leaves native tasks usable with no advice. */ }
+  for (const user of USERS) {
+    db.prepare('INSERT INTO extension_states VALUES (?, 0, NULL)').run(user.id);
+    const template = catalog.find(item => item.id === (user.id === 'maya' ? 'pending' : user.id === 'leo' ? 'attention' : ''));
+    const revisionId = template ? randomUUID() : null;
+    if (template) db.prepare('INSERT INTO extension_revisions VALUES (?, ?, ?, ?, ?)').run(revisionId, user.id, template.id, template.identity, 'operator');
+    db.prepare('INSERT INTO extension_selections VALUES (?, ?, ?)').run(user.id, revisionId, template ? 1 : 0);
+    if (template) db.prepare('INSERT INTO extension_history(owner_id, revision_id, generation, operation) VALUES (?, ?, 1, ?)').run(user.id, revisionId, 'operator');
+  }
+}
+
+function migrateLifecycle(db) {
+  transaction(db, () => {
+    db.exec(`
+      CREATE TABLE extension_revisions(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), template_id TEXT NOT NULL,
+        identity TEXT NOT NULL, provenance TEXT NOT NULL CHECK(provenance IN ('operator','customer')), UNIQUE(id,owner_id)) STRICT;
+      CREATE TABLE extension_states(owner_id TEXT PRIMARY KEY REFERENCES users(id), draft_version INTEGER NOT NULL CHECK(draft_version>=0),
+        draft_id TEXT, FOREIGN KEY(draft_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
+      CREATE TABLE extension_selections(owner_id TEXT PRIMARY KEY REFERENCES users(id), revision_id TEXT,
+        generation INTEGER NOT NULL CHECK(generation>=0), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
+      CREATE TABLE extension_evidence(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT NOT NULL,
+        identity TEXT NOT NULL, suite_identity TEXT NOT NULL, payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB))<=131072),
+        passed INTEGER NOT NULL CHECK(passed IN (0,1)), UNIQUE(id,owner_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
+      CREATE TABLE extension_approvals(owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT NOT NULL, evidence_id TEXT NOT NULL,
+        PRIMARY KEY(owner_id,revision_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
+        FOREIGN KEY(evidence_id,owner_id) REFERENCES extension_evidence(id,owner_id)) STRICT;
+      CREATE TABLE extension_history(id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT,
+        generation INTEGER NOT NULL, operation TEXT NOT NULL, FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
+      CREATE INDEX extension_history_owner ON extension_history(owner_id,id);
+      CREATE INDEX extension_evidence_revision ON extension_evidence(owner_id,revision_id);
+    `);
+    seedLifecycle(db);
+    db.exec('PRAGMA user_version = 2');
+  });
+}
 
 export const USERS = [
   { id: 'maya', name: 'Maya', description: 'A small design practice', project: 'The spring collection', tasks: ['Gather material references', 'Refine the packaging sketches', 'Send the first concept'] },
@@ -86,7 +126,8 @@ export function openData(path) {
         `);
         seedRows(db);
       });
-    } else if (version !== 1) throw new Error('Unsupported database version; no data was reset.');
+    } else if (![1, 2].includes(version)) throw new Error('Unsupported database version; no data was reset.');
+    if (version !== 2) migrateLifecycle(db);
     return db;
   } catch (error) { db.close(); throw error; }
 }
@@ -104,14 +145,16 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
     const copy = new DatabaseSync(backupPath, { readOnly: true });
     try {
       if (copy.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || copy.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Backup verification failed; original data retained.');
-      for (const table of ['users', 'projects', 'tasks']) {
-        const sql = `SELECT * FROM ${table} ORDER BY id`;
+      for (const table of ['users', 'projects', 'tasks', ...lifecycleTables]) {
+        const sql = `SELECT * FROM ${table} ORDER BY rowid`;
         if (JSON.stringify(copy.prepare(sql).all()) !== JSON.stringify(db.prepare(sql).all())) throw new Error('Backup differs; original data retained.');
       }
     } finally { copy.close(); }
     transaction(db, () => {
+      for (const table of lifecycleTables) db.exec(`DELETE FROM ${table}`);
       db.exec('DELETE FROM tasks; DELETE FROM projects; DELETE FROM users;');
       seedRows(db);
+      seedLifecycle(db);
     });
     return backupPath;
   } finally { db?.close(); release(); }

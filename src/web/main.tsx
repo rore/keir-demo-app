@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import "./styles.css";
+import Studio from "./Studio";
 
 type User = { id: string; name: string; description?: string };
 type Session = { user: User | null; contextToken: string; users?: User[] };
@@ -266,6 +267,17 @@ function Workspace({
   const returnFocus = useRef<HTMLElement | null>(null);
   const detailRef = useRef<HTMLDialogElement>(null);
   const detailInstance = useRef(0);
+  const adviceEpoch = useRef(0);
+  const serverGeneration = useRef<number | null>(null);
+  const [lifecycleEpoch, setLifecycleEpoch] = useState(0);
+  function beforeSelectionChange() {
+    adviceEpoch.current++;
+    setLifecycleEpoch(adviceEpoch.current);
+  }
+  function reconcileSelection(next: number) {
+    if (serverGeneration.current !== next) beforeSelectionChange();
+    serverGeneration.current = next;
+  }
   const project = projects.find((item) => item.id === projectId);
   useEffect(
     () => () => {
@@ -709,9 +721,16 @@ function Workspace({
             busy={busy}
             error={error}
             close={closeDetail}
+            adviceEpoch={lifecycleEpoch}
+            studioRequest={async <T,>(path: string, method?: string, body?: object) => {
+              try { return await request<T>(path, method, body); }
+              catch (error) { if (error instanceof ApiError && error.status === 401) handleError(error); throw error; }
+            }}
+            beforeSelectionChange={beforeSelectionChange}
+            reconcileSelection={reconcileSelection}
             check={async () => {
-              const instance = detailInstance.current, current = generation.current;
-              const fresh = () => !lifetime.current.signal.aborted && current === generation.current && instance === detailInstance.current;
+              const instance = detailInstance.current, current = generation.current, epoch = adviceEpoch.current;
+              const fresh = () => !lifetime.current.signal.aborted && current === generation.current && instance === detailInstance.current && epoch === adviceEpoch.current;
               try {
                 const result = await request<Advice>(`tasks/${detail.id}/advice`, "POST", {});
                 return fresh() ? result : undefined;
@@ -752,6 +771,10 @@ function TaskDetail({
   error,
   close,
   check,
+  adviceEpoch,
+  studioRequest,
+  beforeSelectionChange,
+  reconcileSelection,
   save,
 }: {
   task: Task;
@@ -759,26 +782,37 @@ function TaskDetail({
   error: string;
   close: () => void;
   check: () => Promise<Advice | undefined>;
+  adviceEpoch: number;
+  studioRequest: <T>(path: string, method?: string, body?: object) => Promise<T>;
+  beforeSelectionChange: () => void;
+  reconcileSelection: (generation: number) => void;
   save: (title: string, notes: string) => void;
 }) {
   const [title, setTitle] = useState(task.title);
   const [notes, setNotes] = useState(task.notes);
   const [advice, setAdvice] = useState<Advice | null>(null);
   const [checking, setChecking] = useState(false);
+  const [studioOpen, setStudioOpen] = useState(false);
+  useEffect(() => { if (!studioOpen) document.getElementById('edit-title')?.focus(); }, [studioOpen]);
+  const pendingAdvice = useRef(0);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => { pendingAdvice.current++; setAdvice(null); setChecking(false); }, [adviceEpoch]);
   async function checkTask() {
     if (checking) return;
     setChecking(true);
     setAdvice(null);
+    const id = ++pendingAdvice.current;
     const result = await check();
-    if (mounted.current) {
+    if (mounted.current && id === pendingAdvice.current) {
       setAdvice(result ?? null);
       setChecking(false);
     }
   }
   return (
+    <>
     <form
+      className={studioOpen ? "native-detail-hidden" : undefined}
       onSubmit={(event) => {
         event.preventDefault();
         save(title, notes);
@@ -837,6 +871,7 @@ function TaskDetail({
         <button type="button" className="quiet-button" disabled={busy || checking} onClick={checkTask}>
           {checking ? "Checking task…" : "Check task advice"}
         </button>
+        <button type="button" className="quiet-button" disabled={busy} onClick={() => setStudioOpen(true)}>Customize my advice</button>
         <p className="muted">Checks the saved task status using your configured rule. Advice does not change tasks.</p>
         {advice && <p role="status">{advice.status === "NOT_DISPLAYED" ? advice.message : {
           DONE: "All done. This task is completed.", PENDING: "Still open. This task is pending.",
@@ -852,6 +887,9 @@ function TaskDetail({
         </button>
       </div>
     </form>
+    {studioOpen && <div className="studio-container"><Studio request={studioRequest} changed={reconcileSelection}
+      beforeSelectionChange={beforeSelectionChange} back={() => setStudioOpen(false)} /></div>}
+    </>
   );
 }
 

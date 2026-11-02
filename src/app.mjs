@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { AppError, USERS, taskService } from './data.mjs';
 import { createTaskRead } from './task-read.mjs';
+import { createLifecycle } from './extension-lifecycle.mjs';
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
@@ -15,7 +16,8 @@ export async function createApp({ db, origin, staticRoot = resolve('dist') }) {
   const sessions = new Map();
   const anonymousContext = nonce();
   const service = taskService(db);
-  const taskAdvice = createTaskRead({ getTask: service.getTask });
+  const lifecycle = createLifecycle(db);
+  const taskAdvice = createTaskRead({ getTask: service.getTask, lifecycle });
   await app.register(cookie);
   app.decorateRequest('scope', null);
   function current(request) { return sessions.get(request.cookies[COOKIE]); }
@@ -69,6 +71,32 @@ export async function createApp({ db, origin, staticRoot = resolve('dist') }) {
     return { user: null, contextToken: anonymousContext };
   });
   app.get('/api/projects', request => service.listProjects(authorize(request).userId));
+  const lifecycleResponse = value => {
+    if (Buffer.byteLength(JSON.stringify(value)) > 262144) throw new AppError(413, 'Advice response exceeds the host limit.');
+    return value;
+  };
+  const noQuery = request => { if (Object.keys(request.query).length) throw new AppError(400, 'This advice request takes no query fields.'); };
+  app.get('/api/extensions', request => { noQuery(request); return lifecycleResponse(lifecycle.state(authorize(request).userId)); });
+  app.get('/api/extensions/evidence/:id', request => { noQuery(request); return lifecycleResponse(lifecycle.evidence(authorize(request).userId, request.params.id)); });
+  app.get('/api/extensions/history', request => {
+    if (Object.keys(request.query).some(key => key !== 'before') || request.query.before !== undefined && !/^[1-9][0-9]{0,15}$/.test(request.query.before)) throw new AppError(400, 'Use a valid history cursor.');
+    const before = request.query.before === undefined ? undefined : Number(request.query.before);
+    if (before !== undefined && !Number.isSafeInteger(before)) throw new AppError(400, 'Use a valid history cursor.');
+    return lifecycleResponse(lifecycle.history(authorize(request).userId, before));
+  });
+  const operations = { draft: ['templateId', 'draftVersion'], simulate: ['revisionId', 'draftVersion'], approve: ['revisionId', 'draftVersion', 'evidenceId'],
+    activate: ['revisionId', 'draftVersion', 'generation'], disable: ['generation'], rollback: ['revisionId', 'generation'] };
+  for (const [operation, fields] of Object.entries(operations)) app.post(`/api/extensions/${operation}`, async request => {
+    const session = authorize(request), input = request.body;
+    noQuery(request);
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== fields.length
+        || !fields.every(field => Object.hasOwn(input, field) && (['draftVersion', 'generation'].includes(field)
+          ? Number.isSafeInteger(input[field]) && input[field] >= 0 : typeof input[field] === 'string' && /^[A-Za-z0-9-]{1,128}$/.test(input[field]))))
+      throw new AppError(400, 'Use only the supported advice fields.');
+    const result = await lifecycle[operation === 'draft' ? 'load' : operation](session.userId, input, () => authorize(request));
+    authorize(request);
+    return lifecycleResponse(result);
+  });
   app.post('/api/projects', (request, reply) => { const result = service.createProject(authorize(request).userId, request.body); reply.code(201); return result; });
   app.patch('/api/projects/:id', request => service.renameProject(authorize(request).userId, request.params.id, request.body));
   app.get('/api/projects/:id/tasks', request => service.listTasks(authorize(request).userId, request.params.id));
