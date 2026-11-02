@@ -141,9 +141,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (selection) callbacks.current.beforeSelectionChange();
       const next = await callbacks.current.request<State>(`extensions/${operation}`, "POST", body);
       if (!mounted.current || serial.current !== turn) return;
-      if (operation === "approve") focusUse.current = true;
+      const followReading = readingRevision.current === reading;
+      if (operation === "approve" && followReading) focusUse.current = true;
       apply(next); say(message); setNotice(message);
-      if (operation !== "simulate") setCanvasView("advice");
+      if (operation !== "simulate" && followReading) setCanvasView("advice");
       if (operation === "simulate" && next.evidence) {
         const proof = await callbacks.current.request<Evidence>(`extensions/evidence/${encodeURIComponent(next.evidence.id)}`);
         if (mounted.current && serial.current === turn) {

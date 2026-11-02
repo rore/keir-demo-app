@@ -297,3 +297,68 @@ test('a newly produced real sample run does not replace historical evidence bein
     expect(await results.getByRole('table').textContent()).not.toBe(content);
   } finally { release?.(); }
 });
+
+for (const operation of ['draft', 'approve']) {
+  test(`an already-produced ${operation} response preserves explicitly selected sample reading`, async ({ page, demo }) => {
+    await enter(page, demo); await openStudio(page);
+    const studio = ui(page);
+    await studio.getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
+    await studio.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+    await expect(studio.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
+    const original = await page.evaluate(async () => {
+      const session = await (await fetch('/api/session')).json();
+      return (await fetch('/api/extensions', { headers: { 'X-Session-Context': session.contextToken } })).json();
+    });
+    if (operation === 'approve') {
+      await studio.getByRole('button', { name: 'Review this advice', exact: true }).click();
+      await studio.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
+    }
+    let release, arrived, delivered;
+    const started = new Promise(resolve => { arrived = resolve; }), finished = new Promise(resolve => { delivered = resolve; });
+    await page.route(`**/api/extensions/${operation}`, async route => {
+      const response = await route.fetch();
+      const saved = await response.json();
+      expect(saved.selection.generation).toBe(original.selection.generation);
+      if (operation === 'draft') {
+        expect(saved.draft.id).not.toBe(original.draft.id);
+        expect(saved.draftVersion).toBe(original.draftVersion + 1);
+        expect(saved.approved).toBe(false);
+      } else {
+        expect(saved.draft.id).toBe(original.draft.id);
+        expect(saved.evidence.id).toBe(original.evidence.id);
+        expect(saved.approved).toBe(true);
+      }
+      arrived(); await new Promise(resolve => { release = resolve; });
+      await route.fulfill({ response }); delivered();
+    });
+    try {
+      await studio.getByRole('button', { name: operation === 'draft' ? 'Pending for open tasks' : 'Approve this advice', exact: true }).click();
+      await started;
+      const tab = studio.getByRole('button', { name: 'Sample results', exact: true });
+      await tab.click();
+      const results = studio.getByRole('article', { name: 'Sample results', exact: true });
+      await results.getByText('Saved run identity', { exact: true }).click();
+      const content = await results.getByRole('table').textContent();
+      const canvas = studio.locator('.rs-canvas');
+      await canvas.evaluate(node => node.scrollTop = 0);
+      await canvas.focus(); await wheel(page, canvas, 200);
+      const anchor = results.locator('tbody tr').nth(2);
+      await expect(anchor).toBeInViewport();
+      const position = (await anchor.boundingBox()).y;
+      release(); await finished;
+      await expect(studio.getByRole('button', { name: 'Pending for open tasks', exact: true })).toBeEnabled();
+      await expect(tab).toHaveAttribute('aria-pressed', 'true');
+      await expect(results).toBeVisible();
+      await expect(results).toContainText(`Evidence: ${original.evidence.id}`);
+      expect(await results.getByRole('table').textContent()).toBe(content);
+      await expect(canvas).toBeFocused();
+      expect(await scrollTop(canvas)).toBeGreaterThan(0);
+      expect(Math.abs((await anchor.boundingBox()).y - position)).toBeLessThanOrEqual(1);
+      if (operation === 'draft') {
+        await expect(results).toContainText('Earlier proposal');
+        await expect(results.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
+      }
+      await expect(studio.getByRole('button', { name: 'Approve this advice', exact: true })).toHaveCount(0);
+    } finally { release?.(); }
+  });
+}
