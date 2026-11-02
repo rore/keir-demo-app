@@ -28,3 +28,11 @@ The separate `lifecycle.spec.mjs` journeys exercise real sample review, explicit
 `lifecycle-advice-races.spec.mjs` holds actual already-produced unavailable-advice and simulation receipts across restore or cross-tab owner changes. `customization-layout.spec.mjs` enters Studio through normal navigation, checks real overview selection/draft states, native draft/return focus, abandoned overview/Studio responses and owner away-and-back. Deterministic overflowing projects/tasks/transcript/evidence exercise wheel and PageDown, exact scroll positions, stable rail/header/composer, pane edges, splitter limits and narrow/short layouts (390×844, 900×500, 360×540, 683×384). It checks viewport bounds and retained pane positions/unsent text; screenshots complement these assertions. Rendered designer review remains a separate acceptance requirement.
 
 Keep default regression fast, measure duration and investigate regressions. Browser download is separate from warm execution. CI builds and runs both suites. The optional live-provider qualification command is separate; automated tests do not establish real provider compatibility or production identity guarantees.
+
+## Offline configured-AI review
+
+After building, run `node tests/fixtures/authoring-server.mjs openai` (or `anthropic`) with qualified Java available. It prints a test-owned loopback URL and creates a temporary synthetic database. Stop it with Ctrl+C to close the app and remove that database. It never opens or modifies an operator database, app or browser profile.
+
+This fixture scripts only native provider transport. The actual app, durable loop, packaged compiler, scenario parser, simulator and human approval/Use routes run normally. Describe task advice and answer the fixed clarification to exercise a genuine compiler rejection/repair and five independent examples. Its credentials and data are synthetic; it makes no external AI request and establishes no live provider compatibility.
+
+`authoring-integrated.spec.mjs` drives both protocols through this fixture, including exact review and separate human approval/Use, lost-response recovery, preserved editor/native buffers and reload without generation. Screenshots are ignored under `build/screens/`.
