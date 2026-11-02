@@ -46,6 +46,22 @@ async function picture(page, name) {
   await page.screenshot({ path: resolve('build/screens', `daymark-${name}.png`), fullPage: true });
 }
 async function scrollTop(locator) { return locator.evaluate(node => node.scrollTop); }
+async function pageDown(page, locator) {
+  await locator.focus();
+  const before = await scrollTop(locator);
+  // Arm on keydown so completion belongs to this key, not the preceding wheel.
+  const scroll = await locator.evaluateHandle(node => ({ ended: new Promise(resolve => {
+    node.addEventListener('keydown', () => {
+      node.addEventListener('scrollend', () => resolve(node.scrollTop), { once: true });
+    }, { once: true });
+  }) }));
+  try {
+    await page.keyboard.press('PageDown');
+    const position = await scroll.evaluate(state => state.ended);
+    expect(position).toBeGreaterThan(before);
+    return position;
+  } finally { await scroll.dispose(); }
+}
 async function wheel(page, locator, delta) {
   const target = await locator.evaluate((node, amount) => Math.max(0, Math.min(node.scrollHeight - node.clientHeight, node.scrollTop + amount)), delta);
   const box = await locator.boundingBox();
@@ -141,9 +157,7 @@ test('overflowing native projects and tasks scroll independently with stable nav
   await wheel(page, main, 600); await expect.poll(() => scrollTop(main)).toBeGreaterThan(200);
   await expect.poll(() => scrollTop(projects)).toBe(0);
   expect(await rail.boundingBox()).toEqual(geometry.rail); expect(await header.boundingBox()).toEqual(geometry.header);
-  await main.focus(); const before = await scrollTop(main); await page.keyboard.press('PageDown');
-  await expect.poll(() => scrollTop(main)).toBeGreaterThan(before);
-  const taskPosition = await scrollTop(main);
+  const taskPosition = await pageDown(page, main);
   await wheel(page, projects, 500); await expect.poll(() => scrollTop(projects)).toBeGreaterThan(200);
   expect(await scrollTop(main)).toBe(taskPosition);
   await projects.evaluate(node => node.scrollTop = node.scrollHeight); await wheel(page, projects, 600);
@@ -166,8 +180,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
   const geometry = { composer: await composer.boundingBox(), header: await header.boundingBox(), rail: await rail.boundingBox() };
   await wheel(page, log, 400); await expect.poll(() => scrollTop(log)).toBeGreaterThan(100);
   expect(await scrollTop(canvas)).toBe(0);
-  await log.focus(); const before = await scrollTop(log); await page.keyboard.press('PageDown');
-  await expect.poll(() => scrollTop(log)).toBeGreaterThan(before);
+  await pageDown(page, log);
   await log.evaluate(node => node.scrollTop = 0);
   await ui(page).getByLabel('Message to Studio').fill('A new message while reading earlier replies');
   await ui(page).getByRole('button', { name: 'Send', exact: true }).click();
@@ -178,8 +191,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
   await ui(page).getByText('Selection history and exact identities', { exact: true }).click();
   await wheel(page, canvas, 120); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(50);
   expect(await scrollTop(log)).toBe(0);
-  await canvas.focus(); const previewBefore = await scrollTop(canvas); await page.keyboard.press('PageDown');
-  await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(previewBefore);
+  await pageDown(page, canvas);
   await canvas.evaluate(node => node.scrollTop = node.scrollHeight); await wheel(page, canvas, 600);
   expect(await scrollTop(log)).toBe(0);
   expect(await composer.boundingBox()).toEqual(geometry.composer); expect(await header.boundingBox()).toEqual(geometry.header); expect(await rail.boundingBox()).toEqual(geometry.rail);
