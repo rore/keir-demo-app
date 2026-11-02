@@ -111,12 +111,12 @@ test('general start is nonmutating and distinguishes untouched from off setups w
   await expect(page.getByRole('article', { name: 'Task advice customization' })).toHaveCount(0);
   const before = await savedState(page);
   let mutations = 0;
-  page.on('request', request => { if (request.method() === 'POST' && request.url().includes('/api/extensions/')) mutations++; });
+  page.on('request', request => { if (request.method() === 'POST' && (request.url().includes('/api/extensions/') || request.url().includes('/api/authoring'))) mutations++; });
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
   await expect(ui(page).getByRole('heading', { name: 'What would you like Daymark to do differently?' })).toBeVisible();
-  const planned = ui(page).getByRole('button', { name: 'Create from a description · To be implemented' });
+  const planned = ui(page).getByRole('button', { name: 'Describe task advice', exact: true });
   await expect(planned).toBeDisabled();
-  await expect(planned).toHaveAccessibleDescription(/Free-form requests cannot yet/);
+  await expect(planned).toHaveAccessibleDescription(/AI authoring is unavailable/);
   await expect(ui(page).getByLabel('Message to Studio')).toBeDisabled();
   await picture(page, 'general-start');
   await ui(page).getByRole('button', { name: 'See available starting points' }).click();

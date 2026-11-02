@@ -212,7 +212,7 @@ test('a stale second-tab draft request reloads the real proposal after conflict'
     await studio(page).getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
     await expect(studio(page).getByRole('article', { name: 'Proposed advice' }).getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
     await studio(other).getByRole('button', { name: 'Pending for open tasks', exact: true }).click();
-    await expect(studio(other).getByRole('alert')).toContainText('saved proposal or selection changed');
+    await expect(studio(other).getByRole('alert').filter({ hasText: 'saved proposal or selection changed' })).toBeVisible();
     await expect(studio(other).getByRole('status').filter({ hasText: 'Saved state reloaded' })).toBeVisible();
     await expect(studio(other).getByRole('article', { name: 'Proposed advice' }).getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
     await expect(studio(other).getByRole('article', { name: 'Current advice' }).getByRole('heading', { name: 'Pending', exact: true })).toBeVisible();

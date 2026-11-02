@@ -22,7 +22,36 @@ type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"
   id: string; label: string; expected: Outcome;
   report: { status: string; native?: Outcome; consumption?: { status: string; code?: string }; mismatches: object[] };
 }[] };
-type Message = { id: number; who: "You" | "Studio"; text: string; evidenceId?: string; exampleCount?: number };
+type Message = { id: number | string; who: "You" | "Studio"; text: string; evidenceId?: string; exampleCount?: number };
+type Operation = { id: string; runId: string; version: number };
+type Conversation = {
+  id: string; version: number; status: "IDLE" | "RUNNING" | "CANCELLING" | "AWAITING_USER" | "REVIEW_AVAILABLE" | "CANCELLED" | "BLOCKED" | "INTERRUPTED";
+  runId: string; operation: Operation; messages: { id: string; role: "user" | "assistant"; text: string; kind: "text" | "clarification" | "review" }[];
+  code: string | null; review: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string; eligible: boolean } | null;
+  draft: { revisionId: string | null; draftVersion: number; suiteDigest: string | null }; selection: { revisionId: string | null; generation: number };
+};
+type Authoring = {
+  availability: { available: boolean; code: string | null; provider: "openai" | "anthropic" | null; model: string | null };
+  conversations: { id: string; version: number; status: Conversation["status"]; runId: string; creationOperationId: string; operationId: string }[];
+  current: Conversation | null;
+};
+type Turn = { conversationId: string | null; operationId: string; text: string; expectedVersion: number; expectedDraftVersion: number };
+const running = (value: Conversation | null) => value?.status === "RUNNING" || value?.status === "CANCELLING";
+const authoringStatus = {
+  IDLE: "Ready for a description.", RUNNING: "Preparing task advice…", CANCELLING: "Stopping authoring; waiting for work to settle…",
+  AWAITING_USER: "Your answer is needed before authoring can continue.", REVIEW_AVAILABLE: "Saved advice is ready to inspect. Approval and Use are your separate decisions.",
+  CANCELLED: "Authoring stopped. Saved work remains available.", BLOCKED: "Authoring could not continue. Saved work remains available.",
+  INTERRUPTED: "Authoring was interrupted. Check saved state before explicitly continuing.",
+};
+function authoringReason(code: string | null | undefined) {
+  if (!code) return "";
+  if (["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(code)) return "AI authoring is not configured for use. Prepared advice and manual source tools remain available.";
+  if (["SPEND_LIMIT", "BUDGET_EXHAUSTED"].includes(code)) return "The configured authoring allowance is exhausted. Manual tools and saved advice remain available.";
+  if (code === "CONVERSATION_LIMIT") return "The saved conversation limit has been reached. Existing conversations are retained.";
+  if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
+  if (code === "REVIEW_NOT_READY") return "The saved examples do not yet support approval. Inspect their results or discuss the correction.";
+  return "AI authoring is unavailable for this request. Check saved state; native tasks and manual advice tools remain available.";
+}
 type Props = {
   request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
   changed: (generation: number) => void;
@@ -56,6 +85,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [sourceLabel, setSourceLabel] = useState("Authored advice");
   const [caseTexts, setCaseTexts] = useState([""]);
   const [diagnostics, setDiagnostics] = useState<unknown[] | null>(null);
+  const [authoring, setAuthoring] = useState<Authoring | null>(null);
+  const [conversation, setConversation] = useState<Conversation | null>(null);
+  const [authoringError, setAuthoringError] = useState("");
+  const [pendingTurn, setPendingTurn] = useState<Turn | null>(null);
+  const [retryTurn, setRetryTurn] = useState(false);
+  const [observationPaused, setObservationPaused] = useState(false);
+  const [visible, setVisible] = useState(!document.hidden);
+  const observation = useRef({ runId: "", reads: 0 });
+  const authoringLifetime = useRef(new AbortController());
   const preparation = useRef<AbortController | null>(null);
   const [width, setWidth] = useState(52);
   const [pane, setPane] = useState<"conversation" | "preview">("conversation");
@@ -82,10 +120,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const serial = useRef(0);
   const callbacks = useRef({ request, changed, beforeSelectionChange });
   callbacks.current = { request, changed, beforeSelectionChange };
-  const reviewKey = state?.draft && state.evidence ? `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${state.evidence.id}` : "";
-  const currentEvidence = !!state?.draft && evidence?.id === state.evidence?.id && evidence?.revisionId === state.draft.id;
-  const canReview = trusted && currentEvidence && evidence?.passed && state?.evidence?.passed;
-  const disabled = !!busy || !trusted;
+  const offer = conversation?.review;
+  const offeredEvidence = offer?.eligible === true && !!state?.draft && offer.revisionId === state.draft.id
+    && offer.draftVersion === state.draftVersion && offer.suiteDigest === state.draft.suiteDigest
+    && offer.evidenceId === evidence?.id && offer.revisionId === evidence?.revisionId;
+  const reviewKey = state?.draft && evidence ? `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${evidence.id}` : "";
+  const currentEvidence = !!state?.draft && evidence?.revisionId === state.draft.id && (evidence?.id === state.evidence?.id || offeredEvidence);
+  const canReview = trusted && currentEvidence && evidence?.passed && (offeredEvidence || state?.evidence?.passed);
+  const activeAuthoring = running(conversation);
+  const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn;
   const reviewReady = reviewed.current?.kind !== "authored" || !!reviewSource && reviewSource.key === review && reviewSource.ownerId === state?.owner.id && reviewSource.revisionId === state?.draft?.id && reviewSource.suiteDigest === state?.draft?.suiteDigest;
 
   function openPane(next?: "advice" | "results" | "review", invoker = document.activeElement) {
@@ -114,7 +157,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
 
   function say(text: string, who: Message["who"] = "Studio", evidenceId?: string, exampleCount?: number) {
     const id = ++messageId.current;
-    setMessages(old => [...old, { id, who, text, evidenceId, exampleCount }].slice(-40));
+    setMessages(old => {
+      const next = [...old, { id, who, text, evidenceId, exampleCount }];
+      const recentManual = new Set(next.filter(item => typeof item.id === "number").slice(-40).map(item => item.id));
+      return next.filter(item => typeof item.id === "string" || recentManual.has(item.id));
+    });
   }
   function apply(next: State) {
     const bounds = canvas.current?.getBoundingClientRect();
@@ -179,12 +226,143 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
   }
+  async function adoptConversation(next: Conversation, turn: number, creationOperationId?: string) {
+    if (!mounted.current || serial.current !== turn) return;
+    if (!running(next)) {
+      const saved = await callbacks.current.request<State>("extensions", "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn) return;
+      apply(saved);
+    }
+    setConversation(next);
+    setAuthoring(index => {
+      if (!index) return index;
+      const previous = index.conversations.find(item => item.id === next.id);
+      if (!previous && !creationOperationId) return index;
+      const summary = { id: next.id, version: next.version, status: next.status, runId: next.runId, operationId: next.operation.id, creationOperationId: previous?.creationOperationId ?? creationOperationId! };
+      return { ...index, conversations: [summary, ...index.conversations.filter(item => item.id !== next.id)] };
+    });
+    const incoming: Message[] = next.messages.map(item => ({ id: `ai:${next.id}:${item.id}`, who: item.role === "user" ? "You" : "Studio", text: item.text }));
+    setMessages(old => {
+      const ids = new Set(old.map(item => item.id));
+      const byId = new Map(incoming.map(item => [item.id, item]));
+      const merged = [...old.filter(item => typeof item.id !== "string" || item.id.startsWith(`ai:${next.id}:`)).map(item => {
+        const updated = byId.get(item.id); return updated && (updated.text !== item.text || updated.who !== item.who) ? updated : item;
+      }), ...incoming.filter(item => !ids.has(item.id))];
+      return merged.length === old.length && merged.every((item, index) => item === old[index]) ? old : merged;
+    });
+    initialized.current = true; setEntry("item"); setChoices(false);
+  }
+  async function loadAuthoring(id?: string | null) {
+    if (locked.current) return;
+    locked.current = true;
+    const turn = ++serial.current;
+    setBusy("Checking authoring status…"); setAuthoringError("");
+    try {
+      const next = await callbacks.current.request<Authoring>("authoring", "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn) return;
+      setAuthoring(next);
+      const selected = id === undefined ? next.current?.id : id;
+      if (selected) {
+        const current = next.current?.id === selected ? next.current : await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(selected)}`, "GET", undefined, authoringLifetime.current.signal);
+        if (current?.id !== selected) throw new Error("Unconfirmed conversation");
+        await adoptConversation(current!, turn);
+      }
+      if (mounted.current && serial.current === turn) setObservationPaused(false);
+    } catch {
+      if (mounted.current && serial.current === turn) { setObservationPaused(true); setAuthoringError("AI authoring status could not be checked. Manual tools remain available. Check status before continuing a conversation."); }
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
+  }
+  async function recoverTurn(input: Turn, turn: number) {
+    const index = await callbacks.current.request<Authoring>("authoring", "GET", undefined, authoringLifetime.current.signal);
+    if (!mounted.current || serial.current !== turn) return;
+    setAuthoring(index);
+    const summary = index.conversations.find(item => input.conversationId ? item.id === input.conversationId : item.creationOperationId === input.operationId);
+    if (summary) {
+      const current = await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(summary.id)}`, "GET", undefined, authoringLifetime.current.signal);
+      if (current.id !== summary.id) throw new Error("Unconfirmed conversation");
+      await adoptConversation(current, turn);
+      if (!mounted.current || serial.current !== turn) return;
+      if (summary.creationOperationId === input.operationId || current.operation.id === input.operationId) {
+        setPendingTurn(null); setRetryTurn(false); setAuthoringError("");
+        setText(value => value === input.text ? "" : value);
+        return;
+      }
+    }
+    setRetryTurn(true);
+    setAuthoringError("Saved state was checked, but acceptance of this request is unconfirmed. You may explicitly retry the same submitted request; it keeps its operation identity.");
+  }
+  async function submitAuthoring(input: Turn, recoveryOnly = false) {
+    if (locked.current || !trusted) return;
+    locked.current = true;
+    const turn = ++serial.current;
+    setBusy(recoveryOnly ? "Checking submitted request…" : "Sending description…");
+    setAuthoringError(""); setRetryTurn(false); setPendingTurn(input);
+    try {
+      if (recoveryOnly) await recoverTurn(input, turn);
+      else {
+        try {
+          const accepted = await callbacks.current.request<{ operation: Operation; conversation: Conversation }>("authoring/turn", "POST", input, authoringLifetime.current.signal);
+          if (!mounted.current || serial.current !== turn) return;
+          if (accepted.operation.id !== input.operationId || accepted.operation.version !== input.expectedVersion + 1 || accepted.conversation.version < accepted.operation.version || !accepted.operation.runId || input.conversationId && accepted.conversation.id !== input.conversationId) throw new Error("Unconfirmed authoring receipt");
+          await adoptConversation(accepted.conversation, turn, input.conversationId === null ? input.operationId : undefined);
+          if (!mounted.current || serial.current !== turn) return;
+          setPendingTurn(null); setText(value => value === input.text ? "" : value); setObservationPaused(false);
+        } catch {
+          if (!mounted.current || serial.current !== turn) return;
+          await recoverTurn(input, turn);
+        }
+      }
+    } catch {
+      if (mounted.current && serial.current === turn) setAuthoringError("The submitted request's outcome could not be checked. Check authoring status before retrying; nothing will be sent automatically.");
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
+  }
+  async function stopAuthoring() {
+    if (locked.current || !conversation || !activeAuthoring) return;
+    locked.current = true;
+    const turn = ++serial.current;
+    setBusy("Requesting authoring stop…"); setAuthoringError("");
+    try {
+      const next = await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(conversation.id)}/cancel`, "POST", { runId: conversation.runId, expectedVersion: conversation.version }, authoringLifetime.current.signal);
+      if (next.id !== conversation.id || next.runId !== conversation.runId) throw new Error("Unconfirmed stop");
+      await adoptConversation(next, turn); if (mounted.current && serial.current === turn) setObservationPaused(false);
+    } catch {
+      if (mounted.current && serial.current === turn) { setObservationPaused(true); setAuthoringError("Stopping could not be confirmed. Check authoring status; the accepted run may still be settling."); }
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
+  }
   useEffect(() => {
     mounted.current = true;
     document.getElementById("studio-title")?.focus();
-    void refresh();
-    return () => { mounted.current = false; preparation.current?.abort(); ++serial.current; locked.current = false; };
+    void refresh().then(() => { if (mounted.current) void loadAuthoring(); });
+    const visibility = () => setVisible(!document.hidden);
+    document.addEventListener("visibilitychange", visibility);
+    return () => { mounted.current = false; preparation.current?.abort(); authoringLifetime.current.abort(); document.removeEventListener("visibilitychange", visibility); ++serial.current; locked.current = false; };
   }, []);
+  useEffect(() => {
+    if (!conversation || !activeAuthoring || !visible || observationPaused || pendingTurn) return;
+    const abort = new AbortController();
+    const signal = AbortSignal.any([abort.signal, authoringLifetime.current.signal]);
+    const id = conversation.id, runId = conversation.runId;
+    if (observation.current.runId !== runId) observation.current = { runId, reads: 0 };
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      if (signal.aborted || !mounted.current) return;
+      if (observation.current.reads >= 130) { setObservationPaused(true); setAuthoringError("Automatic observation reached its limit. Check authoring status explicitly; this never starts another generation."); return; }
+      if (locked.current) { timer = setTimeout(poll, 1000); return; }
+      const turn = serial.current;
+      try {
+        observation.current.reads++;
+        const next = await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(id)}`, "GET", undefined, signal);
+        if (signal.aborted || !mounted.current || serial.current !== turn) { if (!signal.aborted) timer = setTimeout(poll, 1000); return; }
+        if (next.id !== id || next.runId !== runId) { setObservationPaused(true); setAuthoringError("The saved run changed. Check authoring status before continuing."); return; }
+        await adoptConversation(next, turn);
+        if (!signal.aborted && running(next)) timer = setTimeout(poll, 1000);
+      } catch {
+        if (!signal.aborted && mounted.current && serial.current === turn) { setObservationPaused(true); setAuthoringError("Authoring progress could not be checked. Use Check authoring status for read-only recovery."); }
+      }
+    }
+    timer = setTimeout(poll, 1000);
+    return () => { abort.abort(); clearTimeout(timer); };
+  }, [conversation?.id, conversation?.runId, conversation?.status, visible, observationPaused, !!pendingTurn]);
   useEffect(() => {
     if (entry !== "item" || !state || !trusted || initialized.current) return;
     initialized.current = true;
@@ -220,7 +398,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }, [busy]);
 
   async function mutate(operation: string, body: object, message: string, selection = false) {
-    if (locked.current || !trusted) return;
+    if (locked.current || !trusted || activeAuthoring || pendingTurn) return;
     locked.current = true;
     const turn = ++serial.current;
     const reading = readingRevision.current;
@@ -320,9 +498,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   function submit(event: FormEvent) {
     event.preventDefault();
     if (!text.trim() || disabled) return;
+    if (authoring?.availability.available) {
+      if (/[\uD800-\uDFFF]/u.test(text) || new TextEncoder().encode(text).length > 8192) { setAuthoringError("Use valid text within the 8 KiB description limit."); return; }
+      void submitAuthoring({ conversationId: conversation?.id ?? null, operationId: crypto.randomUUID(), text,
+        expectedVersion: conversation?.version ?? 0, expectedDraftVersion: state!.draftVersion });
+      return;
+    }
     say(text.trim(), "You"); setText("");
     if (/\b(review|approve|use|yes|okay|ok|want)\b/i.test(text)) openReview();
-    else say("Choose prepared advice, review a saved proposal, or open Developer qualification under Manage to enter read-only source and independent examples. AI authoring and task changes are not available here.");
+    else say("AI authoring is unavailable. Choose prepared advice, review a saved proposal, or open Developer qualification under Manage to enter read-only source and independent examples. No task has changed.");
   }
   const target = state?.restoreTargets.find(item => item.id === restore);
   const selectedDraft = !!state?.selection.eligible && state.selection.revision?.id === state.draft?.id;
@@ -359,7 +543,21 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       <section className="rs-chat" aria-labelledby="studio-conversation">
         <div className="rs-chat-head"><h2 id="studio-conversation" tabIndex={-1}>Conversation</h2>
           {state && <p>{entry === "item" ? "Advice" : "Customizations"} for {state.owner.name}</p>}
-          <p>{entry === "item" ? "Prepared choices across your projects. No tasks are changed." : "Choose an available starting point."}</p></div>
+          <p>{authoring?.availability.available ? "Describe read-only task advice. Review and Use remain separate decisions. No tasks are changed." : entry === "item" ? "Prepared choices across your projects. No tasks are changed." : "Choose an available starting point."}</p></div>
+        <section className="rs-authoring" aria-label="AI authoring">
+          {activeAuthoring && <button className="rs-stop" disabled={!!busy || conversation?.status === "CANCELLING"} onClick={() => void stopAuthoring()}>{conversation?.status === "CANCELLING" ? "Stopping authoring…" : "Stop authoring"}</button>}
+          <p>{authoring ? authoring.availability.available ? `AI authoring · ${authoring.availability.provider} / ${authoring.availability.model}` : authoringReason(authoring.availability.code) || "AI authoring is unavailable. Manual tools remain available." : "AI setup has not been confirmed. Prepared advice and manual source tools remain available."}</p>
+          {authoring && authoring.conversations.length > 0 && <label>Saved authoring conversation<select aria-label="Saved authoring conversation" value={conversation?.id ?? ""} disabled={!!busy || activeAuthoring || !!pendingTurn}
+            onChange={event => { if (event.target.value) void loadAuthoring(event.target.value); }}><option value="" disabled>Choose a saved conversation</option>{authoring.conversations.map((item, index) => <option key={item.id} value={item.id}>Conversation {index + 1} · {item.status.toLowerCase().replaceAll("_", " ")}</option>)}</select></label>}
+          {conversation && <><p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>
+            {conversation.review && <button disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>Open offered sample results</button>}
+            {!activeAuthoring && <button disabled={!!busy || !!pendingTurn || (authoring?.conversations.length ?? 0) >= 8} onClick={() => {
+              setConversation(null); setMessages(old => old.filter(item => typeof item.id !== "string")); setObservationPaused(false); setAuthoringError("");
+            }}>New conversation</button>}</>}
+          {authoringError && <p role="alert">{authoringError}</p>}
+          <button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring(conversation?.id ?? null)}>Check authoring status</button>
+          {pendingTurn && retryTurn && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}
+        </section>
         <div className="rs-messages" tabIndex={0} role="log" aria-label="Studio conversation" aria-live="off" onScroll={event => {
           const log = event.currentTarget; followConversation.current = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
           if (followConversation.current) setNewMessages(false);
@@ -367,8 +565,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {entry === "start" ? <article className="rs-message rs-start">
             <strong>Studio</strong><h2>What would you like Daymark to do differently?</h2>
             <button onClick={() => setDiscovery(true)}>See available starting points</button>
-            <button disabled aria-describedby="planned-authoring">Create from a description · To be implemented</button>
-            <p id="planned-authoring">Free-form requests cannot yet be turned into a customization. For now, choose an available starting point.</p>
+            <button disabled={!authoring?.availability.available || disabled} aria-describedby="planned-authoring" onClick={() => { setEntry("item"); setChoices(false); requestAnimationFrame(() => document.getElementById("studio-message")?.focus()); }}>Describe task advice</button>
+            <p id="planned-authoring">{authoring?.availability.available ? "Describe a read-only task-advice rule in the conversation. Unsupported behavior will need an explanation, not a substituted template." : "AI authoring is unavailable. Choose an available starting point or use manual source tools."}</p>
             {discovery && state && <section aria-label="Available starting points"><h3>Task advice</h3><p>Choose the advice you see when you check a task.</p>
               <button disabled={disabled || !state.catalog.length} onClick={() => { setEntry("item"); requestAnimationFrame(() => document.getElementById("studio-title")?.focus()); }}>{state.draft && !state.approved ? "Continue draft" : state.selection.revision || state.approved ? "Open existing setup" : "Set up"}</button>
               {!state.catalog.length && <p>Task advice is unavailable. <button disabled={!!busy} onClick={() => void refresh(true)}>Retry</button></p>}</section>}
@@ -383,9 +581,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         </div>
         {newMessages && <button className="rs-new-messages" onClick={() => { const log = chatEnd.current?.parentElement; if (log) log.scrollTop = log.scrollHeight; followConversation.current = true; setNewMessages(false); }}>New messages ↓</button>}
         <form className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Studio</label>
-          <textarea id="studio-message" disabled={entry === "start"} aria-describedby={entry === "start" ? "planned-authoring" : undefined} maxLength={500} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder={entry === "start" ? "Description authoring is not available yet" : "Ask to review this advice…"} />
-          <button disabled={entry === "start" || disabled || !text.trim()}>Send</button></form>
-        <p className="rs-chat-note">40 recent messages while Studio is open. Advice and sample results are saved.</p>
+          <textarea id="studio-message" disabled={entry === "start" && !authoring?.availability.available} aria-describedby={entry === "start" ? "planned-authoring" : undefined} maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder={authoring?.availability.available ? "Describe task advice or answer a question…" : entry === "start" ? "Choose an available starting point" : "Ask to review this advice…"} />
+          <button disabled={entry === "start" && !authoring?.availability.available || disabled || !text.trim()}>Send</button></form>
+        <p className="rs-chat-note">{authoring?.availability.available ? "Submitted conversations are saved. Navigating away stops observation; Check authoring status reads saved progress without generating." : "40 recent manual messages while Studio is open. Advice and sample results are saved."}</p>
       </section>
       <div hidden={!reviewOpen} className="rs-divider" role="separator" tabIndex={0} aria-label="Resize conversation and advice" aria-orientation="vertical"
         aria-valuemin={limits.min} aria-valuemax={limits.max} aria-valuenow={width}

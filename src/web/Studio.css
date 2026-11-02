@@ -35,6 +35,13 @@
 .rs-chat-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .rs-chat-head h2 { font-size: 20px; line-height: 1.3; letter-spacing: -.02em; }
 .rs-chat-head p { color: #605d60; margin-top: 9px; font-size: 14px; }
+.rs-authoring { flex: none; padding: 10px 24px; border-bottom: 1px solid var(--line); background: #f4f7f7; font-size: 12px; max-height: 30%; overflow-y: auto; }
+.rs-authoring p { margin: 0 0 6px; }
+.rs-authoring button { font-size: 12px; padding: 5px 8px; margin: 3px 6px 3px 0; }
+.rs-authoring .rs-stop { float: right; margin-top: 0; }
+.rs-authoring label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rs-authoring select { width: auto; max-width: 100%; font-size: 12px; padding: 4px; }
+.rs-authoring [role="alert"] { color: #702d39; }
 .rs-messages { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 24px 24px 8px; min-height: 0; }
 .rs-message { margin-bottom: 23px; max-width: 65ch; overflow-wrap: anywhere; }
 .rs-message > strong { display: block; font-size: 13px; color: var(--green); margin-bottom: 5px; }
