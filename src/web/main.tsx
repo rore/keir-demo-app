@@ -924,8 +924,8 @@ function TaskDetail({
         <button id="manage-task-advice" type="button" className="quiet-button" disabled={busy} onClick={manage}>Manage task advice</button>
         <p className="muted">Checks the saved task status using your configured rule. Advice does not change tasks.</p>
         {advice && <p role="status">{advice.status === "NOT_DISPLAYED" ? advice.message : {
-          DONE: "All done. This task is completed.", PENDING: "Still open. This task is pending.",
-          NEEDS_ATTENTION: "Still open. This task needs attention.",
+          DONE: "Task advice: Done", PENDING: "Task advice: Pending",
+          NEEDS_ATTENTION: "Task advice: Needs attention",
         }[advice.classification]}</p>}
       </section>
       <div className="detail-actions">

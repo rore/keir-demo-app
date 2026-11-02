@@ -41,12 +41,12 @@ test('task advice uses saved per-user rules, preserves edits and clears failed o
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByLabel('Task title', { exact: true }).fill('Unsaved title stays');
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'This task is pending' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Pending' })).toBeVisible();
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved title stays');
   await page.route('**/api/tasks/*/advice', route => route.fulfill({ status: 200, contentType: 'application/json',
     body: JSON.stringify({ status: 'NOT_DISPLAYED', message: 'Task advice is unavailable. Your task has not changed.' }) }));
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByText('This task is pending', { exact: false })).toHaveCount(0);
+  await expect(page.getByText('Task advice: Pending', { exact: false })).toHaveCount(0);
   await expect(page.getByRole('status').filter({ hasText: 'Task advice is unavailable' })).toBeVisible();
   await page.unroute('**/api/tasks/*/advice');
   let release, entered;
@@ -64,19 +64,19 @@ test('task advice uses saved per-user rules, preserves edits and clears failed o
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   release();
   await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toBeEnabled();
-  await expect(page.getByText('This task is pending', { exact: false })).toHaveCount(0);
+  await expect(page.getByText('Task advice: Pending', { exact: false })).toHaveCount(0);
   await page.unroute('**/api/tasks/*/advice');
   await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'This task is completed' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Done' })).toBeVisible();
   await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'This task needs attention' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Needs attention' })).toBeVisible();
   await screenshot(page, 'task-advice');
 });
 
@@ -102,7 +102,7 @@ test('task advice response pending across a user switch never enters the new wor
   await finished;
   await page.unroute('**/api/tasks/*/advice');
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-  await expect(page.getByText('This task is pending', { exact: false })).toHaveCount(0);
+  await expect(page.getByText('Task advice: Pending', { exact: false })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toBeEnabled();
 });
 
