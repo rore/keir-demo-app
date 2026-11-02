@@ -101,7 +101,7 @@ test('real sample review separates typed assent, approval and use; native edits 
   await expect(page.getByRole('status').filter({ hasText: 'This task needs attention' })).toHaveCount(0);
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved lifecycle title');
   await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByLabel('Demo person').selectOption('leo');
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'This task needs attention' })).toBeVisible();

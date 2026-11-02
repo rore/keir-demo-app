@@ -25,7 +25,7 @@ const pictures = resolve('build/screens');
 async function screenshot(page, name) { mkdirSync(pictures, { recursive: true }); await page.screenshot({ path: join(pictures, `${name}.png`), fullPage: true }); }
 async function signIn(page, name) {
   await page.getByRole('button', { name: `Continue as ${name}` }).click();
-  await expect(page.getByLabel('Demo person')).toHaveValue(name.toLowerCase());
+  await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue(name.toLowerCase());
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
 }
 async function newProject(page, name, mobile = false) {
@@ -72,7 +72,7 @@ test('task advice uses saved per-user rules, preserves edits and clears failed o
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'This task is completed' })).toBeVisible();
   await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByLabel('Demo person').selectOption('leo');
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
@@ -96,7 +96,7 @@ test('task advice response pending across a user switch never enters the new wor
   await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
   await started;
   await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByLabel('Demo person').selectOption('leo');
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
   await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
   release();
   await finished;
@@ -108,7 +108,7 @@ test('task advice response pending across a user switch never enters the new wor
 
 test('three people create, rename, edit and complete tasks; all data survives real server restart', async ({ page, demo }) => {
   await page.goto(demo.origin);
-  await expect(page.getByRole('heading', { name: 'Make yourself at home.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Choose a demo person.', exact: true })).toBeVisible();
   await screenshot(page, 'welcome-desktop');
   for (const name of ['Maya', 'Leo', 'Sam']) {
     await signIn(page, name);
@@ -174,7 +174,7 @@ test('delayed old data cannot repopulate a switched scope and expired API cannot
   });
   await page.reload(); await intercepted;
   await expect(page.getByText('Gathering your tasks…')).toBeVisible(); await screenshot(page, 'loading-desktop');
-  await page.getByLabel('Demo person').selectOption('leo');
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
   await page.unroute('**/api/projects/*/tasks'); release();
   await expect(page.getByRole('heading', { level: 1, name: 'Neighbourhood workshop' })).toBeVisible();
   await expect(page.getByText('Gather material references', { exact: true })).toHaveCount(0);
@@ -190,7 +190,7 @@ test('delayed old data cannot repopulate a switched scope and expired API cannot
 test('authentication transitions serialize across tabs even when the first cookie response is delayed', async ({ page, context, demo }) => {
   await page.goto(demo.origin); await signIn(page, 'Maya');
   const second = await context.newPage(); await second.goto(demo.origin);
-  await expect(second.getByLabel('Demo person')).toHaveValue('maya');
+  await expect(second.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('maya');
   // Finish initial owner reads before the deliberately delayed cookie transition.
   await expect(second.getByRole('button', { name: 'Gather material references', exact: true })).toBeVisible();
   let release, observed;
@@ -200,11 +200,11 @@ test('authentication transitions serialize across tabs even when the first cooki
     if (route.request().method() !== 'POST') return route.continue();
     const response = await route.fetch(); observed(); await gate; await route.fulfill({ response });
   });
-  await page.getByLabel('Demo person').selectOption('leo'); await intercepted;
-  await second.getByLabel('Demo person').selectOption('sam');
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo'); await intercepted;
+  await second.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam');
   await expect(second.getByRole('status').filter({ hasText: 'Opening your space' })).toBeVisible();
   release();
-  await expect(second.getByLabel('Demo person')).toHaveValue('sam');
+  await expect(second.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam');
   await expect(second.getByRole('heading', { level: 1, name: 'A quieter workspace' })).toBeVisible();
   expect(await second.evaluate(async () => (await (await fetch('/api/session')).json()).user.id)).toBe('sam');
   await expect(page.getByText('The demo person changed in another tab. Choose a person to continue.')).toBeVisible();

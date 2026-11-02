@@ -119,7 +119,7 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   await expect(card).toContainText('Unavailable');
   await expect(card).not.toContainText('completed tasks: Done');
   await picture(page, 'overview-unavailable');
-  await page.getByLabel('Demo person').selectOption('sam'); await overview(page);
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam'); await overview(page);
   await expect(card).toContainText('Off');
   await page.locator('#edit-task-advice').click();
   const current = ui(page).getByRole('article', { name: 'Current advice', exact: true });
@@ -238,9 +238,9 @@ test('late overview and Studio reads cannot repopulate an abandoned destination 
   });
   try {
     await destination(page, 'Customizations'); await started;
-    await destination(page, 'Tasks'); await page.getByLabel('Demo person').selectOption('leo');
+    await destination(page, 'Tasks'); await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
     await expect(page.getByRole('heading', { name: 'Neighbourhood workshop', exact: true })).toBeVisible();
-    await page.getByLabel('Demo person').selectOption('maya');
+    await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('maya');
     release(); await finished; await page.unroute('**/api/extensions');
     await expect(page.getByRole('article', { name: 'Task advice customization' })).toHaveCount(0);
     await overview(page); await expect(page.getByRole('article', { name: 'Task advice customization' })).toContainText('Read-only advice for Maya');
@@ -251,7 +251,7 @@ test('late overview and Studio reads cannot repopulate an abandoned destination 
     await page.route('**/api/extensions', async route => { const response = await route.fetch(); arrivedStudio(); await new Promise(resolve => { releaseStudio = resolve; }); try { await route.fulfill({ response }); } catch {} });
     await openDetails(page);
     await ui(page).getByRole('button', { name: 'Reload saved state', exact: true }).click(); await studioStarted;
-    await destination(page, 'Tasks'); await page.getByLabel('Demo person').selectOption('leo');
+    await destination(page, 'Tasks'); await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
     releaseStudio(); await page.unroute('**/api/extensions');
     await openStudio(page); await expect(ui(page).getByText('Advice for Leo', { exact: true })).toBeVisible();
     await expect(ui(page).getByRole('heading', { name: 'Pending', exact: true })).toHaveCount(0);

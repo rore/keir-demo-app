@@ -82,7 +82,7 @@ test('a late actual simulation receipt cannot enter a new owner workspace after 
   const other = await context.newPage();
   try {
     await studio(page).getByRole('button', { name: 'Try on sample tasks', exact: true }).click(); await started;
-    await other.goto(demo.origin); await other.getByLabel('Demo person').selectOption('leo');
+    await other.goto(demo.origin); await other.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
     await expect(page.getByRole('button', { name: 'Continue as Leo' })).toBeVisible();
     release(); await finished; await page.unroute('**/api/extensions/simulate');
     await page.getByRole('button', { name: 'Continue as Leo' }).click();
