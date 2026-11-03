@@ -27,12 +27,33 @@ async function openDetails(page) {
   const collapsed = studio(page).locator('details.rs-tools:not([open]) > summary');
   if (await collapsed.count()) await collapsed.click();
 }
-async function enter(page, origin) {
+async function savedState(page) {
+  return page.evaluate(async () => {
+    const session = await (await fetch('/api/session')).json();
+    return (await fetch('/api/extensions', { headers: { 'X-Session-Context': session.contextToken } })).json();
+  });
+}
+async function prepareChoice(page, label) {
+  const before = await savedState(page), templateId = label === 'Pending' ? 'pending' : 'attention';
+  const result = await page.evaluate(async ({ templateId, draftVersion }) => {
+    const session = await (await fetch('/api/session')).json();
+    const response = await fetch('/api/extensions/draft', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Context': session.contextToken },
+      body: JSON.stringify({ templateId, draftVersion }) });
+    return { ok: response.ok };
+  }, { templateId, draftVersion: before.draftVersion });
+  expect(result.ok).toBeTruthy();
+  await openDetails(page);
+  await studio(page).getByRole('button', { name: 'Reload saved state', exact: true }).click();
+  await expect.poll(async () => (await savedState(page)).draft?.templateId).toBe(templateId);
+}
+async function enter(page, origin, choice = 'Pending') {
   await page.goto(origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
-  await expect(studio(page).getByRole('button', { name: 'Pending for open tasks', exact: true })).toBeEnabled();
+  await prepareChoice(page, choice);
+  await expect(studio(page).getByLabel('Message to Studio')).toBeVisible();
+  await expect(studio(page).getByRole('button', { name: /Pending for open tasks|Needs attention for open tasks/ })).toHaveCount(0);
 }
 
 test('an actual already-produced unavailable advice receipt cannot overwrite a restored selection or unsaved edit', async ({ page, demo }) => {
@@ -73,8 +94,7 @@ test('an actual already-produced unavailable advice receipt cannot overwrite a r
 });
 
 test('a late actual simulation receipt cannot enter a new owner workspace after a cross-tab switch', async ({ page, context, demo }) => {
-  await enter(page, demo.origin);
-  await studio(page).getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
+  await enter(page, demo.origin, 'Needs attention');
   let release, arrived, delivered;
   const started = new Promise(resolve => { arrived = resolve; });
   const finished = new Promise(resolve => { delivered = resolve; });

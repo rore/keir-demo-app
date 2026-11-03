@@ -23,16 +23,14 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await page.getByLabel('Task title', { exact: true }).fill('Unsaved native title during offline authoring');
       await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
       const ui = studio(page), panel = authoring(page);
-      await expect(panel.getByText('Assistant connected', { exact: true })).toBeVisible();
+      await expect(panel.getByText('Assistant configured', { exact: true })).toBeVisible();
       await expect(panel).not.toContainText(provider);
       const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya'").get();
       await panel.getByRole('button', { name: 'Details', exact: true }).click();
       const connection = ui.getByRole('region', { name: 'Assistant connection details', exact: true });
       await expect(connection.getByText(`Provider: ${provider}`, { exact: true })).toBeVisible();
       await expect(connection.getByText(`Model: ${provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5'}`, { exact: true })).toBeVisible();
-      await ui.locator('.rs-developer > summary').click();
-      await ui.getByLabel('Keir source (developer)', { exact: true }).fill('Keep this unsaved editor source');
-      await ui.getByLabel('Example 1 JSON', { exact: true }).fill('Keep this unsaved expected example');
+      await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
       await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
 
       let turns = 0;
@@ -82,12 +80,12 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         const path = new URL(request.url()).pathname;
         if (path.startsWith('/api/extensions/evidence/')) evidenceRequests.push(path.split('/').at(-1));
       });
+      await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent refinement while reviewing');
       await panel.getByRole('button', { name: 'Open offered sample results', exact: true }).click();
       await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
       expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
       await expect(ui.getByRole('cell', { name: /^Matches/ })).toHaveCount(fixture.metadata.cases.length);
-      await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveValue('Keep this unsaved editor source');
-      await expect(ui.getByLabel('Example 1 JSON', { exact: true })).toHaveValue('Keep this unsaved expected example');
+      await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
       await ui.getByRole('article', { name: 'Sample results', exact: true }).getByRole('button', { name: 'Review this advice', exact: true }).click();
       await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
       for (let index = 0; index < fixture.metadata.cases.length; index++)

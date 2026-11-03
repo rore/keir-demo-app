@@ -100,23 +100,21 @@ async function openDetails(page) {
   if (await summary.count()) await summary.click();
 }
 
-test('unavailable provider leaves prepared and manual tools usable without creating a job', async ({ page, demo }) => {
+test('missing setup offers Configure and saved advice without a generation or manual fallback', async ({ page, demo }) => {
   const calls = await scriptAuthoring(page, { availability: unavailable });
   await enterStudio(page, demo.origin);
   const ui = studio(page), panel = authoring(page);
-  await expect(panel).toContainText('AI authoring is not configured for use');
+  await expect(panel).toContainText('AI authoring is not configured');
   await ui.getByLabel('Message to Studio', { exact: true }).fill('Ask for a read-only task suggestion');
-  await ui.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(ui.getByText('AI authoring is unavailable. Choose prepared advice, review a saved proposal, or open Developer qualification under Manage to enter read-only source and independent examples. No task has changed.', { exact: true })).toBeVisible();
-
-  await ui.getByRole('button', { name: 'Needs attention for open tasks', exact: true }).click();
+  await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+  await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(1);
   const proposal = ui.getByRole('button', { name: 'View proposal', exact: true });
   if (await proposal.count() && await proposal.isVisible()) await proposal.click();
-  await expect(ui.getByRole('article', { name: 'Proposed advice' })).toBeVisible();
+  await expect(ui.getByRole('article', { name: 'Current advice' })).toBeVisible();
   await openDetails(page);
-  const manual = studio(page).locator('.rs-developer');
-  if (!await manual.evaluate(node => node.open)) await manual.locator(':scope > summary').click();
-  await expect(manual.getByLabel('Keir source (developer)', { exact: true })).toBeVisible();
+  await expect(ui.getByLabel('Developer qualification')).toHaveCount(0);
+  await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
+  await expect(ui.getByRole('button', { name: /for open tasks$/ })).toHaveCount(0);
   expect(calls.turns).toHaveLength(0);
 });
 
@@ -362,7 +360,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   const ui = studio(page);
   await expect(ui.getByText('Inspect the exact offered run.', { exact: true })).toBeVisible();
   const heading = authoring(page).locator('.rs-authoring-heading');
-  await expect(heading).toContainText('Assistant connected');
+  await expect(heading).toContainText('Assistant configured');
   await expect(heading).not.toContainText(available.provider);
   await expect(heading).not.toContainText(available.model);
   const offerButton = authoring(page).getByRole('button', { name: 'Open offered sample results', exact: true });
@@ -379,10 +377,8 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   await expect(disclosure).toContainText(`Provider: ${available.provider}`);
   await expect(disclosure).toContainText(`Model: ${available.model}`);
   await openDetails(page);
-  await ui.locator('.rs-developer > summary').click();
-  await ui.getByLabel('Keir source (developer)', { exact: true }).fill('Keep this unsaved source buffer');
-  await ui.getByLabel('Example 1 JSON', { exact: true }).fill('Keep this unsaved example buffer');
   if (width === 683) await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+  await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent conversation draft');
   const requested = [];
   page.on('request', request => { const path = new URL(request.url()).pathname; if (path.startsWith('/api/extensions/evidence/')) requested.push(path.split('/').at(-1)); });
   await authoring(page).getByRole('button', { name: 'Open offered sample results', exact: true }).click();
@@ -406,8 +402,8 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     await expect(ui.getByText(/Earlier run for current proposal/)).toBeVisible();
     await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
   }
-  await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveValue('Keep this unsaved source buffer');
-  await expect(ui.getByLabel('Example 1 JSON', { exact: true })).toHaveValue('Keep this unsaved example buffer');
+  await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent conversation draft');
+  await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
 });
 
 test('active observation pauses while hidden, stops at 130 reads and only offers read-only recovery', async ({ page, demo }) => {
@@ -490,7 +486,7 @@ test('failed start and failed recovery block retry until readback, then reuse th
   } finally { releaseRead?.(); }
 });
 
-test('manual receipts preserve the complete loaded conversation when AI configuration is unavailable', async ({ page, demo }) => {
+test('saved lifecycle receipts preserve the complete loaded conversation when AI configuration is unavailable', async ({ page, demo }) => {
   const saved = conversation('retained-history', 1, 'AWAITING_USER', Array.from({ length: 42 }, (_, index) =>
     message(`saved-${index}`, 'assistant', `Saved conversation message ${index}`)));
   const calls = await scriptAuthoring(page, { onRead: async (_calls, id) => id ? saved : { availability: unavailable,
@@ -499,9 +495,15 @@ test('manual receipts preserve the complete loaded conversation when AI configur
   await enterStudio(page, demo.origin);
   const ui = studio(page);
   await expect(ui.getByText(/^Saved conversation message /)).toHaveCount(42);
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Explain this saved advice');
-  await ui.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(ui.getByText('Explain this saved advice', { exact: true })).toBeVisible();
+  const session = await (await page.request.get(demo.origin + '/api/session')).json();
+  const headers = { 'x-session-context': session.contextToken, origin: demo.origin };
+  const state = await (await page.request.get(demo.origin + '/api/extensions', { headers })).json();
+  const prepared = await page.request.post(demo.origin + '/api/extensions/draft', { headers, data: { templateId: state.catalog[0].id, draftVersion: state.draftVersion } });
+  expect(prepared.ok(), await prepared.text()).toBe(true);
+  await openDetails(page);
+  await ui.getByRole('button', { name: 'Reload saved state', exact: true }).click();
+  await ui.getByRole('button', { name: 'Try on sample tasks', exact: true }).click();
+  await expect(ui.getByText(/The sample run passed\./)).toBeVisible();
   await expect(ui.getByText(/^Saved conversation message /)).toHaveCount(42);
   expect(calls.turns).toHaveLength(0);
 });
