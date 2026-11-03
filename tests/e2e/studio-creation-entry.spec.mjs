@@ -5,6 +5,7 @@ import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const nav = page => page.getByRole('navigation', { name: 'Main navigation' });
+const personSelect = page => page.getByRole('combobox', { name: 'Demo person', exact: true });
 const turnRequest = request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/authoring/turn';
 const evidenceDir = resolve('build/studio-extension-creation');
 
@@ -65,10 +66,10 @@ async function noTurnRequest(page, timeout = 400) {
 }
 
 async function switchPerson(page, id) {
-  const select = page.getByLabel('Demo person');
+  const select = personSelect(page);
   if (await select.count()) await select.selectOption(id);
-  await expect(page.getByLabel('Demo person')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByLabel('Demo person')).toHaveValue(id, { timeout: 15_000 });
+  await expect(personSelect(page)).toBeVisible({ timeout: 15_000 });
+  await expect(personSelect(page)).toHaveValue(id, { timeout: 15_000 });
 }
 
 test('top-level New starts a distinct customization after a real prior chat and saved item', async ({ page }) => {
@@ -321,7 +322,7 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
 
     // The saved identity belongs to Maya. Sam can follow the exact link, but sees only a generic fallback.
     await page.goto(exactLink);
-    await expect(page.getByLabel('Demo person')).toHaveValue('sam');
+    await expect(personSelect(page)).toHaveValue('sam');
     await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.locator(`#edit-${extensionId}`)).toHaveCount(0);
     await expect(page.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(0);

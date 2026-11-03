@@ -101,7 +101,7 @@ async function openConfigure(page) {
   if (!await configure.isVisible()) {
     await ui.getByRole('button', { name: 'History and details', exact: true }).click();
     const tools = ui.locator('details.rs-tools');
-    if (!await tools.evaluate(node => node.open)) await tools.locator(':scope > summary').click();
+    await expect(tools).toHaveJSProperty('open', true);
   }
   await configure.click();
   return page.getByRole('dialog', { name: 'Set up the assistant', exact: true });
