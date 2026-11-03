@@ -135,6 +135,7 @@ for (const approved of [false, true]) test(`restart exposes a displaced never-ac
   const entry = saved.history.find(row => row.operation === 'draft-superseded');
   assert.ok(entry, 'A normal item read discovers the displaced draft without a simulation or caller-retained ID.');
   assert.equal(entry.revisionId, later.draft.id);
+  assert.equal(entry.label, later.draft.label);
   assert.equal(reopened.source('maya', entry.revisionId, extensionId).source, bytes);
   assert.deepEqual(saved.selection, before);
   assert.equal(saved.approved, false);

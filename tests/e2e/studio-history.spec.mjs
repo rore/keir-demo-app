@@ -69,8 +69,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       await page.reload();
       await expect(ui.getByRole('heading', { name: 'History integration', exact: true })).toBeVisible();
       await ui.getByRole('button', { name: 'History and details', exact: true }).click();
-      await ui.getByText('Manage saved customization', { exact: true }).click();
-      await ui.getByText('Selection history and exact identities', { exact: true }).click();
+      await expect(ui.getByRole('region', { name: 'Earlier saved changes', exact: true })).toContainText('Saved before restart');
       const inspection = ui.getByRole('button', { name: 'Inspect earlier saved changes', exact: true });
       await expect(inspection).toHaveCount(1);
       await inspection.click();

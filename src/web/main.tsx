@@ -832,7 +832,7 @@ function Workspace({
           <footer className="task-footer">
             <span>
               <span className="local-dot" aria-hidden="true" />
-              Local demo · read-only task advice
+              Local demo
             </span>
           </footer>
         </main>

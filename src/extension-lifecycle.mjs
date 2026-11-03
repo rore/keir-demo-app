@@ -425,7 +425,8 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       const rows = extensionId === undefined
         ? db.prepare('SELECT id,generation,operation,revision_id AS revisionId FROM extension_history WHERE owner_id=? AND id<? ORDER BY id DESC LIMIT 20').all(owner, before)
         : db.prepare('SELECT h.id,h.generation,h.operation,h.revision_id AS revisionId FROM extension_history h JOIN extension_revision_links l ON l.revision_id=h.revision_id AND l.owner_id=h.owner_id WHERE h.owner_id=? AND h.id<? AND l.extension_id=? ORDER BY h.id DESC LIMIT 20').all(owner, before, extensionId);
-      return { rows, next: rows.length === 20 ? rows.at(-1).id : null };
+      return { rows: rows.map(row => ({ ...row, label: row.revisionId ? view(revision(owner, row.revisionId, extensionId)).label : null })),
+        next: rows.length === 20 ? rows.at(-1).id : null };
     },
     capture(owner) {
       const selected = selection(owner);

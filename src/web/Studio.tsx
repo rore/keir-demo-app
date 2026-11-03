@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import "./Studio.css";
 
 type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: object; provenance: "operator" | "customer" };
-type History = { id: number; generation: number; operation: string; revisionId: string | null };
+type History = { id: number; generation: number; operation: string; revisionId: string | null; label?: string | null };
 export type State = {
   owner: { id: string; name: string };
   extension: { id: string; name: string; hookId: string | null; creationOperationId?: string; creationRevisionId?: string | null } | null;
@@ -1087,7 +1087,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <strong>{message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}{message.evidenceId && message.evidenceId !== decisionEvidenceId && <button id={"studio-evidence-link-" + message.evidenceId} disabled={!!busy} className="rs-link"
               onClick={() => void showEvidence(message.evidenceId!)}>Inspect saved examples from this message</button>}
           </article>)}
-          {!conversation && !scripted && <button className="rs-link" disabled={disabled} onClick={() => void loadExample()}>{state?.draft?.label === "Scripted example: task advice" ? "Continue guided example · no AI" : "Try a guided example · no AI"}</button>}
+          {!conversation && !scripted && (!state?.extension || state.draft?.label === "Scripted example: task advice") && <button className="rs-link" disabled={disabled} onClick={() => void loadExample()}>{state?.draft?.label === "Scripted example: task advice" ? "Continue guided example · no AI" : "Try a guided example · no AI"}</button>}
           {scripted && <article className="rs-message rs-scripted" aria-label="Scripted example"><small>Scripted example · no AI. Saved work and checks are kept.</small>
             {example && !state?.draft && !pendingExample && <button className="rs-primary" disabled={disabled} onClick={() => void prepareExample()}>Yes, keep Done for completed tasks</button>}
             {example && state?.draft?.id === exampleRevision.current && !state?.evidence?.passed && <button className="rs-primary" disabled={disabled} onClick={() => void prepareExample()}>Continue checking this example</button>}
@@ -1219,6 +1219,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
 
         </>}
         <details hidden={canvasView !== "details"} className="rs-sheet rs-tools"><summary>History, details and recovery</summary>
+          {history.some(item => item.operation === "draft-superseded") && <section aria-label="Earlier saved changes"><h3>Earlier saved changes</h3>
+            {history.filter(item => item.operation === "draft-superseded" && item.revisionId).map(item => <p key={item.id}>{item.label ?? "Saved draft"} · read-only <button disabled={disabled} onClick={() => void inspectSource(item.revisionId!)}>Inspect earlier saved changes</button></p>)}
+          </section>}
           <details><summary>Published host model and supported hooks</summary>
             {catalogError && <p role="status">The published host model could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p>}
             {hostCatalog && <>
@@ -1268,9 +1271,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               <details><summary>Exact choice to restore</summary><p>Revision: {restoreTarget.id}</p><pre>{JSON.stringify(restoreTarget.pins, null, 2)}</pre></details>
               <button disabled={disabled} onClick={() => void mutate("rollback", { revisionId: restoreTarget.id, generation: state.selection.generation }, `Restored ${restoreTarget.label} for your tasks.`, true)}>Restore {restoreTarget.label} for me</button></div>}
             <details><summary>Selection history and exact identities</summary><p>Current generation: {state.selection.generation}</p>
-              <ol>{history.map(item => <li key={item.id}>{item.operation === "draft-superseded" ? "Earlier saved changes" : item.operation} · generation {item.generation} · {item.revisionId ?? "Advice off"}
-                {item.operation === "draft-superseded" && item.revisionId && <button disabled={disabled} onClick={() => void inspectSource(item.revisionId!)}>Inspect earlier saved changes</button>}
-              </li>)}</ol>
+              <ol>{history.map(item => <li key={item.id}>{item.operation === "draft-superseded" ? "Earlier saved changes" : item.operation} · {item.label ?? ""} · generation {item.generation} · {item.revisionId ?? "Advice off"}</li>)}</ol>
               {historyNext !== null && <button disabled={!!busy} onClick={() => void earlierHistory()}>Load earlier selections</button>}
               <h4>Saved selection identity</h4><pre>{JSON.stringify(state.selection.revision?.pins ?? {}, null, 2)}</pre>
               <h4>Proposed identity</h4><pre>{JSON.stringify(state.draft?.pins ?? {}, null, 2)}</pre>
