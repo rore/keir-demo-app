@@ -64,6 +64,13 @@ async function noTurnRequest(page, timeout = 400) {
   expect(requested).toBe(false);
 }
 
+async function switchPerson(page, id) {
+  const select = page.getByLabel('Demo person');
+  if (await select.count()) await select.selectOption(id);
+  await expect(page.getByLabel('Demo person')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByLabel('Demo person')).toHaveValue(id, { timeout: 15_000 });
+}
+
 test('top-level New starts a distinct customization after a real prior chat and saved item', async ({ page }) => {
   test.setTimeout(60_000);
   const fixture = await startAuthoringFixture({ provider: 'anthropic' });
@@ -212,4 +219,161 @@ test('Enter sends once; Shift+Enter, IME, repeat, empty and running guards do no
     expect(response.status()).toBe(202);
     writeFileSync(resolve(evidenceDir, 'creation-keyboard.json'), JSON.stringify({ posts, responseStatus: response.status() }, null, 2));
   } finally { releaseRequest?.(); await fixture.close(); }
+});
+
+test('a lost create receipt recovers by operation identity and reload does not replay it', async ({ page }) => {
+  test.setTimeout(60_000);
+  const fixture = await startAuthoringFixture({ provider: 'anthropic' });
+  mkdirSync(evidenceDir, { recursive: true });
+  const posts = [];
+  let dropped;
+  page.on('request', request => { if (turnRequest(request)) posts.push(request.postDataJSON()); });
+  try {
+    const ui = await enterNewStudio(page, fixture.origin);
+    const composer = ui.getByLabel('Message to Studio', { exact: true });
+    await composer.fill('Keep this request if its first response is lost.');
+    await page.route('**/api/authoring/turn', async route => {
+      const response = await route.fetch();
+      dropped = { status: response.status(), body: await response.json() };
+      await route.abort('failed');
+    }, { times: 1 });
+    const requestSeen = page.waitForRequest(turnRequest);
+    await ui.getByRole('button', { name: 'Send', exact: true }).click();
+    const firstRequest = await requestSeen;
+    await expect.poll(() => dropped?.status).toBe(202);
+    const turn = firstRequest.postDataJSON();
+    expect(turn).toMatchObject({ target: { kind: 'create' }, conversationId: null,
+      text: 'Keep this request if its first response is lost.', expectedVersion: 0, expectedDraftVersion: 0 });
+    expect(dropped.body.operation.id).toBe(turn.operationId);
+    expect(dropped.body.conversation.extensionId).toBeTruthy();
+    await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible({ timeout: 20_000 });
+    expect(posts).toHaveLength(1);
+
+    const extension = fixture.db.prepare('SELECT id,owner_id,creation_operation_id FROM extensions WHERE owner_id=? AND creation_operation_id=?')
+      .get('maya', turn.operationId);
+    expect(extension).toEqual({ id: dropped.body.conversation.extensionId, owner_id: 'maya', creation_operation_id: turn.operationId });
+    const conversations = fixture.db.prepare('SELECT id,owner_id,creation_operation_id,status FROM authoring_conversations WHERE owner_id=?').all('maya');
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0]).toMatchObject({ id: dropped.body.conversation.id, owner_id: 'maya', creation_operation_id: turn.operationId, status: 'AWAITING_USER' });
+    expect(fixture.db.prepare('SELECT owner_id,extension_id,purpose FROM extension_conversation_links WHERE conversation_id=?')
+      .get(dropped.body.conversation.id)).toEqual({ owner_id: 'maya', extension_id: extension.id, purpose: 'CREATE' });
+    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+
+    await page.reload();
+    const reopened = studio(page), reopenedLog = reopened.getByRole('log', { name: 'Studio conversation', exact: true });
+    await expect(reopenedLog.getByText('Keep this request if its first response is lost.', { exact: true })).toHaveCount(1);
+    await expect(reopenedLog.getByText(fixture.metadata.question, { exact: true })).toHaveCount(1);
+    expect(posts).toHaveLength(1);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM extensions WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
+    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+
+    writeFileSync(resolve(evidenceDir, 'creation-recovery.json'), JSON.stringify({
+      operationId: turn.operationId, extensionId: extension.id, conversationId: dropped.body.conversation.id,
+      firstResponseStatus: dropped.status, postCountAfterReload: posts.length,
+      extensionCountForOperation: 1, conversationCountForOperation: 1,
+      syntheticProviderTools: fixture.requests.map(item => item.name), recoveredByExactOperation: true,
+    }, null, 2));
+  } finally { await fixture.close(); }
+});
+
+test('an exact Maya conversation link and delayed Maya responses stay isolated from Sam', async ({ page }) => {
+  test.setTimeout(75_000);
+  const fixture = await startAuthoringFixture({ provider: 'anthropic' });
+  mkdirSync(evidenceDir, { recursive: true });
+  const posts = [];
+  let releaseAccepted;
+  const holdAccepted = new Promise(resolve => { releaseAccepted = resolve; });
+  let acceptedResolve;
+  const acceptedSeen = new Promise(resolve => { acceptedResolve = resolve; });
+  let acceptedResponse;
+  page.on('request', request => { if (turnRequest(request)) posts.push(request.postDataJSON()); });
+  try {
+    const ui = await enterNewStudio(page, fixture.origin);
+    await ui.getByLabel('Message to Studio', { exact: true }).fill('Maya private request for the delayed-link regression.');
+    await page.route('**/api/authoring/turn', async route => {
+      const response = await route.fetch();
+      acceptedResponse = { status: response.status(), body: await response.json() };
+      acceptedResolve();
+      await holdAccepted;
+      try { await route.fulfill({ response }); } catch { /* Switching owner may abort the old browser request. */ }
+    }, { times: 1 });
+    await ui.getByRole('button', { name: 'Send', exact: true }).click();
+    await acceptedSeen;
+    expect(acceptedResponse.status).toBe(202);
+    const turn = posts[0];
+    expect(turn).toMatchObject({ target: { kind: 'create' }, conversationId: null,
+      text: 'Maya private request for the delayed-link regression.', expectedVersion: 0 });
+    expect(acceptedResponse.body.operation.id).toBe(turn.operationId);
+    const extensionId = acceptedResponse.body.conversation.extensionId;
+    const conversationId = acceptedResponse.body.conversation.id;
+    expect(fixture.db.prepare('SELECT owner_id,creation_operation_id FROM extensions WHERE id=?').get(extensionId))
+      .toEqual({ owner_id: 'maya', creation_operation_id: turn.operationId });
+    expect(fixture.db.prepare('SELECT owner_id,extension_id,purpose FROM extension_conversation_links WHERE conversation_id=?').get(conversationId))
+      .toEqual({ owner_id: 'maya', extension_id: extensionId, purpose: 'CREATE' });
+    const exactLink = `${fixture.origin}/#customization=${encodeURIComponent(extensionId)}&conversation=${encodeURIComponent(conversationId)}`;
+
+    await switchPerson(page, 'sam');
+    releaseAccepted();
+    await expect(page.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(0);
+    await expect(page.getByText(fixture.metadata.question, { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Customization Studio', exact: true })).toHaveCount(0);
+
+    // The saved identity belongs to Maya. Sam can follow the exact link, but sees only a generic fallback.
+    await page.goto(exactLink);
+    await expect(page.getByLabel('Demo person')).toHaveValue('sam');
+    await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(`#edit-${extensionId}`)).toHaveCount(0);
+    await expect(page.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(0);
+    await expect(page.getByText(fixture.metadata.question, { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/That customization or conversation is unavailable/)).toBeVisible();
+
+    // Hold an authenticated Maya status response, change to Sam, and release the stale response afterward.
+    await switchPerson(page, 'maya');
+    let releaseStatus;
+    let statusResolve;
+    const heldStatus = new Promise(resolve => { releaseStatus = resolve; });
+    const statusSeen = new Promise(resolve => { statusResolve = resolve; });
+    let heldStatusData;
+    await page.route('**/api/authoring*', async route => {
+      const request = route.request(), url = new URL(request.url());
+      if (request.method() !== 'GET' || url.pathname !== '/api/authoring') return route.continue();
+      const response = await route.fetch();
+      heldStatusData = { status: response.status(), body: await response.json() };
+      statusResolve();
+      await heldStatus;
+      try { await route.fulfill({ response }); } catch { /* The owner-scoped request may be cancelled on account change. */ }
+    }, { times: 1 });
+    await page.goto(exactLink);
+    expect(page.url()).toBe(exactLink);
+    await page.reload();
+    await statusSeen;
+    expect(heldStatusData.status).toBe(200);
+    expect(heldStatusData.body.conversations.some(item => item.id === conversationId && item.extensionId === extensionId)).toBe(true);
+    await switchPerson(page, 'sam');
+    releaseStatus();
+    await expect(page.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(0);
+    await expect(page.getByText(fixture.metadata.question, { exact: true })).toHaveCount(0);
+    await expect(page.locator(`#edit-${extensionId}`)).toHaveCount(0);
+
+    await switchPerson(page, 'maya');
+    await page.goto(exactLink);
+    const resumed = studio(page), log = resumed.getByRole('log', { name: 'Studio conversation', exact: true });
+    await expect(log.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(1, { timeout: 20_000 });
+    await expect(log.getByText(fixture.metadata.question, { exact: true })).toHaveCount(1, { timeout: 20_000 });
+    expect(posts).toHaveLength(1);
+    expect(posts[0].operationId).toBe(turn.operationId);
+    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM extensions WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=?').get('sam').n).toBe(0);
+
+    writeFileSync(resolve(evidenceDir, 'creation-owner-switch.json'), JSON.stringify({
+      owner: 'maya', otherOwner: 'sam', extensionId, conversationId, operationId: turn.operationId,
+      exactLinkReturnedGenericFallbackForSam: true, delayedAcceptedResponseReleasedAfterSwitch: true,
+      delayedStatusOwnerAndConversation: { owner: 'maya', conversationId },
+      mayaResumedOriginalConversation: true, postCount: posts.length,
+      syntheticProviderTools: fixture.requests.map(item => item.name),
+    }, null, 2));
+  } finally { releaseAccepted(); await fixture.close(); }
 });

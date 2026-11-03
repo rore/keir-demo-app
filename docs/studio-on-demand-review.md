@@ -1,5 +1,7 @@
 # Designing and managing customizations in Daymark
 
+This is a historical interaction proposal. The [current Studio design](extension-studio-design.md) supersedes its single-item entry, pipeline controls and approval flow.
+
 The product starts with a person who wants Daymark to work differently. They can discover available starting points, describe the change, check what it would do, decide when to use it, and return later to manage it. **Customizations** is the front door. **Studio** is the workspace for making or revising one change. Task advice is the first working customization in that journey.
 
 ## Destinations and entry
