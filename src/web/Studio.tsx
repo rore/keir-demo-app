@@ -54,7 +54,7 @@ function authoringReason(code: string | null | undefined) {
   if (["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(code)) return "AI authoring is not configured.";
   if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved advice and review remain available.";
   if (code === "BUDGET_EXHAUSTED") return "This conversation reached its work limit. Your saved proposal and examples are kept. You can start a new conversation to continue; this does not add to the shared allowance.";
-  if (code === "PROVIDER_RATE_LIMIT") return "Your AI provider reached a request or account limit. Your draft is saved. Check provider usage or explicitly try again later. Nothing is retried automatically.";
+  if (code === "PROVIDER_RATE_LIMIT") return "Your AI provider reached a request or account limit. Your discussion and any saved draft are kept. Check provider usage or explicitly try again later. Nothing is retried automatically.";
   if (code === "CONFIG_CHANGED") return "Assistant settings changed. Start a new conversation to continue; your saved customization remains available.";
   if (code === "CONVERSATION_LIMIT") return "The saved conversation limit has been reached. Existing conversations are retained.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";

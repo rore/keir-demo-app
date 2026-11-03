@@ -558,7 +558,7 @@ for (const [code, oversized] of [['SPEND_LIMIT', false], ['BUDGET_EXHAUSTED', fa
     return;
   }
   if (code === 'PROVIDER_RATE_LIMIT') {
-    await expect(status).toHaveText('Your AI provider reached a request or account limit. Your draft is saved. Check provider usage or explicitly try again later. Nothing is retried automatically.');
+    await expect(status).toHaveText('Your AI provider reached a request or account limit. Your discussion and any saved draft are kept. Check provider usage or explicitly try again later. Nothing is retried automatically.');
     await expect(status).toContainText('Nothing is retried automatically.');
     await expect(status).not.toContainText('conversation reached its work limit');
   } else await expect(status).toContainText('This conversation reached its work limit. Your saved proposal and examples are kept.');
