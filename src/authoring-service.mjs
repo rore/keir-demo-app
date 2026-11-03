@@ -16,6 +16,7 @@ const safeMessage = code => ({
   AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create advice. Saved advice still works.',
   AI_CONFIG_INVALID: 'The operator AI configuration needs attention.', AI_CREDENTIALS_MISSING: 'The operator AI credentials are unavailable.',
   SPEND_LIMIT: 'The operator AI allowance has been reached.', AI_BUSY: 'Another authoring request is still settling. Check its saved state.',
+  PROVIDER_RATE_LIMIT: 'The AI service refused this request because of a request or account limit. Any saved proposal and examples are kept. Check the provider usage and limits before retrying manually.',
   STALE_DRAFT: 'The draft changed. Read saved state before continuing.', STALE_CONVERSATION: 'The conversation changed. Read saved state before continuing.',
   RUN_INTERRUPTED: 'The previous run was interrupted. Check the current draft before explicitly continuing.',
   CANCELLED: 'Authoring stopped. Check saved state; a draft may already have been saved.',

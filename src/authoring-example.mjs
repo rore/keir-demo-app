@@ -3,7 +3,7 @@ import { simulationCases } from './extension-lifecycle.mjs';
 
 export const businessContext = Object.freeze({
   application: 'Daymark',
-  purpose: 'Help a person change the advice shown when they open a task.',
+  purpose: 'Help a person change the advice shown when they choose Check task advice on a saved task.',
   supported: 'Read the selected task status and show Done, Pending or Needs attention. Advice is scoped to the signed-in person.',
   unavailable: 'Creating or editing tasks, follow-ups, project-based rules, dates, notes and background automation are not available to this assistant.',
   checking: 'Try synthetic examples without changing tasks. Include open, completed and unavailable tasks; ask what should happen when intent is unclear.',

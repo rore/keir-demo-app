@@ -221,6 +221,38 @@ test('example source and independent cases pass the real compiler/runtime with s
   assert.equal(state.selection.generation, selection.generation + 1);
 });
 
+test('a provider request limit keeps the saved source and explains manual recovery without guessing quota or retrying', async t => {
+  let requests = 0;
+  const source = readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8');
+  const artifact = readFileSync(new URL('../extensions/task-read/maya.json', import.meta.url));
+  const { db, call, login } = await api(t, { compiler: { compile: async () => ({ artifact, diagnostics: [] }) },
+    authoring: { config, fetchImpl: async () => { requests++; return new Response('', { status: 429 }); } } });
+  await login();
+  const initial = (await call('extensions')).json();
+  const prepared = await call('extensions/compile', { source, draftVersion: initial.draftVersion });
+  assert.equal(prepared.statusCode, 200);
+  const draft = prepared.json();
+  const started = await call('authoring/turn', { conversationId: null, operationId: 'limited-continuation',
+    text: 'Keep the saved advice and continue checking the examples.', expectedVersion: 0, expectedDraftVersion: draft.draftVersion });
+  assert.equal(started.statusCode, 202);
+  let current;
+  for (let tries = 0; tries < 100; tries++) {
+    current = (await call('authoring/conversations/' + started.json().conversation.id)).json();
+    if (!['RUNNING', 'CANCELLING'].includes(current.status)) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(current.status, 'BLOCKED');
+  assert.equal(current.code, 'PROVIDER_RATE_LIMIT');
+  assert.match(current.messages.at(-1).text, /request or account limit/);
+  assert.match(current.messages.at(-1).text, /saved proposal and examples are kept/);
+  assert.match(current.messages.at(-1).text, /retrying manually/);
+  assert.equal(requests, 1, 'no automatic retry');
+  assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, config.reserveMicros);
+  assert.equal((await call('extensions/revisions/' + draft.draft.id)).json().source, source);
+  assert.deepEqual((await call('extensions')).json().selection, initial.selection);
+  assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
+});
+
 test('historical prepared evidence never borrows display expectations from a different suite with reused case IDs', async t => {
   const db = openData(':memory:'), lifecycle = createLifecycle(db);
   t.after(() => db.close());
