@@ -117,7 +117,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     if (state.checkpoint.phase === 'TERMINAL') {
       const result = state.lastResult; const id = ctx.runId + '-assistant';
       if (result && !view.messages.some(message => message.id === id)) view.messages.push({ id, role: 'assistant',
-        text: result.message ?? safeMessage(codeFor(result.code)), kind: result.status === 'AWAITING_USER' ? 'clarification' : result.review ? 'review' : 'text' });
+        text: result.message ?? safeMessage(codeFor(result.code)), kind: result.status === 'AWAITING_USER' ? 'clarification' : result.review ? 'review' : 'text',
+        ...(result.review && { receipt: { revisionId: result.review.revisionId, draftVersion: result.review.draftVersion,
+          suiteDigest: result.review.suiteDigest, evidenceId: result.review.evidenceId } }) });
       view.code = result?.code ? codeFor(result.code) : null;
       view.review = result?.review ? { revisionId: result.review.revisionId, draftVersion: result.review.draftVersion,
         suiteDigest: result.review.suiteDigest, evidenceId: result.review.evidenceId, eligible: result.review.eligible === true } : null;

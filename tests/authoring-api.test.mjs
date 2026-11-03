@@ -53,7 +53,10 @@ function assertDto(value) {
   keys(value.operation, ['id', 'runId', 'version']);
   keys(value.draft, ['revisionId', 'draftVersion', 'suiteDigest']);
   keys(value.selection, ['revisionId', 'generation']);
-  for (const message of value.messages) keys(message, ['id', 'role', 'text', 'kind']);
+  for (const message of value.messages) {
+    keys(message, ['id', 'role', 'text', 'kind', ...(message.receipt ? ['receipt'] : [])]);
+    if (message.receipt) keys(message.receipt, ['revisionId', 'draftVersion', 'suiteDigest', 'evidenceId']);
+  }
   if (value.review) keys(value.review, ['revisionId', 'draftVersion', 'suiteDigest', 'evidenceId', 'eligible']);
   const text = JSON.stringify(value);
   for (const privateValue of ['synthetic-secret-key', 'private-reasoning', 'opaque-signature', 'authorization', 'continuation', 'sourceJson'])
@@ -199,6 +202,12 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
     const state = (await call(extensionPath(db))).json(), review = current.review;
     assert.equal(review.revisionId, state.draft.id); assert.equal(review.draftVersion, state.draftVersion);
     assert.equal(review.suiteDigest, state.suiteDigest); assert.equal(review.evidenceId, exactEvidenceId);
+    const receipt = { revisionId: review.revisionId, draftVersion: review.draftVersion,
+      suiteDigest: review.suiteDigest, evidenceId: exactEvidenceId };
+    assert.deepEqual(current.messages.at(-1).receipt, receipt);
+    const savedView = JSON.parse(db.prepare('SELECT view FROM authoring_conversations WHERE id=?').get(current.id).view);
+    assert.deepEqual(savedView.messages.at(-1).receipt, receipt, 'The exact turn receipt is durable, not inferred from latest evidence.');
+    assert.equal(current.messages[0].receipt, undefined);
     assert.equal(state.evidence.id, latestEvidenceId);
     const proof = (await call(extensionPath(db, 'evidence/' + review.evidenceId))).json();
     assert.equal(proof.revisionId, scenarioId); assert.equal(proof.passed, true);
@@ -215,7 +224,9 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
     assert.equal(rowState(db).journal.length, 12); assert.ok(rowState(db).journal.every(item => item.outcome === 'SUCCESS'));
     const changed = await call(extensionPath(db, 'draft'), { templateId: 'attention', draftVersion: 2 });
     assert.equal(changed.statusCode, 200);
-    assert.equal((await call('authoring/conversations/' + current.id)).json().review.eligible, false);
+    const historical = (await call('authoring/conversations/' + current.id)).json();
+    assert.equal(historical.review.eligible, false);
+    assert.deepEqual(historical.messages.at(-1).receipt, receipt, 'Later drafts cannot retarget an earlier turn’s examples.');
   });
 
 for (const stage of ['beforeCommit', 'afterCommit']) test(`${stage} DISPATCH fault distinguishes rollback from retained uncertain reservation`, async t => {

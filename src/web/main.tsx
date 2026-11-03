@@ -288,8 +288,10 @@ function Workspace({
       if (value && /^[0-9a-f-]{36}$/i.test(value.entryId) && (value.extensionId === null || typeof value.extensionId === "string")
         && (value.conversationId == null || typeof value.conversationId === "string")) stored = value;
     } catch { /* A valid link can still be opened without tab storage. */ }
-    if (entryLink.target) return { ...entryLink.target, entryId: stored && stored.extensionId === entryLink.target.extensionId
-      && (stored.conversationId ?? null) === (entryLink.target.conversationId ?? null) ? stored.entryId : crypto.randomUUID() };
+    if (entryLink.target) {
+      const same = stored && stored.extensionId === entryLink.target.extensionId && (stored.conversationId ?? null) === (entryLink.target.conversationId ?? null);
+      return { ...entryLink.target, history: same ? stored!.history === true : false, entryId: same ? stored!.entryId : crypto.randomUUID() };
+    }
     return stored;
   });
   const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">(savedRoute ? "studio" : !entryLink.valid ? "customizations" : "tasks");
