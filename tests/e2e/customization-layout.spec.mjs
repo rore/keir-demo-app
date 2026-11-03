@@ -73,7 +73,7 @@ async function prepareChoice(page, label) {
     return { ok: response.ok, state: response.ok ? await response.json() : null };
   }, { templateId, draftVersion: saved.draftVersion });
   expect(result.ok).toBeTruthy();
-  let reload = ui(page).getByRole('button', { name: 'Reload saved state', exact: true });
+  const reload = ui(page).getByRole('button', { name: 'Reload saved state', exact: true });
   if (!await reload.isVisible()) {
     const manage = ui(page).getByRole('button', { name: 'Manage', exact: true });
     if (await manage.isVisible()) await manage.click();
@@ -82,9 +82,7 @@ async function prepareChoice(page, label) {
       await page.locator('#edit-task-advice').click();
       await ui(page).getByRole('button', { name: 'Manage', exact: true }).click();
     }
-    reload = ui(page).getByRole('button', { name: 'Reload saved state', exact: true });
   }
-  if (!await reload.isVisible()) await ui(page).getByRole('button', { name: 'Manage', exact: true }).click();
   await reload.click();
   await expect(reload).toBeEnabled();
   await expect.poll(async () => (await savedState(page)).draft?.templateId).toBe(templateId);
