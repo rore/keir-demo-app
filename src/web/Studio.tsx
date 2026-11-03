@@ -12,7 +12,7 @@ export type State = {
   evidence: { id: string; revisionId: string; passed: boolean } | null;
   approved: boolean;
   approvedEvidenceId: string | null;
-  selection: { generation: number; revision: (Revision & { extensionId: string; extensionName: string }) | null; eligible: boolean };
+  selection: { generation: number; revision: (Revision & { extensionId: string; extensionName: string }) | null; eligible: boolean; approvedEvidenceId: string | null };
   restoreTargets: Revision[];
   history: History[];
   evidenceHistory: { id: string; revisionId: string }[];
@@ -133,6 +133,10 @@ const knownObservation = (value?: { status: string; code?: string }) => value?.s
   || value?.status === "DISPLAYED" && ["DONE", "PENDING", "NEEDS_ATTENTION"].includes(value.code ?? "");
 const observedAdvice = (value?: { status: string; code?: string }) => !knownObservation(value) ? "Not observed" : value?.status === "NOT_DISPLAYED" ? "No advice" : advice(value?.code);
 const expectedAdvice = (value: Outcome) => knownObservation(value.consumption) ? observedAdvice(value.consumption) : "Expected advice not recorded";
+const summarizeExamples = (proof: Evidence | null) => (["OPEN", "COMPLETED"] as const).map(status => {
+  const outcomes = Array.from(new Set(proof?.reports.filter(item => item.taskStatus === status).map(item => observedAdvice(item.report.consumption))));
+  return outcomes.length ? `${status === "OPEN" ? "unfinished" : "completed"} tasks showed ${outcomes.join(" or ")}` : null;
+}).filter(Boolean).join("; ");
 
 const continuationPrefix = "Continue my saved proposal and examples using these earlier messages. If the context is incomplete, ask before changing the examples.\n\n";
 function continuationText(previous: Conversation) {
@@ -275,6 +279,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [hostCatalog, setHostCatalog] = useState<HostCatalog | null>(null);
   const [catalogError, setCatalogError] = useState(false);
   const [activeView, setActiveView] = useState(false);
+  const [activeSnapshot, setActiveSnapshot] = useState<{ ownerId: string; extensionId: string; revision: NonNullable<State["selection"]["revision"]>; generation: number; evidenceId: string | null } | null>(null);
+  const [activeProof, setActiveProof] = useState<Evidence | null>(null);
+  const [activeSummaryError, setActiveSummaryError] = useState("");
   const [restart, setRestart] = useState<{ draftVersion: number; revisionId: string; generation: number; activeLabel: string; draftLabel: string } | null>(null);
   const personalStart = useRef(false);
   const exampleOperation = useRef<string | null>(null);
@@ -386,6 +393,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const decisionIdentity = state?.draft && decisionEvidenceId ? `${state.owner.id}/${state.extension!.id}/${state.draft.id}/${state.draftVersion}/${decisionEvidenceId}` : "";
   const reviewKey = state?.draft && reviewEvidence ? `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${reviewEvidence.id}` : "";
   const ownActive = state?.selection.revision?.extensionId === state?.extension?.id ? state?.selection.revision : null;
+  const currentUse = state?.selection.revision ? state.selection.eligible ? `“${state.selection.revision.extensionName}” is in use.`
+    : "The saved setup could not be checked. Its use is unverified." : "No customization is in use.";
   const inspectionRevision = activeView ? ownActive : state?.draft ?? ownActive;
   const inspectionKey = inspectionRevision ? `${state!.owner.id}/${state!.extension!.id}/${inspectionRevision.id}/${inspectionRevision.suiteDigest ?? ""}` : "";
   const currentEvidence = !!state?.draft && evidence?.revisionId === state.draft.id && (evidence?.id === state.evidence?.id || eligibleOffer && evidence?.id === offer?.evidenceId);
@@ -404,10 +413,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const exampleTitle = (item: Evidence["reports"][number], index: number) => item.taskStatus === "OPEN" ? "What an unfinished task would show"
     : item.taskStatus === "COMPLETED" ? "What a completed task would show" : `What happens with ${exampleLabel(item, index).toLowerCase()}`;
   const mainExample = reviewEvidence?.reports.find(item => item.taskStatus === "COMPLETED") ?? reviewEvidence?.reports[0];
-  const behaviorSummary = (["OPEN", "COMPLETED"] as const).map(status => {
-    const outcomes = Array.from(new Set(reviewEvidence?.reports.filter(item => item.taskStatus === status).map(item => observedAdvice(item.report.consumption))));
-    return outcomes.length ? `${status === "OPEN" ? "unfinished" : "completed"} tasks showed ${outcomes.join(" or ")}` : null;
-  }).filter(Boolean).join("; ");
+  const behaviorSummary = summarizeExamples(reviewEvidence);
+  const activeSelectionMatches = !!activeSnapshot && activeSnapshot.ownerId === state?.owner.id && activeSnapshot.extensionId === state.extension?.id
+    && activeSnapshot.revision.id === state.selection.revision?.id && activeSnapshot.generation === state.selection.generation
+    && activeSnapshot.evidenceId === state.selection.approvedEvidenceId;
   const completed = completion && !!state?.selection.eligible && state.selection.revision?.id === state.draft?.id;
 
   function openPane(next?: typeof canvasView, invoker = document.activeElement) {
@@ -441,6 +450,44 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (chatEnd.current?.parentElement) chatEnd.current.parentElement.scrollTop = conversationReturn.current;
       (target?.isConnected && target.getClientRects().length ? target : savedTurn ?? document.getElementById("studio-manage"))?.focus({ preventScroll: true });
     });
+  }
+  useEffect(() => {
+    if (activeView && activeSnapshot && (!activeSelectionMatches || !state?.selection.eligible)) {
+      setActiveProof(null);
+      setActiveSummaryError(activeSelectionMatches ? "No verified saved checks are available for this version. Check task advice on a saved task to see what it currently shows."
+        : "The version in use changed. Reopen what’s in use to check it again.");
+    }
+  }, [activeView, activeSnapshot, activeSelectionMatches, state?.selection.eligible]);
+  async function showActive() {
+    if (locked.current || !trusted || !state?.extension || !ownActive) return;
+    const snapshot = { ownerId: state.owner.id, extensionId: state.extension.id, revision: ownActive,
+      generation: state.selection.generation, evidenceId: state.selection.approvedEvidenceId };
+    setActiveSnapshot(snapshot); setActiveProof(null); setActiveSummaryError(""); setActiveView(true); openPane("advice");
+    if (!state.selection.eligible || snapshot.revision.provenance === "operator" || !snapshot.evidenceId) {
+      setActiveSummaryError("No verified saved checks are available for this version. Check task advice on a saved task to see what it currently shows.");
+      return;
+    }
+    locked.current = true; const turn = ++serial.current, reading = readingRevision.current;
+    setBusy("Checking the version in use…");
+    try {
+      const proof = await callbacks.current.request<Evidence>(`${extensionPath(snapshot.extensionId)}/evidence/${encodeURIComponent(snapshot.evidenceId)}`, "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn) return;
+      const latest = await callbacks.current.request<State>(extensionPath(snapshot.extensionId), "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn) return;
+      apply(latest);
+      if (latest.owner.id !== snapshot.ownerId || latest.extension?.id !== snapshot.extensionId || latest.selection.revision?.id !== snapshot.revision.id
+        || latest.selection.generation !== snapshot.generation || latest.selection.approvedEvidenceId !== snapshot.evidenceId) {
+        setActiveSummaryError("The version in use changed. Reopen what’s in use to check it again.");
+        return;
+      }
+      if (!latest.selection.eligible || proof.id !== snapshot.evidenceId || proof.revisionId !== snapshot.revision.id || !proof.passed || !proof.reports.length
+        || !proof.reports.every(item => item.report.status === "PASS" && knownObservation(item.expected.consumption) && knownObservation(item.report.consumption))
+        || !summarizeExamples(proof)) throw new Error("Active examples are unverified");
+      if (readingRevision.current === reading) setActiveProof(proof);
+      else setActiveSummaryError("The view changed while checking. Reopen what’s in use to check it again.");
+    } catch {
+      if (mounted.current && serial.current === turn) { setActiveProof(null); setActiveSummaryError("The checked examples for the version in use could not be verified. No behavior summary is available. Reopen what’s in use to try again."); }
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   function openTools() {
     managementReturn.current ??= { view: canvasView, position: canvasScroll.current };
@@ -1099,9 +1146,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>Inspect these saved examples</button></article>}
           {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
           {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT"].includes(conversation?.code ?? "") && !activeAuthoring && !legacyConversation && !staleConversation && <button disabled={disabled || !authoring?.availability.available || (authoring?.conversations.length ?? 0) >= 8} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue from saved proposal"}</button>}
-          {state?.extension && ownActive && state.draft?.id !== ownActive.id && !historyView && !staleConversation && <article className="rs-message">
-            <p>The version in use is “{ownActive.label}”. Your saved changes{state.draft ? ` (version ${state.draftVersion})` : ""} are separate and are not in use yet.</p>
-            <button id="studio-view-active" className="rs-link" disabled={!!busy} onClick={() => { setActiveView(true); openPane("advice"); }}>View what’s in use</button>
+          {state?.extension && ownActive && !historyView && !staleConversation && <article className="rs-message">
+            <p>{state.draft?.id !== ownActive.id ? `The version in use is “${ownActive.label}”. Your saved changes${state.draft ? ` (version ${state.draftVersion})` : ""} are separate and are not in use yet.` : "This setup is in use."}</p>
+            <button id="studio-view-active" className="rs-link" disabled={!!busy} onClick={() => void showActive()}>View what’s in use</button>
           </article>}
 
           {authoringError && <p role="alert">{authoringError}</p>}
@@ -1187,10 +1234,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         onWheel={() => { readingRevision.current++; }} onKeyDown={() => { readingRevision.current++; }} onPointerDown={() => { readingRevision.current++; }}
         onScroll={event => { if (reviewOpen) canvasScroll.current = event.currentTarget.scrollTop; }}>
         {state && <>
-          {activeView && canvasView === "advice" && state.selection.revision?.extensionId === state.extension?.id && <article className="rs-sheet" aria-label="Version in use">
-            <h3>Version currently in use</h3><p>“{state.selection.revision!.label}”. Your saved changes (version {state.draftVersion}) are separate. This view is read-only.</p>
-            <button disabled={disabled} onClick={() => { void inspectSource(); openTools(); }}>Inspect this version’s source</button>
-            <button disabled={disabled} onClick={() => { setRestart({ draftVersion: state.draftVersion, revisionId: state.selection.revision!.id, generation: state.selection.generation, activeLabel: state.selection.revision!.label, draftLabel: state.draft?.label ?? "saved" }); closeReview(); }}>Start changes from this version</button>
+          {activeView && canvasView === "advice" && activeSnapshot && <article className="rs-sheet" aria-label="Version in use">
+            <h3>{activeSelectionMatches ? "Version currently in use" : "Previously viewed version"}</h3><p>“{activeSnapshot.revision.label}”. {state.draft && state.draft.id !== activeSnapshot.revision.id && <>Your saved changes (version {state.draftVersion}) are separate. </>}This view is read-only.</p>
+            {activeProof && activeSelectionMatches && state.selection.eligible ? <><p aria-label="Checked behavior in use">In the last checked examples, {summarizeExamples(activeProof)}.</p><p>These are synthetic, limited examples. Other situations remain untested.</p></>
+              : <p role="status">{activeSummaryError || "Checking the saved examples for this version…"}</p>}
+            <button disabled={disabled} onClick={() => { void inspectSource(activeSelectionMatches ? undefined : activeSnapshot.revision.id); openTools(); }}>Inspect this version’s source</button>
+            <button disabled={disabled || !activeSelectionMatches || !state.selection.eligible} onClick={() => { setRestart({ draftVersion: state.draftVersion, revisionId: activeSnapshot.revision.id, generation: activeSnapshot.generation, activeLabel: activeSnapshot.revision.label, draftLabel: state.draft?.label ?? "saved" }); closeReview(); }}>Start changes from this version</button>
             <button onClick={() => { setActiveView(false); closeReview(); }}>Continue saved changes</button>
           </article>}
           {evidence && <article hidden={canvasView !== "results"} className="rs-sheet rs-results" aria-label="Sample results">
@@ -1219,8 +1268,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
 
         </>}
         <details hidden={canvasView !== "details"} className="rs-sheet rs-tools"><summary>History, details and recovery</summary>
-          {history.some(item => item.operation === "draft-superseded") && <section aria-label="Earlier saved changes"><h3>Earlier saved changes</h3>
-            {history.filter(item => item.operation === "draft-superseded" && item.revisionId).map(item => <p key={item.id}>{item.label ?? "Saved draft"} · read-only <button disabled={disabled} onClick={() => void inspectSource(item.revisionId!)}>Inspect earlier saved changes</button></p>)}
+          {history.some(item => item.operation === "draft-superseded") && <section aria-label="Earlier saved changes"><h3>Earlier saved changes</h3><p>{currentUse}</p>
+            {history.filter(item => item.operation === "draft-superseded" && item.revisionId).map(item => <p key={item.id}>{item.label ?? "Saved draft"} · {item.revisionId === state?.selection.revision?.id ? "Saved selection" : "Not in use"} · read-only <button disabled={disabled} onClick={() => void inspectSource(item.revisionId!)}>Inspect earlier saved changes</button></p>)}
           </section>}
           <details><summary>Published host model and supported hooks</summary>
             {catalogError && <p role="status">The published host model could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p>}
@@ -1246,6 +1295,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {inspectionRevision && <button disabled={disabled} onClick={() => void inspectSource()}>Inspect saved source and examples</button>}
             {inspection && (inspection.historical || inspection.key === inspectionKey) && <>
               {inspection.historical && <h3 id="studio-inspected-history" tabIndex={-1}>Earlier saved changes · read-only</h3>}
+              {inspection.historical && <p>{inspection.revisionId === state.selection.revision?.id ? "This is the saved selection." : "These earlier changes are not in use."} {currentUse} Opening this history does not change what runs.</p>}
               <p>Exact saved revision: {inspection.revisionId}. {inspection.historical ? "These earlier changes stay in History. They cannot approve, activate or replace your current changes." : "Inspection is read-only."}</p>
               <h3>Saved source</h3><pre aria-label="Saved source for inspection">{inspection.source}</pre>
               <h3>Exact compiled artifact</h3><pre aria-label="Compiled artifact for inspection">{inspection.artifact}</pre>

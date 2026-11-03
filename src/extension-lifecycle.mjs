@@ -179,7 +179,10 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
   }
   function selectionView(owner) {
     const active = selection(owner), row = active.revision_id ? revision(owner, active.revision_id) : null;
-    return { generation: active.generation, revision: view(row), eligible: !!row && eligible(row) };
+    const available = !!row && eligible(row);
+    const approval = available && row.provenance === 'customer'
+      ? db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, row.id) : null;
+    return { generation: active.generation, revision: view(row), eligible: available, approvedEvidenceId: approval?.evidence_id ?? null };
   }
   function choices() { return catalog.map(({ id, label, openCode }) => ({ id, label, openCode })); }
   function creation(owner, operationId, hash) {

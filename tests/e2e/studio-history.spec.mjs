@@ -70,10 +70,13 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       await expect(ui.getByRole('heading', { name: 'History integration', exact: true })).toBeVisible();
       await ui.getByRole('button', { name: 'History and details', exact: true }).click();
       await expect(ui.getByRole('region', { name: 'Earlier saved changes', exact: true })).toContainText('Saved before restart');
+      await expect(ui.getByRole('region', { name: 'Earlier saved changes', exact: true })).toContainText('“History integration” is in use.');
+      await expect(ui.getByRole('region', { name: 'Earlier saved changes', exact: true })).toContainText('Not in use');
       const inspection = ui.getByRole('button', { name: 'Inspect earlier saved changes', exact: true });
       await expect(inspection).toHaveCount(1);
       await inspection.click();
       await expect(ui.getByRole('heading', { name: 'Earlier saved changes · read-only', exact: true })).toBeVisible();
+      await expect(ui.getByRole('region', { name: 'Saved program', exact: true })).toContainText('These earlier changes are not in use. “History integration” is in use.');
       await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toHaveText(savedSource);
       expect(await ui.getByLabel('Saved source for inspection', { exact: true }).textContent()).toBe(savedSource);
       await expect(ui.getByLabel('Compiled artifact for inspection', { exact: true })).toBeVisible();

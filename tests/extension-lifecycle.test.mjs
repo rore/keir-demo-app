@@ -88,6 +88,28 @@ test('approved evidence stays pinned when a later sample run becomes latest', as
   assert.throws(() => lifecycle.activate('maya', { extensionId: itemId(lifecycle, 'maya'), ...input, generation: replacement.selection.generation }, authorized), { status: 409 });
 });
 
+test('active inspection exposes only its exact approved evidence, never a newer run or draft', async t => {
+  const { db, lifecycle } = setup(t);
+  const first = await approved(lifecycle);
+  const id = first.state.extension.id, proof = first.state.approvedEvidenceId;
+  let state = lifecycle.activate('maya', { ...first.input, generation: first.state.selection.generation }, authorized);
+  assert.equal(state.selection.approvedEvidenceId, proof);
+  state = await lifecycle.simulate('maya', first.input, authorized);
+  assert.notEqual(state.evidence.id, proof);
+  assert.equal(state.selection.approvedEvidenceId, proof, 'A later run is not the active approval receipt.');
+  state = lifecycle.load('maya', { extensionId: id, templateId: 'pending', draftVersion: state.draftVersion }, authorized);
+  state = await lifecycle.simulate('maya', { extensionId: id, revisionId: state.draft.id, draftVersion: state.draftVersion }, authorized);
+  assert.notEqual(state.evidence.id, proof);
+  assert.equal(state.approvedEvidenceId, null);
+  assert.equal(state.selection.approvedEvidenceId, proof, 'A separate checked draft cannot supply the active summary.');
+  assert.equal(lifecycle.collection('leo').selection.approvedEvidenceId, null, 'Operator choices have no invented human approval.');
+  assert.equal(lifecycle.collection('sam').selection.approvedEvidenceId, null);
+  db.prepare('UPDATE extension_evidence SET payload=? WHERE id=?').run('{}', proof);
+  state = lifecycle.state('maya', id);
+  assert.equal(state.selection.eligible, false);
+  assert.equal(state.selection.approvedEvidenceId, null, 'Unavailable proof cannot appear as verified summary evidence.');
+});
+
 test('both independently expected curated suites execute through the actual simulator', async t => {
   const { lifecycle } = setup(t);
   for (const template of ['pending', 'attention']) {
