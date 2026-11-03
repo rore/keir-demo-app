@@ -287,7 +287,10 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     },
     evidence(owner, id) {
       const proof = evidence(owner, id), row = revision(owner, proof.revision_id);
-      const payload = JSON.parse(proof.payload), originals = cases(row);
+      const payload = JSON.parse(proof.payload);
+      let originals = [];
+      try { if (proof.suite_identity === suiteIdentity(row)) originals = cases(row); }
+      catch { /* Historical proof remains readable without borrowing current scenario metadata. */ }
       const reports = payload.reports.map(item => {
         const original = originals.find(example => example.id === item.id);
         return original ? { ...item, expected: { ...item.expected, consumption: JSON.parse(original.bytes).expect.consumption } } : item;

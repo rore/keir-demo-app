@@ -221,6 +221,20 @@ test('example source and independent cases pass the real compiler/runtime with s
   assert.equal(state.selection.generation, selection.generation + 1);
 });
 
+test('historical prepared evidence never borrows display expectations from a different suite with reused case IDs', async t => {
+  const db = openData(':memory:'), lifecycle = createLifecycle(db);
+  t.after(() => db.close());
+  let state = lifecycle.load('maya', { templateId: 'attention', draftVersion: 0 }, () => true);
+  state = await lifecycle.simulate('maya', input(state), () => true);
+  const id = state.evidence.id;
+  const original = JSON.parse(db.prepare('SELECT payload FROM extension_evidence WHERE id=?').get(id).payload);
+  assert.deepEqual(lifecycle.evidence('maya', id).reports[0].expected.consumption, { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' });
+  db.prepare('UPDATE extension_evidence SET suite_identity=? WHERE id=?').run('sha256:' + '0'.repeat(64), id);
+  const historical = lifecycle.evidence('maya', id);
+  assert.equal(historical.passed, false);
+  assert.deepEqual(historical.reports, original.reports, 'a reused open case ID cannot confer current-suite expectations');
+});
+
 test('mismatch receipts keep independent expectations and actual results without advice on errors', () => {
   const example = authoringExample(), incorrect = JSON.parse(example.cases[0]);
   incorrect.expect.outcome.result.classification = 'DONE'; incorrect.expect.consumption.code = 'DONE';
