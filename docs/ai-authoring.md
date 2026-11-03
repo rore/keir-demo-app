@@ -1,6 +1,6 @@
 # Optional AI authoring
 
-The task-advice conversation assistant can prepare advice for review. It needs an operator-configured provider and can incur real charges. Native tasks and saved advice continue to work without AI setup.
+Studio helps a business user describe a customization, clarify its behavior and check examples before deciding whether to use it. Live AI needs an operator-configured provider and can incur real charges. Native tasks, saved customizations and the labeled scripted example work without AI setup. Today's host contract supports read-only task advice; a general conversation does not grant unsupported capabilities.
 
 ## Configure a provider
 
@@ -29,11 +29,13 @@ The assistant leads the conversation, asks about missing business choices, prepa
 
 The clearly labeled scripted example needs no AI credentials and makes no provider request. It demonstrates Needs attention for open tasks and Done for completed tasks using the real compiler, independent synthetic cases, simulator and exact review. The scripted replies are not an AI conversation; the saved draft, evidence and approval remain available after leaving the example. Starting an example must not silently replace an unrelated draft. Approval and turning it on remain separate human decisions.
 
-Before using advice, independently choose and review the expected scenarios, run them through the host compiler and simulator, and inspect the exact results. Approve only the exact revision with eligible host evidence. Then choose **Use this advice for me** as a separate human action. Until that choice, the currently selected advice remains in use.
+Describe the wanted outcomes before checking them. The assistant prepares and runs the examples through the actual Keir compiler and simulator, then explains what happened. A named example opens on request and returns to its exchange when closed. Choose **Approve this change** only when the checked behavior matches your intent. Turning it on is a separate action; switching from another customization names the one being replaced and keeps it saved. Until that choice, the currently selected advice remains in use.
 
 ## Conversations and recovery
 
-Conversations persist under their demo owner and survive process restarts. If the process stops during a provider or host operation, the saved conversation is marked interrupted. Startup only reads and marks the saved state; it does not call the provider, compiler, or simulator again. Open the conversation, inspect its saved draft and status, and explicitly continue only when the UI offers that action. A cancel, timeout, or lost response can leave a saved change; read saved state before retrying.
+**New customization** opens an empty conversation, even when other work exists. Opening it or typing does not create an item or call AI. The first accepted message creates a distinct saved item; later turns stay with that item. Opening a saved item resumes its current changes. History retains earlier discussions and displaced drafts for read-only inspection. Starting again from the version in use requires an explicit confirmation and preserves the unfinished work in History.
+
+Conversations persist under their demo owner and saved customization and survive process restarts. If the process stops during a provider or host operation, the saved conversation is marked interrupted. Startup only reads and marks the saved state; it does not call the provider, compiler, or simulator again. Open the conversation, inspect its saved draft and status, and explicitly continue only when the UI offers that action. A cancel, timeout, or lost response can leave a saved change; check the original submitted request before retrying. Recovery does not automatically repeat a paid turn or create another item.
 
 For advanced local process configuration, `.env.example` documents the supported environment variables. The app does not load that file automatically. A valid saved local settings file takes precedence over environment configuration; if no local file exists, environment settings remain a fallback. An invalid existing settings file fails closed instead of falling back.
 

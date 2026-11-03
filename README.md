@@ -2,7 +2,7 @@
 
 A small local task workspace: projects, tasks, notes and a satisfying completion flow. Sign in as Maya, Leo or Sam, three fictional demo people with independent data. Your work stays in a local SQLite database across restarts.
 
-The shared app lockup shows **Daymark** with **A KEIR Demo** directly beneath it. Use **Tasks** for native work and **Customizations** to discover Task advice, start a customization conversation, or reopen a saved item. The task-advice assistant can prepare advice for review; an operator can configure AI in the local **Configure** dialog. Try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut to the same item; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
+The shared app lockup shows **Daymark** with **A KEIR Demo** directly beneath it. Use **Tasks** for native work and **Customizations** to start a new conversation or return to a named saved customization. The assistant helps clarify your goal and checks what Daymark can support. Today the published host contract supports read-only task advice; task creation and background automation are not available to extensions yet. Configure AI locally, or try the clearly labeled scripted example without credentials. Review the checked behavior, approve it, then separately choose whether to turn it on. Several customizations can be saved; one supplies task advice at a time. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
 
 ## Run locally
 
@@ -48,7 +48,7 @@ Native regression uses temporary data. Browser setup downloads separate test Chr
 
 ## Studio and its design reference
 
-The functional Studio shares Daymark's navigation and controls. Conversation leads; proposal, latest-run, approved-run and management views open on demand and start closed. On wide screens the workspace can be resized; on phone-sized screens it uses a full-workspace view. View changes retain reading, input and width state. See the [implemented experience and design reference](docs/extension-studio-design.md).
+The functional Studio shares Daymark's navigation and controls. Conversation leads, with one current decision. A named example opens beside its exchange on request; on a phone it takes the available workspace. Closing it returns to the same place in chat. History and technical inspection are secondary. See the [experience and design reference](docs/extension-studio-design.md).
 
 The earlier scripted prototype remains available with `node docs/extension-studio/serve.mjs` at [the prototype address](http://localhost:4179/); it is a separate historical future-authoring reference. The native app includes the task-advice assistant; see [review and select task advice](docs/read-extension-lifecycle.md). Tool authors can use the [core manual authoring guide](https://github.com/rore/keir-core/blob/main/docs/manual-authoring.md).
 
