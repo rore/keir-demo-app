@@ -146,7 +146,7 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
       <div className="rs-setup-fields">
         <h2 id="assistant-setup-title">Set up the assistant</h2>
         <p>These settings are shared by all three people in this demo. Each person keeps their own customizations.</p>
-        <p>The service receives your authoring messages, public host contract, draft source, synthetic examples and sanitized tool results. It may charge for explicit chat requests.</p>
+        <p>The AI service receives your messages, a description of what the app can do, your draft customization, sample cases and filtered results. Sending a message may cost money.</p>
         {reading && <p role="status">Checking current settings…</p>}
         {readFailed && <p role="alert">Assistant settings could not be checked. <button type="button" disabled={waiting || reading} onClick={() => void read(!setup)}>Retry status</button></p>}
         {error && <p className="error" role="alert">{error}</p>}
