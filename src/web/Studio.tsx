@@ -1109,7 +1109,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   return <section className={`read-studio${reviewOpen ? " rs-review-open" : ""}`} aria-label="Customization Studio">
     <div className="sr-only" role="status">{busy || notice}</div>
-    <header className="rs-header"><div><p className="rs-breadcrumb">Customizations / Studio</p><h1 id="studio-title" tabIndex={-1}>{state?.extension?.name ?? (target.extensionId ? "Opening customization…" : legacyConversation ? "Earlier conversation" : target.conversationId ? "Opening conversation…" : "New customization")}</h1></div>
+    <header className="rs-header"><div><p className="rs-breadcrumb">Customizations / Studio</p><h1 id="studio-title" tabIndex={-1} title={state?.extension?.name}>{state?.extension?.name ?? (target.extensionId ? "Opening customization…" : legacyConversation ? "Earlier conversation" : target.conversationId ? "Opening conversation…" : "New customization")}</h1></div>
       <div className="rs-header-actions">{activeAuthoring && <button className="rs-stop" disabled={!!busy || conversation?.status === "CANCELLING"} onClick={() => void stopAuthoring()}>{conversation?.status === "CANCELLING" ? "Stopping…" : "Stop"}</button>}<button id="studio-manage" disabled={!!restart} onClick={openTools}>History and details</button><button onClick={back} disabled={!!busy || !!restart}>{backLabel}</button></div></header>
     {error && <div role="alert" className="rs-error">{error} <button onClick={() => void refresh(true)} disabled={!!busy}>Retry</button></div>}
     {state && <div className="rs-status-summary" aria-label="Customization status">
@@ -1147,7 +1147,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
           {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT"].includes(conversation?.code ?? "") && !activeAuthoring && !legacyConversation && !staleConversation && <button disabled={disabled || !authoring?.availability.available || (authoring?.conversations.length ?? 0) >= 8} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue from saved proposal"}</button>}
           {state?.extension && ownActive && !historyView && !staleConversation && <article className="rs-message">
-            <p>{state.draft?.id !== ownActive.id ? `The version in use is “${ownActive.label}”. Your saved changes${state.draft ? ` (version ${state.draftVersion})` : ""} are separate and are not in use yet.` : "This setup is in use."}</p>
+            <p>{state.draft && state.draft.id !== ownActive.id ? `The version in use is “${ownActive.label}”. Your saved changes (version ${state.draftVersion}) are separate and are not in use yet.` : "This setup is in use."}</p>
             <button id="studio-view-active" className="rs-link" disabled={!!busy} onClick={() => void showActive()}>View what’s in use</button>
           </article>}
 

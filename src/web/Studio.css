@@ -15,7 +15,8 @@
 .read-studio .rs-primary:hover:not(:disabled) { background: #172c36; }
 .rs-header { display: flex; flex-shrink: 0; justify-content: space-between; gap: 15px; align-items: center; padding: 10px 24px; background: #304651; color: #fff; }
 .rs-breadcrumb { font-size: 12px; color: #d1dde2; margin-bottom: 4px; }
-.read-studio .rs-header h1 { font-size: 22px; letter-spacing: -.02em; }
+.rs-header > div:first-child { min-width: 0; max-width: 100%; }
+.read-studio .rs-header h1 { font-size: 22px; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rs-header h1 span { font-size: 12px; font-weight: 500; margin-left: 8px; padding: 3px 7px; border: 1px solid #9fb2ba; border-radius: 4px; vertical-align: middle; }
 .rs-header-actions { display: flex; align-items: center; gap: 8px; }
 .read-studio .rs-header button { background: transparent; color: inherit; border-color: #89818a; }
