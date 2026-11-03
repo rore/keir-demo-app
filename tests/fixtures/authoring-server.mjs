@@ -13,6 +13,7 @@ import { simulationCases } from '../../src/extension-lifecycle.mjs';
 
 const question = 'Should OPEN tasks show PENDING and COMPLETED tasks show DONE?';
 const offerText = 'Review the new source and five independent scenarios. Other inputs are untested. Approval and Use remain your choice.';
+const mismatchText = 'The completed example wanted Done but showed Pending. This did not pass. Keep the original expectations and explicitly ask to correct the source in a new conversation.';
 
 function nativeHistory(provider, body) {
   if (provider === 'openai') return {
@@ -30,7 +31,7 @@ function nativeHistory(provider, body) {
   };
 }
 
-function scriptedTransport(provider, source, cases, requests) {
+function scriptedTransport(provider, source, cases, requests, semanticMismatch) {
   return async (url, init) => {
     assert.equal(url, provider === 'openai' ? 'https://api.openai.com/v1/responses' : 'https://api.anthropic.com/v1/messages');
     assert.equal(init.redirect, 'error');
@@ -42,6 +43,16 @@ function scriptedTransport(provider, source, cases, requests) {
     const output = history.outputs.findLast(item => item.id === previous?.id)?.value;
     let name, args;
     if (!previous) { name = 'discover_catalog'; args = {}; }
+    else if (previous.name === 'discover_catalog' && semanticMismatch) {
+      const discovered = output.result;
+      const wrongSource = source.replace('completed ? "DONE" : "PENDING"', 'completed ? "PENDING" : "PENDING"');
+      const repairing = discovered.currentProposal?.source === wrongSource;
+      if (repairing) {
+        assert.deepEqual(discovered.currentProposal.cases, cases, 'Repair keeps the original independent scenarios.');
+        assert.match(JSON.stringify(history.users.at(-1).content), /correct/i, 'Only an explicit correction starts the repair.');
+      }
+      name = 'compile_draft'; args = { sourceJson: repairing ? source : wrongSource, expectedDraftVersion: discovered.currentDraft.draftVersion };
+    }
     else if (previous.name === 'discover_catalog') { name = 'ask_clarification'; args = { question }; }
     else if (previous.name === 'ask_clarification') {
       assert.equal(output.status, 'AWAITING_USER');
@@ -61,7 +72,15 @@ function scriptedTransport(provider, source, cases, requests) {
       assert.equal(output.result.revisionId, previous.arguments.revisionId);
       assert.equal(output.result.draftVersion, previous.arguments.expectedDraftVersion);
       assert.ok(output.result.evidenceId);
-      name = 'offer_review'; args = { summary: offerText };
+      if (semanticMismatch) {
+        const completed = output.result.summary.cases.find(item => item.id === 'synthetic-completed');
+        assert.equal(completed.expected.code, 'DONE');
+        const wrong = history.calls.findLast(item => item.name === 'compile_draft').arguments.sourceJson !== source;
+        assert.equal(completed.actual.consumption.code, wrong ? 'PENDING' : 'DONE');
+        assert.equal(completed.status, wrong ? 'MISMATCH' : 'PASS');
+        assert.equal(completed.mismatches.length > 0, wrong);
+        name = 'offer_review'; args = { summary: wrong ? mismatchText : offerText };
+      } else { name = 'offer_review'; args = { summary: offerText }; }
     } else throw new Error('The synthetic fixture supports one review journey per conversation.');
     const id = 'synthetic-call-' + (history.calls.length + 1);
     requests.push(Object.freeze({ callId: id, name }));
@@ -83,7 +102,7 @@ async function unusedLoopbackPort() {
 }
 
 // Synthetic offline transport only; app, compiler, lifecycle and simulator are real.
-export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, staticRoot = fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
+export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, staticRoot = fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
@@ -98,9 +117,12 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
       expect: { calls: [call], outcome: { classification: 'COMPLETED', result: { classification: code } }, consumption: { status: 'DISPLAYED', code } } }, null, 2) + '\n';
   });
   cases.push(...simulationCases('pending').filter(item => ['missing', 'business-denied', 'transient'].includes(item.id)).map(item => item.bytes.toString('utf8')));
-  const metadata = Object.freeze({ synthetic: true, offline: true, compatibility: 'unqualified', provider, question, offerText, source, cases: Object.freeze(cases) });
+  const metadata = Object.freeze({ synthetic: true, offline: true, compatibility: 'unqualified', provider, question, offerText, mismatchText, source,
+    wrongSource: source.replace('completed ? "DONE" : "PENDING"', 'completed ? "PENDING" : "PENDING"'), cases: Object.freeze(cases) });
+  assert.notEqual(metadata.wrongSource, source, 'The semantic mismatch variant must change compiled behavior.');
   const config = readAuthoringConfig(unconfigured ? {} : { KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
-    KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
+    // Ten offline OpenAI reservations total 3.19488 USD across the mismatch and repair conversations.
+    KEIR_AI_MAX_USD: semanticMismatch ? '3.2' : '3', OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
   assert.equal(config.status, unconfigured ? 'unavailable' : 'ready');
   const prefix = join(resolve(tmpdir()), 'keir-authoring-offline-');
   const directory = await mkdtemp(prefix), origin = `http://127.0.0.1:${port}`, requests = [];
@@ -124,7 +146,7 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
     db = openData(join(directory, 'app.sqlite'));
     const compiler = createCompiler({ modelBytes: loadHost().dcmBytes, javaExecutable: process.env.KEIR_JAVA_BIN });
     app = await createApp({ db, origin, staticRoot: resolve(staticRoot), compiler,
-      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, source, cases, requests) } });
+      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, source, cases, requests, semanticMismatch) } });
     await app.listen({ host: '127.0.0.1', port });
     return { app, db, origin, directory, metadata, requests, close };
   } catch (error) { await close(); throw error; }

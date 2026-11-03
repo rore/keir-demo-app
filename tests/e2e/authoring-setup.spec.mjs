@@ -20,7 +20,7 @@ const test = base.extend({
 });
 
 const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
-const authoring = page => studio(page).getByRole('region', { name: 'AI authoring', exact: true });
+const authoring = studio;
 const choices = [
   { provider: 'openai', model: 'gpt-5.6-terra' },
   { provider: 'anthropic', model: 'claude-haiku-5-5' },
@@ -87,9 +87,7 @@ async function enterStudio(page, origin, user = 'Maya') {
 async function openConfigure(page) {
   const ui = studio(page), configure = ui.getByRole('button', { name: 'Configure', exact: true });
   if (!await configure.isVisible()) {
-    const details = ui.getByRole('button', { name: 'Details', exact: true });
-    if (await details.isVisible()) await details.click();
-    else await ui.getByRole('button', { name: 'Manage', exact: true }).click();
+    await ui.getByRole('button', { name: 'Manage', exact: true }).click();
     const tools = ui.locator('details.rs-tools');
     if (!await tools.evaluate(node => node.open)) await tools.locator(':scope > summary').click();
   }
@@ -349,7 +347,8 @@ test('an owner switch fences a pending setup response and clears the old key fro
     await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
     await expect(authoring(page)).toBeVisible();
-    await expect(ui.getByText('Advice for Leo', { exact: true })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('leo');
+    await expect(ui.getByRole('log', { name: 'Studio conversation', exact: true })).toContainText('Plan the Saturday session');
     await expect(ui.getByLabel('API key', { exact: true })).toHaveCount(0);
     await noSecretInBrowser(page, secret);
     expect(calls.setupPosts).toHaveLength(1);
@@ -394,12 +393,12 @@ test('a held old setup recovery read cannot overwrite a reopened successful save
     await next.getByRole('button', { name: 'Save settings', exact: true }).click();
     const saved = ui.getByRole('status').filter({ hasText: 'Settings saved. Send a message when you’re ready.' });
     await expect(saved).toBeVisible();
-    await expect(authoring(page)).toContainText('Assistant configured');
+    await expect(ui.locator('.rs-chat-note')).toContainText('Messages use your configured assistant');
     const delivered = page.waitForResponse(response => new URL(response.url()).pathname === '/api/authoring/setup' && response.request().method() === 'GET');
     releaseRead(); await (await delivered).finished();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect(saved).toBeVisible();
-    await expect(authoring(page)).toContainText('Assistant configured');
+    await expect(ui.locator('.rs-chat-note')).toContainText('Messages use your configured assistant');
     expect(calls.setupPosts).toHaveLength(2); expect(calls.turns).toHaveLength(0);
   } finally { releaseSave?.(); releaseRead?.(); }
 });

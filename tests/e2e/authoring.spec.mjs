@@ -22,7 +22,7 @@ const test = base.extend({
 });
 
 const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
-const authoring = page => studio(page).getByRole('region', { name: 'AI authoring', exact: true });
+const authoring = studio;
 const available = { available: true, code: null, provider: 'openai', model: 'test-model' };
 const unavailable = { available: false, code: 'AI_NOT_CONFIGURED', provider: null, model: null };
 
@@ -91,25 +91,20 @@ async function enterStudio(page, origin, user = 'Maya') {
 
 async function openDetails(page) {
   const ui = studio(page);
-  if (await ui.locator('.rs-preview').isHidden()) {
-    await ui.getByRole('button', { name: 'Manage', exact: true }).click();
-    await expect(ui.locator('.rs-tools')).toHaveJSProperty('open', true);
-    return;
-  }
-  const summary = ui.locator('details.rs-tools:not([open]) > summary');
-  if (await summary.count()) await summary.click();
+  await ui.getByRole('button', { name: 'Manage', exact: true }).click();
+  await expect(ui.locator('.rs-tools')).toHaveJSProperty('open', true);
 }
 
 test('missing setup offers Configure and saved advice without a generation or manual fallback', async ({ page, demo }) => {
   const calls = await scriptAuthoring(page, { availability: unavailable });
   await enterStudio(page, demo.origin);
   const ui = studio(page), panel = authoring(page);
-  await expect(panel).toContainText('AI authoring is not configured');
+  await expect(panel).toContainText('Set up the assistant to create or change a customization.');
   await ui.getByLabel('Message to Studio', { exact: true }).fill('Ask for a read-only task suggestion');
   await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
   await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(1);
-  const proposal = ui.getByRole('button', { name: 'View proposal', exact: true });
-  if (await proposal.count() && await proposal.isVisible()) await proposal.click();
+  await openDetails(page);
+  await ui.getByRole('button', { name: 'View proposal', exact: true }).click();
   await expect(ui.getByRole('article', { name: 'Current advice' })).toBeVisible();
   await openDetails(page);
   await expect(ui.getByLabel('Developer qualification')).toHaveCount(0);
@@ -239,19 +234,19 @@ for (const width of [1440, 683]) test(`Stop stays visible and remains cancelling
   await studio(page).getByLabel('Message to Studio', { exact: true }).fill('Start a bounded authoring request');
   await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
   await studio(page).getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent follow-up');
-  await expect(panel.getByRole('button', { name: 'Stop authoring', exact: true })).toBeInViewport();
-  await panel.getByRole('button', { name: 'Stop authoring', exact: true }).click();
+  await expect(panel.getByRole('button', { name: 'Stop', exact: true })).toBeInViewport();
+  await panel.getByRole('button', { name: 'Stop', exact: true }).click();
   await cancelledStatusStarted;
-  await expect(panel.getByRole('status')).toContainText('Stopping authoring; waiting for work to settle');
+  await expect(panel.getByRole('status').filter({ hasText: 'Stopping; waiting for accepted work to settle' })).toBeVisible();
   expect(cancelRequest).toEqual({ id: 'stoppable', body: { runId: 'run-stoppable', expectedVersion: 1 } });
-  await expect(panel.getByRole('button', { name: 'Stopping authoring…', exact: true })).toBeDisabled();
-  await expect(panel.getByRole('button', { name: 'Stopping authoring…', exact: true })).toBeInViewport();
+  await expect(panel.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled();
+  await expect(panel.getByRole('button', { name: 'Stopping…', exact: true })).toBeInViewport();
   await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent follow-up');
 
   current = { ...current, status: 'CANCELLED' };
   settled = true;
   releaseCancelledStatus();
-  await expect(panel.getByRole('status')).toContainText('Authoring stopped', { timeout: 10_000 });
+  await expect(panel.getByRole('status').filter({ hasText: 'Authoring stopped' })).toBeVisible({ timeout: 10_000 });
   await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent follow-up');
   expect(lifecycleActions).toEqual([]);
   expect(calls.turns).toHaveLength(1);
@@ -315,6 +310,7 @@ test('mount, reload, readback and New conversation never submit; saved messages 
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
   await expect(studio(page).getByText('This message came from saved state.', { exact: true })).toBeVisible();
+  await openDetails(page);
   await authoring(page).getByRole('button', { name: 'Check authoring status', exact: true }).click();
   await authoring(page).getByRole('button', { name: 'New conversation', exact: true }).click();
   await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toBeVisible();
@@ -366,11 +362,11 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
   const ui = studio(page);
   await expect(ui.getByText('Inspect the exact offered run.', { exact: true })).toBeVisible();
-  const heading = authoring(page).locator('.rs-authoring-heading');
-  await expect(heading).toContainText('Assistant configured');
+  const heading = ui.locator('.rs-chat-note');
+  await expect(heading).toContainText('Messages use your configured assistant');
   await expect(heading).not.toContainText(available.provider);
   await expect(heading).not.toContainText(available.model);
-  const offerButton = authoring(page).getByRole('button', { name: 'Open offered sample results', exact: true });
+  const offerButton = authoring(page).getByRole('button', { name: 'See the checked examples', exact: true });
   await expect(offerButton).toBeInViewport();
   await expect(offerButton).toBeEnabled();
   if (width === 683) {
@@ -379,33 +375,35 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     await expect(offerButton).toBeInViewport();
     await expect(offerButton).toBeEnabled();
   }
-  await authoring(page).getByRole('button', { name: 'Details', exact: true }).click();
+  await openDetails(page);
   const disclosure = ui.getByRole('region', { name: 'Assistant connection details', exact: true });
   await expect(disclosure).toContainText(`Provider: ${available.provider}`);
   await expect(disclosure).toContainText(`Model: ${available.model}`);
   await openDetails(page);
-  if (width === 683) await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+  await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
   await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent conversation draft');
   const requested = [];
   page.on('request', request => { const path = new URL(request.url()).pathname; if (path.startsWith('/api/extensions/evidence/')) requested.push(path.split('/').at(-1)); });
-  await authoring(page).getByRole('button', { name: 'Open offered sample results', exact: true }).click();
-  await expect(ui.getByRole('heading', { name: 'Sample run passed', exact: true })).toBeVisible();
+  await authoring(page).getByRole('button', { name: 'See the checked examples', exact: true }).click();
+  await expect(ui.getByRole('heading', { name: 'The examples match', exact: true })).toBeVisible();
   expect(requested).toEqual([first.evidence.id]);
-  await expect(ui.getByRole('button', { name: 'Approve this advice', exact: true })).toHaveCount(0);
+  await expect(ui.getByRole('button', { name: 'This is what I want', exact: true })).toHaveCount(0);
   if (eligible) {
     await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeEnabled();
     await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
+    await ui.getByText('Exact saved source and examples', { exact: true }).click();
     const savedSource = ui.getByLabel('Saved source for approval', { exact: true });
     await expect(savedSource).toBeVisible();
     expect(await savedSource.textContent()).toBe(source);
     await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
-    await ui.getByRole('button', { name: 'Approve this advice', exact: true }).click();
-    await expect(ui.getByRole('button', { name: 'Use this advice for me', exact: true })).toBeEnabled();
+    await ui.getByRole('button', { name: 'This is what I want', exact: true }).click();
+    await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
     const state = await (await page.request.get(`${demo.origin}/api/extensions`, { headers: { 'x-session-context': contextToken } })).json();
     expect(state.approvedEvidenceId).toBe(first.evidence.id);
     expect(state.evidence.id).toBe(latest.evidence.id);
     expect(state.selection).toEqual(latest.selection);
   } else {
+    await ui.getByText('About these examples', { exact: true }).click();
     await expect(ui.getByText(/Earlier run for current proposal/)).toBeVisible();
     await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
   }
@@ -513,4 +511,116 @@ test('saved lifecycle receipts preserve the complete loaded conversation when AI
   await expect(ui.getByText(/The sample run passed\./)).toBeVisible();
   await expect(ui.getByText(/^Saved conversation message /)).toHaveCount(42);
   expect(calls.turns).toHaveLength(0);
+});
+
+for (const [code, oversized] of [['SPEND_LIMIT', false], ['BUDGET_EXHAUSTED', false], ['PROVIDER_RATE_LIMIT', false], ['BUDGET_EXHAUSTED', true]]) test(`public authoring recovery distinguishes ${code}${oversized ? ' with oversized Unicode context' : ''} and only explicit continuation starts fresh work`, async ({ page, demo }) => {
+  const getDraftVersion = captureDraftVersion(page);
+  const correction = 'Keep open tasks at Pending; completed tasks must still show Done. Do not change the independent examples.';
+  let current = { ...conversation('limited-conversation', 4, 'BLOCKED', [
+    message('saved-intent', 'user', 'OLD_CONTEXT_ONLY: show read-only advice without editing tasks.'),
+    message('saved-question', 'assistant', 'Should completed tasks still show Done?'),
+    message('latest-correction', 'user', (oversized ? 'Earlier discussion: ' + '🧭אב'.repeat(3000) + '\n' : '') + correction),
+    message('saved-limit', 'assistant', 'The saved examples still describe your request.'),
+  ]), code };
+  const calls = await scriptAuthoring(page, {
+    onRead: async (_calls, id) => id ? current : { availability: available, conversations: [{ id: current.id, version: current.version,
+      status: current.status, runId: current.runId, creationOperationId: 'limited-creation', operationId: current.operation.id }], current },
+    onTurn: async (route, body) => {
+      current = conversation('explicit-continuation', 1, 'AWAITING_USER', [message('continued-user', 'user', body.text),
+        message('continued', 'assistant', 'The saved proposal is ready for your next choice.', 'clarification')],
+        { operation: { id: body.operationId, runId: 'run-explicit-continuation', version: 1 }, runId: 'run-explicit-continuation', draftVersion: body.expectedDraftVersion });
+      return route.fulfill({ status: 202, json: { operation: current.operation, conversation: current } });
+    },
+  });
+  await enterStudio(page, demo.origin);
+  const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+  const session = await (await page.request.get(demo.origin + '/api/session')).json();
+  const headers = { 'x-session-context': session.contextToken, origin: demo.origin };
+  const initial = await (await page.request.get(demo.origin + '/api/extensions', { headers })).json();
+  const prepared = await page.request.post(demo.origin + '/api/extensions/draft', { headers,
+    data: { templateId: initial.catalog[0].id, draftVersion: initial.draftVersion } });
+  expect(prepared.ok(), await prepared.text()).toBe(true);
+  const saved = await prepared.json();
+  await openDetails(page);
+  await ui.getByRole('button', { name: 'Reload saved state', exact: true }).click();
+  await expect.poll(getDraftVersion).toBe(saved.draftVersion);
+  await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+  await expect(ui.locator('.rs-yours').filter({ hasText: correction }).locator('p')).toHaveText((oversized ? 'Earlier discussion: ' + '🧭אב'.repeat(3000) + '\n' : '') + correction);
+  await expect(ui.getByText('Earlier discussion included', { exact: true })).toHaveCount(0);
+  await composer.fill('Keep this unsent request');
+  const continuation = ui.getByRole('button', { name: code === 'PROVIDER_RATE_LIMIT' ? 'Try again from saved work' : 'Continue from saved proposal', exact: true });
+  const status = ui.locator('.rs-chat').getByRole('status');
+  if (code === 'SPEND_LIMIT') {
+    await expect(status).toContainText('The shared authoring allowance is exhausted.');
+    await expect(status).not.toContainText('conversation reached its work limit');
+    await expect(continuation).toHaveCount(0);
+    expect(calls.turns).toHaveLength(0);
+    return;
+  }
+  if (code === 'PROVIDER_RATE_LIMIT') {
+    await expect(status).toHaveText('Your AI provider reached a request or account limit. Your draft is saved. Check provider usage or explicitly try again later. Nothing is retried automatically.');
+    await expect(status).toContainText('Nothing is retried automatically.');
+    await expect(status).not.toContainText('conversation reached its work limit');
+  } else await expect(status).toContainText('This conversation reached its work limit. Your saved proposal and examples are kept.');
+  await expect(status).not.toContainText('allowance is exhausted');
+  await expect(continuation).toBeEnabled();
+  expect(calls.turns).toHaveLength(0);
+  await continuation.click();
+  await expect(ui.getByText('The saved proposal is ready for your next choice.', { exact: true })).toBeVisible();
+  expect(calls.turns).toHaveLength(1);
+  expect(calls.turns[0]).toEqual({ conversationId: null, operationId: expect.any(String), expectedVersion: 0,
+    expectedDraftVersion: saved.draftVersion, text: expect.any(String) });
+  const sent = calls.turns[0].text;
+  const continuedBubble = ui.locator('.rs-yours').filter({ hasText: 'Continue from saved work.' });
+  const included = continuedBubble.getByLabel('Included earlier discussion', { exact: true });
+  await expect(continuedBubble.locator(':scope > p')).toHaveText('Continue from saved work.');
+  await expect(included).toBeHidden();
+  await continuedBubble.getByText('Earlier discussion included', { exact: true }).click();
+  await expect(included).toBeVisible();
+  await expect(included).toHaveText(sent);
+  await continuedBubble.getByText('Earlier discussion included', { exact: true }).click();
+  await expect(included).toBeHidden();
+  expect(sent).toMatch(/^Continue my saved proposal and examples using these earlier messages\. If the context is incomplete, ask before changing the examples\./);
+  expect(sent).toContain(correction);
+  expect(sent).toContain('You:');
+  expect(sent).not.toContain('Gather material references');
+  expect(sent).not.toContain('When you check an open task');
+  expect(sent).not.toContain('Advice appears when you choose');
+  expect(sent).not.toContain('Keep this unsent request');
+  expect(Buffer.byteLength(sent, 'utf8')).toBeLessThanOrEqual(8192);
+  expect(sent.isWellFormed()).toBe(true);
+  expect(Buffer.from(sent, 'utf8').toString('utf8')).toBe(sent);
+  const omitted = '[Some earlier conversation was omitted to fit this request.]';
+  if (oversized) {
+    expect(sent).toContain(omitted);
+    expect(sent).toContain('🧭אב');
+    expect(sent).not.toContain('OLD_CONTEXT_ONLY');
+  } else {
+    expect(sent).toContain('Studio: Should completed tasks still show Done?');
+    expect(sent).not.toContain(omitted);
+  }
+  expect(calls.turns[0].operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  expect(calls.turns[0].operationId).not.toBe('operation-limited-conversation');
+  await expect(composer).toHaveValue('Keep this unsent request');
+  await expect(continuation).toHaveCount(0);
+  await openDetails(page);
+  await ui.getByRole('button', { name: 'Check authoring status', exact: true }).click();
+  await expect(continuedBubble.locator(':scope > p')).toHaveText('Continue from saved work.');
+  await expect(included).toBeHidden();
+  expect(calls.turns).toHaveLength(1);
+  expect(calls.cancels).toHaveLength(0);
+  if (code === 'BUDGET_EXHAUSTED' && !oversized) {
+    await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+    await continuedBubble.getByText('Earlier discussion included', { exact: true }).click();
+    await expect(included).toBeVisible();
+    await page.reload();
+    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+    await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await expect(continuedBubble.locator(':scope > p')).toHaveText('Continue from saved work.');
+    await expect(included).toBeHidden();
+    await continuedBubble.getByText('Earlier discussion included', { exact: true }).click();
+    await expect(included).toHaveText(sent);
+    expect(current.messages[0].text).toBe(sent);
+    expect(calls.turns).toHaveLength(1);
+  }
 });
