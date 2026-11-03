@@ -11,6 +11,15 @@ const safeCodes = new Set(['AUTHORITY_DENIED', 'AUTHORITY_CHECK_FAILED', 'HOST_C
   'ADAPTER_EXCEPTION', 'ADAPTER_INVALID', 'ADAPTER_TRANSIENT', 'EXPRESSION_FAILED', 'BUDGET_EXCEEDED']);
 const abort = signal => { if (signal?.aborted) throw new AppError(499, 'Preparation stopped. Check saved state before trying again.'); };
 const allowedReceipts = [...['DONE', 'PENDING', 'NEEDS_ATTENTION'].map(code => ({ status: 'DISPLAYED', code })), { status: 'NOT_DISPLAYED' }];
+export function situation(example) {
+  const reads = example?.stubs?.filter(stub => stub.capability === 'tasks.get');
+  const response = reads?.length === 1 ? reads[0].response : undefined;
+  return {
+    taskStatus: response?.kind === 'SUCCESS' && ['OPEN', 'COMPLETED'].includes(response.value?.status) ? response.value.status : null,
+    readFailure: response?.kind === 'BUSINESS_REJECTION' && ['TASK_NOT_FOUND', 'ACCESS_DENIED'].includes(response.code) ? response.code
+      : response?.kind === 'TRANSIENT_FAILURE' ? 'TRANSIENT_FAILURE' : null,
+  };
+}
 export function simulationCases(templateId) {
   const call = { step: 'source', capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' } };
   return [
@@ -300,7 +309,9 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       catch { /* Historical proof remains readable without borrowing current scenario metadata. */ }
       const reports = payload.reports.map(item => {
         const original = originals.find(example => example.id === item.id);
-        return original ? { ...item, expected: { ...item.expected, consumption: JSON.parse(original.bytes).expect.consumption } } : item;
+        if (!original) return item;
+        const example = JSON.parse(original.bytes);
+        return { ...item, ...situation(example), expected: { ...item.expected, consumption: example.expect.consumption } };
       });
       return { id: proof.id, revisionId: proof.revision_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
         ...payload, reports, passed: passing(row, proof) };

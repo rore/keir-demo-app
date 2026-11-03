@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
-import { createLifecycle, simulationCases } from '../src/extension-lifecycle.mjs';
+import { createLifecycle, simulationCases, situation } from '../src/extension-lifecycle.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { loadHost } from '../src/extension-catalog.mjs';
 import { authoringExample, businessContext, evidenceSummary } from '../src/authoring-example.mjs';
@@ -93,6 +93,8 @@ test('agent discovery sends static supported context and worked source/scenario 
   }
   assert.equal(current.status, 'IDLE', JSON.stringify(current));
   assert.equal(requests.length, 2);
+  assert.match(requests[0].instructions, /plain text, without Markdown, tool names, UUIDs/);
+  assert.match(requests[0].instructions, /two or three concise sentences/);
   const receipt = JSON.parse(requests[1].input.find(item => item.type === 'function_call_output').output).result;
   assert.deepEqual(receipt.businessContext, businessContext);
   assert.ok(receipt.sourceExample.includes('NEEDS_ATTENTION'));
@@ -212,6 +214,11 @@ test('example source and independent cases pass the real compiler/runtime with s
   state = await lifecycle.simulate('maya', input(state), () => true);
   const evidence = lifecycle.evidence('maya', state.evidence.id);
   assert.equal(evidence.passed, true);
+  assert.deepEqual(evidence.reports.map(({ taskStatus, readFailure }) => [taskStatus, readFailure]), [
+    ['OPEN', null], ['COMPLETED', null], [null, 'TASK_NOT_FOUND'], [null, 'ACCESS_DENIED'], [null, 'TRANSIENT_FAILURE'],
+  ]);
+  const savedProof = JSON.parse(db.prepare('SELECT payload FROM extension_evidence WHERE id=?').get(state.evidence.id).payload);
+  assert.ok(savedProof.reports.every(item => !Object.hasOwn(item, 'taskStatus') && !Object.hasOwn(item, 'readFailure')));
   assert.deepEqual(evidence.reports.map(row => row.report.status), ['PASS', 'PASS', 'PASS', 'PASS', 'PASS']);
   assert.deepEqual(evidence.reports.slice(0, 2).map(row => row.report.native), [
     { classification: 'COMPLETED' }, { classification: 'COMPLETED' },
@@ -273,12 +280,27 @@ test('historical prepared evidence never borrows display expectations from a dif
   const historical = lifecycle.evidence('maya', id);
   assert.equal(historical.passed, false);
   assert.deepEqual(historical.reports, original.reports, 'a reused open case ID cannot confer current-suite expectations');
+  const summary = evidenceSummary(historical, authoringExample().cases);
+  assert.ok(summary.cases.every(item => item.taskStatus === null && item.readFailure === null), 'provider summaries cannot infer historical situations from reused IDs');
+});
+
+test('synthetic situation facts stay finite and unknown rather than guessing a task or observation', () => {
+  for (const response of [undefined, { kind: 'SUCCESS', value: { status: 'UNKNOWN' } },
+    { kind: 'BUSINESS_REJECTION', code: 'OTHER' }, { kind: 'FAILURE', code: 'TASK_NOT_FOUND' }]) {
+    assert.deepEqual(situation({ stubs: response ? [{ capability: 'tasks.get', response }] : [] }), { taskStatus: null, readFailure: null });
+  }
+  const stubs = [{ capability: 'tasks.get', response: { kind: 'SUCCESS', value: { status: 'OPEN' } } }];
+  assert.deepEqual(situation({ stubs: [...stubs, ...stubs] }), { taskStatus: null, readFailure: null });
+  const summary = evidenceSummary({ reports: [{ id: 'case', label: 'case', ...situation({ stubs }), expected: {},
+    report: { status: 'PASS', mismatches: [] } }] }, []);
+  assert.equal(summary.cases[0].taskStatus, 'OPEN');
+  assert.deepEqual(summary.cases[0].actual.consumption, {}, 'configured synthetic status is not an observed receipt');
 });
 
 test('mismatch receipts keep independent expectations and actual results without advice on errors', () => {
   const example = authoringExample(), incorrect = JSON.parse(example.cases[0]);
   incorrect.expect.outcome.result.classification = 'DONE'; incorrect.expect.consumption.code = 'DONE';
-  const original = JSON.stringify(incorrect), proof = { reports: [{ id: 'open', label: 'Open task', expected: { classification: 'COMPLETED', code: 'DONE' },
+  const original = JSON.stringify(incorrect), proof = { reports: [{ id: 'open', label: 'Open task', ...situation(incorrect), expected: { classification: 'COMPLETED', code: 'DONE' },
     report: { status: 'MISMATCH', native: { classification: 'COMPLETED' }, consumption: { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' },
       mismatches: [{ stage: 'CONSUMPTION', code: 'VALUE_MISMATCH' }] } }] };
   const summary = evidenceSummary(proof, [original]);
@@ -289,8 +311,9 @@ test('mismatch receipts keep independent expectations and actual results without
   assert.equal(summary.truncated, false);
   const changing = structuredClone(incorrect);
   changing.stubs.push({ ...structuredClone(changing.stubs[0]), response: { kind: 'SUCCESS', value: { id: 'sample-task', status: 'COMPLETED' } } });
-  assert.equal(evidenceSummary(proof, [JSON.stringify(changing)]).cases[0].taskStatus, null,
+  assert.equal(situation(changing).taskStatus, null,
     'several synthetic reads must not be presented as one known task state');
+  assert.equal(evidenceSummary(proof, [JSON.stringify(changing)]).cases[0].taskStatus, 'OPEN', 'summary uses verified proof projection instead of joining another supplied case');
   assert.equal(JSON.stringify(summary).includes('synthetic-key'), false);
   assert.equal(JSON.parse(original).expect.outcome.result.classification, 'DONE');
   const clipped = evidenceSummary({ reports: Array.from({ length: 9 }, (_, index) => ({ id: 'case-' + index, label: 'x'.repeat(140), expected: {},

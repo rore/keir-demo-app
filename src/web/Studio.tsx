@@ -20,7 +20,7 @@ type Outcome = { classification: string; code?: string; consumption?: { status: 
 type SavedSource = { revisionId: string; source: string; cases: string[]; suiteDigest: string | null };
 type Example = { label: string; description: string; source: string; cases: string[]; situations: { id: string; label: string; taskStatus: "OPEN" | "COMPLETED" | null }[] };
 type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"; identity: object; passed: boolean; reports: {
-  id: string; label: string; expected: Outcome;
+  id: string; label: string; expected: Outcome; taskStatus?: "OPEN" | "COMPLETED" | null; readFailure?: "TASK_NOT_FOUND" | "ACCESS_DENIED" | "TRANSIENT_FAILURE" | null;
   report: { status: string; native?: Outcome; consumption?: { status: string; code?: string }; mismatches: object[] };
 }[] };
 type Message = { id: number | string; who: "You" | "Studio"; text: string; evidenceId?: string; exampleCount?: number; context?: string };
@@ -282,8 +282,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn;
   const reviewReady = reviewed.current?.kind !== "authored" || !!reviewSource && reviewSource.key === review && reviewSource.ownerId === state?.owner.id && reviewSource.revisionId === state?.draft?.id && reviewSource.suiteDigest === state?.draft?.suiteDigest;
   const reviewedApproved = !!state?.approved && state.approvedEvidenceId === evidence?.id && review === reviewKey;
-  const exampleLabel = (item: Evidence["reports"][number], index: number) => (evidence?.revisionId === exampleRevision.current ? example?.situations.find(value => value.id === item.id)?.label : undefined)
-    ?? (item.label === item.id ? `Example ${index + 1}` : item.label);
+  const exampleLabel = (item: Evidence["reports"][number], index: number) => item.taskStatus === "OPEN" ? "Unfinished task" : item.taskStatus === "COMPLETED" ? "Completed task"
+    : (item.readFailure ? ({ TASK_NOT_FOUND: "Missing task", ACCESS_DENIED: "Task access denied", TRANSIENT_FAILURE: "Read temporarily unavailable" })[item.readFailure] : undefined) ?? `Example ${index + 1}`;
 
   function openPane(next?: "advice" | "results" | "review", invoker = document.activeElement) {
     const reading = ++readingRevision.current;
@@ -557,11 +557,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     initialized.current = true;
     const selected = state.selection.eligible && state.selection.revision?.id === state.draft?.id;
     const text = state.draft ? state.approved
-      ? selected ? `Your ${state.draft.label} advice is on. What would you like to change?`
-        : `Your saved ${state.draft.label} draft is approved. Choose Turn on for my tasks when you are ready. Your current advice has not changed.`
+      ? selected ? "Your task advice is on. What would you like to change?"
+        : "Your saved draft is approved. Choose Turn on for my tasks when you are ready. Your current advice has not changed."
       : state.draft.kind === "authored" && !state.draft.suiteDigest
-        ? `Your saved ${state.draft.label} draft is here. We can continue checking it. Your current advice has not changed.`
-        : `Your saved ${state.draft.label} draft is here. What would you like to change or check? Your current advice has not changed.`
+        ? "Your saved draft is here. We can continue checking it. Your current advice has not changed."
+        : "Your saved draft is here. What would you like to change or check? Your current advice has not changed."
       : "What would you like the advice on your tasks to say?";
     setMessages([{ id: ++messageId.current, who: "Studio", text: `${task ? `From your ${task.status} task “${task.title}”. ` : ""}${text}\n\nAdvice appears when you choose Check task advice on a saved task. Your tasks are not edited.` }]);
   }, [entry, state, trusted]);
@@ -907,13 +907,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {evidence && <article hidden={canvasView !== "results"} className="rs-sheet rs-results" aria-label="Sample results">
             <h3 id="studio-results-heading" tabIndex={-1}>{!observationsKnown ? "Some results were not observed" : evidence.passed ? "The examples match" : "An example needs a correction"}</h3>
             <section aria-label="Expected and actual sample results">{evidence.reports.map((item, index) => {
-              const situation = evidence.revisionId === exampleRevision.current ? example?.situations.find(value => value.id === item.id) : undefined;
               const observed = knownObservation(item.report.consumption), expected = knownObservation(item.expected.consumption);
-              return <article className="rs-example" key={item.id} aria-label={`Example: ${item.label}`}>
-                <div className="rs-example-task"><span className="rs-task-mark" aria-hidden="true">{situation?.taskStatus === "COMPLETED" ? "✓" : situation?.taskStatus === "OPEN" ? "○" : "–"}</span><div><small>Sample task{situation?.taskStatus ? ` · ${situation.taskStatus === "OPEN" ? "Open" : "Completed"}` : ""}</small><h4>{exampleLabel(item, index)}</h4></div></div>
+              return <article className="rs-example" key={item.id} aria-label={`Example: ${exampleLabel(item, index)}`}>
+                <div className="rs-example-task"><span className="rs-task-mark" aria-hidden="true">{item.taskStatus === "COMPLETED" ? "✓" : item.taskStatus === "OPEN" ? "○" : "–"}</span><div><small>Sample task{item.taskStatus === "OPEN" ? " · Unfinished" : item.taskStatus === "COMPLETED" ? " · Completed" : ""}</small><h4>{exampleLabel(item, index)}</h4></div></div>
                 <dl><div><dt>You wanted</dt><dd>{expectedAdvice(item.expected)}</dd></div><div><dt>In this example</dt><dd>{observedAdvice(item.report.consumption)}</dd></div></dl>
                 <p className={observed && expected && item.report.status === "PASS" ? "rs-match" : "rs-mismatch"}>{!observed ? "This result was not observed" : !expected ? "The expected advice was not recorded" : item.report.status === "PASS" ? "Matches what you wanted" : "This example needs a correction"}</p>
-                <details><summary>Technical run details</summary><pre>{JSON.stringify({ expected: item.expected, actual: item.report }, null, 2)}</pre></details>
+                <details><summary>Technical run details</summary><pre>{JSON.stringify({ id: item.id, expected: item.expected, actual: item.report }, null, 2)}</pre></details>
               </article>;
             })}</section>
             <details><summary>About these examples</summary><span>Saved sample run · {currentEvidence ? "Current proposal" : evidence.revisionId === state.draft?.id ? "Earlier run for current proposal" : "Earlier proposal"}</span>

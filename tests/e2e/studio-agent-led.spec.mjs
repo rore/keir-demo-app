@@ -56,10 +56,19 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await examples.click();
       await expect(ui.locator('.rs-example')).toHaveCount(5);
       if (viewport.width === 1440) {
+        await expect(ui.locator('.rs-example').first().getByRole('heading')).toHaveText('Unfinished task');
         await expect(ui.locator('.rs-example').first().locator('dl > div').nth(1)).toHaveText('In this exampleNot observed');
         await expect(ui.getByRole('heading', { name: 'Some results were not observed', exact: true })).toBeVisible();
         await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
         await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+        await page.route(`**/api/extensions/evidence/${prepared.evidence.id}`, async route => {
+          const response = await route.fetch(), proof = await response.json();
+          delete proof.reports[0].report.consumption;
+          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(proof) });
+        }, { times: 1 });
+        await ui.getByRole('button', { name: 'See what will change', exact: true }).click();
+        await expect(ui.getByRole('alert').filter({ hasText: 'The saved proposal or its observations could not be confirmed. Approval is unavailable.' })).toBeVisible();
+        await expect(ui.getByRole('button', { name: 'This is what I want', exact: true })).toHaveCount(0);
         await examples.click();
       }
       await expect(ui.locator('.rs-example').first()).toContainText('Needs attention');
@@ -71,7 +80,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await ui.getByRole('button', { name: 'See what will change', exact: true }).click();
       const review = ui.getByRole('article', { name: 'Review exact advice', exact: true });
       await expect(review).toBeVisible();
-      await expect(review.locator('li').first()).toContainText('Open task');
+      await expect(review.locator('li strong')).toHaveText(['Unfinished task', 'Completed task', 'Missing task', 'Task access denied', 'Read temporarily unavailable']);
+      mkdirSync('build/scenario-repair', { recursive: true });
+      await page.screenshot({ path: `build/scenario-repair/presentation-review-${viewport.width}x${viewport.height}.png` });
       await expect(review.getByLabel('Saved source for approval', { exact: true })).toBeHidden();
       await review.getByText('Exact saved source and examples', { exact: true }).click();
       const documents = await page.evaluate(async revisionId => {
@@ -109,10 +120,39 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved native title');
       await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
       await expect(page.getByRole('status').filter({ hasText: 'Task advice: Needs attention' })).toBeVisible();
+      await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+      await expect(ui.locator('.rs-chat')).toContainText('Your task advice is on. What would you like to change?');
+      await expect(ui.locator('.rs-chat')).not.toContainText('advice advice');
       expect(fixture.requests).toHaveLength(0);
     } finally { await fixture.close(); }
   });
 }
+
+test('an exact review without verified situation metadata keeps generic labels despite the scripted example', async ({ page }) => {
+  const fixture = await startAuthoringFixture({ unconfigured: true });
+  try {
+    await page.goto(fixture.origin);
+    await page.getByRole('button', { name: 'Continue as Maya' }).click();
+    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+    await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    const ui = studio(page);
+    await ui.getByRole('button', { name: 'Try a guided example · no AI', exact: true }).click();
+    await ui.getByRole('button', { name: 'Yes, keep Done for completed tasks', exact: true }).click();
+    await expect(ui.getByRole('button', { name: 'See what will change', exact: true })).toBeVisible();
+    const state = await saved(page);
+    await page.route(`**/api/extensions/evidence/${state.evidence.id}`, async route => {
+      const response = await route.fetch(), proof = await response.json();
+      for (const item of proof.reports) { delete item.taskStatus; delete item.readFailure; item.label = 'untrusted-case-label'; }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(proof) });
+    });
+    await ui.getByRole('button', { name: 'See what will change', exact: true }).click();
+    const review = ui.getByRole('article', { name: 'Review exact advice', exact: true });
+    await expect(review.locator('li strong')).toHaveText(['Example 1', 'Example 2', 'Example 3', 'Example 4', 'Example 5']);
+    await expect(review).not.toContainText('untrusted-case-label');
+    await expect(review.getByRole('button', { name: 'This is what I want', exact: true })).toBeDisabled();
+    expect((await saved(page)).approved).toBe(false); expect(fixture.requests).toHaveLength(0);
+  } finally { await fixture.close(); }
+});
 
 test('guided example does not replace an unrelated saved proposal on reentry', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });

@@ -206,9 +206,16 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.getByRole('heading', { name: 'The examples match', exact: true })).toBeVisible();
       expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
       await expect(ui.locator('.rs-example')).toHaveCount(fixture.metadata.cases.length);
+      const situationLabels = ['Unfinished task', 'Completed task', 'Missing task', 'Task access denied', 'Read temporarily unavailable'];
+      await expect(ui.locator('.rs-example h4')).toHaveText(situationLabels);
+      await expect(ui.locator('.rs-example').first()).toHaveAttribute('aria-label', 'Example: Unfinished task');
+      await expect(ui.locator('.rs-example').first().locator('pre')).toBeHidden();
+      await ui.locator('.rs-example').first().getByText('Technical run details', { exact: true }).click();
+      await expect(ui.locator('.rs-example').first().locator('pre')).toContainText('synthetic-open');
       await expect(ui.locator('.rs-example .rs-match')).toHaveCount(fixture.metadata.cases.length);
       await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
       await ui.getByRole('article', { name: 'Sample results', exact: true }).getByRole('button', { name: 'Review this advice', exact: true }).click();
+      await expect(ui.locator('.rs-review-examples strong')).toHaveText(situationLabels);
       await ui.getByText('Exact saved source and examples', { exact: true }).click();
       await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
       for (let index = 0; index < fixture.metadata.cases.length; index++)

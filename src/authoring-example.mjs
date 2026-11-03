@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { simulationCases } from './extension-lifecycle.mjs';
+import { simulationCases, situation } from './extension-lifecycle.mjs';
 
 export const businessContext = Object.freeze({
   application: 'Daymark',
@@ -21,12 +21,6 @@ export function authoringExample() {
   };
 }
 
-function situation(example) {
-  const reads = example?.stubs?.filter(stub => stub.capability === 'tasks.get');
-  const response = reads?.length === 1 ? reads[0].response : undefined;
-  return { taskStatus: response?.kind === 'SUCCESS' && ['OPEN', 'COMPLETED'].includes(response.value?.status) ? response.value.status : null };
-}
-
 // Project immutable synthetic proof, never task records or provider continuation text.
 export function evidenceSummary(proof, originals) {
   let truncated = proof.reports.length > 8;
@@ -42,7 +36,7 @@ export function evidenceSummary(proof, originals) {
     if (item.report.mismatches.length > 8) truncated = true;
     return {
       id: text(item.id), label: text(item.label), status: text(item.report.status),
-      ...situation(example),
+      taskStatus: item.taskStatus ?? null, readFailure: item.readFailure ?? null,
       expected: { ...fields(item.expected, ['classification', 'code']), consumption: fields(example?.expect?.consumption, ['status', 'code']) },
       actual: { native: fields(item.report.native, ['classification', 'code']), consumption: fields(item.report.consumption, ['status', 'code']) },
       mismatches: item.report.mismatches.slice(0, 8).map(item => ({ ...fields(item, ['stage', 'code']),
