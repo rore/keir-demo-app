@@ -1,8 +1,15 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
-const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
+const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
+const targetId = page => new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
 async function api(page, path, data) {
+  const id = targetId(page);
+  if (path === 'extensions' && data === undefined && id) path += `/${id}`;
+  else if (/^extensions\/(scenarios|revisions|evidence)(\/|$)/.test(path)) {
+    expect(id, 'A lifecycle read or mutation must name its saved customization.').toBeTruthy();
+    path = path.replace('extensions/', `extensions/${id}/`);
+  }
   const session = await (await page.request.get(new URL('/api/session', page.url()).href)).json();
   const response = await page.request.fetch(new URL(`/api/${path}`, page.url()).href, {
     method: data === undefined ? 'GET' : 'POST',
@@ -21,9 +28,11 @@ async function enter(page, origin) {
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
 }
 async function reopen(page) {
+  const id = targetId(page);
+  expect(id).toBeTruthy();
   await page.reload();
   await navigateCustomizations(page);
-  await page.getByRole('button', { name: 'Continue draft', exact: true }).click();
+  await page.locator(`#edit-${id}`).click();
 }
 const stages = ['compile', 'scenarios', 'simulate'];
 function observeStages(page, failure) {
@@ -33,13 +42,14 @@ function observeStages(page, failure) {
   page.on('request', request => {
     if (request.method() !== 'GET') return;
     const path = new URL(request.url()).pathname;
-    if (path === '/api/extensions') reads.state++;
-    if (path.startsWith('/api/extensions/revisions/')) reads.source++;
+    if (/^\/api\/extensions(?:\/[^/]+)?$/.test(path)) reads.state++;
+    if (/^\/api\/extensions\/[^/]+\/revisions\//.test(path)) reads.source++;
     if (path === '/api/authoring/example') reads.example++;
   });
   let interrupted = false;
-  const ready = page.route(/\/api\/extensions\/(compile|scenarios|simulate)$/, async route => {
-    const stage = new URL(route.request().url()).pathname.split('/').at(-1);
+  const ready = page.route(/\/api\/extensions(?:\/[^/]+\/(?:scenarios|simulate))?$/, async route => {
+    const path = new URL(route.request().url()).pathname;
+    const stage = path === '/api/extensions' ? 'compile' : path.split('/').at(-1);
     if (route.request().method() !== 'POST') return route.continue();
     attempted[stage]++;
     const stop = !interrupted && failure?.stage === stage;
@@ -90,7 +100,8 @@ for (const failure of [
     expect(calls.reads.source).toBeGreaterThan(beforeReads.source);
     expect(await api(page, 'extensions')).toEqual(partial);
     await ui.getByRole('button', { name: 'Continue checking this example', exact: true }).click();
-    await expect(ui.getByRole('button', { name: 'See 5 sample tasks', exact: true })).toBeVisible();
+    const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
+    await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     const completed = await api(page, 'extensions');
     expect(completed.evidence.passed).toBe(true);
     expect(completed.approved).toBe(false);
@@ -104,9 +115,22 @@ for (const failure of [
     expect(proof.revisionId).toBe(completed.draft.id);
     expect(proof.reports).toHaveLength(5);
     expect(proof.reports.every(item => item.report.status === 'PASS')).toBe(true);
-    await ui.getByRole('button', { name: 'See 5 sample tasks', exact: true }).click();
-    await expect(ui.locator('.rs-example')).toHaveCount(5);
-    await expect(ui.locator('.rs-example').getByText('Matches what you wanted', { exact: true })).toHaveCount(5);
+    const invitations = decision.getByRole('button', { name: /^Show the .* example$/ });
+    await expect(invitations).toHaveCount(1);
+    await invitations.click();
+    const preview = ui.getByRole('region', { name: 'Customization preview', exact: true });
+    for (const title of ['What an unfinished task would show', 'What a completed task would show', 'What happens with missing task', 'What happens with task access denied', 'What happens with read temporarily unavailable']) {
+      if (await preview.locator('#studio-results-heading').innerText() !== title) {
+        const other = preview.getByText('Other checked examples', { exact: true }).locator('..');
+        if (!await other.evaluate(node => node.open)) await other.locator(':scope > summary').click();
+        await other.getByRole('button', { name: title, exact: true }).click();
+      }
+      await expect(preview.locator('.rs-example')).toHaveCount(1);
+      await expect(preview.getByText('Matches what you wanted', { exact: true })).toBeVisible();
+    }
+    await preview.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+    await expect(invitations).toBeFocused();
+    expect((await api(page, 'extensions')).approved).toBe(false);
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });
@@ -122,14 +146,15 @@ test('guided recovery refuses matching source and label with different independe
       value.expect.consumption = { status: 'NOT_DISPLAYED' };
       return JSON.stringify(value);
     });
-    let prepared = await api(page, 'extensions/compile', { source: example.source, label: example.label, draftVersion: initial.draftVersion });
+    let prepared = await api(page, 'extensions', { operationId: crypto.randomUUID(), source: example.source, label: example.label });
+    await page.goto(`${fixture.origin}/#customization=${prepared.extension.id}`);
     prepared = await api(page, 'extensions/scenarios', { revisionId: prepared.draft.id, cases, draftVersion: prepared.draftVersion });
     const calls = observeStages(page);
     await calls.ready;
     await reopen(page);
     const ui = studio(page);
     await ui.getByRole('button', { name: 'Continue guided example · no AI', exact: true }).click();
-    await expect(ui.getByText('You have a saved proposal. You can continue it here; the guided example will not replace it.', { exact: true })).toBeVisible();
+    await expect(ui.getByText('Continue this customization here. To try a separate guided example, choose New customization from the collection; this example will not replace your saved work.', { exact: true })).toBeVisible();
     await expect(ui.getByRole('button', { name: 'Continue checking this example', exact: true })).toHaveCount(0);
     expect(await api(page, 'extensions')).toEqual(prepared);
     const exact = await api(page, `extensions/revisions/${prepared.draft.id}`);

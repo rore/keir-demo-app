@@ -102,7 +102,7 @@ async function unusedLoopbackPort() {
 }
 
 // Synthetic offline transport only; app, compiler, lifecycle and simulator are real.
-export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, staticRoot = fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
+export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');

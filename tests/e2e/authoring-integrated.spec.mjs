@@ -4,14 +4,33 @@ import { join, resolve } from 'node:path';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 // Offline native provider responses; every application/compiler/lifecycle operation is real.
-const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
+const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const authoring = studio;
+const decision = page => studio(page).getByRole('article', { name: 'Current decision', exact: true });
+function scopedPath(page, path, id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization')) {
+  if (path === 'authoring') {
+    expect(id, 'Authoring reads identify the intended saved customization.').toBeTruthy();
+    return `authoring?extensionId=${id}`;
+  }
+  if (path === 'extensions' && id) return `extensions/${id}`;
+  if (/^extensions\/(revisions|evidence)\//.test(path)) {
+    expect(id).toBeTruthy();
+    return path.replace('extensions/', `extensions/${id}/`);
+  }
+  return path;
+}
+async function navigate(page, destination) {
+  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  const select = page.getByLabel('Destination', { exact: true });
+  if (await select.isVisible()) await select.selectOption(destination.toLowerCase());
+  else await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: destination, exact: true }).click();
+}
 const send = async (page, text) => {
   await studio(page).getByLabel('Message to Studio', { exact: true }).fill(text);
   await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
 };
 async function openDetails(page) {
-  await studio(page).getByRole('button', { name: 'Manage', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'History and details', exact: true }).click();
   await expect(studio(page).locator('.rs-tools')).toHaveJSProperty('open', true);
 }
 
@@ -23,15 +42,17 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
     await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await expect(page).toHaveURL(/#customization=[^&]+/);
     const ui = studio(page), session = await (await page.request.get(`${fixture.origin}/api/session`)).json();
+    const exactItem = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     const read = async path => {
-      const response = await page.request.get(`${fixture.origin}/api/${path}`, { headers: { 'x-session-context': session.contextToken } });
+      const response = await page.request.get(`${fixture.origin}/api/${scopedPath(page, path, exactItem)}`, { headers: { 'x-session-context': session.contextToken } });
       expect(response.ok(), await response.text()).toBe(true); return response.json();
     };
     const selection = (await read('extensions')).selection;
     const mutations = [];
     page.on('request', request => {
-      if (request.method() === 'POST' && /\/api\/extensions\/(approve|activate)$/.test(new URL(request.url()).pathname)) mutations.push(request.url());
+      if (request.method() === 'POST' && /\/api\/extensions\/[^/]+\/(approve|activate)$/.test(new URL(request.url()).pathname)) mutations.push(request.url());
     });
     await send(page, 'Show Pending for open tasks and Done for completed tasks, with no advice when reading fails.');
     await expect(ui.getByText(fixture.metadata.mismatchText, { exact: true })).toBeVisible({ timeout: 20_000 });
@@ -44,20 +65,22 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     const completed = failedProof.reports.find(item => item.id === 'synthetic-completed');
     expect(completed.expected.code).toBe('DONE'); expect(completed.report.consumption.code).toBe('PENDING');
     expect(completed.report.status).toBe('MISMATCH'); expect(completed.report.mismatches.length).toBeGreaterThan(0);
-    await ui.getByRole('button', { name: 'See the checked examples', exact: true }).click();
-    await expect(ui.getByRole('heading', { name: 'An example needs a correction', exact: true })).toBeVisible();
+    await ui.getByRole('button', { name: 'Inspect saved examples from this message', exact: true }).click();
+    await ui.getByText('Other checked examples', { exact: true }).click();
+    await ui.getByRole('button', { name: 'What a completed task would show', exact: true }).click();
     const mismatch = ui.locator('.rs-example').filter({ hasText: 'This example needs a correction' });
     await expect(mismatch).toHaveCount(1);
     await expect(mismatch.locator('dd')).toHaveText(['Done', 'Pending']);
-    await expect(ui.getByRole('button', { name: 'Review this advice', exact: true })).toBeDisabled();
-    await expect(ui.getByRole('button', { name: 'This is what I want', exact: true })).toHaveCount(0);
+    await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
+    await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
     expect((await read('extensions')).approved).toBe(false); expect((await read('extensions')).selection).toEqual(selection);
     expect(mutations).toEqual([]);
     expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 
     // The eight-call conversation ceiling requires an explicit fresh conversation for this repair.
     await openDetails(page);
-    await ui.getByRole('button', { name: 'New conversation', exact: true }).click();
+    await ui.getByRole('button', { name: 'Continue current changes in a new conversation', exact: true }).click();
+    await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
     expect(fixture.requests).toHaveLength(5);
     await send(page, 'Correct the saved source so completed tasks show Done. Keep exactly the same independent expected examples.');
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
@@ -69,32 +92,24 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     const passedProof = await read(`extensions/evidence/${repaired.review.evidenceId}`);
     expect(passedProof.passed).toBe(true); expect(passedProof.reports.every(item => item.report.status === 'PASS')).toBe(true);
     expect((await read(`extensions/evidence/${failed.review.evidenceId}`))).toEqual(failedProof);
-    await ui.getByRole('button', { name: 'See the checked examples', exact: true }).click();
-    await expect(ui.getByRole('heading', { name: 'The examples match', exact: true })).toBeVisible();
-    await expect(ui.locator('.rs-example .rs-match')).toHaveCount(fixture.metadata.cases.length);
-    await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
-    await ui.getByText('Exact saved source and examples', { exact: true }).click();
+    await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+    await expect(decision(page).getByRole('button', { name: /^Show the .* example$/ })).toHaveCount(1);
+    await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
     for (let index = 0; index < saved.cases.length; index++)
       await expect(ui.getByLabel(`Saved example ${index + 1} for approval`, { exact: true })).toHaveText(wrong.cases[index]);
-    await expect(ui.getByRole('button', { name: 'This is what I want', exact: true })).toBeDisabled();
-    await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
-    await ui.getByRole('button', { name: 'This is what I want', exact: true }).click();
-    await expect(ui.getByRole('button', { name: 'This is what I want', exact: true })).toHaveCount(0);
+    await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
+    await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect((await read('extensions')).selection).toEqual(selection);
     await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
     await expect(ui.getByRole('article', { name: 'Advice is on', exact: true }).locator('h3#studio-completion')).toBeFocused();
     await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(repaired.review.revisionId);
     expect(mutations).toHaveLength(2);
-    await ui.getByRole('button', { name: 'See approved examples', exact: true }).click();
-    await ui.getByRole('button', { name: 'Review this advice', exact: true }).click();
-    const approvedDetails = ui.getByText('Reviewed examples and exact details', { exact: true });
-    await expect(approvedDetails.locator('..')).toHaveJSProperty('open', false);
-    await approvedDetails.click();
-    await ui.getByText('Exact saved source and examples', { exact: true }).click();
-    await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
-    await expect(ui.getByRole('button', { name: 'This is what I want', exact: true })).toHaveCount(0);
+    await openDetails(page);
+    await ui.getByRole('button', { name: 'Inspect saved source and examples', exact: true }).click();
+    await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toHaveText(fixture.metadata.source);
+    await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect(mutations).toHaveLength(2);
     expect(fixture.requests.map(item => item.name)).toEqual(Array.from({ length: 2 }, () => ['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']).flat());
@@ -111,7 +126,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await page.goto(fixture.origin);
       await page.getByRole('button', { name: 'Continue as Maya' }).click();
       if (provider === 'openai') {
-        await page.getByRole('button', { name: 'Customizations', exact: true }).click();
+        await navigate(page, 'Customizations');
         await page.getByRole('button', { name: 'New customization', exact: true }).click();
         await expect(authoring(page)).toContainText('Set up the assistant to create or change a customization.');
         const setupRequests = [];
@@ -139,9 +154,11 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await page.reload();
         expect(fixture.requests).toEqual([]);
       }
+      await navigate(page, 'Tasks');
       await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
       await page.getByLabel('Task title', { exact: true }).fill('Unsaved native title during offline authoring');
       await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+      await expect(page).toHaveURL(/#customization=[^&]+/);
       const ui = studio(page), panel = authoring(page);
       await expect(ui.locator('.rs-chat-note')).toContainText('Messages use your configured assistant');
       expect(fixture.requests).toEqual([]);
@@ -171,10 +188,10 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
       await send(page, 'Confirmed: OPEN means PENDING and COMPLETED means DONE. Use the independent synthetic cases.');
       await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
-      await expect(panel.getByRole('button', { name: 'See the checked examples', exact: true })).toBeEnabled();
+      await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
       if (provider === 'openai') {
         await page.setViewportSize({ width: 683, height: 384 });
-        await expect(panel.getByRole('button', { name: 'See the checked examples', exact: true })).toBeInViewport({ ratio: 1 });
+        await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeInViewport({ ratio: 1 });
         mkdirSync(resolve('build/screens'), { recursive: true });
         await page.screenshot({ path: resolve('build/screens', 'authoring-offer-short-finished.png'), fullPage: true });
         await page.setViewportSize({ width: 1440, height: 1000 });
@@ -184,8 +201,9 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 
       const session = await (await page.request.get(`${fixture.origin}/api/session`)).json();
+      const exactItem = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
       const read = async path => {
-        const response = await page.request.get(`${fixture.origin}/api/${path}`, { headers: { 'x-session-context': session.contextToken } });
+        const response = await page.request.get(`${fixture.origin}/api/${scopedPath(page, path, exactItem)}`, { headers: { 'x-session-context': session.contextToken } });
         expect(response.ok(), await response.text()).toBe(true); return response.json();
       };
       const conversation = (await read('authoring')).current;
@@ -199,33 +217,43 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       const evidenceRequests = [];
       page.on('request', request => {
         const path = new URL(request.url()).pathname;
-        if (path.startsWith('/api/extensions/evidence/')) evidenceRequests.push(path.split('/').at(-1));
+        if (/^\/api\/extensions\/[^/]+\/evidence\//.test(path)) evidenceRequests.push(path.split('/').at(-1));
       });
       await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent refinement while reviewing');
-      await panel.getByRole('button', { name: 'See the checked examples', exact: true }).click();
-      await expect(ui.getByRole('heading', { name: 'The examples match', exact: true })).toBeVisible();
-      expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
-      await expect(ui.locator('.rs-example')).toHaveCount(fixture.metadata.cases.length);
       const situationLabels = ['Unfinished task', 'Completed task', 'Missing task', 'Task access denied', 'Read temporarily unavailable'];
-      await expect(ui.locator('.rs-example h4')).toHaveText(situationLabels);
-      await expect(ui.locator('.rs-example').first()).toHaveAttribute('aria-label', 'Example: Unfinished task');
-      await expect(ui.locator('.rs-example').first().locator('pre')).toBeHidden();
-      await ui.locator('.rs-example').first().getByText('Technical run details', { exact: true }).click();
-      await expect(ui.locator('.rs-example').first().locator('pre')).toContainText('synthetic-open');
-      await expect(ui.locator('.rs-example .rs-match')).toHaveCount(fixture.metadata.cases.length);
+      const invitation = decision(page).getByRole('button', { name: 'Show the completed task example', exact: true });
+      await invitation.click();
+      for (const [index, label] of situationLabels.entries()) {
+        if (await ui.locator('.rs-example h4').innerText() !== label) {
+          const other = ui.getByText('Other checked examples', { exact: true }).locator('..');
+          if (!await other.evaluate(node => node.open)) await other.locator(':scope > summary').click();
+          const title = index === 0 ? 'What an unfinished task would show' : index === 1 ? 'What a completed task would show' : `What happens with ${label.toLowerCase()}`;
+          await other.getByRole('button', { name: title, exact: true }).click();
+        }
+        await expect(ui.locator('.rs-example')).toHaveCount(1);
+        await expect(ui.locator('.rs-example h4')).toHaveText(label);
+        await expect(ui.locator('.rs-example')).toHaveAttribute('aria-label', `Example: ${label}`);
+        await expect(ui.locator('.rs-example .rs-match')).toHaveCount(1);
+        if (!index) {
+          await expect(ui.locator('.rs-example pre')).toBeHidden();
+          await ui.locator('.rs-example').getByText('Technical run details', { exact: true }).click();
+          await expect(ui.locator('.rs-example pre')).toContainText('synthetic-open');
+        }
+      }
+      await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+      await expect(invitation).toBeFocused();
+      expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
       await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
-      await ui.getByRole('article', { name: 'Sample results', exact: true }).getByRole('button', { name: 'Review this advice', exact: true }).click();
-      await expect(ui.locator('.rs-review-examples strong')).toHaveText(situationLabels);
-      await ui.getByText('Exact saved source and examples', { exact: true }).click();
+      await expect(decision(page)).toContainText('This changes only your advice.');
+      await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
       for (let index = 0; index < fixture.metadata.cases.length; index++)
         await expect(ui.getByLabel(`Saved example ${index + 1} for approval`, { exact: true })).toHaveText(fixture.metadata.cases[index]);
-      await expect(ui.getByRole('button', { name: 'This is what I want', exact: true })).toBeDisabled();
+      expect((await read('extensions')).approved).toBe(false);
       mkdirSync(resolve('build/screens'), { recursive: true });
       await page.screenshot({ path: resolve('build/screens', `authoring-integrated-${provider}.png`), fullPage: true });
-      await ui.getByLabel('I reviewed these sample results and want this advice for my tasks.').check();
-      await ui.getByRole('button', { name: 'This is what I want', exact: true }).click();
-      await expect(ui.getByRole('button', { name: 'This is what I want', exact: true })).toHaveCount(0);
+      await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
+      await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
       await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
       await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
       expect((await read('extensions')).selection.revision.id).toBe(selectedA.revision_id);
@@ -241,7 +269,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       if (provider === 'openai') {
         await page.setViewportSize({ width: 683, height: 384 });
         await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
-        await expect(panel.getByRole('button', { name: 'See the checked examples', exact: true })).toBeInViewport({ ratio: 1 });
+        await expect(ui.getByRole('button', { name: 'History and details', exact: true })).toBeInViewport({ ratio: 1 });
         await page.screenshot({ path: resolve('build/screens', 'authoring-offer-short-reopened.png'), fullPage: true });
         expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(2);
       }
@@ -252,6 +280,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(2);
       if (provider === 'openai') {
         await page.setViewportSize({ width: 1440, height: 1000 });
+        await navigate(page, 'Tasks');
         await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
         await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
         const intended = 'Refine the saved advice after replacing assistant settings.';
@@ -270,13 +299,14 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await send(page, intended);
         await expect(panel.getByRole('alert')).toContainText('Start a new conversation');
         await openDetails(page);
-        await expect(panel.getByRole('button', { name: 'New conversation', exact: true })).toBeEnabled();
+        await expect(panel.getByRole('button', { name: 'Continue current changes in a new conversation', exact: true })).toBeEnabled();
         await expect(panel.getByRole('button', { name: 'Retry submitted request', exact: true })).toHaveCount(0);
         await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue(intended);
         await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible();
         expect((await read('authoring')).current.id).toBe(conversation.id);
         expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(3);
-        await panel.getByRole('button', { name: 'New conversation', exact: true }).click();
+        await panel.getByRole('button', { name: 'Continue current changes in a new conversation', exact: true }).click();
+        await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
         await send(page, intended);
         await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
         expect(fixture.requests.slice(callCount).map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);

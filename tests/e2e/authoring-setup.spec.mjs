@@ -19,8 +19,15 @@ const test = base.extend({
   },
 });
 
-const studio = page => page.getByRole('region', { name: 'Advice Studio', exact: true });
+const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const authoring = studio;
+async function navigate(page, destination) {
+  const main = page.getByRole('navigation', { name: 'Main navigation' });
+  const mobile = page.getByRole('combobox', { name: 'Destination', exact: true });
+  await expect.poll(async () => await main.isVisible().catch(() => false) || await mobile.isVisible().catch(() => false)).toBe(true);
+  if (await main.isVisible().catch(() => false)) await main.getByRole('button', { name: destination, exact: true }).click();
+  else await mobile.selectOption(destination.toLowerCase());
+}
 const choices = [
   { provider: 'openai', model: 'gpt-5.6-terra' },
   { provider: 'anthropic', model: 'claude-haiku-5-5' },
@@ -48,7 +55,9 @@ async function scriptSetup(page, options = {}) {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     if (url.pathname === '/api/authoring' && method === 'GET') {
       calls.authoringReads++;
-      const result = options.onAuthoringRead ? await options.onAuthoringRead(calls, state) : null;
+      const personalStudioRead = url.searchParams.has('extensionId') ? 0 : calls.authoringReads - 2;
+      const result = options.onAuthoringRead && personalStudioRead > 0
+        ? await options.onAuthoringRead({ ...calls, authoringReads: personalStudioRead }, state) : null;
       if (result?.status) return json(route, result.body ?? { message: 'Scripted status failure' }, result.status);
       return json(route, result ?? { availability: state.availability, conversations: [], current: null });
     }
@@ -81,13 +90,16 @@ async function enterStudio(page, origin, user = 'Maya') {
   await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');
   await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
   await expect(studio(page)).toBeVisible();
+  await navigate(page, 'Customizations');
+  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await expect(studio(page)).toBeVisible();
   await expect(authoring(page)).toBeVisible();
 }
 
 async function openConfigure(page) {
   const ui = studio(page), configure = ui.getByRole('button', { name: 'Configure', exact: true });
   if (!await configure.isVisible()) {
-    await ui.getByRole('button', { name: 'Manage', exact: true }).click();
+    await ui.getByRole('button', { name: 'History and details', exact: true }).click();
     const tools = ui.locator('details.rs-tools');
     if (!await tools.evaluate(node => node.open)) await tools.locator(':scope > summary').click();
   }
@@ -230,7 +242,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(cancelled).toBeHidden();
     await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toBeFocused();
     await noSecretInBrowser(page, reopenCancelSecret);
-    await page.getByRole('button', { name: 'Back to my task', exact: true }).click();
+    await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
+    await navigate(page, 'Tasks');
     await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved task title');
   });
 }
@@ -340,10 +353,12 @@ test('an owner switch fences a pending setup response and clears the old key fro
     await expect(page.getByRole('button', { name: /^Continue as Leo/ })).toBeVisible();
     await expect(dialog).toHaveCount(0);
     release();
+    await navigate(other, 'Tasks');
     await other.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await other.getByRole('button', { name: 'Manage task advice', exact: true }).click();
     await expect(studio(other)).toBeVisible();
     await page.getByRole('button', { name: /^Continue as Leo/ }).click();
+    await navigate(page, 'Tasks');
     await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
     await expect(authoring(page)).toBeVisible();
