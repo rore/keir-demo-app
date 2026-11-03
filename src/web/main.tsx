@@ -760,7 +760,8 @@ function Workspace({
         </main>
         {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} open={start => openStudio("overview", start)} focusAction={destinationFocus.current ?? ""} />}
         {destination === "studio" && <main className="studio-main"><Studio request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
-          start={studioStart} back={returnFromStudio} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
+          start={studioStart} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
+          back={returnFromStudio} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
       </div>
       <dialog
         ref={detailRef}

@@ -13,17 +13,18 @@
 .read-studio pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 260px; overflow: auto; }
 .read-studio .rs-primary { background: var(--green); border-color: var(--green); color: white; }
 .read-studio .rs-primary:hover:not(:disabled) { background: #172c36; }
-.rs-header { display: flex; flex-shrink: 0; justify-content: space-between; gap: 15px; align-items: center; padding: 14px 24px; background: #304651; color: #fff; }
+.rs-header { display: flex; flex-shrink: 0; justify-content: space-between; gap: 15px; align-items: center; padding: 10px 24px; background: #304651; color: #fff; }
 .rs-breadcrumb { font-size: 12px; color: #d1dde2; margin-bottom: 4px; }
 .read-studio .rs-header h1 { font-size: 22px; letter-spacing: -.02em; }
 .rs-header h1 span { font-size: 12px; font-weight: 500; margin-left: 8px; padding: 3px 7px; border: 1px solid #9fb2ba; border-radius: 4px; vertical-align: middle; }
+.rs-header-actions { display: flex; align-items: center; gap: 8px; }
 .read-studio .rs-header button { background: transparent; color: inherit; border-color: #89818a; }
 .read-studio .rs-header button:hover:not(:disabled) { background: #494449; }
 .rs-room { display: grid; grid-template-columns: minmax(0, calc((100% - 14px) * var(--rs-chat, 52) / 100)) 14px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .read-studio [hidden] { display: none !important; }
 .rs-room.rs-review-closed { grid-template-columns: minmax(0, 1fr); }
 .rs-review-closed .rs-chat { width: 100%; max-width: 800px; margin-inline: auto; }
-.rs-status-summary { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--line); background: #f4f7f7; }
+.rs-status-summary { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 20px; border-bottom: 1px solid var(--line); background: #f4f7f7; }
 .rs-status-summary > div:first-child { display: flex; flex-direction: column; flex-shrink: 0; font-size: 13px; }
 .rs-summary-actions { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .read-studio .rs-summary-actions button { padding: 5px 8px; font-size: 12px; }
@@ -35,7 +36,7 @@
 .rs-chat-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .rs-chat-head h2 { font-size: 20px; line-height: 1.3; letter-spacing: -.02em; }
 .rs-chat-head p { color: #605d60; margin-top: 9px; font-size: 14px; }
-.rs-authoring { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 0; max-height: 35%; border-bottom: 1px solid var(--line); background: #f4f7f7; font-size: 12px; }
+.rs-authoring { font-size: 13px; }
 .rs-authoring-heading { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 24px; }
 .rs-authoring-heading > p { flex: 1; margin: 0; }
 .rs-authoring-body { min-height: 0; overflow-y: auto; padding: 0 24px 8px; }
@@ -49,6 +50,22 @@
 .rs-message { margin-bottom: 23px; max-width: 65ch; overflow-wrap: anywhere; }
 .rs-message > strong { display: block; font-size: 13px; color: var(--green); margin-bottom: 5px; }
 .rs-message p { white-space: pre-wrap; }
+.rs-scripted, .rs-decision { padding: 16px; border-left: 3px solid var(--green); background: #f4f7f7; }
+.rs-scripted { padding: 0; border: 0; background: transparent; }
+.rs-scripted button, .rs-decision button { margin: 10px 8px 0 0; }
+.rs-working { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 24px; font-size: 13px; }
+.rs-review-examples { list-style: none; padding: 0; margin: 16px 0; }
+.rs-review-examples li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.rs-review-examples span { display: block; font-size: 14px; margin-top: 4px; }
+.rs-example { margin-top: 18px; padding: 16px; border: 1px solid #c5cac8; background: #fff; border-radius: 5px; }
+.rs-example-task { display: flex; align-items: center; gap: 12px; }
+.rs-task-mark { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 4px; color: var(--green); }
+.rs-example h4 { margin: 4px 0 0; font-size: 15px; }
+.rs-example dl { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0 12px; }
+.rs-example dt { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+.rs-example dd { margin: 0; font-size: 16px; font-weight: 600; }
+.rs-match { color: var(--green); }
+.rs-mismatch { color: #842c28; font-weight: 600; }
 .rs-yours { margin-left: auto; background: #f3f1ef; border-radius: 10px 10px 2px 10px; padding: 10px 15px; max-width: 88%; }
 .rs-yours > strong { color: #605d60; }
 .read-studio .rs-link { color: #702d39; border: 0; border-bottom: 1px solid #ba9a9c; padding: 3px 0; background: transparent; margin-top: 8px; }
@@ -127,7 +144,7 @@
   .rs-header { padding: 10px 16px; }
   .read-studio .rs-header button { max-width: 145px; font-size: 13px; }
   .rs-chat-head { padding: 12px 16px; }
-  .rs-chat-head p { display: none; }
+  .rs-chat-head p { font-size: 12px; margin: 0; }
   .rs-chat-head h2 { font-size: 17px; }
   .rs-messages { padding: 16px 16px 8px; }
   .read-studio .rs-composer { margin: 0 16px 8px; padding: 8px; }
@@ -136,6 +153,15 @@
   .rs-results th, .rs-results td { padding-inline: 6px; }
 }
 @media (max-height: 500px) {
+  .rs-canvas { padding: 10px 12px; }
+  .rs-results { padding: 12px; }
+  .rs-results h3 { margin-bottom: 6px; font-size: 16px; }
+  .rs-example { margin-top: 10px; padding: 10px; }
+  .rs-example dl { margin: 8px 0; gap: 10px; }
+  .rs-example dd { font-size: 14px; }
+  .rs-example p { margin: 0; font-size: 12px; }
+  .rs-example details { margin-top: 4px; }
+  .rs-example details summary { padding: 0; }
   .read-studio.rs-review-open .rs-breadcrumb, .read-studio.rs-review-open .rs-canvas-tabs { display: none; }
   .read-studio.rs-review-open .rs-header { padding: 4px 12px; }
   .read-studio.rs-review-open .rs-header button { max-width: none; white-space: nowrap; font-size: 12px; padding: 4px 8px; }
@@ -148,7 +174,7 @@
   .read-studio .rs-header h1 { font-size: 18px; }
   .rs-breadcrumb { margin-bottom: 0; font-size: 11px; }
   .rs-pane-tabs { padding-block: 4px; }
-  .rs-chat-head { display: none; }
+  .rs-chat-head { padding: 6px 12px; }
   .read-studio .rs-composer { margin: 0 12px 8px; padding: 6px; }
   .read-studio .rs-composer textarea { max-height: 38px; }
 }
