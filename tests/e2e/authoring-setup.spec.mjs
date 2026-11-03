@@ -106,15 +106,40 @@ async function noSecretInBrowser(page, secret) {
   expect(values.storage).not.toContain(secret);
 }
 
+async function saveContrast(button) {
+  return button.evaluate(element => {
+    const style = getComputedStyle(element);
+    const rgb = color => color.match(/[\d.]+/g).slice(0, 3).map(Number);
+    const surface = rgb(getComputedStyle(element.closest('.rs-setup-actions')).backgroundColor);
+    const opacity = Number(style.opacity);
+    const luminance = color => {
+      const channels = rgb(color).map((value, index) => (value * opacity + surface[index] * (1 - opacity)) / 255)
+        .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+      return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+    };
+    const text = luminance(style.color), background = luminance(style.backgroundColor);
+    return (Math.max(text, background) + 0.05) / (Math.min(text, background) + 0.05);
+  });
+}
+
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 683, height: 384 }]) {
   test(`Configure validates, saves safely, and preserves chat and native edits at ${viewport.width}x${viewport.height}`, async ({ page, demo }) => {
     await page.setViewportSize(viewport);
-    const { calls } = await scriptSetup(page);
+    let releaseRead;
+    const readGate = new Promise(resolve => { releaseRead = resolve; });
+    const { calls } = await scriptSetup(page, { onSetupRead: async calls => { if (calls.setupReads === 1) await readGate; return null; } });
     await enterStudio(page, demo.origin);
     const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
     await composer.fill('Keep this unsent authoring message');
     await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(1);
     const dialog = await openConfigure(page);
+    try {
+      const waitingSave = dialog.getByRole('button', { name: 'Save settings', exact: true });
+      await expect(waitingSave).toBeDisabled();
+      expect(await saveContrast(waitingSave)).toBeGreaterThanOrEqual(4.5);
+      mkdirSync('build/screens', { recursive: true });
+      await page.screenshot({ path: join('build/screens', `assistant-setup-disabled-${viewport.width}x${viewport.height}.png`), fullPage: true });
+    } finally { releaseRead(); }
     await expect(dialog.getByText('These settings are shared by all three people in this demo. Each person keeps their own customizations.', { exact: true })).toBeVisible();
     const service = dialog.getByLabel('Service', { exact: true }), model = dialog.getByLabel('Model', { exact: true });
     await expect(service.locator('option')).toHaveText(['openai', 'anthropic']);
@@ -129,6 +154,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(key).toHaveAttribute('type', 'password');
     await expect(key).toHaveAttribute('autocomplete', 'off');
     const save = dialog.getByRole('button', { name: 'Save settings', exact: true });
+    await expect(save).toBeEnabled();
+    expect(await saveContrast(save)).toBeGreaterThanOrEqual(4.5);
     await save.click();
     await expect(dialog.getByRole('alert')).toContainText('Enter an API key');
     await expect(key).toBeFocused();
@@ -156,6 +183,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await page.keyboard.press('Tab'); await expect(key).toBeFocused();
     await page.keyboard.press('Tab'); await expect(allowance).toBeFocused();
     await page.keyboard.press('Tab'); await expect(save).toBeFocused();
+    const outline = await save.evaluate(button => ({ style: getComputedStyle(button).outlineStyle, width: getComputedStyle(button).outlineWidth }));
+    expect(outline.style).not.toBe('none'); expect(parseFloat(outline.width)).toBeGreaterThan(0);
 
     const escapeSecret = 'synthetic-ui-escape-key';
     await key.fill(escapeSecret);

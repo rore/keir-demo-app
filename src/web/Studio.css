@@ -112,6 +112,7 @@
 .rs-setup-actions { flex: none; padding: 12px 20px; border-top: 1px solid var(--line); background: #fff; }
 .rs-setup-actions p { font-size: 12px; margin: 0 0 8px; }
 .rs-setup-actions > div { display: flex; gap: 10px; }
+.read-studio .rs-setup .rs-primary:disabled { opacity: 1; background: var(--muted); border-color: var(--muted); cursor: not-allowed; }
 .rs-mobile-link { display: none; }
 @media (max-width: 1120px), (max-height: 650px) {
   .rs-status-summary { display: block; padding: 7px 16px; }

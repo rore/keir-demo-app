@@ -168,7 +168,7 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
         </>}
       </div>
       <div className="rs-setup-actions"><p>Saving these settings won’t contact the service or use any allowance.</p>
-        <div><button className="primary" disabled={!setup || waiting || reading || readFailed}>{waiting ? "Saving settings…" : "Save settings"}</button>
+        <div><button className="primary rs-primary" disabled={!setup || waiting || reading || readFailed}>{waiting ? "Saving settings…" : "Save settings"}</button>
           <button type="button" onClick={() => callbacks.current.close(saving.current || uncertain.current)}>Cancel</button></div>
       </div>
     </form>
