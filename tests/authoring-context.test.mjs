@@ -170,6 +170,9 @@ test('example source and independent cases pass the real compiler/runtime with s
   state = await lifecycle.simulate('maya', input(state), () => true);
   const consumptionProof = lifecycle.evidence('maya', state.evidence.id);
   assert.equal(consumptionProof.passed, false);
+  assert.deepEqual(consumptionProof.reports[0].expected.consumption, { status: 'NOT_DISPLAYED' });
+  const storedProof = JSON.parse(db.prepare('SELECT payload FROM extension_evidence WHERE id=?').get(state.evidence.id).payload);
+  assert.equal(Object.hasOwn(storedProof.reports[0].expected, 'consumption'), false, 'public projection must not rewrite exact stored evidence');
   const consumerReport = consumptionProof.reports[0].report;
   assert.deepEqual(consumerReport.native, { classification: 'COMPLETED' });
   assert.deepEqual(consumerReport.consumption, { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' });
@@ -244,4 +247,3 @@ test('mismatch receipts keep independent expectations and actual results without
   assert.equal(clipped.cases[0].label.length, 128);
   assert.ok(businessContext.supported && businessContext.unavailable && businessContext.checking);
 });
-

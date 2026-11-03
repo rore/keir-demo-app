@@ -287,8 +287,13 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     },
     evidence(owner, id) {
       const proof = evidence(owner, id), row = revision(owner, proof.revision_id);
+      const payload = JSON.parse(proof.payload), originals = cases(row);
+      const reports = payload.reports.map(item => {
+        const original = originals.find(example => example.id === item.id);
+        return original ? { ...item, expected: { ...item.expected, consumption: JSON.parse(original.bytes).expect.consumption } } : item;
+      });
       return { id: proof.id, revisionId: proof.revision_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
-        ...JSON.parse(proof.payload), passed: passing(row, proof) };
+        ...payload, reports, passed: passing(row, proof) };
     },
     history(owner, before = Number.MAX_SAFE_INTEGER) {
       draft(owner);
