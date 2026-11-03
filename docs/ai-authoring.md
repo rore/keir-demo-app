@@ -15,7 +15,7 @@ The saved settings file is `ai-authoring.json` in the app's chosen data director
 
 The allowance is one positive, finite total shared across all demo owners in the database. The server reserves a conservative amount before each provider request. Reservations are durable and never refunded, including unused capacity, cancellation, interruption, or data reset. Changing settings or resetting data does not restore allowance. Choose an amount you are willing to spend; requests stop when it is exhausted. Do not put keys in browser code, chat, screenshots, logs, or public files.
 
-The selected provider receives your authoring text, the public host contract, draft source, synthetic cases and sanitized tool results. It does not receive session cookies, protected bindings or native task records. Avoid including unrelated private information in authoring messages.
+The selected provider receives your authoring text, the public host contract, static business guidance about supported task advice, a worked source/scenario, draft source, synthetic cases and bounded sanitized per-example results. Results distinguish independently expected behavior from actual observations and mismatches; a truncated result is explicitly marked incomplete. It does not receive session cookies, protected bindings or native task records. Avoid including unrelated private information in authoring messages.
 
 Without valid settings, AI authoring is unavailable; native tasks and saved advice remain available. For tool authors learning Keir, use the [core manual authoring guide](https://github.com/rore/keir-core/blob/main/docs/manual-authoring.md).
 
@@ -24,6 +24,10 @@ Changing the provider, model, key, or allowance requires starting a fresh conver
 ## Draft, verify, decide
 
 The model can suggest a read-only draft and help prepare examples. It cannot approve a draft or activate it. Treat model-written examples as proposals, not independent expectations.
+
+The assistant leads the conversation, asks about missing business choices, prepares the change and tries examples without changing tasks. It explains mismatches rather than changing expectations to make a check pass. The current contract can show Done, Pending or Needs attention from a task's status; it cannot create follow-ups, edit tasks or run background automation.
+
+The clearly labeled scripted example needs no AI credentials and makes no provider request. It demonstrates Needs attention for open tasks and Done for completed tasks using the real compiler, independent synthetic cases, simulator and exact review. The scripted replies are not an AI conversation; the saved draft, evidence and approval remain available after leaving the example. Starting an example must not silently replace an unrelated draft. Approval and turning it on remain separate human decisions.
 
 Before using advice, independently choose and review the expected scenarios, run them through the host compiler and simulator, and inspect the exact results. Approve only the exact revision with eligible host evidence. Then choose **Use this advice for me** as a separate human action. Until that choice, the currently selected advice remains in use.
 

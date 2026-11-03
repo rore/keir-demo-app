@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { AppError, transaction } from './data.mjs';
 import { loadHost, digest, json } from './extension-catalog.mjs';
 import { readAuthoringConfig } from './authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
 import { createAuthoringState, runAuthoringTurn } from './authoring-agent.mjs';
+import { authoringExample, businessContext, evidenceSummary } from './authoring-example.mjs';
 
 export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_INVALID', 'AI_CREDENTIALS_MISSING', 'HOST_UNAVAILABLE',
   'SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'CONVERSATION_LIMIT', 'CONFIG_CHANGED', 'BYTE_LIMIT', 'TOKEN_LIMIT', 'TIME_LIMIT', 'EXPIRED',
@@ -203,12 +203,15 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       const current = mapped(), proof = lifecycle.evidence(ctx.owner, handle.evidenceId);
       if (!same(current, handle) || proof.revisionId !== handle.revisionId || proof.identity?.suiteDigest !== handle.simulationSuiteIdentity) stop('STALE_DRAFT');
       return { ...current, evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest, eligible: proof.passed,
-        summary: { statuses: proof.reports.map(item => item.report.status) } };
+        summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId).cases) };
     };
     return {
       readDraft: () => { authorize(); return mapped(); },
-      discover: () => { authorize(); return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...definition.pins,
-        currentDraft: mapped(), sourceExample: readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8') }; },
+      discover: () => {
+        authorize(); const example = authoringExample();
+        return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...definition.pins,
+          currentDraft: mapped(), businessContext, sourceExample: example.source, scenarioExample: example.cases[0] };
+      },
       compile: (source, version, signal) => invoke(async () => {
         const value = await lifecycle.compile(ctx.owner, { source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
       }),
@@ -220,7 +223,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         const proof = lifecycle.evidence(ctx.owner, value.evidence.id);
         if (proof.revisionId !== revisionId) stop('HOST_RESULT_INVALID');
         return { ...draftHandles(value), evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest,
-          summary: { statuses: proof.reports.map(item => item.report.status) } };
+          summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId).cases) };
       }),
       readEvidence: () => proofFor(ctx.state.evidenceHandle),
     };

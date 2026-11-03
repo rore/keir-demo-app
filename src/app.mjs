@@ -11,6 +11,7 @@ import { loadHost } from './extension-catalog.mjs';
 import { createAuthoringService, AUTHORING_CODES } from './authoring-service.mjs';
 import { authoringChoices } from './authoring-config.mjs';
 import { assertAuthoringSettingsLocation, createAuthoringSettings } from './authoring-settings.mjs';
+import { authoringExample } from './authoring-example.mjs';
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
@@ -118,6 +119,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     return setupResponse();
   });
   app.get('/api/authoring', request => { noQuery(request); return lifecycleResponse(ai.list(authorize(request).userId)); });
+  app.get('/api/authoring/example', request => { authorize(request); noQuery(request); return lifecycleResponse(authoringExample()); });
   app.get('/api/authoring/conversations/:id', request => { noQuery(request); return lifecycleResponse(ai.read(authorize(request).userId, request.params.id)); });
   app.post('/api/authoring/turn', { bodyLimit: 65536 }, async (request, reply) => {
     noQuery(request); const session = authorize(request), lease = authoringLease(request);
