@@ -242,7 +242,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       const latest = candidate && db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(owner, candidate.id);
       const approval = candidate?.provenance === 'customer' && db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, candidate.id);
       const approvedProof = approval && evidence(owner, approval.evidence_id, extensionId);
-      const targets = db.prepare('SELECT r.* FROM extension_revisions r JOIN extension_revision_links l ON l.revision_id=r.id AND l.owner_id=r.owner_id WHERE r.owner_id=? AND l.extension_id=? AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id) ORDER BY r.rowid DESC LIMIT 20').all(owner, extensionId).filter(eligible);
+      const targets = db.prepare("SELECT r.* FROM extension_revisions r JOIN extension_revision_links l ON l.revision_id=r.id AND l.owner_id=r.owner_id WHERE r.owner_id=? AND l.extension_id=? AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id AND h.operation IN ('operator','activate','rollback')) ORDER BY r.rowid DESC LIMIT 20").all(owner, extensionId).filter(eligible);
       const evidenceHistory = db.prepare('SELECT e.id,e.revision_id AS revisionId FROM extension_evidence e JOIN extension_revision_links l ON l.revision_id=e.revision_id AND l.owner_id=e.owner_id WHERE e.owner_id=? AND l.extension_id=? ORDER BY e.rowid DESC LIMIT 20').all(owner, extensionId);
       const first = state.creation_operation_id && db.prepare('SELECT revision_id FROM extension_revision_links WHERE owner_id=? AND extension_id=? ORDER BY rowid LIMIT 1').get(owner, extensionId);
       return { owner: ownerView(owner), extension: { id: state.id, name: state.name, hookId: state.hook_id, creationOperationId: state.creation_operation_id },
@@ -307,6 +307,8 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         if (state.draft_version !== input.draftVersion || active.generation !== input.generation || active.revision_id !== input.revisionId) conflict();
         const row = revision(owner, input.revisionId, input.extensionId);
         if (!eligible(row)) conflict();
+        if (state.draft_id && state.draft_id !== row.id) db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)')
+          .run(owner, state.draft_id, active.generation, 'draft-superseded');
         if (row.template_id === 'authored') saveAuthored(owner, input.extensionId, content(row));
         else {
           const id = randomUUID();
@@ -397,7 +399,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     rollback(owner, input, authorize) {
       commit(owner, input.extensionId, authorize, () => {
         const row = revision(owner, input.revisionId, input.extensionId);
-        if (!db.prepare('SELECT 1 FROM extension_history WHERE owner_id=? AND revision_id=?').get(owner, row.id)) conflict();
+        if (!db.prepare("SELECT 1 FROM extension_history WHERE owner_id=? AND revision_id=? AND operation IN ('operator','activate','rollback')").get(owner, row.id)) conflict();
         change(owner, input.generation, row, 'rollback');
       }); return api.state(owner, input.extensionId);
     },

@@ -234,7 +234,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       discover: () => {
         authorize(); const example = authoringExample(), current = lifecycle.state(ctx.owner, ctx.extensionId);
         const baseId = current.draft?.id ?? ctx.baseRevisionId;
-        const currentProposal = baseId ? { ...lifecycle.source(ctx.owner, baseId, ctx.extensionId), truncated: false } : null;
+        const proposal = baseId ? lifecycle.source(ctx.owner, baseId, ctx.extensionId) : null;
+        const currentProposal = proposal ? { revisionId: proposal.revisionId, source: proposal.source, cases: proposal.cases,
+          suiteDigest: proposal.suiteDigest, truncated: false } : null;
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.cases = null; currentProposal.truncated = true; }
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.source = null; currentProposal.truncated = true; }
         const messages = decode(rowFor(ctx.owner, ctx.id)).view.messages;

@@ -5,7 +5,7 @@ import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 import { createLifecycle, simulationCases, situation } from '../src/extension-lifecycle.mjs';
 import { createCompiler } from '../src/compiler.mjs';
-import { loadHost } from '../src/extension-catalog.mjs';
+import { loadHost, loadCatalog } from '../src/extension-catalog.mjs';
 import { authoringExample, businessContext, evidenceSummary } from '../src/authoring-example.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { join } from 'node:path';
@@ -35,6 +35,7 @@ const noAiConfig = readAuthoringConfig({});
 
 async function api(t, options = {}) {
   const db = openData(':memory:'), origin = 'http://127.0.0.1:32124';
+  if (typeof options === 'function') options = options(db);
   const app = await createApp({ db, origin, compiler: {}, ...options });
   t.after(async () => { await app.close(); db.close(); });
   let auth = {};
@@ -171,7 +172,9 @@ test('rediscovery carries the saved Pending proposal and clarified intent while 
   const result = await settled(call, first.id);
   assert.equal(result.status, 'IDLE');
   const discovered = JSON.parse(requests[2].input.find(item => item.type === 'function_call_output').output).result;
-  assert.deepEqual(discovered.currentProposal, { ...proposal.json(), truncated: false });
+  assert.deepEqual(discovered.currentProposal, { revisionId: proposal.json().revisionId, source: proposal.json().source,
+    cases: proposal.json().cases, suiteDigest: proposal.json().suiteDigest, truncated: false });
+  for (const key of ['artifact', 'pins', 'hostCases', 'extensionId']) assert.equal(Object.hasOwn(discovered.currentProposal, key), false);
   assert.equal(discovered.currentProposal.source, source);
   assert.deepEqual(discovered.currentProposal.cases, cases);
   assert.deepEqual(discovered.conversationContext.messages.map(item => item.text), [
@@ -181,6 +184,46 @@ test('rediscovery carries the saved Pending proposal and clarified intent while 
   assert.equal(JSON.stringify(result).includes(source), false, 'raw proposal remains out of the transcript DTO');
   assert.equal(db.prepare('SELECT count(*) n FROM extension_authored WHERE owner_id=?').get('maya').n, 2);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_authored WHERE owner_id=?').get('leo').n, 0);
+});
+
+for (const oversizedSource of [false, true]) test(`discovery excludes large inspection artifacts and bounds ${oversizedSource ? 'escaped' : 'small'} saved source`, async t => {
+  const requests = [];
+  const artifact = loadCatalog().find(item => item.id === 'pending').artifactBytes;
+  let inspectedBytes = 0;
+  const source = oversizedSource ? '"'.repeat(64000) : 'Small saved source';
+  const providerFactory = settings => ({ reserveMicros: settings.reserveMicros, maxMicros: settings.maxMicros,
+    async complete(request) {
+      requests.push(request);
+      return { calls: requests.length === 1 ? [{ id: 'discover-only', name: 'discover_catalog', arguments: {} }] : [],
+        text: requests.length === 1 ? '' : 'I have the available saved context.', usage: { inputTokens: 4, outputTokens: 2 } };
+    } });
+  const compiler = { compile: async () => ({ artifact, diagnostics: [] }) };
+  const { db, call, login } = await api(t, db => {
+    const lifecycle = createLifecycle(db, { compiler });
+    return { compiler, authoring: { config, providerFactory, lifecycle: { ...lifecycle, source(...args) {
+      const inspection = { ...lifecycle.source(...args), artifact: 'x'.repeat(140000), pins: { inspectionOnly: true }, hostCases: ['inspection-only'] };
+      inspectedBytes = Buffer.byteLength(JSON.stringify(inspection));
+      return inspection;
+    } } } };
+  });
+  await login();
+  const saved = await call(extensionPath(db, 'compile'), { source, draftVersion: 0 });
+  assert.equal(saved.statusCode, 200, saved.body);
+  const inspected = (await call(extensionPath(db, 'revisions/' + saved.json().revisionId))).json();
+  assert.equal(inspected.artifact, artifact.toString('utf8'), 'The separate human inspection DTO remains intact.');
+  const started = await call('authoring/turn', { target: authoringTarget(db), conversationId: null, operationId: 'large-discovery',
+    text: 'Continue these saved changes.', expectedVersion: 0, expectedDraftVersion: saved.json().draftVersion });
+  assert.equal(started.statusCode, 202);
+  const result = await settled(call, started.json().conversation.id);
+  assert.equal(result.status, 'IDLE', JSON.stringify(result));
+  assert.equal(requests.length, 2, 'Bounded discovery can reach the provider continuation.');
+  assert.ok(inspectedBytes > 131072, 'The host inspection seam supplies large fields that the provider does not need.');
+  const discovery = JSON.parse(requests[1].toolResult.output).result;
+  assert.deepEqual(Object.keys(discovery.currentProposal).sort(), ['cases', 'revisionId', 'source', 'suiteDigest', 'truncated']);
+  assert.equal(discovery.currentProposal.source, oversizedSource ? null : source);
+  assert.equal(discovery.currentProposal.truncated, oversizedSource);
+  assert.ok(Buffer.byteLength(JSON.stringify(discovery.currentProposal)) <= 65536);
+  assert.ok(Buffer.byteLength(JSON.stringify(discovery)) <= 131072);
 });
 
 test('example source and independent cases pass the real compiler/runtime with separate review and activation', async t => {

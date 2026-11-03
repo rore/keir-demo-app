@@ -113,6 +113,39 @@ test('restart makes a clean head from the active revision and retains later draf
   assert.ok(restarted.evidenceHistory.some(item => item.id === laterProof));
 });
 
+for (const approved of [false, true]) test(`restart exposes a displaced never-active ${approved ? 'approved' : 'unchecked'} draft through read-only item history`, async t => {
+  const { db, lifecycle } = setup(t);
+  const created = await create(lifecycle, 'history-create', 'initial source', 'History item');
+  const extensionId = created.extension.id;
+  let active = await prepare(lifecycle, extensionId, 'attention');
+  active.state = lifecycle.approve('maya', { ...active.input, evidenceId: active.state.evidence.id }, authorized);
+  active.state = lifecycle.activate('maya', { ...active.input, generation: active.state.selection.generation }, authorized);
+  const bytes = 'Never-active saved source: original \u03bb\n';
+  let later = await lifecycle.compile('maya', { extensionId, source: bytes, draftVersion: active.state.draftVersion }, authorized);
+  if (approved) {
+    const cases = lifecycle.source('maya', active.state.draft.id, extensionId).cases;
+    later = await lifecycle.proposeScenarios('maya', { ...current(later), cases }, authorized);
+    later = await lifecycle.simulate('maya', current(later), authorized);
+    later = lifecycle.approve('maya', { ...current(later), evidenceId: later.evidence.id }, authorized);
+  }
+  const before = later.selection;
+  lifecycle.restart('maya', { extensionId, revisionId: before.revision.id, draftVersion: later.draftVersion, generation: before.generation }, authorized);
+  const reopened = createLifecycle(db);
+  const saved = reopened.state('maya', extensionId);
+  const entry = saved.history.find(row => row.operation === 'draft-superseded');
+  assert.ok(entry, 'A normal item read discovers the displaced draft without a simulation or caller-retained ID.');
+  assert.equal(entry.revisionId, later.draft.id);
+  assert.equal(reopened.source('maya', entry.revisionId, extensionId).source, bytes);
+  assert.deepEqual(saved.selection, before);
+  assert.equal(saved.approved, false);
+  assert.equal(saved.evidence, null);
+  assert.equal(saved.restoreTargets.some(row => row.id === entry.revisionId), false);
+  assert.throws(() => reopened.rollback('maya', { extensionId, revisionId: entry.revisionId, generation: before.generation }, authorized), { status: 409 });
+  assert.throws(() => reopened.approve('maya', { ...current(saved), evidenceId: later.evidence?.id ?? 'missing-proof' }, authorized));
+  assert.throws(() => reopened.source('leo', entry.revisionId, extensionId), { status: 404 });
+  assert.deepEqual(reopened.state('maya', extensionId).selection, before);
+});
+
 test('an admitted unbound item binds its hook only after valid compilation at the current draft version', async t => {
   const { db, lifecycle } = setup(t);
   const extensionId = 'unbound-item', operationId = 'unbound-operation', source = 'fixture source';
