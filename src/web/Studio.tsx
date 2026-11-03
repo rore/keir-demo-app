@@ -23,7 +23,7 @@ type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"
   id: string; label: string; expected: Outcome;
   report: { status: string; native?: Outcome; consumption?: { status: string; code?: string }; mismatches: object[] };
 }[] };
-type Message = { id: number | string; who: "You" | "Studio"; text: string; evidenceId?: string; exampleCount?: number };
+type Message = { id: number | string; who: "You" | "Studio"; text: string; evidenceId?: string; exampleCount?: number; context?: string };
 type Operation = { id: string; runId: string; version: number };
 type Conversation = {
   id: string; version: number; status: "IDLE" | "RUNNING" | "CANCELLING" | "AWAITING_USER" | "REVIEW_AVAILABLE" | "CANCELLED" | "BLOCKED" | "INTERRUPTED";
@@ -54,7 +54,7 @@ function authoringReason(code: string | null | undefined) {
   if (["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(code)) return "AI authoring is not configured.";
   if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved advice and review remain available.";
   if (code === "BUDGET_EXHAUSTED") return "This conversation reached its work limit. Your saved proposal and examples are kept. You can start a new conversation to continue; this does not add to the shared allowance.";
-  if (code === "PROVIDER_RATE_LIMIT") return "The AI service refused this request because of a request or account limit; the exact limit is unknown. Your saved work is kept. Check your provider's usage and limits, then explicitly try again later. Nothing is retried automatically.";
+  if (code === "PROVIDER_RATE_LIMIT") return "Your AI provider reached a request or account limit. Your draft is saved. Check provider usage or explicitly try again later. Nothing is retried automatically.";
   if (code === "CONFIG_CHANGED") return "Assistant settings changed. Start a new conversation to continue; your saved customization remains available.";
   if (code === "CONVERSATION_LIMIT") return "The saved conversation limit has been reached. Existing conversations are retained.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
@@ -76,11 +76,12 @@ const knownObservation = (value?: { status: string; code?: string }) => value?.s
 const observedAdvice = (value?: { status: string; code?: string }) => !knownObservation(value) ? "Not observed" : value?.status === "NOT_DISPLAYED" ? "No advice" : advice(value?.code);
 const expectedAdvice = (value: Outcome) => knownObservation(value.consumption) ? observedAdvice(value.consumption) : "Expected advice not recorded";
 
+const continuationPrefix = "Continue my saved proposal and examples using these earlier messages. If the context is incomplete, ask before changing the examples.\n\n";
 function continuationText(previous: Conversation) {
   const encoder = new TextEncoder();
   const messages = previous.messages.map(({ role, text }) => ({ role, text }));
   let truncated = false;
-  const render = () => "Continue my saved proposal and examples using these earlier messages. If the context is incomplete, ask before changing the examples.\n\n"
+  const render = () => continuationPrefix
     + messages.map(item => `${item.role === "user" ? "You" : "Studio"}: ${item.text}`).join("\n\n")
     + (truncated ? "\n\n[Some earlier conversation was omitted to fit this request.]" : "");
   while (encoder.encode(render()).length > 8192 && messages.length > 1) {
@@ -407,12 +408,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       const summary = { id: next.id, version: next.version, status: next.status, runId: next.runId, operationId: next.operation.id, creationOperationId: previous?.creationOperationId ?? creationOperationId! };
       return { ...index, conversations: [summary, ...index.conversations.filter(item => item.id !== next.id)] };
     });
-    const incoming: Message[] = next.messages.map(item => ({ id: `ai:${next.id}:${item.id}`, who: item.role === "user" ? "You" : "Studio", text: item.text }));
+    const incoming: Message[] = next.messages.map(item => ({ id: `ai:${next.id}:${item.id}`, who: item.role === "user" ? "You" : "Studio",
+      text: item.role === "user" && item.text.startsWith(continuationPrefix) ? "Continue from saved work." : item.text,
+      context: item.role === "user" && item.text.startsWith(continuationPrefix) ? item.text : undefined }));
     setMessages(old => {
       const ids = new Set(old.map(item => item.id));
       const byId = new Map(incoming.map(item => [item.id, item]));
       const merged = [...old.filter(item => typeof item.id !== "string" || item.id.startsWith(`ai:${next.id}:`)).map(item => {
-        const updated = byId.get(item.id); return updated && (updated.text !== item.text || updated.who !== item.who) ? updated : item;
+        const updated = byId.get(item.id); return updated && (updated.text !== item.text || updated.who !== item.who || updated.context !== item.context) ? updated : item;
       }), ...incoming.filter(item => !ids.has(item.id))];
       return merged.length === old.length && merged.every((item, index) => item === old[index]) ? old : merged;
     });
@@ -554,12 +557,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     initialized.current = true;
     const selected = state.selection.eligible && state.selection.revision?.id === state.draft?.id;
     const text = state.draft ? state.approved
-      ? selected ? `${state.draft.label} is already in use. Open saved examples, discuss a change or manage this customization.`
-        : `Your saved ${state.draft.label} choice is approved. Choose Use this advice for me when you are ready. Your current choice has not changed.`
+      ? selected ? `Your ${state.draft.label} advice is on. What would you like to change?`
+        : `Your saved ${state.draft.label} draft is approved. Choose Turn on for my tasks when you are ready. Your current advice has not changed.`
       : state.draft.kind === "authored" && !state.draft.suiteDigest
-        ? `Saved source: ${state.draft.label}. Continue in the conversation to prepare independent examples. Your current advice has not changed.`
-        : `Saved proposal: ${state.draft.label}. Continue with its sample examples or discuss a change. Your current advice has not changed.`
-      : "When you check an open task, what should it say?";
+        ? `Your saved ${state.draft.label} draft is here. We can continue checking it. Your current advice has not changed.`
+        : `Your saved ${state.draft.label} draft is here. What would you like to change or check? Your current advice has not changed.`
+      : "What would you like the advice on your tasks to say?";
     setMessages([{ id: ++messageId.current, who: "Studio", text: `${task ? `From your ${task.status} task “${task.title}”. ` : ""}${text}\n\nAdvice appears when you choose Check task advice on a saved task. Your tasks are not edited.` }]);
   }, [entry, state, trusted]);
   useEffect(() => {
@@ -813,7 +816,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <p>I can help change the advice you see when checking a task. Tell me what you want, and we'll work through a few examples together.</p>
           </article>}
           {messages.map(message => <article className={`rs-message ${message.who === "You" ? "rs-yours" : ""}`} key={message.id}>
-            <strong>{message.who}</strong><p>{message.text}</p>{message.evidenceId && <button disabled={!!busy} className="rs-link"
+            <strong>{message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}{message.evidenceId && <button disabled={!!busy} className="rs-link"
               onClick={() => void showEvidence(message.evidenceId!)}>See {message.exampleCount} sample {message.exampleCount === 1 ? "task" : "tasks"}</button>}
           </article>)}
           {!conversation && !scripted && <button className="rs-link" disabled={disabled} onClick={() => void loadExample()}>{state?.draft?.label === "Scripted example: task advice" ? "Continue guided example · no AI" : "Try a guided example · no AI"}</button>}
@@ -826,7 +829,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           </article>}
           {conversation?.review && <article className="rs-message"><button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>See the checked examples</button>
             {!conversation.review.eligible && <p>You can inspect these saved examples. They do not yet support approval of this proposal.</p>}</article>}
-          {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>}
+          {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
           {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT"].includes(conversation?.code ?? "") && !activeAuthoring && <button disabled={disabled || !authoring?.availability.available || (authoring?.conversations.length ?? 0) >= 8} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue from saved proposal"}</button>}
           {completion && selectedDraft && <article className="rs-message rs-decision" aria-label="Advice is on"><h3 id="studio-completion" tabIndex={-1}>On for your tasks</h3><p>Choose Check task advice on a saved task to see the change. Your tasks are unchanged.</p>
             <button className="rs-primary" onClick={back}>{task ? "Return to my task" : "Return to customizations"}</button>
@@ -859,14 +862,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           <div ref={chatEnd} />
         </div>
         {newMessages && <button className="rs-new-messages" onClick={() => { const log = chatEnd.current?.parentElement; if (log) log.scrollTop = log.scrollHeight; followConversation.current = true; setNewMessages(false); }}>New messages ↓</button>}
-        {!(scripted && completion && selectedDraft) && authoring && !authoring.availability.available && ["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <div className="rs-setup-notice"><p>Set up the assistant to create or change a customization.</p><button id="assistant-configure" onClick={openSetup}>Configure</button></div>}
-        {authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
-        {setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
+        {!scripted && authoring && !authoring.availability.available && ["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <div className="rs-setup-notice"><p>Set up the assistant to create or change a customization.</p><button id="assistant-configure" onClick={openSetup}>Configure</button></div>}
+        {!scripted && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
+        {!scripted && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
-        <form hidden={scripted && completion && selectedDraft} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Studio</label>
+        <form hidden={scripted} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Studio</label>
           <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder="Describe task advice or answer a question…" />
           <button disabled={scripted || !authoring?.availability.available || disabled || !text.trim()}>Send</button></form>
-        <p hidden={scripted && completion && selectedDraft} className="rs-chat-note">{scripted ? "This example uses the choices above. Return to your request to describe a different rule." : authoring?.availability.available ? "Messages use your configured assistant. Your messages are saved." : "You decide whether to approve and turn on a change."}</p>
+        <p hidden={scripted} className="rs-chat-note">{authoring?.availability.available ? "Messages use your configured assistant. Your messages are saved." : "You decide whether to approve and turn on a change."}</p>
       </section>
       <div hidden={!reviewOpen} className="rs-divider" role="separator" tabIndex={0} aria-label="Resize conversation and advice" aria-orientation="vertical"
         aria-valuemin={limits.min} aria-valuemax={limits.max} aria-valuenow={width}
