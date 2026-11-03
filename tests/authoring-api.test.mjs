@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises';
-import { openData } from '../src/data.mjs';
+import { AppError, openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
@@ -428,24 +428,94 @@ for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lo
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
 });
 
-test('duplicate-key original scenario JSON is rejected by native validation before any suite revision is saved', async t => {
-  const valid = simulationCases('pending')[0].bytes.toString();
-  const duplicate = '{"id":"other",' + valid.slice(1);
-  const fake = wire('anthropic', (body, index) => {
+for (const provider of ['openai', 'anthropic']) for (const defect of ['duplicate-key', 'missing-error-path', 'duplicate-id'])
+test(`${provider} repairs ${defect} native scenario rejection without changing original expectations or limits`, async t => {
+  const cases = simulationCases('pending').filter(item => item.id !== 'host-denied').map(item => '\n ' + item.bytes.toString() + '\n');
+  const malformed = JSON.parse(cases[2]); delete malformed.expect.outcome.error.path;
+  const invalid = defect === 'duplicate-key' ? ['{"id":"private-hostile-instruction",' + cases[0].trim().slice(1)]
+    : defect === 'missing-error-path' ? [cases[0], JSON.stringify(malformed)] : [cases[0], cases[0]];
+  let compiled, saved, db, service, lifecycle;
+  const fake = wire(provider, (body, index) => {
     if (index === 0) return { name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 0 } };
-    assert.equal(index, 1);
-    const compiled = lastTool('anthropic', body).result;
-    return { name: 'propose_scenarios', arguments: { revisionId: compiled.revisionId, cases: [duplicate], expectedDraftVersion: 1 } };
+    const prior = lastTool(provider, body);
+    if (index === 1) {
+      compiled = prior.result;
+      return { name: 'propose_scenarios', arguments: { revisionId: compiled.revisionId, cases: invalid, expectedDraftVersion: 1 } };
+    }
+    if (index === 2) {
+      assert.deepEqual(prior, { ok: true, result: { diagnostics: [{ code: defect === 'duplicate-id' ? 'DUPLICATE_SCENARIO_ID' : 'INVALID_SCENARIO',
+        path: defect === 'duplicate-key' ? '/cases/0' : '/cases/1' }] } });
+      assert.equal(lifecycle.state('maya').draft.id, compiled.revisionId);
+      assert.equal(lifecycle.state('maya').draftVersion, 1); assert.equal(lifecycle.state('maya').suiteDigest, null);
+      assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 1);
+      assert.equal(db.prepare('SELECT suite FROM extension_authored').get().suite, null);
+      assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
+      assert.equal(reserved(db), configFor(provider).reserveMicros * 3);
+      return { name: 'propose_scenarios', arguments: { revisionId: compiled.revisionId, cases, expectedDraftVersion: 1 } };
+    }
+    if (index === 3) {
+      saved = prior.result; assert.equal(saved.draftVersion, 2); assert.notEqual(saved.revisionId, compiled.revisionId);
+      return { name: 'simulate_draft', arguments: { revisionId: saved.revisionId, expectedDraftVersion: 2 } };
+    }
+    assert.equal(index, 4); assert.ok(prior.result.summary.statuses.every(status => status === 'PASS'));
+    return { name: 'offer_review', arguments: { summary: 'Review the independently expected examples.' } };
   });
-  const { db, service, lifecycle } = direct(t, { config: configFor('anthropic'), fetchImpl: fake.fetchImpl });
-  const started = await service.turn('maya', input('duplicate-json'), lease('session'));
-  const blocked = await service.wait('maya', started.conversation.id);
-  assert.equal(blocked.status, 'BLOCKED'); assert.equal(blocked.code, 'TOOL_FAILED');
-  assert.equal(lifecycle.state('maya').draftVersion, 1);
-  assert.equal(lifecycle.state('maya').suiteDigest, null);
-  assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 1);
-  assert.equal(db.prepare('SELECT suite FROM extension_authored').get().suite, null);
-  assert.equal(fake.requests.length, 2);
+  ({ db, service, lifecycle } = direct(t, { config: configFor(provider), fetchImpl: fake.fetchImpl }));
+  const selection = lifecycle.state('maya').selection;
+  const started = await service.turn('maya', input('scenario-repair'), lease('session'));
+  const finished = await service.wait('maya', started.conversation.id);
+  assert.equal(finished.status, 'REVIEW_AVAILABLE'); assert.equal(finished.review.eligible, true); assertDto(finished);
+  assert.deepEqual(lifecycle.source('maya', saved.revisionId).cases, cases);
+  assert.equal(lifecycle.source('maya', saved.revisionId).source, source);
+  assert.equal(lifecycle.state('maya').draftVersion, 2);
+  assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 2);
+  assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
+  assert.deepEqual(lifecycle.state('maya').selection, selection);
+  assert.deepEqual(rowState(db).counts, { calls: 5, tools: 5, compiles: 1, simulations: 1, clarifications: 0, inputs: 1 });
+  assert.equal(fake.requests.length, 5); assert.equal(reserved(db), configFor(provider).reserveMicros * 5);
+});
+
+test('only allowlisted scenario admission diagnostics are repairable; other host failures stay terminal', async t => {
+  const valid = { code: 'INVALID_SCENARIO', path: '/cases/0' };
+  for (const [status, diagnostics, expected] of [
+    [400, undefined, 'TOOL_FAILED'], [400, [{ ...valid, code: 'SETUP_ERROR' }], 'TOOL_FAILED'],
+    [400, [{ ...valid, code: 'CONSUMER_ERROR' }], 'TOOL_FAILED'], [400, [{ ...valid, path: '/cases/8' }], 'TOOL_FAILED'],
+    [400, [{ ...valid, path: '/private-hostile-instruction' }], 'TOOL_FAILED'], [400, [{ ...valid, message: 'private-hostile-instruction' }], 'TOOL_FAILED'],
+    [400, [], 'TOOL_FAILED'], [400, [valid, valid], 'TOOL_FAILED'], [500, [valid], 'TOOL_FAILED'],
+    [401, [valid], 'TOOL_FAILED'], [422, [valid], 'TOOL_FAILED'], [409, [valid], 'STALE_DRAFT'], [499, [valid], 'CANCELLED'], [429, [valid], 'AI_BUSY'],
+  ]) {
+    const fake = wire('openai', (body, index) => {
+      if (index === 0) return { name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 0 } };
+      assert.equal(index, 1);
+      return { name: 'propose_scenarios', arguments: { revisionId: lastTool('openai', body).result.revisionId, cases: ['{}'], expectedDraftVersion: 1 } };
+    });
+    const { db, service, lifecycle } = direct(t, { fetchImpl: fake.fetchImpl });
+    lifecycle.proposeScenarios = () => { throw Object.assign(new AppError(status, 'private-hostile-instruction'), { diagnostics }); };
+    const started = await service.turn('maya', input('terminal-scenario'), lease('session'));
+    const finished = await service.wait('maya', started.conversation.id);
+    assert.equal(finished.code, expected); assert.equal(finished.status, expected === 'CANCELLED' ? 'CANCELLED' : 'BLOCKED');
+    assert.equal(JSON.stringify(finished).includes('private-hostile-instruction'), false);
+    assert.equal(fake.requests.length, 2); assert.equal(lifecycle.state('maya').draftVersion, 1);
+    assert.equal(db.prepare('SELECT suite FROM extension_authored').get().suite, null);
+    assert.equal(reserved(db), configFor().reserveMicros * 2);
+  }
+});
+
+test('public scenario rejection stays HTTP400 and returns only a host-constructed case diagnostic', async t => {
+  const { db, call, login } = await api(t, { config: configFor() });
+  await login();
+  const compiled = (await call('extensions/compile', { source, draftVersion: 0 })).json();
+  const valid = simulationCases('pending')[0].bytes.toString();
+  for (const [cases, diagnostic] of [
+    [['{"id":"private-hostile-instruction",' + valid.slice(1)], { code: 'INVALID_SCENARIO', path: '/cases/0' }],
+    [[valid, valid], { code: 'DUPLICATE_SCENARIO_ID', path: '/cases/1' }],
+  ]) {
+    const response = await call('extensions/scenarios', { revisionId: compiled.draft.id, draftVersion: 1, cases });
+    assert.equal(response.statusCode, 400); assert.deepEqual(response.json().diagnostics, [diagnostic]);
+    assert.equal(response.body.includes('private-hostile-instruction'), false);
+    assert.equal((await call('extensions')).json().draftVersion, 1);
+    assert.equal(db.prepare('SELECT suite FROM extension_authored').get().suite, null);
+  }
 });
 
 for (const secondLength of [8192, 6000]) test(`near-full public transcript with ${secondLength}-byte next input stays readable and never strands RUNNING`, async t => {

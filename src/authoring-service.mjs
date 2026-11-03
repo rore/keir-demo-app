@@ -190,11 +190,15 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   function bindings(ctx) {
     const authorize = () => { if (!ctx.context.current()) stop('STALE_CONTEXT'); };
     const mapped = () => draftHandles(lifecycle.state(ctx.owner));
-    const invoke = work => tracked(ctx, async () => {
+    const invoke = (work, scenario = false) => tracked(ctx, async () => {
       authorize(); try { return await work(); }
       catch (cause) {
         if (cause instanceof AuthoringError) throw cause;
-        if (cause?.status === 422 && Array.isArray(cause.diagnostics)) return { diagnostics: cause.diagnostics };
+        if (scenario && cause instanceof AppError && cause.status === 400 && Array.isArray(cause.diagnostics)
+            && cause.diagnostics.length === 1 && cause.diagnostics.every(item => object(item) && Object.keys(item).length === 2
+              && ['INVALID_SCENARIO', 'DUPLICATE_SCENARIO_ID'].includes(item.code) && typeof item.path === 'string' && /^\/cases\/[0-7]$/.test(item.path)))
+          return { diagnostics: cause.diagnostics.map(({ code, path }) => ({ code, path })) };
+        if (!scenario && cause?.status === 422 && Array.isArray(cause.diagnostics)) return { diagnostics: cause.diagnostics };
         stop(cause?.status === 409 ? 'STALE_DRAFT' : cause?.status === 429 ? 'AI_BUSY' : cause?.status === 499 ? 'CANCELLED' : 'TOOL_FAILED');
       }
     });
@@ -223,13 +227,13 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         while (length(recent) > 16384) { recent.shift(); truncated = true; }
         return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...definition.pins,
           currentDraft: mapped(), currentProposal, conversationContext: { messages: recent, truncated },
-          businessContext, sourceExample: example.source, scenarioExample: example.cases[0] };
+          businessContext, sourceExample: example.source, scenarioExample: example.cases[0], scenarioExamples: example.cases };
       },
       compile: (source, version, signal) => invoke(async () => {
         const value = await lifecycle.compile(ctx.owner, { source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
       }),
       proposeScenarios: (revisionId, cases, version) => invoke(async () => draftHandles(await lifecycle.proposeScenarios(ctx.owner,
-        { revisionId, cases, draftVersion: version }, authorize, { signal: ctx.controller.signal }))),
+        { revisionId, cases, draftVersion: version }, authorize, { signal: ctx.controller.signal })), true),
       simulate: (revisionId, version, signal) => invoke(async () => {
         const value = await lifecycle.simulate(ctx.owner, { revisionId, draftVersion: version }, authorize, { signal });
         if (value.revisionId !== revisionId || value.draftVersion !== version || !value.evidence?.id) stop('HOST_RESULT_INVALID');

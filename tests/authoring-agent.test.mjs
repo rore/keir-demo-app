@@ -231,6 +231,22 @@ test('case schema is closed and original malformed JSON strings reach native adm
   assert.deepEqual(JSON.parse(f.requests[1].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
 });
 
+test('scenario diagnostics preserve current handles, enforce the draft fence and consume the existing budget', async () => {
+  const ready = { revisionId: 'compiled', draftVersion: 1, suiteDigest: null };
+  for (const stale of [false, true]) {
+    const f = fixture([call('propose_scenarios', { revisionId: 'compiled', cases: ['{}'], expectedDraftVersion: 1 })], ready);
+    f.host.proposeScenarios = () => {
+      if (stale) f.setDraft({ revisionId: 'external', draftVersion: 2, suiteDigest: null });
+      return { diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }] };
+    };
+    const result = await f.run({ limits: { calls: 1 } });
+    assert.equal(result.code, stale ? 'STALE_DRAFT' : 'BUDGET_EXHAUSTED');
+    assert.deepEqual(f.state.handles, ready); assert.equal(f.state.counts.tools, 1); assert.equal(f.state.counts.calls, 1);
+    assert.equal(f.context.budget.remainingMicros, 990); assert.equal(f.requests.length, 1); assert.deepEqual(f.events, []);
+    if (!stale) assert.deepEqual(JSON.parse(f.state.pending.output), { ok: true, result: { diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }] } });
+  }
+});
+
 test('synchronous admission precedes the first await and each dispatch/result precedes the next effect', async () => {
   const f = fixture([call('discover_catalog')]);
   assert.deepEqual({ ordinal: f.state.dispatchOrdinal, inFlight: f.state.inFlight, checkpoint: f.state.checkpoint,

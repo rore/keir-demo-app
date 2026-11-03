@@ -97,6 +97,14 @@ test('agent discovery sends static supported context and worked source/scenario 
   assert.deepEqual(receipt.businessContext, businessContext);
   assert.ok(receipt.sourceExample.includes('NEEDS_ATTENTION'));
   assert.ok(JSON.parse(receipt.scenarioExample).expect);
+  assert.deepEqual(receipt.scenarioExamples, authoringExample().cases);
+  assert.deepEqual(receipt.scenarioExamples.map(text => JSON.parse(text).id), ['open', 'completed', 'missing', 'business-denied', 'transient']);
+  assert.ok(Buffer.byteLength(JSON.stringify(receipt)) < 131072);
+  for (const text of receipt.scenarioExamples) {
+    const row = JSON.parse(text);
+    assert.deepEqual(Object.keys(row.stubs[0].args), ['taskId']);
+    if (row.stubs[0].response.kind !== 'SUCCESS') assert.deepEqual(row.expect.consumption, { status: 'NOT_DISPLAYED' });
+  }
   for (const id of taskIds) assert.equal(JSON.stringify(receipt).includes(id), false);
   assert.equal(JSON.stringify(current).includes('scenarioExample'), false);
 });

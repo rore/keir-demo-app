@@ -227,13 +227,20 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       const suiteBytes = json(input.cases);
       if (Buffer.byteLength(suiteBytes) > 131072) throw new AppError(413, 'The complete scenario suite exceeds 128 KiB.');
       const ids = new Set();
-      for (const text of input.cases) {
+      for (const [index, text] of input.cases.entries()) {
         abort(signal); authorize();
         // Denied entry reuses native strict case validation without dispatch or evidence creation.
         const report = await runReadSimulation(selectionInput(item), fixture(owner, item, authorize, false), Buffer.from(text));
-        if (['INVALID_SCENARIO', 'SETUP_ERROR', 'CONSUMER_ERROR'].includes(report.status)) throw new AppError(400, 'A scenario is invalid for the host contract.');
+        if (report.status === 'INVALID_SCENARIO') {
+          const error = new AppError(400, 'A scenario is invalid for the host contract.');
+          error.diagnostics = [{ code: 'INVALID_SCENARIO', path: `/cases/${index}` }]; throw error;
+        }
+        if (['SETUP_ERROR', 'CONSUMER_ERROR'].includes(report.status)) throw new AppError(400, 'A scenario is invalid for the host contract.');
         const id = JSON.parse(text).id;
-        if (ids.has(id)) throw new AppError(400, 'Scenario IDs must be unique.');
+        if (ids.has(id)) {
+          const error = new AppError(400, 'Scenario IDs must be unique.');
+          error.diagnostics = [{ code: 'DUPLICATE_SCENARIO_ID', path: `/cases/${index}` }]; throw error;
+        }
         ids.add(id);
       }
       commit(owner, authorize, () => {
