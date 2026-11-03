@@ -208,9 +208,21 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     return {
       readDraft: () => { authorize(); return mapped(); },
       discover: () => {
-        authorize(); const example = authoringExample();
+        authorize(); const example = authoringExample(), current = lifecycle.state(ctx.owner);
+        const currentProposal = current.draft?.kind === 'authored' ? { ...lifecycle.source(ctx.owner, current.draft.id), truncated: false } : null;
+        if (currentProposal && length(currentProposal) > 65536) { currentProposal.cases = null; currentProposal.truncated = true; }
+        if (currentProposal && length(currentProposal) > 65536) { currentProposal.source = null; currentProposal.truncated = true; }
+        const messages = decode(rowFor(ctx.owner, ctx.id)).view.messages;
+        let truncated = messages.length > 8;
+        const recent = messages.slice(-8).map(({ role, text }) => {
+          const points = Array.from(text); if (points.length > 1024) truncated = true;
+          return { role, text: points.slice(0, 1024).join('') };
+        });
+        // Keep combined discovery inside the existing tool byte ceiling, including escaped text.
+        while (length(recent) > 16384) { recent.shift(); truncated = true; }
         return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...definition.pins,
-          currentDraft: mapped(), businessContext, sourceExample: example.source, scenarioExample: example.cases[0] };
+          currentDraft: mapped(), currentProposal, conversationContext: { messages: recent, truncated },
+          businessContext, sourceExample: example.source, scenarioExample: example.cases[0] };
       },
       compile: (source, version, signal) => invoke(async () => {
         const value = await lifecycle.compile(ctx.owner, { source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
