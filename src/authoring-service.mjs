@@ -10,10 +10,10 @@ export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_IN
   'SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'CONVERSATION_LIMIT', 'CONFIG_CHANGED', 'BYTE_LIMIT', 'TOKEN_LIMIT', 'TIME_LIMIT', 'EXPIRED',
   'RUN_INTERRUPTED', 'CANCELLED', 'STALE_CONTEXT', 'STALE_DRAFT', 'STALE_CONVERSATION', 'AI_BUSY', 'PROVIDER_TIMEOUT',
   'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', 'PROVIDER_RESPONSE_INVALID',
-  'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED']);
+  'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
 const codeFor = value => AUTHORING_CODES.includes(value) ? value : 'TOOL_FAILED';
 const safeMessage = code => ({
-  AI_NOT_CONFIGURED: 'AI authoring is not configured. Manual authoring and saved advice still work.',
+  AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create advice. Saved advice still works.',
   AI_CONFIG_INVALID: 'The operator AI configuration needs attention.', AI_CREDENTIALS_MISSING: 'The operator AI credentials are unavailable.',
   SPEND_LIMIT: 'The operator AI allowance has been reached.', AI_BUSY: 'Another authoring request is still settling. Check its saved state.',
   STALE_DRAFT: 'The draft changed. Read saved state before continuing.', STALE_CONVERSATION: 'The conversation changed. Read saved state before continuing.',
@@ -39,7 +39,7 @@ const resourcePolicy = 'bounded-ai-authoring/2';
 export function createAuthoringService({ db, lifecycle, config = readAuthoringConfig(), fetchImpl, limits,
   checkpointFault = () => {}, providerFactory = value => createAuthoringProvider(value, { fetchImpl }) }) {
   const live = new Map(); let closing = false; let definition;
-  try { definition = loadHost(); } catch { /* AI setup failure never disables native/manual operation. */ }
+  try { definition = loadHost(); } catch { /* AI setup failure never disables native tasks or saved advice. */ }
   const rowFor = (owner, id) => db.prepare('SELECT * FROM authoring_conversations WHERE id=? AND owner_id=?').get(id, owner);
   const held = () => {
     const value = db.prepare('SELECT reserved_micros FROM authoring_budget WHERE id=1').get()?.reserved_micros;
@@ -151,7 +151,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           if (!item || item.outcome || !['SUCCESS', 'REJECTED', 'UNKNOWN'].includes(cp.outcome)) stop('HOST_RESULT_INVALID'); item.outcome = cp.outcome;
         }
         if (journal.length > 16) stop('BUDGET_EXHAUSTED');
-        const saved = { ...state, journal, transport: { provider: config.provider, model: config.model, policy: resourcePolicy },
+        const saved = { ...state, journal, transport: { provider: config.provider, model: config.model, policy: resourcePolicy,
+          settingsRevision: config.settingsRevision ?? null },
           runLedger: { base: ledger.base, reserved: additional, ordinal: cp.phase === 'DISPATCH' ? cp.ordinal : ledger.ordinal } };
         const ops = prior?.operations ?? [];
         if (cp.phase === 'ADMIT') {
@@ -241,7 +242,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     if (row && (row.version !== input.expectedVersion || ['RUNNING', 'CANCELLING'].includes(row.status)) || !row && input.expectedVersion !== 0) throw error(409, 'STALE_CONVERSATION');
     const current = draftHandles(lifecycle.state(owner)); if (current.draftVersion !== input.expectedDraftVersion) throw error(409, 'STALE_DRAFT');
     if (prior?.state.transport && (prior.state.transport.provider !== config.provider || prior.state.transport.model !== config.model
-        || prior.state.transport.policy !== resourcePolicy)) throw error(409, 'CONFIG_CHANGED');
+        || prior.state.transport.policy !== resourcePolicy
+        || (prior.state.transport.settingsRevision ?? null) !== (config.settingsRevision ?? null))) throw error(409, 'CONFIG_CHANGED');
     const id = row?.id ?? randomUUID(), runId = randomUUID(), controller = new AbortController();
     const state = prior?.state ?? createAuthoringState({ ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId });
     const fresh = !row || state.sessionId !== lease.sessionId || ['CANCELLED', 'BLOCKED', 'INTERRUPTED'].includes(row.status) || !same(state.handles, current);
@@ -319,7 +321,14 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     return read(owner, id);
   }
   return {
-    list, read, turn, cancel,
+    list, read, turn, cancel, availability,
+    configure(next, persist) {
+      if (closing || live.size) throw error(409, 'AI_BUSY');
+      if (next.status !== 'ready') throw error(400, 'AI_CONFIG_INVALID');
+      if (next.maxMicros < held()) throw error(409, 'SPEND_LIMIT');
+      // No await: admission, persistence and installation share one event-loop turn.
+      persist(); config = next;
+    },
     invalidateSession(sessionId) {
       for (const ctx of live.values()) if (ctx.lease.sessionId === sessionId) {
         db.prepare("UPDATE authoring_conversations SET cancel_requested=1,status='CANCELLING' WHERE id=? AND run_id=?").run(ctx.id, ctx.runId);

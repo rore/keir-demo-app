@@ -9,6 +9,8 @@ test-results/
 playwright-report/
 .tools/
 .data/
+ai-authoring.json
+.ai-authoring-*.tmp
 *.log
 .DS_Store
 Thumbs.db

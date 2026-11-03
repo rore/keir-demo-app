@@ -282,6 +282,7 @@ test('cancel remains CANCELLING and blocks replacement until an ignoring compile
   assert.equal(service.cancel('maya', current.id, { runId: current.runId, expectedVersion: current.version }, lease('session')).status, 'CANCELLING');
   await tick(); await tick();
   assert.equal(service.read('maya', current.id).status, 'CANCELLING');
+  assert.throws(() => service.configure(configFor(), () => assert.fail('busy compiler must not persist settings')), { code: 'AI_BUSY' });
   await assert.rejects(service.turn('maya', input('replacement'), lease('session')), { code: 'AI_BUSY' });
   assert.equal(lifecycle.state('maya').draftVersion, initial.draftVersion);
   release.resolve();
@@ -310,9 +311,11 @@ test('cancel retains the run until an abort-insensitive fetch and response cance
   await tick(); await tick();
   assert.equal(service.read('maya', id).status, 'CANCELLING');
   await assert.rejects(service.turn('maya', input('during-fetch'), lease('session')), { code: 'AI_BUSY' });
+  assert.throws(() => service.configure(configFor(), () => assert.fail('busy fetch must not persist settings')), { code: 'AI_BUSY' });
   fetched.resolve(); await cancelEntered.promise;
   assert.equal(service.read('maya', id).status, 'CANCELLING');
   await assert.rejects(service.turn('maya', input('during-body-cancel'), lease('session')), { code: 'AI_BUSY' });
+  assert.throws(() => service.configure(configFor(), () => assert.fail('pending response cancellation must not persist settings')), { code: 'AI_BUSY' });
   cancelled.resolve();
   const result = await service.wait('maya', id);
   assert.equal(result.status, 'CANCELLED'); assert.equal(requests, 1);

@@ -8,11 +8,14 @@ import { createTaskRead } from './task-read.mjs';
 import { createLifecycle } from './extension-lifecycle.mjs';
 import { loadHost } from './extension-catalog.mjs';
 import { createAuthoringService, AUTHORING_CODES } from './authoring-service.mjs';
+import { authoringChoices } from './authoring-config.mjs';
+import { assertAuthoringSettingsLocation, createAuthoringSettings } from './authoring-settings.mjs';
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
 
-export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler, authoring = {} }) {
+export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler, authoring = {}, authoringSettingsFile }) {
+  assertAuthoringSettingsLocation(authoringSettingsFile, staticRoot);
   const url = new URL(origin);
   const app = Fastify({ logger: false, bodyLimit: 24 * 1024, requestTimeout: 10_000, connectionTimeout: 10_000, ajv: { customOptions: { removeAdditional: false } } });
   const sessions = new Map();
@@ -23,7 +26,8 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     catch { /* Missing compiler assets never prevent native or stored advice startup. */ }
   }
   const lifecycle = createLifecycle(db, { compiler });
-  const ai = createAuthoringService({ db, lifecycle, ...authoring });
+  const settings = createAuthoringSettings({ file: authoringSettingsFile, config: authoring.config });
+  const ai = createAuthoringService({ db, lifecycle, ...authoring, config: settings.config });
   app.addHook('onClose', () => ai.close());
   const taskAdvice = createTaskRead({ getTask: service.getTask, lifecycle });
   await app.register(cookie);
@@ -55,6 +59,11 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   });
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof AppError ? error.status : error.statusCode ?? 500;
+    if (request.url.split('?')[0] === '/api/authoring/setup') {
+      const message = error instanceof AppError ? error.message : ({ 400: 'Send valid JSON settings using the supported fields.',
+        413: 'Settings exceed the request size limit.', 415: 'Send application/json.' }[status] ?? 'Settings could not be processed safely.');
+      return reply.code(status).send({ message, ...(AUTHORING_CODES.includes(error.code) ? { code: error.code } : {}) });
+    }
     const diagnostics = error instanceof AppError && Array.isArray(error.diagnostics)
       && Buffer.byteLength(JSON.stringify(error.diagnostics)) <= 16384 ? error.diagnostics : undefined;
     reply.code(status).send({ message: status >= 500 && !(error instanceof AppError) ? 'Something could not be saved. Please try again.' : error.message,
@@ -93,6 +102,18 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     const session = authorize(request);
     return { sessionId: session.authoringEpoch, current: () => { try { return authorize(request) === session; } catch { return false; } } };
   }
+  const setupResponse = () => ({ configuration: settings.publicConfiguration(), choices: authoringChoices, availability: ai.availability() });
+  function setupAuthority(request) {
+    authorize(request); noQuery(request);
+    if (request.headers.origin !== undefined && request.headers.origin !== origin) throw new AppError(403, 'Use the same local app origin.');
+  }
+  app.get('/api/authoring/setup', request => { setupAuthority(request); return setupResponse(); });
+  app.post('/api/authoring/setup', { bodyLimit: 8192 }, request => {
+    setupAuthority(request);
+    const next = settings.prepare(request.body);
+    ai.configure(next.config, next.persist);
+    return setupResponse();
+  });
   app.get('/api/authoring', request => { noQuery(request); return lifecycleResponse(ai.list(authorize(request).userId)); });
   app.get('/api/authoring/conversations/:id', request => { noQuery(request); return lifecycleResponse(ai.read(authorize(request).userId, request.params.id)); });
   app.post('/api/authoring/turn', { bodyLimit: 65536 }, async (request, reply) => {

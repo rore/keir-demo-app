@@ -2,15 +2,15 @@
 
 A small local task workspace: projects, tasks, notes and a satisfying completion flow. Sign in as Maya, Leo or Sam, three fictional demo people with independent data. Your work stays in a local SQLite database across restarts.
 
-The shared app lockup shows **Daymark** with **A KEIR Demo** directly beneath it. Use **Tasks** for native work and **Customizations** to discover Task advice, start a customization conversation, or reopen a saved item. Try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Optional server-configured AI authoring can help draft advice; it is unavailable until an operator configures a supported provider and spend cap. The **Details and recovery → Developer qualification · authored source** tool remains available for manual source and independently written examples. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut to the same item; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
+The shared app lockup shows **Daymark** with **A KEIR Demo** directly beneath it. Use **Tasks** for native work and **Customizations** to discover Task advice, start a customization conversation, or reopen a saved item. The task-advice assistant can prepare advice for review; an operator can configure AI in the local **Configure** dialog. Try sample tasks, review and approve a prepared read-only rule, then explicitly put it in use. Maya and Leo begin with different rules; Sam starts without one. Task details retain **Check task advice** and a **Manage task advice** shortcut to the same item; returning preserves unsaved title/notes. Native CRUD remains independent of advice. Running the app needs no AI credentials, Java, hosted database or sibling repository. Demo sign-in is local impersonation, not production authentication or a private account.
 
 ## Run locally
 
 Prerequisite: **Node.js 24.14.1** with npm. This is the qualified runtime; its `node:sqlite` API is experimental. Nothing here installs or upgrades global tools. Package versions are pinned in `package-lock.json`.
 
-Manual source compilation additionally requires **Java 21** and the independently pinned compiler shipped in `vendor/`. The server uses its existing `JAVA_HOME` or `PATH`, with optional trusted process setting `KEIR_JAVA_BIN` for an existing executable. Native tasks and saved advice work without Java. See [authored drafts](docs/authored-extension-drafts.md) for the developer qualification flow and limits.
+For tool authors who want to learn Keir, see the [core manual authoring guide](https://github.com/rore/keir-core/blob/main/docs/manual-authoring.md).
 
-AI authoring is optional and server-side. The provider can draft but cannot approve or put advice in use; people must review independent scenarios and host evidence, then choose **Use** themselves. Configuration, the durable shared allowance, and explicit live qualification steps are in the [AI authoring operator guide](docs/ai-authoring.md). The example environment file is a template only; the app does not load it automatically.
+AI authoring is optional and server-side. The provider can draft but cannot approve or put advice in use; people must review the evidence, approve, then choose **Use** themselves. The local Configure dialog stores settings in the app data directory. See the [AI authoring guide](docs/ai-authoring.md) for key handling, shared spending limits, and environment fallback.
 
 From this repository:
 
@@ -50,7 +50,7 @@ Native regression uses temporary data. Browser setup downloads separate test Chr
 
 The functional Studio shares Daymark's navigation and controls. Conversation leads; proposal, latest-run, approved-run and management views open on demand and start closed. On wide screens the workspace can be resized; on phone-sized screens it uses a full-workspace view. View changes retain reading, input and width state. See the [implemented experience and design reference](docs/extension-studio-design.md).
 
-The earlier scripted prototype remains available with `node docs/extension-studio/serve.mjs` at [the prototype address](http://localhost:4179/); it is a separate future-authoring reference. The native app includes the real server-backed Studio; see [review and select task advice](docs/read-extension-lifecycle.md) and [manual authored drafts](docs/authored-extension-drafts.md). Compilation is optional and needs the independently packaged compiler plus Java 21; Node startup and native or saved advice do not. The manual tool does not call an AI provider.
+The earlier scripted prototype remains available with `node docs/extension-studio/serve.mjs` at [the prototype address](http://localhost:4179/); it is a separate historical future-authoring reference. The native app includes the task-advice assistant; see [review and select task advice](docs/read-extension-lifecycle.md). Tool authors can use the [core manual authoring guide](https://github.com/rore/keir-core/blob/main/docs/manual-authoring.md).
 
 ## Project boundaries
 

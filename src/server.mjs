@@ -2,8 +2,11 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { acquireDataLock, openData } from './data.mjs';
 import { createApp } from './app.mjs';
+import { assertAuthoringSettingsLocation } from './authoring-settings.mjs';
 
 export async function start({ directory = resolve('.data'), port = 3000, staticRoot = resolve('dist') } = {}) {
+  const authoringSettingsFile = join(resolve(directory), 'ai-authoring.json');
+  assertAuthoringSettingsLocation(authoringSettingsFile, staticRoot);
   const release = acquireDataLock(directory);
   let db, app;
   try {
@@ -11,7 +14,7 @@ export async function start({ directory = resolve('.data'), port = 3000, staticR
     // A test-owned OS port is selected before app creation so Host checks stay exact.
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Choose a port between 1 and 65535.');
     const origin = `http://127.0.0.1:${port}`;
-    app = await createApp({ db, origin, staticRoot });
+    app = await createApp({ db, origin, staticRoot, authoringSettingsFile });
     await app.listen({ host: '127.0.0.1', port });
     let closed = false;
     return { app, db, origin, async close() {

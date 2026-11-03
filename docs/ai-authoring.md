@@ -1,23 +1,25 @@
 # Optional AI authoring
 
-AI authoring is an optional, server-side drafting aid in the local Studio. The app and its existing manual authoring and saved advice flows work without provider credentials. Provider setup is an operator choice and can incur real charges.
+The task-advice conversation assistant can prepare advice for review. It needs an operator-configured provider and can incur real charges. Native tasks and saved advice continue to work without AI setup.
 
 ## Configure a provider
 
-Set these variables in the environment of the server process before starting the app. The app does not load `.env` or `.env.example` automatically. `.env.example` shows the two accepted configurations; use only one provider/model/key pair:
+In the local app, open **Configure** and choose one of the supported provider/model options. Enter its API key and a positive decimal total allowance (up to six fractional digits), then save. Saving checks the values locally; it does not contact the provider, verify the key, start a draft, or incur a charge. The status means **settings saved**, not **provider verified**. Every save requires the full key; the app never reads it back or retains a masked key for reuse.
 
 | `KEIR_AI_PROVIDER` | `KEIR_AI_MODEL` | Required key |
 | --- | --- | --- |
 | `openai` | `gpt-5.6-terra` | `OPENAI_API_KEY` |
 | `anthropic` | `claude-haiku-5-5` | `ANTHROPIC_API_KEY` |
 
-Set `KEIR_AI_MAX_USD` to a positive decimal allowance, with up to six fractional digits. It is one finite, durable allowance shared across all demo owners in that database. The server reserves a conservative amount before each provider request. Reservations are never refunded, including for unused capacity, cancellation, interruption, or reset. Requests stop when the allowance is exhausted. Choose a cap you are willing to spend before enabling a provider.
+The saved settings file is `ai-authoring.json` in the app's chosen data directory (by default `.data/`). It is ignored by Git. Keep the data directory private and out of public assets, shared backups, and exports. The file contains the key in plaintext protected by the local OS account and directory permissions; it is not encrypted. POSIX creation uses mode `0600` where applicable; Windows uses the directory's inherited ACL. Configuration is shared across all three local demo people and is not production administrator authentication.
 
-Keep keys in the server process environment. Do not put them in browser code, API requests, screenshots, logs, or public files. Provider credentials, internal counters, and continuation state are not part of the public app responses.
+The allowance is one positive, finite total shared across all demo owners in the database. The server reserves a conservative amount before each provider request. Reservations are durable and never refunded, including unused capacity, cancellation, interruption, or data reset. Changing settings or resetting data does not restore allowance. Choose an amount you are willing to spend; requests stop when it is exhausted. Do not put keys in browser code, chat, screenshots, logs, or public files.
 
 The selected provider receives your authoring text, the public host contract, draft source, synthetic cases and sanitized tool results. It does not receive session cookies, protected bindings or native task records. Avoid including unrelated private information in authoring messages.
 
-Without a valid configuration, AI authoring is unavailable; native tasks, saved advice, and the manual authored-source qualification path remain available. Java is only needed for source compilation, as described in [manual authored drafts](authored-extension-drafts.md).
+Without valid settings, AI authoring is unavailable; native tasks and saved advice remain available. For tool authors learning Keir, use the [core manual authoring guide](https://github.com/rore/keir-core/blob/main/docs/manual-authoring.md).
+
+Changing the provider, model, key, or allowance requires starting a fresh conversation before drafting again. Saved conversations and advice remain readable. If a save response is lost, setup status cannot prove whether your submitted key matches; resubmit the complete settings only if you want to retry the save. A save is refused while authoring work is still settling, including cancellation; wait for it to finish before saving again.
 
 ## Draft, verify, decide
 
@@ -29,11 +31,13 @@ Before using advice, independently choose and review the expected scenarios, run
 
 Conversations persist under their demo owner and survive process restarts. If the process stops during a provider or host operation, the saved conversation is marked interrupted. Startup only reads and marks the saved state; it does not call the provider, compiler, or simulator again. Open the conversation, inspect its saved draft and status, and explicitly continue only when the UI offers that action. A cancel, timeout, or lost response can leave a saved change; read saved state before retrying.
 
-The shared allowance is stored with the database and is preserved by the app's deliberate reset. Do not delete or replace the database to recover allowance. Use the existing data backup and recovery guidance before any deliberate database operation.
+For advanced local process configuration, `.env.example` documents the supported environment variables. The app does not load that file automatically. A valid saved local settings file takes precedence over environment configuration; if no local file exists, environment settings remain a fallback. An invalid existing settings file fails closed instead of falling back.
 
 ## Optional live provider qualification
 
 The default command is a dry check and makes no provider request:
+
+The qualification script reads only its process environment, not the running app's saved settings file. Supply its supported provider/model/key and finite allowance separately; in-app setup does not authorize a qualification call.
 
 ```sh
 node scripts/check-authoring-provider.mjs

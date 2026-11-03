@@ -5,7 +5,18 @@ const tariffs = {
 
 const unavailable = code => Object.freeze({ status: 'unavailable', code });
 
-export function readAuthoringConfig(env = process.env) {
+export const authoringChoices = Object.freeze(Object.entries(tariffs).map(([provider, { model }]) => Object.freeze({ provider, model })));
+
+export function readSetupConfig(input, settingsRevision) {
+  const fields = ['provider', 'model', 'apiKey', 'maxUsd'];
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== fields.length
+      || fields.some(field => !Object.hasOwn(input, field) || typeof input[field] !== 'string')) return unavailable('AI_CONFIG_INVALID');
+  const key = Object.hasOwn(tariffs, input.provider) ? tariffs[input.provider].key : 'unsupported';
+  return readAuthoringConfig({ KEIR_AI_PROVIDER: input.provider, KEIR_AI_MODEL: input.model, KEIR_AI_MAX_USD: input.maxUsd,
+    [key]: input.apiKey }, settingsRevision);
+}
+
+export function readAuthoringConfig(env = process.env, settingsRevision) {
   const provider = env.KEIR_AI_PROVIDER;
   if (provider === undefined || provider === '') return unavailable('AI_NOT_CONFIGURED');
   if (!Object.hasOwn(tariffs, provider)) return unavailable('AI_CONFIG_INVALID');
@@ -23,5 +34,6 @@ export function readAuthoringConfig(env = process.env) {
   const result = { status: 'ready', provider, model: tariff.model, maxMicros,
     reserveMicros: Math.ceil(135168 * tariff.input + 4096 * tariff.output) };
   Object.defineProperty(result, 'apiKey', { value: apiKey, enumerable: false });
+  if (settingsRevision !== undefined) Object.defineProperty(result, 'settingsRevision', { value: settingsRevision, enumerable: false });
   return Object.freeze(result);
 }
