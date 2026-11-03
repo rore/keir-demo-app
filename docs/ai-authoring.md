@@ -2,6 +2,8 @@
 
 Studio helps a business user describe a customization, clarify its behavior and check examples before deciding whether to use it. Live AI needs an operator-configured provider and can incur real charges. Native tasks, saved customizations and the labeled scripted example work without AI setup. Today's host contract supports read-only task advice; a general conversation does not grant unsupported capabilities.
 
+Compiling new customizations, including the scripted example, requires Java 21 for the packaged Keir compiler. App startup and execution of already saved advice need only the documented Node runtime; the app does not install or upgrade Java.
+
 ## Configure a provider
 
 In the local app, open **Configure** and choose one of the supported provider/model options. Enter its API key and a positive decimal total allowance (up to six fractional digits), then save. Saving checks the values locally; it does not contact the provider, verify the key, start a draft, or incur a charge. The status means **settings saved**, not **provider verified**. Every save requires the full key; the app never reads it back or retains a masked key for reuse.
