@@ -1238,9 +1238,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <h3>{activeSelectionMatches ? "Version currently in use" : "Previously viewed version"}</h3><p>“{activeSnapshot.revision.label}”. {state.draft && state.draft.id !== activeSnapshot.revision.id && <>Your saved changes (version {state.draftVersion}) are separate. </>}This view is read-only.</p>
             {activeProof && activeSelectionMatches && state.selection.eligible ? <><p aria-label="Checked behavior in use">In the last checked examples, {summarizeExamples(activeProof)}.</p><p>These are synthetic, limited examples. Other situations remain untested.</p></>
               : <p role="status">{activeSummaryError || "Checking the saved examples for this version…"}</p>}
-            <button disabled={disabled} onClick={() => { void inspectSource(activeSelectionMatches ? undefined : activeSnapshot.revision.id); openTools(); }}>Inspect this version’s source</button>
             <button disabled={disabled || !activeSelectionMatches || !state.selection.eligible} onClick={() => { setRestart({ draftVersion: state.draftVersion, revisionId: activeSnapshot.revision.id, generation: activeSnapshot.generation, activeLabel: activeSnapshot.revision.label, draftLabel: state.draft?.label ?? "saved" }); closeReview(); }}>Start changes from this version</button>
             <button onClick={() => { setActiveView(false); closeReview(); }}>Continue saved changes</button>
+            <button className="rs-link" disabled={disabled} onClick={() => { void inspectSource(activeSelectionMatches ? undefined : activeSnapshot.revision.id); openTools(); }}>Inspect this version’s source</button>
           </article>}
           {evidence && <article hidden={canvasView !== "results"} className="rs-sheet rs-results" aria-label="Sample results">
             <h3 id="studio-results-heading" tabIndex={-1}>{exampleId ? exampleTitle(evidence.reports.find(item => item.id === exampleId)!, evidence.reports.findIndex(item => item.id === exampleId)) : "Saved checked examples"}</h3>
