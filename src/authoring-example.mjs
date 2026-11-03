@@ -3,8 +3,8 @@ import { simulationCases, situation } from './extension-lifecycle.mjs';
 
 export const businessContext = Object.freeze({
   application: 'Daymark',
-  purpose: 'Help a person change the advice shown when they choose Check task advice on a saved task.',
-  supported: 'Read the selected task status and show Done, Pending or Needs attention. Advice is scoped to the signed-in person.',
+  purpose: 'Help a person describe, create and revise distinct personal extensions using only this host’s published extension points.',
+  supported: 'Discover the supportedHooks catalog before choosing a target. The currently published task-status hook can read the selected task status and display Done, Pending or Needs attention when the person chooses Check task advice. Other extension points must not be invented.',
   unavailable: 'Creating or editing tasks, follow-ups, project-based rules, dates, notes and background automation are not available to this assistant.',
   checking: 'Try synthetic examples without changing tasks. Include open, completed and unavailable tasks; ask what should happen when intent is unclear.',
   decisions: 'The person decides the intended behavior and expectations. Explain actual differences. Human approval and turning on the exact checked change are separate decisions.',

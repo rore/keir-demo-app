@@ -17,7 +17,11 @@ export function loadHost() {
   if ('sha512-' + createHash('sha512').update(archive).digest('base64') !== provenance.integrity) throw new Error('Invalid runtime package');
   const dcmBytes = load('extensions/task-read/dcm.json');
   if (digest(dcmBytes) !== pins.modelDigest) throw new Error('Invalid model');
-  return { dcmBytes, programs: pins.programs, pins: { modelDigest: pins.modelDigest, compiler: pins.compiler, environment: ENVIRONMENT,
+  const model = JSON.parse(dcmBytes);
+  const entrypoint = model.entrypoints[hook];
+  if (!entrypoint || entrypoint.trigger !== 'REQUEST' || Object.values(model.capabilities).some(item => item.effect !== 'READ')) throw new Error('Invalid host hook');
+  return { dcmBytes, catalog: { hooks: [{ id: hook, label: 'Task status advice', description: 'Show advice when checking a saved task',
+    effect: 'READ', trigger: entrypoint.trigger }] }, programs: pins.programs, pins: { modelDigest: pins.modelDigest, compiler: pins.compiler, environment: ENVIRONMENT,
     profile: 'keir-read/2', hook, consumer, packageIntegrity: provenance.integrity, adapter: 'native-task-read/1' } };
 }
 
@@ -51,6 +55,6 @@ export function loadCatalog() {
     if (digest(artifactBytes) !== host.programs[stem].digest || digest(source) !== host.programs[stem].sourceDigest) throw new Error('Invalid program');
     const identity = { sourceDigest: digest(source), artifactDigest: digest(artifactBytes), ...host.pins };
     return Object.freeze({ id, label: index ? 'Needs attention' : 'Pending', openCode: index ? 'NEEDS_ATTENTION' : 'PENDING',
-      identity: json(identity), pins: JSON.parse(json(identity)), artifactBytes, dcmBytes: host.dcmBytes });
+      identity: json(identity), pins: JSON.parse(json(identity)), artifactBytes, source: source.toString('utf8'), dcmBytes: host.dcmBytes });
   });
 }

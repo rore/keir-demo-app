@@ -4,15 +4,24 @@ import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync
 import { resolve, join } from 'node:path';
 import { loadCatalog } from './extension-catalog.mjs';
 
-const lifecycleTables = ['extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections', 'extension_states', 'extension_authored', 'extension_revisions'];
+const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
+  'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
 function seedLifecycle(db) {
   let catalog = [];
   try { catalog = loadCatalog(); } catch { /* Invalid deployment leaves native tasks usable with no advice. */ }
+  const scoped = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extensions'").get();
   for (const user of USERS) {
-    db.prepare('INSERT INTO extension_states VALUES (?, 0, NULL)').run(user.id);
+    if (!scoped) db.prepare('INSERT INTO extension_states VALUES (?, 0, NULL)').run(user.id);
     const template = catalog.find(item => item.id === (user.id === 'maya' ? 'pending' : user.id === 'leo' ? 'attention' : ''));
     const revisionId = template ? randomUUID() : null;
-    if (template) db.prepare('INSERT INTO extension_revisions VALUES (?, ?, ?, ?, ?)').run(revisionId, user.id, template.id, template.identity, 'operator');
+    if (template) {
+      db.prepare('INSERT INTO extension_revisions VALUES (?, ?, ?, ?, ?)').run(revisionId, user.id, template.id, template.identity, 'operator');
+      if (scoped) {
+        const extensionId = randomUUID();
+        db.prepare('INSERT INTO extensions VALUES (?,?,?,?,?,NULL,NULL,0,NULL)').run(extensionId, user.id, 'ClassifyTask', 'Task advice (saved setup)', Date.now());
+        db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(revisionId, user.id, extensionId);
+      }
+    }
     db.prepare('INSERT INTO extension_selections VALUES (?, ?, ?)').run(user.id, revisionId, template ? 1 : 0);
     if (template) db.prepare('INSERT INTO extension_history(owner_id, revision_id, generation, operation) VALUES (?, ?, 1, ?)').run(user.id, revisionId, 'operator');
   }
@@ -71,6 +80,61 @@ function migrateAuthoring(db) {
       CREATE INDEX authoring_conversations_owner ON authoring_conversations(owner_id,updated_at);
       PRAGMA user_version = 4;
     `);
+  });
+}
+
+function migrateExtensions(db) {
+  transaction(db, () => {
+    db.exec(`
+      CREATE TABLE extensions(
+        id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), hook_id TEXT,
+        name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80), created_at INTEGER NOT NULL CHECK(created_at>=0),
+        creation_operation_id TEXT, creation_hash TEXT, draft_version INTEGER NOT NULL CHECK(draft_version>=0), draft_revision_id TEXT,
+        UNIQUE(id,owner_id), UNIQUE(owner_id,creation_operation_id),
+        FOREIGN KEY(draft_revision_id,owner_id,id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id)
+      ) STRICT;
+      CREATE TABLE extension_revision_links(
+        revision_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, extension_id TEXT NOT NULL,
+        UNIQUE(revision_id,owner_id,extension_id),
+        FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
+        FOREIGN KEY(extension_id,owner_id) REFERENCES extensions(id,owner_id)
+      ) STRICT;
+      CREATE TABLE extension_conversation_links(
+        conversation_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, extension_id TEXT NOT NULL,
+        purpose TEXT NOT NULL CHECK(purpose IN ('CREATE','REVISE')), base_revision_id TEXT, base_generation INTEGER,
+        FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id),
+        FOREIGN KEY(extension_id,owner_id) REFERENCES extensions(id,owner_id),
+        FOREIGN KEY(base_revision_id,owner_id,extension_id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id)
+      ) STRICT;
+      CREATE INDEX extension_items_owner ON extensions(owner_id,created_at);
+      CREATE INDEX extension_revisions_item ON extension_revision_links(owner_id,extension_id);
+      CREATE INDEX extension_conversations_item ON extension_conversation_links(owner_id,extension_id);
+    `);
+    for (const state of db.prepare('SELECT * FROM extension_states').all()) {
+      const revisions = db.prepare('SELECT id FROM extension_revisions WHERE owner_id=?').all(state.owner_id);
+      if (!revisions.length) {
+        if (state.draft_id) throw new Error('Invalid legacy draft lineage');
+        continue;
+      }
+      const id = randomUUID();
+      db.prepare('INSERT INTO extensions VALUES (?,?,?,?,?,NULL,NULL,0,NULL)').run(id, state.owner_id, 'ClassifyTask', 'Task advice (saved setup)', Date.now());
+      for (const row of revisions) db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(row.id, state.owner_id, id);
+      db.prepare('UPDATE extensions SET draft_version=?,draft_revision_id=? WHERE id=?').run(state.draft_version, state.draft_id, id);
+    }
+    for (const row of db.prepare('SELECT * FROM authoring_conversations').all()) {
+      let state, view;
+      try { state = JSON.parse(row.state); view = JSON.parse(row.view); } catch { continue; }
+      const ids = [state.handles?.revisionId, state.evidenceHandle?.revisionId, view.review?.revisionId].filter(value => value !== null && value !== undefined);
+      if (!ids.length || ids.some(id => typeof id !== 'string')) continue;
+      const links = ids.map(id => db.prepare('SELECT extension_id FROM extension_revision_links WHERE owner_id=? AND revision_id=?').get(row.owner_id, id));
+      if (links.some(link => !link) || new Set(links.map(link => link.extension_id)).size !== 1) continue;
+      const proofs = [state.evidenceHandle, view.review].filter(value => value?.evidenceId);
+      if (proofs.some(proof => !db.prepare('SELECT 1 FROM extension_evidence WHERE owner_id=? AND id=? AND revision_id=?').get(row.owner_id, proof.evidenceId, proof.revisionId))) continue;
+      db.prepare('INSERT INTO extension_conversation_links VALUES (?,?,?,?,?,NULL)').run(row.id, row.owner_id, links[0].extension_id, 'REVISE', ids[0]);
+    }
+    db.exec('DROP TABLE extension_states');
+    if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Extension migration failed integrity checks');
+    db.exec('PRAGMA user_version = 5');
   });
 }
 
@@ -157,10 +221,11 @@ export function openData(path) {
         `);
         seedRows(db);
       });
-    } else if (![1, 2, 3, 4].includes(version)) throw new Error('Unsupported database version; no data was reset.');
+    } else if (![1, 2, 3, 4, 5].includes(version)) throw new Error('Unsupported database version; no data was reset.');
     if (version < 2) migrateLifecycle(db);
     if (version < 3) migrateAuthored(db);
     if (version < 4) migrateAuthoring(db);
+    if (version < 5) migrateExtensions(db);
     return db;
   } catch (error) { db.close(); throw error; }
 }
@@ -184,8 +249,9 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
       }
     } finally { copy.close(); }
     transaction(db, () => {
-      db.exec('DELETE FROM authoring_conversations');
+      db.exec('UPDATE extensions SET draft_revision_id=NULL');
       for (const table of lifecycleTables) db.exec(`DELETE FROM ${table}`);
+      db.exec('DELETE FROM authoring_conversations');
       db.exec('DELETE FROM tasks; DELETE FROM projects; DELETE FROM users;');
       seedRows(db);
       seedLifecycle(db);

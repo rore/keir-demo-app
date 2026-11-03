@@ -28,7 +28,9 @@ export function createQualificationHost({ env = process.env } = {}) {
         let conversation = null;
         for (const input of inputs) {
           const accepted = await service.turn('sam', { conversationId: conversation?.id ?? null, operationId: input.id,
-            text: input.text, expectedVersion: conversation?.version ?? 0, expectedDraftVersion: lifecycle.state('sam').draftVersion }, lease);
+            target: conversation ? { kind: 'resume', extensionId: conversation.extensionId } : { kind: 'create' },
+            text: input.text, expectedVersion: conversation?.version ?? 0,
+            expectedDraftVersion: conversation ? lifecycle.state('sam', conversation.extensionId).draftVersion : 0 }, lease);
           conversation = await service.wait('sam', accepted.conversation.id);
           if (conversation.status !== 'AWAITING_USER') break;
         }

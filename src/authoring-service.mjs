@@ -42,6 +42,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   const live = new Map(); let closing = false; let definition;
   try { definition = loadHost(); } catch { /* AI setup failure never disables native tasks or saved advice. */ }
   const rowFor = (owner, id) => db.prepare('SELECT * FROM authoring_conversations WHERE id=? AND owner_id=?').get(id, owner);
+  const linkFor = (owner, id) => db.prepare('SELECT * FROM extension_conversation_links WHERE owner_id=? AND conversation_id=?').get(owner, id);
   const held = () => {
     const value = db.prepare('SELECT reserved_micros FROM authoring_budget WHERE id=1').get()?.reserved_micros;
     if (!integer(value)) stop('CHECKPOINT_UNCERTAIN'); return value;
@@ -67,29 +68,42 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   });
 
   function dto(row, bounded = true) {
-    const { operations, view } = decode(row), current = lifecycle.state(row.owner_id);
+    const { state, operations, view } = decode(row), link = row.extension_id ? { extension_id: row.extension_id, purpose: row.purpose } : linkFor(row.owner_id, row.id);
+    const current = link ? lifecycle.state(row.owner_id, link.extension_id) : lifecycle.collection(row.owner_id);
     let review = view.review ?? null;
     if (review) review = { revisionId: review.revisionId, draftVersion: review.draftVersion, suiteDigest: review.suiteDigest,
-      evidenceId: review.evidenceId, eligible: review.eligible === true && same(review, draftHandles(current)) };
+      evidenceId: review.evidenceId, eligible: !!link && review.eligible === true && same(review, draftHandles(current)) };
     const result = { id: row.id, version: row.version, status: row.status, runId: row.run_id,
       operation: operation(operations.at(-1).id, operations.at(-1).runId, operations.at(-1).version), messages: view.messages,
-      code: view.code ? codeFor(view.code) : null, review, draft: draftHandles(current),
+      extensionId: link?.extension_id ?? null, purpose: link?.purpose ?? null,
+      code: view.code ? codeFor(view.code) : null, review, draft: state.handles ?? { revisionId: null, draftVersion: 0, suiteDigest: null },
       selection: { revisionId: current.selection.revision?.id ?? null, generation: current.selection.generation } };
     if (bounded && length(result) > 131072) throw error(413, 'BYTE_LIMIT'); return result;
   }
   function read(owner, id) { const row = rowFor(owner, id); if (!row) throw error(404, 'STALE_CONVERSATION'); return dto(row); }
-  function list(owner) {
-    const rows = db.prepare('SELECT * FROM authoring_conversations WHERE owner_id=? ORDER BY updated_at DESC,rowid DESC LIMIT 8').all(owner);
+  function list(owner, extensionId) {
+    if (extensionId !== undefined) lifecycle.state(owner, extensionId);
+    const rows = extensionId === undefined
+      ? db.prepare('SELECT * FROM authoring_conversations WHERE owner_id=? ORDER BY updated_at DESC,rowid DESC LIMIT 8').all(owner)
+      : db.prepare('SELECT c.* FROM authoring_conversations c JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE c.owner_id=? AND l.extension_id=? ORDER BY c.updated_at DESC,c.rowid DESC LIMIT 8').all(owner, extensionId);
     return { availability: availability(), conversations: rows.map(row => ({ id: row.id, version: row.version, status: row.status,
+      extensionId: linkFor(owner, row.id)?.extension_id ?? null, purpose: linkFor(owner, row.id)?.purpose ?? null,
       runId: row.run_id, creationOperationId: row.creation_operation_id, operationId: decode(row).operations.at(-1).id })),
-    current: rows.length ? dto(rows[0]) : null };
+    current: extensionId !== undefined && rows.length ? dto(rows[0]) : null };
   }
   function assertLease(lease) { if (!lease || !token(lease.sessionId) || lease.current() !== true) stop('STALE_CONTEXT'); }
   function validate(input) {
-    if (!object(input) || Object.keys(input).length !== 5 || !['conversationId', 'operationId', 'text', 'expectedVersion', 'expectedDraftVersion'].every(key => Object.hasOwn(input, key))
+    if (!object(input) || Object.keys(input).length !== 6 || !['conversationId', 'operationId', 'text', 'expectedVersion', 'expectedDraftVersion', 'target'].every(key => Object.hasOwn(input, key))
         || !(input.conversationId === null || token(input.conversationId)) || !token(input.operationId)
         || typeof input.text !== 'string' || !input.text.isWellFormed() || !input.text.trim() || Buffer.byteLength(input.text) > 8192
         || !integer(input.expectedVersion) || !integer(input.expectedDraftVersion)) throw error(400, 'INVALID_TOOL_ARGUMENTS');
+    const target = input.target;
+    if (!object(target) || !['create', 'revise', 'resume'].includes(target.kind)) throw error(400, 'INVALID_TOOL_ARGUMENTS');
+    const fields = target.kind === 'create' ? ['kind'] : target.kind === 'resume' ? ['kind', 'extensionId'] : ['kind', 'extensionId', 'baseRevisionId', 'selectionGeneration'];
+    if (Object.keys(target).length !== fields.length || !fields.every(key => Object.hasOwn(target, key))
+        || target.kind !== 'create' && !token(target.extensionId)
+        || target.kind === 'revise' && (!(target.baseRevisionId === null || token(target.baseRevisionId)) || !integer(target.selectionGeneration))
+        || (target.kind === 'resume') !== (input.conversationId !== null)) throw error(400, 'INVALID_TOOL_ARGUMENTS');
   }
   function tracked(ctx, work) {
     const promise = Promise.resolve().then(work); ctx.tracked.add(promise);
@@ -124,7 +138,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           if (ctx.admitted || row && (row.version !== ctx.input.expectedVersion || ['RUNNING', 'CANCELLING'].includes(row.status))
               || !row && ctx.input.expectedVersion !== 0 || state.version !== ctx.input.expectedVersion + 1) stop('STALE_CONVERSATION');
           if (!row && db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=?').get(ctx.owner).n >= 8) stop('CONVERSATION_LIMIT');
-          const current = lifecycle.state(ctx.owner); if (current.draftVersion !== ctx.input.expectedDraftVersion) stop('STALE_DRAFT');
+          if (ctx.input.target.kind === 'create') lifecycle.admit(ctx.owner,
+            { extensionId: ctx.extensionId, operationId: ctx.input.operationId, hash: ctx.hash, name: Array.from(ctx.input.text.trim()).slice(0, 80).join('') }, () => assertLease(ctx.lease));
+          const current = lifecycle.state(ctx.owner, ctx.extensionId); if (current.draftVersion !== ctx.input.expectedDraftVersion) stop('STALE_DRAFT');
           state.runLedger = { base: prior?.state.usage.reservedMicros ?? 0, reserved: 0, ordinal: 0 };
           state.journal = prior?.state.journal ?? [];
         } else if (!row || row.run_id !== ctx.runId || row.version !== state.version || row.cancel_requested || row.status !== 'RUNNING') stop('STALE_CONTEXT');
@@ -165,7 +181,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         const status = cp.phase === 'TERMINAL' ? state.status : 'RUNNING';
         if (!statuses.has(status)) stop('HOST_RESULT_INVALID');
         // Leave room for late authoritative handles and a safe blocker without dropping intent.
-        const projection = { id: ctx.id, owner_id: ctx.owner, version: state.version, run_id: ctx.runId, status,
+        const projection = { id: ctx.id, owner_id: ctx.owner, extension_id: ctx.extensionId, purpose: ctx.purpose, version: state.version, run_id: ctx.runId, status,
           state: encode(saved), operations: encode(ops), view: encode(view) };
         if (length(dto(projection, false)) > 131072 - 1024) stop('BYTE_LIMIT');
         checkpointFault({ stage: 'beforeCommit', phase: cp.phase, runId: ctx.runId, ordinal: cp.ordinal });
@@ -174,6 +190,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           state.version, ctx.runId, status, 0, Date.now(), encode(saved), encode(ops), encode(view));
         else db.prepare('UPDATE authoring_conversations SET version=?,run_id=?,status=?,cancel_requested=0,updated_at=?,state=?,operations=?,view=? WHERE id=? AND owner_id=?')
           .run(state.version, ctx.runId, status, Date.now(), encode(saved), encode(ops), encode(view), ctx.id, ctx.owner);
+        if (!row) db.prepare('INSERT INTO extension_conversation_links VALUES (?,?,?,?,?,?)').run(ctx.id, ctx.owner, ctx.extensionId, ctx.purpose, ctx.baseRevisionId, ctx.baseGeneration);
       });
       committed = true; ctx.admitted = true; ctx.state = state;
       ctx.context.budget.remainingMicros = Math.max(0, config.maxMicros - held());
@@ -189,7 +206,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
 
   function bindings(ctx) {
     const authorize = () => { if (!ctx.context.current()) stop('STALE_CONTEXT'); };
-    const mapped = () => draftHandles(lifecycle.state(ctx.owner));
+    const mapped = () => draftHandles(lifecycle.state(ctx.owner, ctx.extensionId));
     const invoke = (work, scenario = false) => tracked(ctx, async () => {
       authorize(); try { return await work(); }
       catch (cause) {
@@ -205,16 +222,17 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const proofFor = handle => {
       authorize();
       if (!handle) stop('REVIEW_NOT_READY');
-      const current = mapped(), proof = lifecycle.evidence(ctx.owner, handle.evidenceId);
+      const current = mapped(), proof = lifecycle.evidence(ctx.owner, handle.evidenceId, ctx.extensionId);
       if (!same(current, handle) || proof.revisionId !== handle.revisionId || proof.identity?.suiteDigest !== handle.simulationSuiteIdentity) stop('STALE_DRAFT');
       return { ...current, evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest, eligible: proof.passed,
-        summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId).cases) };
+        summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases) };
     };
     return {
       readDraft: () => { authorize(); return mapped(); },
       discover: () => {
-        authorize(); const example = authoringExample(), current = lifecycle.state(ctx.owner);
-        const currentProposal = current.draft?.kind === 'authored' ? { ...lifecycle.source(ctx.owner, current.draft.id), truncated: false } : null;
+        authorize(); const example = authoringExample(), current = lifecycle.state(ctx.owner, ctx.extensionId);
+        const baseId = current.draft?.id ?? ctx.baseRevisionId;
+        const currentProposal = baseId ? { ...lifecycle.source(ctx.owner, baseId, ctx.extensionId), truncated: false } : null;
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.cases = null; currentProposal.truncated = true; }
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.source = null; currentProposal.truncated = true; }
         const messages = decode(rowFor(ctx.owner, ctx.id)).view.messages;
@@ -226,21 +244,22 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         // Keep combined discovery inside the existing tool byte ceiling, including escaped text.
         while (length(recent) > 16384) { recent.shift(); truncated = true; }
         return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...definition.pins,
-          currentDraft: mapped(), currentProposal, conversationContext: { messages: recent, truncated },
+          currentDraft: mapped(), currentProposal, extension: current.extension, purpose: ctx.purpose,
+          supportedHooks: lifecycle.hostCatalog().hooks, conversationContext: { messages: recent, truncated },
           businessContext, sourceExample: example.source, scenarioExample: example.cases[0], scenarioExamples: example.cases };
       },
       compile: (source, version, signal) => invoke(async () => {
-        const value = await lifecycle.compile(ctx.owner, { source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
+        const value = await lifecycle.compile(ctx.owner, { extensionId: ctx.extensionId, source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
       }),
       proposeScenarios: (revisionId, cases, version) => invoke(async () => draftHandles(await lifecycle.proposeScenarios(ctx.owner,
-        { revisionId, cases, draftVersion: version }, authorize, { signal: ctx.controller.signal })), true),
+        { extensionId: ctx.extensionId, revisionId, cases, draftVersion: version }, authorize, { signal: ctx.controller.signal })), true),
       simulate: (revisionId, version, signal) => invoke(async () => {
-        const value = await lifecycle.simulate(ctx.owner, { revisionId, draftVersion: version }, authorize, { signal });
+        const value = await lifecycle.simulate(ctx.owner, { extensionId: ctx.extensionId, revisionId, draftVersion: version }, authorize, { signal });
         if (value.revisionId !== revisionId || value.draftVersion !== version || !value.evidence?.id) stop('HOST_RESULT_INVALID');
-        const proof = lifecycle.evidence(ctx.owner, value.evidence.id);
+        const proof = lifecycle.evidence(ctx.owner, value.evidence.id, ctx.extensionId);
         if (proof.revisionId !== revisionId) stop('HOST_RESULT_INVALID');
         return { ...draftHandles(value), evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest,
-          summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId).cases) };
+          summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases) };
       }),
       readEvidence: () => proofFor(ctx.state.evidenceHandle),
     };
@@ -257,10 +276,25 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       if (priorOperation.hash !== hash) throw error(409, 'STALE_CONVERSATION');
       return { duplicate: { operation: operation(priorOperation.id, priorOperation.runId, priorOperation.version), conversation: dto(row) } };
     }
+    const link = row ? linkFor(owner, row.id) : null;
+    if (row && (!link || input.target.kind !== 'resume' || input.target.extensionId !== link.extension_id)) throw error(404, 'STALE_CONVERSATION');
+    const extensionId = input.target.kind === 'create' ? randomUUID() : input.target.extensionId;
+    const currentState = input.target.kind === 'create'
+      ? { revisionId: null, draftVersion: 0, suiteDigest: null, selection: lifecycle.collection(owner).selection }
+      : lifecycle.state(owner, extensionId);
+    const current = draftHandles(currentState);
+    if (current.draftVersion !== input.expectedDraftVersion) throw error(409, 'STALE_DRAFT');
+    if (input.target.kind === 'revise') {
+      const base = input.target.baseRevisionId;
+      if (input.target.selectionGeneration !== currentState.selection.generation
+          || current.revisionId !== null && base !== current.revisionId
+          || current.revisionId === null && base !== null && !(currentState.selection.revision?.id === base && currentState.selection.revision?.extensionId === extensionId)) throw error(409, 'STALE_DRAFT');
+      if (base) lifecycle.source(owner, base, extensionId);
+    }
+    if (prior && !same(prior.state.handles, current)) throw error(409, 'STALE_DRAFT');
     const available = availability(); if (!available.available) throw error(503, available.code);
     if (closing || live.size >= 2 || [...live.values()].some(item => item.owner === owner)) throw error(429, 'AI_BUSY');
     if (row && (row.version !== input.expectedVersion || ['RUNNING', 'CANCELLING'].includes(row.status)) || !row && input.expectedVersion !== 0) throw error(409, 'STALE_CONVERSATION');
-    const current = draftHandles(lifecycle.state(owner)); if (current.draftVersion !== input.expectedDraftVersion) throw error(409, 'STALE_DRAFT');
     if (prior?.state.transport && (prior.state.transport.provider !== config.provider || prior.state.transport.model !== config.model
         || prior.state.transport.policy !== resourcePolicy
         || (prior.state.transport.settingsRevision ?? null) !== (config.settingsRevision ?? null))) throw error(409, 'CONFIG_CHANGED');
@@ -270,13 +304,18 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     Object.assign(state, { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId, status: 'IDLE', handles: current,
       dispatchOrdinal: 0, inFlight: null, checkpoint: null, lastResult: null });
     if (fresh) { state.continuation = undefined; state.pending = undefined; state.callIds = []; state.evidenceHandle = null; }
-    const ctx = { owner, id, runId, lease, controller, input, hash, state, tracked: new Set(), admitted: false };
+    const ctx = { owner, id, runId, lease, controller, input, hash, state, extensionId,
+      purpose: link?.purpose ?? (input.target.kind === 'create' ? 'CREATE' : 'REVISE'),
+      baseRevisionId: link?.base_revision_id ?? (input.target.kind === 'revise' ? input.target.baseRevisionId : null),
+      baseGeneration: link?.base_generation ?? (input.target.kind === 'revise' ? input.target.selectionGeneration : null),
+      tracked: new Set(), admitted: false };
     ctx.context = { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId,
       budget: { remainingMicros: Math.max(0, config.maxMicros - held()) },
       current: () => {
         if (closing || controller.signal.aborted || lease.current() !== true) return false;
         const saved = rowFor(owner, id);
-        return ctx.admitted ? saved?.run_id === runId && saved.cancel_requested === 0 : !saved || saved.version === input.expectedVersion;
+        return ctx.admitted ? saved?.run_id === runId && saved.cancel_requested === 0 && linkFor(owner, id)?.extension_id === extensionId
+          : !saved || saved.version === input.expectedVersion;
       }, checkpoint: value => checkpoint(ctx, value) };
     ctx.host = bindings(ctx);
     return ctx;

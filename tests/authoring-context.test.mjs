@@ -10,7 +10,26 @@ import { authoringExample, businessContext, evidenceSummary } from '../src/autho
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { join } from 'node:path';
 
-const input = state => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
+function itemId(lifecycle, owner) {
+  const items = lifecycle.collection(owner).items;
+  assert.equal(items.length, 1, 'Fixture must have exactly one explicitly scoped extension.');
+  return items[0].extension.id;
+}
+
+function extensionPath(db, suffix = '', owner = 'maya') {
+  const rows = db.prepare('SELECT id FROM extensions WHERE owner_id=?').all(owner);
+  assert.equal(rows.length, 1, 'Use the fixture owner’s explicit legacy extension.');
+  return 'extensions/' + rows[0].id + (suffix ? '/' + suffix : '');
+}
+
+function authoringTarget(db, conversationId) {
+  const rows = db.prepare("SELECT * FROM extensions WHERE owner_id='maya'").all();
+  assert.equal(rows.length, 1);
+  const extension = rows[0], selected = db.prepare("SELECT * FROM extension_selections WHERE owner_id='maya'").get();
+  return conversationId ? { kind: 'resume', extensionId: extension.id }
+    : { kind: 'revise', extensionId: extension.id, baseRevisionId: extension.draft_revision_id ?? selected.revision_id, selectionGeneration: selected.generation };
+}
+const input = state => ({ extensionId: state.extension.id, revisionId: state.draft.id, draftVersion: state.draftVersion });
 const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '1', OPENAI_API_KEY: 'synthetic-key' });
 const noAiConfig = readAuthoringConfig({});
 
@@ -47,7 +66,7 @@ test('example GET is authenticated, queryless, inert and returns original synthe
   const { db, call, login, getAuth } = await api(t, { authoring: { config: noAiConfig, fetchImpl: async () => { providerCalls++; throw Error('unexpected'); } } });
   assert.equal((await call('authoring/example')).statusCode, 401);
   await login();
-  const before = db.prepare('SELECT * FROM extension_states ORDER BY owner_id').all();
+  const before = db.prepare('SELECT * FROM extensions ORDER BY owner_id').all();
   const beforeSelection = db.prepare('SELECT * FROM extension_selections ORDER BY owner_id').all();
   const beforeBudget = db.prepare('SELECT * FROM authoring_budget').all();
   assert.equal((await call('authoring/example?owner=leo')).statusCode, 400);
@@ -61,7 +80,7 @@ test('example GET is authenticated, queryless, inert and returns original synthe
     ['open', 'OPEN'], ['completed', 'COMPLETED'], ['missing', null], ['business-denied', null], ['transient', null],
   ]);
   assert.equal(providerCalls, 0);
-  assert.deepEqual(db.prepare('SELECT * FROM extension_states ORDER BY owner_id').all(), before);
+  assert.deepEqual(db.prepare('SELECT * FROM extensions ORDER BY owner_id').all(), before);
   assert.deepEqual(db.prepare('SELECT * FROM authoring_budget').all(), beforeBudget);
   assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
@@ -83,7 +102,7 @@ test('agent discovery sends static supported context and worked source/scenario 
   const { db, call, login } = await api(t, { authoring: { config, fetchImpl } });
   await login();
   const taskIds = db.prepare('SELECT id FROM tasks').all().map(row => row.id);
-  const started = await call('authoring/turn', { conversationId: null, operationId: 'discover-context', text: 'Help with task advice.', expectedVersion: 0, expectedDraftVersion: 0 });
+  const started = await call('authoring/turn', { target: authoringTarget(db), conversationId: null, operationId: 'discover-context', text: 'Help with task advice.', expectedVersion: 0, expectedDraftVersion: 0 });
   assert.equal(started.statusCode, 202);
   let current;
   for (let tries = 0; tries < 100; tries++) {
@@ -128,13 +147,13 @@ test('rediscovery carries the saved Pending proposal and clarified intent while 
   const compiler = createCompiler({ modelBytes: loadHost().dcmBytes, javaExecutable: java });
   const { db, call, login, getAuth } = await api(t, { compiler, authoring: { config, fetchImpl } });
   await login('maya');
-  const created = await call('extensions/compile', { source, label: 'Pending preference', draftVersion: 0 });
+  const created = await call(extensionPath(db, 'compile'), { source, label: 'Pending preference', draftVersion: 0 });
   assert.equal(created.statusCode, 200);
-  const saved = await call('extensions/scenarios', { revisionId: created.json().draft.id, draftVersion: created.json().draftVersion, cases });
+  const saved = await call(extensionPath(db, 'scenarios'), { revisionId: created.json().draft.id, draftVersion: created.json().draftVersion, cases });
   assert.equal(saved.statusCode, 200);
-  const proposal = await call('extensions/revisions/' + saved.json().draft.id);
+  const proposal = await call(extensionPath(db, 'revisions/' + saved.json().draft.id));
   const initialAuth = getAuth();
-  const started = await call('authoring/turn', { conversationId: null, operationId: 'clarify-pending', text: 'When a task is open, keep showing Pending.',
+  const started = await call('authoring/turn', { target: authoringTarget(db), conversationId: null, operationId: 'clarify-pending', text: 'When a task is open, keep showing Pending.',
     expectedVersion: 0, expectedDraftVersion: saved.json().draftVersion });
   assert.equal(started.statusCode, 202);
   const first = await settled(call, started.json().conversation.id);
@@ -142,11 +161,11 @@ test('rediscovery carries the saved Pending proposal and clarified intent while 
 
   await login('leo');
   assert.equal((await call('authoring')).json().conversations.length, 0);
-  assert.notEqual((await call('extensions')).json().revisionId, saved.json().draft.id);
+  assert.notEqual((await call(extensionPath(db, '', 'leo'))).json().revisionId, saved.json().draft.id);
   assert.equal((await call('authoring/conversations/' + first.id, undefined, initialAuth)).statusCode, 401);
 
   await login('maya');
-  const continuation = await call('authoring/turn', { conversationId: first.id, operationId: 'clarified-pending', text: 'Yes, show Done after completion.',
+  const continuation = await call('authoring/turn', { target: authoringTarget(db, first.id), conversationId: first.id, operationId: 'clarified-pending', text: 'Yes, show Done after completion.',
     expectedVersion: first.version, expectedDraftVersion: saved.json().draftVersion });
   assert.equal(continuation.statusCode, 202);
   const result = await settled(call, first.id);
@@ -169,16 +188,16 @@ test('example source and independent cases pass the real compiler/runtime with s
     ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java');
   const db = openData(':memory:'), lifecycle = createLifecycle(db, { compiler: createCompiler({ modelBytes: loadHost().dcmBytes, javaExecutable: java }) });
   t.after(() => db.close());
-  const example = authoringExample(), initial = lifecycle.state('maya'), selection = initial.selection;
-  let state = await lifecycle.compile('maya', { source: example.source, label: example.label, draftVersion: initial.draftVersion }, () => true);
+  const example = authoringExample(), initial = lifecycle.state('maya', itemId(lifecycle, 'maya')), selection = initial.selection;
+  let state = await lifecycle.compile('maya', { extensionId: itemId(lifecycle, 'maya'), source: example.source, label: example.label, draftVersion: initial.draftVersion }, () => true);
   const wrongConsumption = JSON.parse(example.cases[0]);
   wrongConsumption.expect.consumption = { status: 'NOT_DISPLAYED' };
   const wrongConsumptionCase = JSON.stringify(wrongConsumption);
-  state = await lifecycle.proposeScenarios('maya', { ...input(state), cases: [wrongConsumptionCase, ...example.cases.slice(1)] }, () => true);
-  const consumptionSuite = lifecycle.source('maya', state.draft.id).cases;
+  state = await lifecycle.proposeScenarios('maya', { extensionId: itemId(lifecycle, 'maya'), ...input(state), cases: [wrongConsumptionCase, ...example.cases.slice(1)] }, () => true);
+  const consumptionSuite = lifecycle.source('maya', state.draft.id, itemId(lifecycle, 'maya')).cases;
   assert.deepEqual(consumptionSuite, [wrongConsumptionCase, ...example.cases.slice(1)]);
   state = await lifecycle.simulate('maya', input(state), () => true);
-  const consumptionProof = lifecycle.evidence('maya', state.evidence.id);
+  const consumptionProof = lifecycle.evidence('maya', state.evidence.id, itemId(lifecycle, 'maya'));
   assert.equal(consumptionProof.passed, false);
   assert.deepEqual(consumptionProof.reports[0].expected.consumption, { status: 'NOT_DISPLAYED' });
   const storedProof = JSON.parse(db.prepare('SELECT payload FROM extension_evidence WHERE id=?').get(state.evidence.id).payload);
@@ -191,28 +210,28 @@ test('example source and independent cases pass the real compiler/runtime with s
   assert.equal(consumerSummary.expected.code, 'NEEDS_ATTENTION');
   assert.deepEqual(consumerSummary.expected.consumption, { status: 'NOT_DISPLAYED' });
   assert.deepEqual(consumerSummary.actual.consumption, { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' });
-  assert.deepEqual(lifecycle.source('maya', state.draft.id).cases, consumptionSuite);
-  await assert.rejects(Promise.resolve().then(() => lifecycle.approve('maya', { ...input(state), evidenceId: state.evidence.id }, () => true)), { status: 409 });
+  assert.deepEqual(lifecycle.source('maya', state.draft.id, itemId(lifecycle, 'maya')).cases, consumptionSuite);
+  await assert.rejects(Promise.resolve().then(() => lifecycle.approve('maya', { extensionId: itemId(lifecycle, 'maya'), ...input(state), evidenceId: state.evidence.id }, () => true)), { status: 409 });
 
   const wrong = JSON.parse(example.cases[0]);
   wrong.expect.outcome.result.classification = 'DONE'; wrong.expect.consumption.code = 'DONE';
   const wrongCase = JSON.stringify(wrong);
-  state = await lifecycle.proposeScenarios('maya', { ...input(state), cases: [wrongCase, ...example.cases.slice(1)] }, () => true);
-  const wrongSuite = lifecycle.source('maya', state.draft.id).cases;
+  state = await lifecycle.proposeScenarios('maya', { extensionId: itemId(lifecycle, 'maya'), ...input(state), cases: [wrongCase, ...example.cases.slice(1)] }, () => true);
+  const wrongSuite = lifecycle.source('maya', state.draft.id, itemId(lifecycle, 'maya')).cases;
   assert.deepEqual(wrongSuite, [wrongCase, ...example.cases.slice(1)]);
   state = await lifecycle.simulate('maya', input(state), () => true);
-  const mismatchProof = lifecycle.evidence('maya', state.evidence.id);
+  const mismatchProof = lifecycle.evidence('maya', state.evidence.id, itemId(lifecycle, 'maya'));
   assert.equal(mismatchProof.passed, false);
   const mismatch = evidenceSummary(mismatchProof, wrongSuite).cases[0];
   assert.equal(mismatch.status, 'MISMATCH');
   assert.equal(mismatch.expected.code, 'DONE');
   assert.equal(mismatch.actual.consumption.code, 'NEEDS_ATTENTION');
-  await assert.rejects(Promise.resolve().then(() => lifecycle.approve('maya', { ...input(state), evidenceId: state.evidence.id }, () => true)), { status: 409 });
-  state = await lifecycle.proposeScenarios('maya', { ...input(state), cases: example.cases }, () => true);
-  const savedSuite = lifecycle.source('maya', state.draft.id).cases;
+  await assert.rejects(Promise.resolve().then(() => lifecycle.approve('maya', { extensionId: itemId(lifecycle, 'maya'), ...input(state), evidenceId: state.evidence.id }, () => true)), { status: 409 });
+  state = await lifecycle.proposeScenarios('maya', { extensionId: itemId(lifecycle, 'maya'), ...input(state), cases: example.cases }, () => true);
+  const savedSuite = lifecycle.source('maya', state.draft.id, itemId(lifecycle, 'maya')).cases;
   assert.deepEqual(savedSuite, example.cases);
   state = await lifecycle.simulate('maya', input(state), () => true);
-  const evidence = lifecycle.evidence('maya', state.evidence.id);
+  const evidence = lifecycle.evidence('maya', state.evidence.id, itemId(lifecycle, 'maya'));
   assert.equal(evidence.passed, true);
   assert.deepEqual(evidence.reports.map(({ taskStatus, readFailure }) => [taskStatus, readFailure]), [
     ['OPEN', null], ['COMPLETED', null], [null, 'TASK_NOT_FOUND'], [null, 'ACCESS_DENIED'], [null, 'TRANSIENT_FAILURE'],
@@ -228,10 +247,10 @@ test('example source and independent cases pass the real compiler/runtime with s
   ]);
   assert.equal(evidence.reports[2].report.native.classification, 'BUSINESS_REJECTION');
   assert.deepEqual(evidence.reports[2].report.consumption, { status: 'NOT_DISPLAYED' });
-  state = lifecycle.approve('maya', { ...input(state), evidenceId: state.evidence.id }, () => true);
+  state = lifecycle.approve('maya', { extensionId: itemId(lifecycle, 'maya'), ...input(state), evidenceId: state.evidence.id }, () => true);
   assert.deepEqual(state.selection, selection, 'approval does not activate or select');
-  await assert.rejects(lifecycle.proposeScenarios('maya', { ...input(state), cases: example.cases, draftVersion: state.draftVersion - 1 }, () => true), { status: 409 });
-  state = lifecycle.activate('maya', { ...input(state), generation: state.selection.generation }, () => true);
+  await assert.rejects(lifecycle.proposeScenarios('maya', { extensionId: itemId(lifecycle, 'maya'), ...input(state), cases: example.cases, draftVersion: state.draftVersion - 1 }, () => true), { status: 409 });
+  state = lifecycle.activate('maya', { extensionId: itemId(lifecycle, 'maya'), ...input(state), generation: state.selection.generation }, () => true);
   assert.equal(state.selection.revision.id, state.draft.id);
   assert.equal(state.selection.generation, selection.generation + 1);
 });
@@ -243,11 +262,11 @@ test('a provider request limit keeps the saved source and explains manual recove
   const { db, call, login } = await api(t, { compiler: { compile: async () => ({ artifact, diagnostics: [] }) },
     authoring: { config, fetchImpl: async () => { requests++; return new Response('', { status: 429 }); } } });
   await login();
-  const initial = (await call('extensions')).json();
-  const prepared = await call('extensions/compile', { source, draftVersion: initial.draftVersion });
+  const initial = (await call(extensionPath(db))).json();
+  const prepared = await call(extensionPath(db, 'compile'), { source, draftVersion: initial.draftVersion });
   assert.equal(prepared.statusCode, 200);
   const draft = prepared.json();
-  const started = await call('authoring/turn', { conversationId: null, operationId: 'limited-continuation',
+  const started = await call('authoring/turn', { target: authoringTarget(db), conversationId: null, operationId: 'limited-continuation',
     text: 'Keep the saved advice and continue checking the examples.', expectedVersion: 0, expectedDraftVersion: draft.draftVersion });
   assert.equal(started.statusCode, 202);
   let current;
@@ -263,21 +282,21 @@ test('a provider request limit keeps the saved source and explains manual recove
   assert.match(current.messages.at(-1).text, /retrying manually/);
   assert.equal(requests, 1, 'no automatic retry');
   assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, config.reserveMicros);
-  assert.equal((await call('extensions/revisions/' + draft.draft.id)).json().source, source);
-  assert.deepEqual((await call('extensions')).json().selection, initial.selection);
+  assert.equal((await call(extensionPath(db, 'revisions/' + draft.draft.id))).json().source, source);
+  assert.deepEqual((await call(extensionPath(db))).json().selection, initial.selection);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
 });
 
 test('historical prepared evidence never borrows display expectations from a different suite with reused case IDs', async t => {
   const db = openData(':memory:'), lifecycle = createLifecycle(db);
   t.after(() => db.close());
-  let state = lifecycle.load('maya', { templateId: 'attention', draftVersion: 0 }, () => true);
+  let state = lifecycle.load('maya', { extensionId: itemId(lifecycle, 'maya'), templateId: 'attention', draftVersion: 0 }, () => true);
   state = await lifecycle.simulate('maya', input(state), () => true);
   const id = state.evidence.id;
   const original = JSON.parse(db.prepare('SELECT payload FROM extension_evidence WHERE id=?').get(id).payload);
-  assert.deepEqual(lifecycle.evidence('maya', id).reports[0].expected.consumption, { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' });
+  assert.deepEqual(lifecycle.evidence('maya', id, itemId(lifecycle, 'maya')).reports[0].expected.consumption, { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' });
   db.prepare('UPDATE extension_evidence SET suite_identity=? WHERE id=?').run('sha256:' + '0'.repeat(64), id);
-  const historical = lifecycle.evidence('maya', id);
+  const historical = lifecycle.evidence('maya', id, itemId(lifecycle, 'maya'));
   assert.equal(historical.passed, false);
   assert.deepEqual(historical.reports, original.reports, 'a reused open case ID cannot confer current-suite expectations');
   const summary = evidenceSummary(historical, authoringExample().cases);

@@ -146,10 +146,11 @@ test('qualification examples pass the actual permitted authored simulator indepe
     // Packaging/compilation is covered separately; this checks the fixture's independent truth.
     const compiler = { compile: async () => ({ artifact: readFileSync(new URL('../extensions/task-read/maya.json', import.meta.url)), diagnostics: [] }) };
     const lifecycle = createLifecycle(db, { compiler });
-    let draft = await lifecycle.compile('sam', { source: readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8'), draftVersion: 0 }, () => {});
-    draft = await lifecycle.proposeScenarios('sam', { revisionId: draft.revisionId, cases, draftVersion: draft.draftVersion }, () => {});
-    draft = await lifecycle.simulate('sam', { revisionId: draft.revisionId, draftVersion: draft.draftVersion }, () => {});
-    const proof = lifecycle.evidence('sam', draft.evidence.id);
+    let draft = await lifecycle.createFromSource('sam', { operationId: 'qualified-source', source: readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8') }, () => {});
+    const extensionId = draft.extension.id;
+    draft = await lifecycle.proposeScenarios('sam', { extensionId, revisionId: draft.revisionId, cases, draftVersion: draft.draftVersion }, () => {});
+    draft = await lifecycle.simulate('sam', { extensionId, revisionId: draft.revisionId, draftVersion: draft.draftVersion }, () => {});
+    const proof = lifecycle.evidence('sam', draft.evidence.id, extensionId);
     assert.equal(proof.passed, true);
     assert.deepEqual(proof.reports.map(item => item.report.status), Array(5).fill('PASS'));
   } finally { db.close(); }

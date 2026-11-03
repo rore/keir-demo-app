@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData } from '../src/data.mjs';
+import { createLegacyV4 } from './fixtures/legacy-v4.mjs';
 
-const existingTables = ['users', 'projects', 'tasks', 'extension_revisions', 'extension_states', 'extension_selections',
+const existingTables = ['users', 'projects', 'tasks', 'extension_revisions', 'extension_selections',
   'extension_evidence', 'extension_approvals', 'extension_history', 'extension_authored'];
 const authoringTables = ['authoring_budget', 'authoring_conversations'];
+const allDataTables = [...existingTables, ...authoringTables, 'extensions', 'extension_revision_links', 'extension_conversation_links'];
 const snapshot = (db, tables) => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'keir-authoring-data-'));
@@ -24,26 +26,27 @@ function insertConversation(db, overrides = {}) {
 
 test('populated v3 migrates once, retaining every native/lifecycle byte and existing budget on reopen', t => {
   const { path } = fixture(t);
-  let db = openData(path);
+  let db = createLegacyV4(path);
   db.exec('DROP TABLE authoring_conversations; DROP TABLE authoring_budget; PRAGMA user_version=3');
   db.prepare("UPDATE tasks SET notes=? WHERE id=(SELECT id FROM tasks LIMIT 1)").run('Original native notes: \u0000\u03bb');
-  const revision = db.prepare("SELECT id FROM extension_revisions WHERE owner_id='maya'").get().id;
-  db.prepare('INSERT INTO extension_authored VALUES (?, ?, ?, ?, ?, ?)').run(revision, 'maya', 'Original source',
+  const revision = db.prepare("SELECT id FROM extension_revisions WHERE owner_id='owner-a'").get().id;
+  db.prepare('INSERT INTO extension_authored VALUES (?, ?, ?, ?, ?, ?)').run(revision, 'owner-a', 'Original source',
     Buffer.from([0, 255, 195, 169, 10]), Buffer.from([123, 0, 255, 125]), '{"independent":"\u03bb"}');
-  db.prepare('INSERT INTO extension_evidence VALUES (?, ?, ?, ?, ?, ?, ?)').run('evidence-1', 'maya', revision,
+  db.prepare('INSERT INTO extension_evidence VALUES (?, ?, ?, ?, ?, ?, ?)').run('evidence-1', 'owner-a', revision,
     'exact identity', 'exact suite identity', '{"original":"\u03bb"}', 1);
-  db.prepare('INSERT INTO extension_approvals VALUES (?, ?, ?)').run('maya', revision, 'evidence-1');
-  db.prepare('UPDATE extension_states SET draft_version=7, draft_id=? WHERE owner_id=?').run(revision, 'maya');
+  db.prepare('INSERT INTO extension_approvals VALUES (?, ?, ?)').run('owner-a', revision, 'evidence-1');
+  db.prepare('UPDATE extension_states SET draft_version=7, draft_id=? WHERE owner_id=?').run(revision, 'owner-a');
   const original = snapshot(db, existingTables);
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(db.prepare("SELECT draft_revision_id FROM extensions WHERE owner_id='owner-a'").get().draft_revision_id, revision);
   assert.deepEqual(snapshot(db, existingTables), original);
   assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 0 });
   assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 0);
   db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(9007199254740991);
-  insertConversation(db);
+  insertConversation(db, { owner_id: 'owner-a' });
   const authoring = snapshot(db, authoringTables);
   db.close();
   db = openData(path);
@@ -97,7 +100,7 @@ test('schema 4 enforces ownership, identity, statuses, integer bounds and byte q
 
 test('schema 4 migration rolls back partial DDL and rejects unsupported versions without resetting rows', t => {
   const { path } = fixture(t);
-  let db = openData(path);
+  let db = createLegacyV4(path);
   const original = snapshot(db, existingTables);
   db.exec('DROP TABLE authoring_conversations; DROP TABLE authoring_budget; CREATE TABLE authoring_conversations(conflict TEXT); PRAGMA user_version=3');
   db.close();
@@ -127,7 +130,7 @@ test('reset verifies both authoring tables, backs up conversations and preserves
   insertConversation(db);
   insertConversation(db, { id: 'conversation-2', creation_operation_id: 'operation-2', status: 'INTERRUPTED' });
   db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(987654321);
-  const original = snapshot(db, [...existingTables, ...authoringTables]);
+  const original = snapshot(db, allDataTables);
   db.close();
   for (const sql of ["UPDATE authoring_conversations SET state='different'", 'UPDATE authoring_budget SET reserved_micros=0']) {
     await assert.rejects(resetData(directory, true, async (source, destination) => {
@@ -137,12 +140,12 @@ test('reset verifies both authoring tables, backs up conversations and preserves
       copy.close();
     }), /Backup differs/);
     db = openData(path);
-    assert.deepEqual(snapshot(db, [...existingTables, ...authoringTables]), original);
+    assert.deepEqual(snapshot(db, allDataTables), original);
     db.close();
   }
   const backupPath = await resetData(directory, true);
   const copy = new DatabaseSync(backupPath, { readOnly: true });
-  assert.deepEqual(snapshot(copy, [...existingTables, ...authoringTables]), original);
+  assert.deepEqual(snapshot(copy, allDataTables), original);
   copy.close();
   for (let attempt = 0; attempt < 2; attempt++) {
     db = openData(path);
@@ -161,10 +164,10 @@ test('failed reset rolls conversation deletion back without releasing reserved b
   insertConversation(db);
   db.exec(`UPDATE authoring_budget SET reserved_micros=2345;
     CREATE TRIGGER fail_authoring_reset BEFORE INSERT ON users BEGIN SELECT RAISE(ABORT, 'seed blocked'); END;`);
-  const original = snapshot(db, [...existingTables, ...authoringTables]);
+  const original = snapshot(db, allDataTables);
   db.close();
   await assert.rejects(resetData(directory, true), /seed blocked/);
   db = openData(path);
-  assert.deepEqual(snapshot(db, [...existingTables, ...authoringTables]), original);
+  assert.deepEqual(snapshot(db, allDataTables), original);
   db.close();
 });

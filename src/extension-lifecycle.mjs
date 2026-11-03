@@ -4,7 +4,7 @@ import { runReadSimulation } from '@keir/runtime-node/read-simulation';
 import { AppError, notFound, transaction } from './data.mjs';
 import { loadCatalog, loadHost, admitArtifact, hostBindings, digest, json, consumer, hook } from './extension-catalog.mjs';
 
-const conflict = () => { throw new AppError(409, 'This advice changed. Review the current version before trying again.'); };
+const conflict = () => { throw new AppError(409, 'This extension changed. Review the current version before trying again.'); };
 const suite = 'task-advice-lifecycle/1', fixtureVersion = 'task-advice-fixtures/1';
 const authoredSuite = 'task-advice-authored/1', authoredFixture = 'task-advice-authored-fixtures/1';
 const safeCodes = new Set(['AUTHORITY_DENIED', 'AUTHORITY_CHECK_FAILED', 'HOST_CONTEXT_INVALID', 'HOST_BINDING_INVALID', 'INPUT_INVALID',
@@ -65,8 +65,10 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         artifactBytes: Buffer.from(value.artifact), dcmBytes: host.dcmBytes, source: Buffer.from(value.source).toString('utf8'), suite: value.suite };
     } catch { return null; }
   }
-  function revision(owner, id) {
-    const row = db.prepare('SELECT * FROM extension_revisions WHERE owner_id=? AND id=?').get(owner, id);
+  function revision(owner, id, extensionId) {
+    const row = extensionId === undefined
+      ? db.prepare('SELECT * FROM extension_revisions WHERE owner_id=? AND id=?').get(owner, id)
+      : db.prepare('SELECT r.* FROM extension_revisions r JOIN extension_revision_links l ON l.revision_id=r.id AND l.owner_id=r.owner_id WHERE r.owner_id=? AND r.id=? AND l.extension_id=?').get(owner, id, extensionId);
     if (!row) throw notFound();
     return row;
   }
@@ -76,12 +78,14 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     let pins = {};
     try { pins = JSON.parse(row.identity); } catch { /* Malformed deployment metadata is never eligible. */ }
     const item = executable(row);
-    return { id: row.id, templateId: row.template_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
+    const extension = db.prepare('SELECT e.id,e.name FROM extensions e JOIN extension_revision_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=?').get(row.owner_id, row.id);
+    return { id: row.id, extensionId: extension?.id ?? null, extensionName: extension?.name ?? null, templateId: row.template_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
       label: item?.label ?? 'Unavailable advice', pins, provenance: row.provenance,
       suiteDigest: row.template_id === 'authored' ? item?.pins.suiteDigest ?? null : null };
   }
-  function draft(owner) {
-    const state = db.prepare('SELECT * FROM extension_states WHERE owner_id=?').get(owner);
+  function draft(owner, extensionId) {
+    if (typeof extensionId !== 'string' || !extensionId) throw notFound();
+    const state = db.prepare('SELECT *,draft_revision_id AS draft_id FROM extensions WHERE owner_id=? AND id=?').get(owner, extensionId);
     if (!state) throw notFound();
     return state;
   }
@@ -103,9 +107,10 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
   function suiteIdentity(row) {
     return digest(json({ ...versions(row), simulator: row.identity, cases: cases(row).map(item => ({ id: item.id, digest: digest(item.bytes) })) }));
   }
-  function evidence(owner, id) {
+  function evidence(owner, id, extensionId) {
     const row = db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND id=?').get(owner, id);
     if (!row) throw notFound();
+    if (extensionId !== undefined) revision(owner, row.revision_id, extensionId);
     return row;
   }
   function passing(row, proof) {
@@ -132,31 +137,84 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     return !!approval && passing(row, evidence(row.owner_id, approval.evidence_id));
   }
   function currentDraft(owner, input) {
-    const state = draft(owner);
+    const state = draft(owner, input.extensionId);
     if (state.draft_id !== input.revisionId || state.draft_version !== input.draftVersion) conflict();
-    const row = revision(owner, input.revisionId);
+    const row = revision(owner, input.revisionId, input.extensionId);
     if (!valid(row)) conflict();
     return row;
   }
-  function commit(owner, authorize, action) {
-    return transaction(db, () => { authorize(); draft(owner); const result = action(); authorize(); return result; });
+  function commit(owner, extensionId, authorize, action) {
+    return transaction(db, () => { authorize(); draft(owner, extensionId); const result = action(); authorize(); return result; });
   }
   function change(owner, generation, row, operation) {
-    if (selection(owner).generation !== generation) conflict();
+    const selected = selection(owner), outgoing = selected.revision_id;
+    if (selected.generation !== generation) conflict();
     if (row && !eligible(row)) conflict();
     db.prepare('UPDATE extension_selections SET revision_id=?,generation=generation+1 WHERE owner_id=?').run(row?.id ?? null, owner);
-    db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)').run(owner, row?.id ?? null, generation + 1, operation);
+    db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)').run(owner, row?.id ?? outgoing, generation + 1, operation);
   }
   function quota(owner) {
     if (db.prepare('SELECT count(*) n FROM extension_authored WHERE owner_id=?').get(owner).n >= 32)
       throw new AppError(409, 'The 32 saved authored-revision limit is reached. Existing advice and history are retained.');
   }
-  function saveAuthored(owner, value) {
+  function saveAuthored(owner, extensionId, value) {
     quota(owner);
     const id = randomUUID(), identity = json(authoredPins(value));
     db.prepare('INSERT INTO extension_revisions VALUES (?,?,?,?,?)').run(id, owner, 'authored', identity, 'customer');
     db.prepare('INSERT INTO extension_authored VALUES (?,?,?,?,?,?)').run(id, owner, value.label, value.source, value.artifact, value.suite);
-    db.prepare('UPDATE extension_states SET draft_id=?,draft_version=draft_version+1 WHERE owner_id=?').run(id, owner);
+    saveHead(owner, extensionId, id);
+    return id;
+  }
+  function saveHead(owner, extensionId, revisionId) {
+    const state = draft(owner, extensionId);
+    if (state.hook_id !== null && state.hook_id !== hook) conflict();
+    db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(revisionId, owner, extensionId);
+    const result = db.prepare('UPDATE extensions SET draft_revision_id=?,draft_version=draft_version+1,hook_id=? WHERE owner_id=? AND id=? AND draft_version=?').run(revisionId, hook, owner, extensionId, state.draft_version);
+    if (result.changes !== 1) conflict();
+  }
+  function ownerView(owner) {
+    const row = db.prepare('SELECT id,name FROM users WHERE id=?').get(owner);
+    if (!row) throw notFound();
+    return row;
+  }
+  function selectionView(owner) {
+    const active = selection(owner), row = active.revision_id ? revision(owner, active.revision_id) : null;
+    return { generation: active.generation, revision: view(row), eligible: !!row && eligible(row) };
+  }
+  function choices() { return catalog.map(({ id, label, openCode }) => ({ id, label, openCode })); }
+  function creation(owner, operationId, hash) {
+    const row = db.prepare('SELECT id,creation_hash FROM extensions WHERE owner_id=? AND creation_operation_id=?').get(owner, operationId);
+    if (row && row.creation_hash !== hash) conflict();
+    return row;
+  }
+  function creationInput(operationId, hash, name) {
+    if (typeof operationId !== 'string' || !operationId || operationId.length > 128
+        || typeof hash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(hash)) throw new AppError(400, 'Use a valid creation operation.');
+    if (typeof name !== 'string' || !name.trim() || Array.from(name).length > 80) throw new AppError(400, 'Use a name of 1–80 characters.');
+  }
+  async function compileValue(input, authorize, signal) {
+    if (typeof input.source !== 'string' || !input.source.length || Buffer.byteLength(input.source) > 65536
+        || Buffer.from(input.source).toString('utf8') !== input.source) throw new AppError(400, 'Source must be 1–65,536 valid UTF-8 bytes.');
+    const label = input.label ?? 'Authored extension';
+    if (typeof label !== 'string' || !label.trim() || label.length > 80) throw new AppError(400, 'Use a label of 1–80 characters.');
+    if (!compiler || !host) throw new AppError(503, 'Source compilation is unavailable. Native tasks and saved extensions still work.');
+    let result;
+    try { result = await compiler.compile(Buffer.from(input.source), { signal }); }
+    catch (error) {
+      const messages = { 413: 'Compiler input or output exceeds the host limit.', 429: 'Compilation is busy. Try again after the current preparation settles.',
+        499: 'Preparation stopped. Check saved state before trying again.', 503: 'Source compilation is unavailable. Native tasks and saved extensions still work.',
+        504: 'Compilation exceeded its time limit. Check saved state before trying again.' };
+      const status = Object.hasOwn(messages, error?.status) ? error.status : 503;
+      throw new AppError(status, messages[status]);
+    }
+    authorize(); abort(signal);
+    if (!result.artifact) {
+      const error = new AppError(422, 'The source did not compile. Check the reported fields before trying again.');
+      error.diagnostics = result.diagnostics; throw error;
+    }
+    const value = { label: label.trim(), source: Buffer.from(input.source), artifact: Buffer.from(result.artifact), suite: null };
+    try { admitArtifact(value.artifact, host); authoredPins(value); } catch { throw new AppError(422, 'The compiled program does not match the host contract.'); }
+    return value;
   }
   function selectionInput(item) {
     return { dcmBytes: item.dcmBytes, artifactBytes: item.artifactBytes, modelDigest: item.pins.modelDigest,
@@ -170,62 +228,92 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       responseCheck: (capability, args, response) => capability === 'tasks.get' && (response.kind !== 'SUCCESS' || response.value.id === args.taskId) };
   }
   const api = {
-    state(owner) {
-      const state = draft(owner), active = selection(owner);
-      const candidate = state.draft_id ? revision(owner, state.draft_id) : null;
+    hostCatalog() {
+      return host ? { ...host.catalog, model: { dcm: host.dcmBytes.toString('utf8'), digest: host.pins.modelDigest,
+        profile: host.pins.profile, hook: host.pins.hook, consumer: host.pins.consumer, compiler: host.pins.compiler } } : { hooks: [] };
+    },
+    collection(owner) {
+      return { owner: ownerView(owner), items: db.prepare('SELECT id FROM extensions WHERE owner_id=? ORDER BY created_at,id').all(owner).map(row => api.state(owner, row.id)),
+        selection: selectionView(owner), catalog: choices(), hostCatalog: host?.catalog ?? { hooks: [] } };
+    },
+    state(owner, extensionId) {
+      const state = draft(owner, extensionId);
+      const candidate = state.draft_id ? revision(owner, state.draft_id, extensionId) : null;
       const latest = candidate && db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(owner, candidate.id);
       const approval = candidate?.provenance === 'customer' && db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, candidate.id);
-      const approvedProof = approval && db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND id=?').get(owner, approval.evidence_id);
-      const rows = db.prepare('SELECT id,generation,operation,revision_id AS revisionId FROM extension_history WHERE owner_id=? ORDER BY id DESC LIMIT 20').all(owner);
-      const targets = db.prepare('SELECT r.* FROM extension_revisions r WHERE owner_id=? AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id) ORDER BY rowid DESC LIMIT 20').all(owner).filter(eligible);
-      const evidenceHistory = db.prepare('SELECT id,revision_id AS revisionId FROM extension_evidence WHERE owner_id=? ORDER BY rowid DESC LIMIT 20').all(owner);
-      const selectedRow = active.revision_id ? revision(owner, active.revision_id) : null;
-      return { owner: { id: owner, name: db.prepare('SELECT name FROM users WHERE id=?').get(owner).name },
-        catalog: catalog.map(({ id, label, openCode }) => ({ id, label, openCode })), draftVersion: state.draft_version,
+      const approvedProof = approval && evidence(owner, approval.evidence_id, extensionId);
+      const targets = db.prepare('SELECT r.* FROM extension_revisions r JOIN extension_revision_links l ON l.revision_id=r.id AND l.owner_id=r.owner_id WHERE r.owner_id=? AND l.extension_id=? AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id) ORDER BY r.rowid DESC LIMIT 20').all(owner, extensionId).filter(eligible);
+      const evidenceHistory = db.prepare('SELECT e.id,e.revision_id AS revisionId FROM extension_evidence e JOIN extension_revision_links l ON l.revision_id=e.revision_id AND l.owner_id=e.owner_id WHERE e.owner_id=? AND l.extension_id=? ORDER BY e.rowid DESC LIMIT 20').all(owner, extensionId);
+      const first = state.creation_operation_id && db.prepare('SELECT revision_id FROM extension_revision_links WHERE owner_id=? AND extension_id=? ORDER BY rowid LIMIT 1').get(owner, extensionId);
+      return { owner: ownerView(owner), extension: { id: state.id, name: state.name, hookId: state.hook_id, creationOperationId: state.creation_operation_id },
+        creationRevisionId: first?.revision_id ?? null, creationReceipt: first ? { extensionId, revisionId: first.revision_id, draftVersion: 1 } : null,
+        catalog: choices(), hostCatalog: host?.catalog ?? { hooks: [] }, draftVersion: state.draft_version,
         revisionId: candidate?.id ?? null, suiteDigest: candidate?.template_id === 'authored' ? executable(candidate)?.pins.suiteDigest ?? null : null,
         draft: view(candidate), evidence: latest ? { id: latest.id, revisionId: candidate.id, passed: passing(candidate, latest) } : null,
         approved: !!candidate && eligible(candidate), approvedEvidenceId: approvedProof && passing(candidate, approvedProof) ? approvedProof.id : null,
-        selection: { generation: active.generation, revision: view(selectedRow), eligible: !!selectedRow && eligible(selectedRow) },
-        restoreTargets: targets.map(view), history: rows, evidenceHistory };
+        selection: selectionView(owner), restoreTargets: targets.map(view), history: api.history(owner, Number.MAX_SAFE_INTEGER, extensionId).rows, evidenceHistory };
+    },
+    admit(owner, { extensionId, operationId, hash, name }, authorize) {
+      authorize();
+      if (!db.isTransaction) conflict();
+      ownerView(owner); creationInput(operationId, hash, name);
+      const existing = creation(owner, operationId, hash);
+      if (existing) return api.state(owner, existing.id);
+      if (typeof extensionId !== 'string' || !extensionId || extensionId.length > 128) throw new AppError(400, 'Use a valid extension identity.');
+      if (db.prepare('SELECT 1 FROM extensions WHERE id=?').get(extensionId)) conflict();
+      db.prepare('INSERT INTO extensions VALUES (?,?,NULL,?,?,?,?,0,NULL)').run(extensionId, owner, name.trim(), Date.now(), operationId, hash);
+      authorize(); return api.state(owner, extensionId);
+    },
+    async createFromSource(owner, input, authorize, { signal } = {}) {
+      authorize(); abort(signal); ownerView(owner);
+      const name = input.label ?? 'Authored extension', hash = digest(json({ operationId: input.operationId, source: input.source, label: input.label }));
+      creationInput(input.operationId, hash, name);
+      const existing = creation(owner, input.operationId, hash);
+      if (existing) return api.state(owner, existing.id);
+      quota(owner);
+      const value = await compileValue(input, authorize, signal);
+      return transaction(db, () => {
+        authorize(); abort(signal);
+        const duplicate = creation(owner, input.operationId, hash);
+        if (duplicate) return api.state(owner, duplicate.id);
+        const extensionId = randomUUID();
+        api.admit(owner, { extensionId, operationId: input.operationId, hash, name }, authorize);
+        saveAuthored(owner, extensionId, value);
+        authorize(); return api.state(owner, extensionId);
+      });
     },
     load(owner, input, authorize) {
-      commit(owner, authorize, () => {
-        if (draft(owner).draft_version !== input.draftVersion) conflict();
+      commit(owner, input.extensionId, authorize, () => {
+        if (draft(owner, input.extensionId).draft_version !== input.draftVersion) conflict();
         const item = template(input.templateId);
-        if (!item) throw new AppError(400, 'Choose one of the available advice rules.');
+        if (!item) throw new AppError(400, 'Choose one of the available rules.');
         const id = randomUUID();
         db.prepare('INSERT INTO extension_revisions VALUES (?,?,?,?,?)').run(id, owner, item.id, item.identity, 'customer');
-        db.prepare('UPDATE extension_states SET draft_id=?,draft_version=draft_version+1 WHERE owner_id=?').run(id, owner);
-      }); return api.state(owner);
+        saveHead(owner, input.extensionId, id);
+      }); return api.state(owner, input.extensionId);
     },
     async compile(owner, input, authorize, { signal } = {}) {
-      authorize(); abort(signal); const state = draft(owner);
+      authorize(); abort(signal); const state = draft(owner, input.extensionId);
       if (state.draft_version !== input.draftVersion) conflict();
       quota(owner);
-      if (typeof input.source !== 'string' || !input.source.length || Buffer.byteLength(input.source) > 65536
-          || Buffer.from(input.source).toString('utf8') !== input.source) throw new AppError(400, 'Source must be 1–65,536 valid UTF-8 bytes.');
-      const label = input.label ?? 'Authored advice';
-      if (typeof label !== 'string' || !label.trim() || label.length > 80) throw new AppError(400, 'Use a label of 1–80 characters.');
-      if (!compiler || !host) throw new AppError(503, 'Source compilation is unavailable. Native tasks and saved advice still work.');
-      let result;
-      try { result = await compiler.compile(Buffer.from(input.source), { signal }); }
-      catch (error) {
-        const messages = { 413: 'Compiler input or output exceeds the host limit.', 429: 'Compilation is busy. Try again after the current preparation settles.',
-          499: 'Preparation stopped. Check saved state before trying again.', 503: 'Source compilation is unavailable. Native tasks and saved advice still work.',
-          504: 'Compilation exceeded its time limit. Check saved state before trying again.' };
-        const status = Object.hasOwn(messages, error?.status) ? error.status : 503;
-        throw new AppError(status, messages[status]);
-      }
-      authorize(); abort(signal);
-      if (!result.artifact) {
-        const error = new AppError(422, 'The source did not compile. Check the reported fields before trying again.');
-        error.diagnostics = result.diagnostics; throw error;
-      }
-      const value = { label: label.trim(), source: Buffer.from(input.source), artifact: Buffer.from(result.artifact), suite: null };
-      try { admitArtifact(value.artifact, host); authoredPins(value); } catch { throw new AppError(422, 'The compiled program does not match the host contract.'); }
-      commit(owner, authorize, () => {
-        abort(signal); if (draft(owner).draft_version !== input.draftVersion) conflict(); saveAuthored(owner, value);
-      }); return api.state(owner);
+      const value = await compileValue(input, authorize, signal);
+      commit(owner, input.extensionId, authorize, () => {
+        abort(signal); if (draft(owner, input.extensionId).draft_version !== input.draftVersion) conflict(); saveAuthored(owner, input.extensionId, value);
+      }); return api.state(owner, input.extensionId);
+    },
+    restart(owner, input, authorize) {
+      commit(owner, input.extensionId, authorize, () => {
+        const state = draft(owner, input.extensionId), active = selection(owner);
+        if (state.draft_version !== input.draftVersion || active.generation !== input.generation || active.revision_id !== input.revisionId) conflict();
+        const row = revision(owner, input.revisionId, input.extensionId);
+        if (!eligible(row)) conflict();
+        if (row.template_id === 'authored') saveAuthored(owner, input.extensionId, content(row));
+        else {
+          const id = randomUUID();
+          db.prepare('INSERT INTO extension_revisions VALUES (?,?,?,?,?)').run(id, owner, row.template_id, row.identity, 'customer');
+          saveHead(owner, input.extensionId, id);
+        }
+      }); return api.state(owner, input.extensionId);
     },
     async proposeScenarios(owner, input, authorize, { signal } = {}) {
       authorize(); abort(signal); const row = currentDraft(owner, input), item = executable(row);
@@ -252,15 +340,20 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         }
         ids.add(id);
       }
-      commit(owner, authorize, () => {
+      commit(owner, input.extensionId, authorize, () => {
         abort(signal); currentDraft(owner, input);
-        const value = content(row); saveAuthored(owner, { ...value, suite: suiteBytes });
-      }); return api.state(owner);
+        const value = content(row); saveAuthored(owner, input.extensionId, { ...value, suite: suiteBytes });
+      }); return api.state(owner, input.extensionId);
     },
-    source(owner, id) {
-      const row = revision(owner, id), item = executable(row);
-      if (!item || row.template_id !== 'authored') throw notFound();
-      return { revisionId: id, source: item.source, cases: item.suite ? JSON.parse(item.suite) : [], suiteDigest: item.pins.suiteDigest };
+    source(owner, id, extensionId) {
+      draft(owner, extensionId);
+      const row = revision(owner, id, extensionId), item = executable(row);
+      if (!item || item.identity !== row.identity) throw notFound();
+      const prepared = row.template_id !== 'authored';
+      return { extensionId, revisionId: id, source: item.source, artifact: item.artifactBytes.toString('utf8'), pins: JSON.parse(row.identity),
+        cases: prepared ? cases(row).filter(example => example.id !== 'host-denied').map(example => example.bytes.toString('utf8')) : item.suite ? JSON.parse(item.suite) : [],
+        suiteDigest: prepared ? null : item.pins.suiteDigest,
+        hostCases: prepared ? cases(row).filter(example => example.id === 'host-denied').map(example => ({ case: example.bytes.toString('utf8'), editable: false, authority: 'host' })) : [] };
     },
     async simulate(owner, input, authorize, { signal } = {}) {
       authorize(); abort(signal); const row = currentDraft(owner, input), item = executable(row), examples = cases(row, item);
@@ -278,31 +371,39 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         const suiteDigest = suiteIdentity(row);
         const payload = json({ identity: { dependencies: item.pins, ...versions(row), suiteDigest }, reports });
         if (Buffer.byteLength(payload) > 131072) throw new AppError(413, 'Sample evidence exceeds the host limit.');
-        commit(owner, authorize, () => {
+        commit(owner, input.extensionId, authorize, () => {
           abort(signal); currentDraft(owner, input);
           const proof = { owner_id: owner, revision_id: row.id, identity: row.identity, suite_identity: suiteDigest, payload, passed: reports.every(entry => entry.report.status === 'PASS') ? 1 : 0 };
           db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)').run(randomUUID(), owner, row.id, proof.identity, suiteDigest, payload, passing(row, proof) ? 1 : 0);
-        }); return api.state(owner);
+        }); return api.state(owner, input.extensionId);
       } finally { simulations.delete(owner); }
     },
     approve(owner, input, authorize) {
-      commit(owner, authorize, () => {
-        const row = currentDraft(owner, input), proof = evidence(owner, input.evidenceId);
+      commit(owner, input.extensionId, authorize, () => {
+        const row = currentDraft(owner, input), proof = evidence(owner, input.evidenceId, input.extensionId);
         if (!passing(row, proof)) conflict();
         db.prepare('INSERT INTO extension_approvals VALUES (?,?,?) ON CONFLICT(owner_id,revision_id) DO UPDATE SET evidence_id=excluded.evidence_id').run(owner, row.id, proof.id);
-      }); return api.state(owner);
+      }); return api.state(owner, input.extensionId);
     },
-    activate(owner, input, authorize) { commit(owner, authorize, () => change(owner, input.generation, currentDraft(owner, input), 'activate')); return api.state(owner); },
-    disable(owner, input, authorize) { commit(owner, authorize, () => change(owner, input.generation, null, 'disable')); return api.state(owner); },
+    activate(owner, input, authorize) { commit(owner, input.extensionId, authorize, () => change(owner, input.generation, currentDraft(owner, input), 'activate')); return api.state(owner, input.extensionId); },
+    disable(owner, input, authorize) {
+      commit(owner, input.extensionId, authorize, () => {
+        const active = selection(owner);
+        if (!active.revision_id) conflict();
+        revision(owner, active.revision_id, input.extensionId);
+        change(owner, input.generation, null, 'disable');
+      }); return api.state(owner, input.extensionId);
+    },
     rollback(owner, input, authorize) {
-      commit(owner, authorize, () => {
-        const row = revision(owner, input.revisionId);
+      commit(owner, input.extensionId, authorize, () => {
+        const row = revision(owner, input.revisionId, input.extensionId);
         if (!db.prepare('SELECT 1 FROM extension_history WHERE owner_id=? AND revision_id=?').get(owner, row.id)) conflict();
         change(owner, input.generation, row, 'rollback');
-      }); return api.state(owner);
+      }); return api.state(owner, input.extensionId);
     },
-    evidence(owner, id) {
-      const proof = evidence(owner, id), row = revision(owner, proof.revision_id);
+    evidence(owner, id, extensionId) {
+      draft(owner, extensionId);
+      const proof = evidence(owner, id, extensionId), row = revision(owner, proof.revision_id, extensionId);
       const payload = JSON.parse(proof.payload);
       let originals = [];
       try { if (proof.suite_identity === suiteIdentity(row)) originals = cases(row); }
@@ -316,9 +417,12 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       return { id: proof.id, revisionId: proof.revision_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
         ...payload, reports, passed: passing(row, proof) };
     },
-    history(owner, before = Number.MAX_SAFE_INTEGER) {
-      draft(owner);
-      const rows = db.prepare('SELECT id,generation,operation,revision_id AS revisionId FROM extension_history WHERE owner_id=? AND id<? ORDER BY id DESC LIMIT 20').all(owner, before);
+    history(owner, before = Number.MAX_SAFE_INTEGER, extensionId) {
+      ownerView(owner);
+      if (extensionId !== undefined) draft(owner, extensionId);
+      const rows = extensionId === undefined
+        ? db.prepare('SELECT id,generation,operation,revision_id AS revisionId FROM extension_history WHERE owner_id=? AND id<? ORDER BY id DESC LIMIT 20').all(owner, before)
+        : db.prepare('SELECT h.id,h.generation,h.operation,h.revision_id AS revisionId FROM extension_history h JOIN extension_revision_links l ON l.revision_id=h.revision_id AND l.owner_id=h.owner_id WHERE h.owner_id=? AND h.id<? AND l.extension_id=? ORDER BY h.id DESC LIMIT 20').all(owner, before, extensionId);
       return { rows, next: rows.length === 20 ? rows.at(-1).id : null };
     },
     capture(owner) {

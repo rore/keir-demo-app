@@ -118,7 +118,10 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     ai.configure(next.config, next.persist);
     return setupResponse();
   });
-  app.get('/api/authoring', request => { noQuery(request); return lifecycleResponse(ai.list(authorize(request).userId)); });
+  app.get('/api/authoring', request => {
+    if (Object.keys(request.query).some(key => key !== 'extensionId') || request.query.extensionId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(request.query.extensionId)) throw new AppError(400, 'Use an exact extension identity.');
+    return lifecycleResponse(ai.list(authorize(request).userId, request.query.extensionId));
+  });
   app.get('/api/authoring/example', request => { authorize(request); noQuery(request); return lifecycleResponse(authoringExample()); });
   app.get('/api/authoring/conversations/:id', request => { noQuery(request); return lifecycleResponse(ai.read(authorize(request).userId, request.params.id)); });
   app.post('/api/authoring/turn', { bodyLimit: 65536 }, async (request, reply) => {
@@ -130,21 +133,30 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     noQuery(request); const session = authorize(request);
     return lifecycleResponse(ai.cancel(session.userId, request.params.id, request.body, authoringLease(request)));
   });
-  app.get('/api/extensions', request => { noQuery(request); return lifecycleResponse(lifecycle.state(authorize(request).userId)); });
-  app.get('/api/extensions/evidence/:id', request => { noQuery(request); return lifecycleResponse(lifecycle.evidence(authorize(request).userId, request.params.id)); });
-  app.get('/api/extensions/revisions/:id', request => {
-    noQuery(request); const value = lifecycle.source(authorize(request).userId, request.params.id);
+  app.get('/api/extensions', request => { noQuery(request); return lifecycleResponse(lifecycle.collection(authorize(request).userId)); });
+  app.get('/api/extensions/catalog', request => { authorize(request); noQuery(request); return lifecycleResponse(lifecycle.hostCatalog()); });
+  app.get('/api/extensions/:extensionId', request => { noQuery(request); return lifecycleResponse(lifecycle.state(authorize(request).userId, request.params.extensionId)); });
+  app.post('/api/extensions', { bodyLimit: 1048576 }, async (request, reply) => {
+    noQuery(request); const session = authorize(request), input = request.body;
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['operationId', 'source', 'label'].includes(key))
+        || typeof input.operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.operationId) || typeof input.source !== 'string') throw new AppError(400, 'Use a source and creation operation identity.');
+    const result = await withSignal(request, reply, signal => lifecycle.createFromSource(session.userId, input, () => authorize(request), { signal }));
+    authorize(request); return lifecycleResponse(result);
+  });
+  app.get('/api/extensions/:extensionId/evidence/:id', request => { noQuery(request); return lifecycleResponse(lifecycle.evidence(authorize(request).userId, request.params.id, request.params.extensionId)); });
+  app.get('/api/extensions/:extensionId/revisions/:id', request => {
+    noQuery(request); const value = lifecycle.source(authorize(request).userId, request.params.id, request.params.extensionId);
     if (Buffer.byteLength(JSON.stringify(value)) > 1048576) throw new AppError(413, 'Source response exceeds the host limit.');
     return value;
   });
-  app.get('/api/extensions/history', request => {
+  app.get('/api/extensions/:extensionId/history', request => {
     if (Object.keys(request.query).some(key => key !== 'before') || request.query.before !== undefined && !/^[1-9][0-9]{0,15}$/.test(request.query.before)) throw new AppError(400, 'Use a valid history cursor.');
     const before = request.query.before === undefined ? undefined : Number(request.query.before);
     if (before !== undefined && !Number.isSafeInteger(before)) throw new AppError(400, 'Use a valid history cursor.');
-    return lifecycleResponse(lifecycle.history(authorize(request).userId, before));
+    return lifecycleResponse(lifecycle.history(authorize(request).userId, before, request.params.extensionId));
   });
   const operations = { draft: ['templateId', 'draftVersion'], simulate: ['revisionId', 'draftVersion'], approve: ['revisionId', 'draftVersion', 'evidenceId'],
-    activate: ['revisionId', 'draftVersion', 'generation'], disable: ['generation'], rollback: ['revisionId', 'generation'] };
+    activate: ['revisionId', 'draftVersion', 'generation'], disable: ['generation'], rollback: ['revisionId', 'generation'], restart: ['revisionId', 'draftVersion', 'generation'] };
   async function withSignal(request, reply, action) {
     const abort = new AbortController();
     const disconnected = () => { if (!reply.raw.writableFinished) abort.abort(); };
@@ -153,18 +165,18 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     try { return await action(abort.signal); }
     finally { request.raw.removeListener('aborted', disconnected); reply.raw.removeListener('close', disconnected); }
   }
-  for (const [operation, fields] of Object.entries(operations)) app.post(`/api/extensions/${operation}`, async (request, reply) => {
+  for (const [operation, fields] of Object.entries(operations)) app.post(`/api/extensions/:extensionId/${operation}`, async (request, reply) => {
     const session = authorize(request), input = request.body;
     noQuery(request);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== fields.length
         || !fields.every(field => Object.hasOwn(input, field) && (['draftVersion', 'generation'].includes(field)
           ? Number.isSafeInteger(input[field]) && input[field] >= 0 : typeof input[field] === 'string' && /^[A-Za-z0-9-]{1,128}$/.test(input[field]))))
       throw new AppError(400, 'Use only the supported advice fields.');
-    const result = await withSignal(request, reply, signal => lifecycle[operation === 'draft' ? 'load' : operation](session.userId, input, () => authorize(request), { signal }));
+    const result = await withSignal(request, reply, signal => lifecycle[operation === 'draft' ? 'load' : operation](session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request), { signal }));
     authorize(request);
     return lifecycleResponse(result);
   });
-  for (const operation of ['compile', 'scenarios']) app.post(`/api/extensions/${operation}`, { bodyLimit: 1048576 }, async (request, reply) => {
+  for (const operation of ['compile', 'scenarios']) app.post(`/api/extensions/:extensionId/${operation}`, { bodyLimit: 1048576 }, async (request, reply) => {
     const session = authorize(request), input = request.body;
     noQuery(request);
     const fields = operation === 'compile' ? ['source', 'draftVersion'] : ['revisionId', 'cases', 'draftVersion'];
@@ -174,7 +186,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
         || operation === 'scenarios' && (typeof input.revisionId !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(input.revisionId)))
       throw new AppError(400, 'Use only the supported preparation fields.');
     const result = await withSignal(request, reply, signal => lifecycle[operation === 'compile' ? 'compile' : 'proposeScenarios'](
-      session.userId, input, () => authorize(request), { signal }));
+      session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request), { signal }));
     authorize(request); return lifecycleResponse(result);
   });
   app.post('/api/projects', (request, reply) => { const result = service.createProject(authorize(request).userId, request.body); reply.code(201); return result; });

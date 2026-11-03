@@ -1,11 +1,21 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import "./styles.css";
-import Studio from "./Studio";
+import Studio, { type Collection, type StudioTarget } from "./Studio";
 import Customizations from "./Customizations";
 
 type User = { id: string; name: string; description?: string };
 type Session = { user: User | null; contextToken: string; users?: User[] };
+function studioLink() {
+  if (!location.hash) return { valid: true, target: null };
+  const params = new URLSearchParams(location.hash.slice(1));
+  const keys = Array.from(params.keys());
+  const id = (value: string | null) => value !== null && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value);
+  if (keys.length === 1 && params.get("new") === "1") return { valid: true, target: { extensionId: null } as StudioTarget };
+  if (keys.length < 1 || keys.length > 2 || new Set(keys).size !== keys.length || keys.some(key => !["customization", "conversation"].includes(key))
+    || !id(params.get("customization")) || params.has("conversation") && !id(params.get("conversation"))) return { valid: false, target: null };
+  return { valid: true, target: { extensionId: params.get("customization"), conversationId: params.get("conversation") } as StudioTarget };
+}
 type Project = { id: string; name: string };
 type Advice = { status: "DISPLAYED"; classification: "DONE" | "PENDING" | "NEEDS_ATTENTION" }
   | { status: "NOT_DISPLAYED"; message: string };
@@ -113,6 +123,7 @@ function App() {
   async function authenticate(userId?: string) {
     if (authBusy.current) return;
     authBusy.current = true;
+    if (session?.user && session.user.id !== userId) history.replaceState(null, "", location.pathname + location.search);
     setPending(true);
     setSession(null);
     setError("");
@@ -267,9 +278,61 @@ function Workspace({
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<Task | null>(null);
   const [draft, setDraft] = useState({ title: "", notes: "" });
-  const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">("tasks");
+  const routeKey = "daymark-studio-route:" + session.user.id;
+  const [entryLink] = useState(studioLink);
+  const [savedRoute] = useState<(StudioTarget & { entryId: string }) | null>(() => {
+    if (!entryLink.valid) return null;
+    let stored: (StudioTarget & { entryId: string }) | null = null;
+    try {
+      const value = JSON.parse(sessionStorage.getItem(routeKey) ?? "null");
+      if (value && /^[0-9a-f-]{36}$/i.test(value.entryId) && (value.extensionId === null || typeof value.extensionId === "string")
+        && (value.conversationId == null || typeof value.conversationId === "string")) stored = value;
+    } catch { /* A valid link can still be opened without tab storage. */ }
+    if (entryLink.target) return { ...entryLink.target, entryId: stored && stored.extensionId === entryLink.target.extensionId
+      && (stored.conversationId ?? null) === (entryLink.target.conversationId ?? null) ? stored.entryId : crypto.randomUUID() };
+    return stored;
+  });
+  const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">(savedRoute ? "studio" : !entryLink.valid ? "customizations" : "tasks");
   const [studioOrigin, setStudioOrigin] = useState<"detail" | "overview">("overview");
-  const [studioStart, setStudioStart] = useState(false);
+  const [studioTarget, setStudioTarget] = useState(savedRoute ?? { extensionId: null, entryId: crypto.randomUUID() });
+  const [customizationNotice, setCustomizationNotice] = useState(entryLink.valid ? "" : "That customization link is invalid. Choose a saved item or start a new one.");
+  const studioEntrySerial = useRef(0);
+  const currentStudioEntry = useRef<string | null>(studioTarget.entryId);
+  function rememberStudio(next: StudioTarget & { entryId: string }) {
+    currentStudioEntry.current = next.entryId;
+    try { sessionStorage.setItem(routeKey, JSON.stringify(next)); } catch { /* Recovery still uses the submitted operation when storage permits. */ }
+    const params = new URLSearchParams();
+    if (next.extensionId) {
+      params.set("customization", next.extensionId);
+      if (next.conversationId) params.set("conversation", next.conversationId);
+    } else params.set("new", "1");
+    const hash = !next.extensionId && next.conversationId ? "" : "#" + params.toString();
+    if (location.hash !== hash) history.replaceState(null, "", location.pathname + location.search + hash);
+    setStudioTarget(next);
+  }
+  useEffect(() => {
+    try {
+      if (destination === "studio") sessionStorage.setItem(routeKey, JSON.stringify(studioTarget));
+      else sessionStorage.removeItem(routeKey);
+    } catch { /* Tab recovery is unavailable when browser storage is disabled. */ }
+    if (destination !== "studio" && location.hash) history.replaceState(null, "", location.pathname + location.search);
+  }, [destination, studioTarget, routeKey]);
+  useEffect(() => {
+    const changed = () => {
+      studioEntrySerial.current++;
+      const link = studioLink();
+      if (link.valid && link.target) {
+        setStudioOrigin("overview"); setCustomizationNotice("");
+        rememberStudio({ ...link.target, entryId: crypto.randomUUID() }); setDestination("studio");
+      } else {
+        currentStudioEntry.current = null;
+        setCustomizationNotice(link.valid ? "" : "That customization link is invalid. Choose a saved item or start a new one.");
+        setDestination("customizations");
+      }
+    };
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, [routeKey]);
   const detailVisible = useRef(false);
   detailVisible.current = destination === "tasks" && !!detail;
   const resumeDetail = useRef(false);
@@ -327,20 +390,33 @@ function Workspace({
     catch (error) { if (error instanceof ApiError && error.status === 401) handleError(error); throw error; }
   }
   function navigate(next: "tasks" | "customizations") {
+    studioEntrySerial.current++;
+    currentStudioEntry.current = null;
     destinationFocus.current = next === "tasks" ? "tasks-heading" : "customizations-heading";
     setDestination(next);
   }
-  function openStudio(origin: "detail" | "overview", start = false) {
+  async function openStudio(origin: "detail" | "overview", target: StudioTarget = { extensionId: null }) {
+    const entry = ++studioEntrySerial.current;
+    if (origin === "detail") {
+      try {
+        const collection = await studioRequest<Collection>("extensions");
+        if (lifetime.current.signal.aborted || studioEntrySerial.current !== entry || !detailVisible.current) return;
+        target = { extensionId: collection.selection.revision?.extensionId ?? null };
+      } catch (failure) { handleError(failure); return; }
+    }
+    setCustomizationNotice("");
     setStudioOrigin(origin);
-    setStudioStart(start);
+    rememberStudio({ ...target, entryId: target.recoveryId ?? crypto.randomUUID() });
     setDestination("studio");
   }
   function returnFromStudio() {
+    studioEntrySerial.current++;
+    currentStudioEntry.current = null;
     if (studioOrigin === "detail" && detail && tasks.some(task => task.id === detail.id)) {
       resumeDetail.current = true;
       setDestination("tasks");
     } else {
-      destinationFocus.current = studioStart ? "new-customization" : "edit-task-advice";
+      destinationFocus.current = studioTarget.extensionId ? `edit-${studioTarget.extensionId}` : "new-customization";
       setDestination("customizations");
     }
   }
@@ -758,9 +834,11 @@ function Workspace({
             </span>
           </footer>
         </main>
-        {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} open={start => openStudio("overview", start)} focusAction={destinationFocus.current ?? ""} />}
-        {destination === "studio" && <main className="studio-main"><Studio request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
-          start={studioStart} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
+        {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} open={target => void openStudio("overview", target)} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} />}
+        {destination === "studio" && <main className="studio-main"><Studio key={studioTarget.entryId} request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
+          target={studioTarget} ownerId={session.user.id} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId}
+          targeted={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) rememberStudio({ ...next, entryId: studioTarget.entryId }); }}
+          unavailable={() => { if (currentStudioEntry.current !== studioTarget.entryId || lifetime.current.signal.aborted) return; currentStudioEntry.current = null; setCustomizationNotice("That customization or conversation is unavailable. Choose a saved item or start a new one."); setDestination("customizations"); }} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
           back={returnFromStudio} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
       </div>
       <dialog
@@ -781,7 +859,7 @@ function Workspace({
             task={detail}
             draft={draft}
             setDraft={setDraft}
-            manage={() => openStudio("detail")}
+            manage={() => void openStudio("detail")}
             busy={busy}
             error={error}
             close={closeDetail}

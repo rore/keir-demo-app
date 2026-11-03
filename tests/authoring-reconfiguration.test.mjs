@@ -11,7 +11,7 @@ import { createAuthoringSettings } from '../src/authoring-settings.mjs';
 import { readSetupConfig } from '../src/authoring-config.mjs';
 
 const settingsInput = (apiKey = 'synthetic-key-a', maxUsd = '3') => ({ provider: 'openai', model: 'gpt-5.6-terra', apiKey, maxUsd });
-const input = (operationId, fields = {}) => ({ conversationId: null, operationId, text: 'Read-only task advice, please.',
+const input = (operationId, fields = {}) => ({ target: { kind: 'create' }, conversationId: null, operationId, text: 'Read-only task advice, please.',
   expectedVersion: 0, expectedDraftVersion: 0, ...fields });
 const lease = { sessionId: 'test-session', current: () => true };
 const reply = { calls: [], text: 'Ready to continue.', continuation: { opaque: 'native-continuation' }, usage: { inputTokens: 1, outputTokens: 1 } };
@@ -61,7 +61,7 @@ test('key-only settings revisions survive restart, fence old chains and preserve
   const second = settings.prepare(settingsInput('synthetic-key-b')); service.configure(second.config, second.persist);
   const revision = settings.config.settingsRevision;
   assert.notEqual(revision, first.config.settingsRevision);
-  const resumeA = input('resume-a', { conversationId: aSaved.id, expectedVersion: aSaved.version });
+  const resumeA = input('resume-a', { target: { kind: 'resume', extensionId: aSaved.extensionId }, conversationId: aSaved.id, expectedVersion: aSaved.version });
   await assert.rejects(service.turn('maya', resumeA, lease), { code: 'CONFIG_CHANGED', status: 409 });
   assert.equal((await service.turn('maya', aInput, lease)).conversation.id, aSaved.id, 'exact retries read prior operation');
   assert.equal(held(db), creditA);
@@ -76,7 +76,7 @@ test('key-only settings revisions survive restart, fence old chains and preserve
   assert.equal(settings.config.settingsRevision, revision);
   assert.equal(held(db), creditB); assert.equal(requests.length, 2, 'startup never dispatches');
   await assert.rejects(service.turn('maya', resumeA, lease), { code: 'CONFIG_CHANGED' });
-  const resumed = await service.turn('leo', input('resume-b', { conversationId: bSaved.id, expectedVersion: bSaved.version }), lease);
+  const resumed = await service.turn('leo', input('resume-b', { target: { kind: 'resume', extensionId: bSaved.extensionId }, conversationId: bSaved.id, expectedVersion: bSaved.version }), lease);
   await service.wait('leo', resumed.conversation.id);
   assert.equal(requests.length, 3); const beforeReset = held(db), savedFile = readFileSync(file);
   await close();

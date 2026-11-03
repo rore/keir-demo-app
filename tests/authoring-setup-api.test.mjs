@@ -123,7 +123,7 @@ test('valid setup saves without provider traffic, applies immediately, survives 
   assertPrivate(saved.json(), file);
   const turn = await first.app.inject({ method: 'POST', url: '/api/authoring/turn', headers: {
     host: '127.0.0.1:32123', origin, 'content-type': 'application/json', ...first.getAuth()
-  }, payload: { conversationId: null, operationId: 'setup-dispatch', text: 'Help with task advice.', expectedVersion: 0, expectedDraftVersion: 0 } });
+  }, payload: { target: { kind: 'create' }, conversationId: null, operationId: 'setup-dispatch', text: 'Help with task advice.', expectedVersion: 0, expectedDraftVersion: 0 } });
   assert.equal(turn.statusCode, 202);
   assert.deepEqual(seenKeys, [sentinel]);
 

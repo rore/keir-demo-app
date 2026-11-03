@@ -5,19 +5,26 @@ type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"
 type History = { id: number; generation: number; operation: string; revisionId: string | null };
 export type State = {
   owner: { id: string; name: string };
+  extension: { id: string; name: string; hookId: string | null; creationOperationId?: string; creationRevisionId?: string | null } | null;
   catalog: { id: string; label: string; openCode: string }[];
   draftVersion: number;
   draft: Revision | null;
   evidence: { id: string; revisionId: string; passed: boolean } | null;
   approved: boolean;
   approvedEvidenceId: string | null;
-  selection: { generation: number; revision: Revision | null; eligible: boolean };
+  selection: { generation: number; revision: (Revision & { extensionId: string; extensionName: string }) | null; eligible: boolean };
   restoreTargets: Revision[];
   history: History[];
   evidenceHistory: { id: string; revisionId: string }[];
 };
+export type Collection = { items: State[]; owner: State["owner"]; selection: State["selection"]; catalog: State["catalog"] };
+export type StudioTarget = { extensionId: string | null; conversationId?: string | null; recoveryId?: string };
+type HostCatalog = {
+  hooks: { id: string; label: string; description: string; effect: string; trigger: string }[];
+  model: { dcm: string; digest: string; profile: string; hook: string; consumer: object; compiler: unknown };
+};
 type Outcome = { classification: string; code?: string; consumption?: { status: "DISPLAYED" | "NOT_DISPLAYED"; code?: string } };
-type SavedSource = { revisionId: string; source: string; cases: string[]; suiteDigest: string | null };
+type SavedSource = { revisionId: string; source: string; artifact: string; pins: object; cases: string[]; suiteDigest: string | null };
 type Example = { label: string; description: string; source: string; cases: string[]; situations: { id: string; label: string; taskStatus: "OPEN" | "COMPLETED" | null }[] };
 type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"; identity: object; passed: boolean; reports: {
   id: string; label: string; expected: Outcome; taskStatus?: "OPEN" | "COMPLETED" | null; readFailure?: "TASK_NOT_FOUND" | "ACCESS_DENIED" | "TRANSIENT_FAILURE" | null;
@@ -26,6 +33,7 @@ type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"
 type Message = { id: number | string; who: "You" | "Studio"; text: string; evidenceId?: string; exampleCount?: number; context?: string };
 type Operation = { id: string; runId: string; version: number };
 type Conversation = {
+  extensionId: string | null; purpose: "CREATE" | "REVISE" | null;
   id: string; version: number; status: "IDLE" | "RUNNING" | "CANCELLING" | "AWAITING_USER" | "REVIEW_AVAILABLE" | "CANCELLED" | "BLOCKED" | "INTERRUPTED";
   runId: string; operation: Operation; messages: { id: string; role: "user" | "assistant"; text: string; kind: "text" | "clarification" | "review" }[];
   code: string | null; review: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string; eligible: boolean } | null;
@@ -33,10 +41,55 @@ type Conversation = {
 };
 type Authoring = {
   availability: { available: boolean; code: string | null; provider: "openai" | "anthropic" | null; model: string | null };
-  conversations: { id: string; version: number; status: Conversation["status"]; runId: string; creationOperationId: string; operationId: string }[];
+  conversations: { extensionId: string | null; purpose: "CREATE" | "REVISE" | null; id: string; version: number; status: Conversation["status"]; runId: string; creationOperationId: string; operationId: string }[];
   current: Conversation | null;
 };
-type Turn = { conversationId: string | null; operationId: string; text: string; expectedVersion: number; expectedDraftVersion: number };
+type TurnTarget = { kind: "create" } | { kind: "revise"; extensionId: string; baseRevisionId: string | null; selectionGeneration: number } | { kind: "resume"; extensionId: string };
+type Turn = { target: TurnTarget; conversationId: string | null; operationId: string; text: string; expectedVersion: number; expectedDraftVersion: number };
+export function pendingRequests(ownerId: string) {
+  const entries: { entryId: string; turn: Turn }[] = [];
+  const prefix = "daymark-studio-work:" + ownerId + ":";
+  try {
+    for (let index = 0; index < sessionStorage.length; index++) {
+      const key = sessionStorage.key(index)!;
+      if (!key.startsWith(prefix)) continue;
+      const entryId = key.slice(prefix.length);
+      if (!/^[0-9a-f-]{36}$/i.test(entryId)) continue;
+      let turn: Turn;
+      try { turn = JSON.parse(sessionStorage.getItem(key)!); } catch { continue; }
+      if (!turn || !/^[0-9a-f-]{36}$/i.test(turn.operationId) || typeof turn.text !== "string" || !turn.text.trim()
+        || new TextEncoder().encode(turn.text).length > 8192 || !Number.isSafeInteger(turn.expectedVersion) || turn.expectedVersion < 0
+        || !Number.isSafeInteger(turn.expectedDraftVersion) || turn.expectedDraftVersion < 0
+        || !(turn.conversationId === null || typeof turn.conversationId === "string") || !turn.target) continue;
+      const target = turn.target;
+      if (target.kind === "create" ? turn.conversationId !== null : !["revise", "resume"].includes(target.kind)
+        || typeof target.extensionId !== "string" || !target.extensionId || target.kind === "resume" && !turn.conversationId
+        || target.kind === "revise" && (turn.conversationId !== null || !(target.baseRevisionId === null || typeof target.baseRevisionId === "string")
+          || !Number.isSafeInteger(target.selectionGeneration) || target.selectionGeneration < 0)) continue;
+      entries.push({ entryId, turn });
+      if (entries.length === 8) break;
+    }
+  } catch { /* The caller can keep an in-memory request when tab storage is unavailable. */ }
+  return entries;
+}
+export function pendingGuidedRequests(ownerId: string) {
+  const entries: { entryId: string; operationId: string; personal: boolean }[] = [];
+  const prefix = "daymark-studio-work:" + ownerId + ":";
+  try {
+    for (let index = 0; index < sessionStorage.length; index++) {
+      const key = sessionStorage.key(index)!;
+      if (!key.startsWith(prefix) || !key.endsWith(":example")) continue;
+      const entryId = key.slice(prefix.length, -8);
+      if (!/^[0-9a-f-]{36}$/i.test(entryId)) continue;
+      let value;
+      try { value = JSON.parse(sessionStorage.getItem(key)!); } catch { continue; }
+      if (!value || !/^[0-9a-f-]{36}$/i.test(value.operationId) || typeof value.personal !== "boolean") continue;
+      entries.push({ entryId, operationId: value.operationId, personal: value.personal });
+      if (entries.length === 8) break;
+    }
+  } catch { /* Tab storage can be unavailable. */ }
+  return entries;
+}
 type Setup = {
   configuration: { status: string; code: string | null; source: "local" | "environment" | "none"; provider: string | null; model: string | null; maxUsd: string | null };
   choices: { provider: string; model: string }[];
@@ -44,22 +97,22 @@ type Setup = {
 };
 const running = (value: Conversation | null) => value?.status === "RUNNING" || value?.status === "CANCELLING";
 const authoringStatus = {
-  IDLE: "Ready for a description.", RUNNING: "Preparing task advice…", CANCELLING: "Stopping authoring; waiting for work to settle…",
-  AWAITING_USER: "Your answer is needed before authoring can continue.", REVIEW_AVAILABLE: "Saved advice is ready to inspect. Approval and Use are your separate decisions.",
+  IDLE: "Ready for a description.", RUNNING: "Preparing your customization…", CANCELLING: "Stopping authoring; waiting for work to settle…",
+  AWAITING_USER: "Your answer is needed before authoring can continue.", REVIEW_AVAILABLE: "Your saved proposal is ready to inspect. Approval and Use are your separate decisions.",
   CANCELLED: "Authoring stopped. Saved work remains available.", BLOCKED: "Authoring could not continue. Saved work remains available.",
   INTERRUPTED: "Authoring was interrupted. Check saved state before explicitly continuing.",
 };
 function authoringReason(code: string | null | undefined) {
   if (!code) return "";
   if (["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(code)) return "AI authoring is not configured.";
-  if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved advice and review remain available.";
+  if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved work and review remain available.";
   if (code === "BUDGET_EXHAUSTED") return "This conversation reached its work limit. Your saved proposal and examples are kept. You can start a new conversation to continue; this does not add to the shared allowance.";
   if (code === "PROVIDER_RATE_LIMIT") return "Your AI provider reached a request or account limit. Your discussion and any saved draft are kept. Check provider usage or explicitly try again later. Nothing is retried automatically.";
   if (code === "CONFIG_CHANGED") return "Assistant settings changed. Start a new conversation to continue; your saved customization remains available.";
   if (code === "CONVERSATION_LIMIT") return "The saved conversation limit has been reached. Existing conversations are retained.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
   if (code === "REVIEW_NOT_READY") return "The saved examples do not yet support approval. Inspect their results or discuss the correction.";
-  return "AI authoring is unavailable for this request. Check saved state; native tasks and saved advice remain available.";
+  return "AI authoring is unavailable for this request. Check saved state; native tasks and saved work remain available.";
 }
 type Props = {
   request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
@@ -67,7 +120,11 @@ type Props = {
   beforeSelectionChange: () => void;
   back: () => void;
   backLabel: string;
-  start?: boolean;
+  target: StudioTarget;
+  ownerId: string;
+  recoveryKey: string;
+  targeted: (target: StudioTarget) => void;
+  unavailable: () => void;
   task?: { title: string; status: "open" | "completed" };
 };
 const advice = (code?: string) => ({ PENDING: "Pending", NEEDS_ATTENTION: "Needs attention", DONE: "Done" })[code ?? ""] ?? code;
@@ -208,8 +265,20 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
   </dialog>;
 }
 
-export default function Studio({ request, changed, beforeSelectionChange, back, backLabel, start = false, task }: Props) {
-  const [entry, setEntry] = useState(start ? "start" : "item");
+export default function Studio({ request, changed, beforeSelectionChange, back, backLabel, target, ownerId, recoveryKey, targeted, unavailable, task }: Props) {
+  const initialTarget = useRef(target);
+  const extensionId = useRef(target.extensionId);
+  const [entry, setEntry] = useState(target.extensionId || target.conversationId ? "item" : "start");
+  const [hostCatalog, setHostCatalog] = useState<HostCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState(false);
+  const [activeView, setActiveView] = useState(false);
+  const [restart, setRestart] = useState<{ draftVersion: number; revisionId: string; generation: number; activeLabel: string; draftLabel: string } | null>(null);
+  const [activation, setActivation] = useState<{ revisionId: string; draftVersion: number; generation: number; incoming: string; outgoing: string | null } | null>(null);
+  const personalStart = useRef(false);
+  const exampleOperation = useRef<string | null>(null);
+  const [pendingExample, setPendingExample] = useState(() => pendingGuidedRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId)) ?? null);
+  const [exampleRetry, setExampleRetry] = useState(false);
+  const [recoveryError, setRecoveryError] = useState("");
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupNotice, setSetupNotice] = useState("");
   const setupInvoker = useRef<HTMLElement | null>(null);
@@ -232,7 +301,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [authoring, setAuthoring] = useState<Authoring | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [authoringError, setAuthoringError] = useState("");
-  const [pendingTurn, setPendingTurn] = useState<Turn | null>(null);
+  const [pendingTurn, setPendingTurn] = useState<Turn | null>(() => pendingRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId))?.turn ?? null);
   const [retryTurn, setRetryTurn] = useState(false);
   const [observationPaused, setObservationPaused] = useState(false);
   const [visible, setVisible] = useState(!document.hidden);
@@ -267,19 +336,55 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const mounted = useRef(false);
   const locked = useRef(false);
   const serial = useRef(0);
-  const callbacks = useRef({ request, changed, beforeSelectionChange });
-  callbacks.current = { request, changed, beforeSelectionChange };
+  const callbacks = useRef({ request, changed, beforeSelectionChange, targeted, unavailable });
+  callbacks.current = { request, changed, beforeSelectionChange, targeted, unavailable };
+  function extensionPath(id = extensionId.current) {
+    if (!id) throw new Error("Choose an exact customization first");
+    return "extensions/" + encodeURIComponent(id);
+  }
+  function authoringPath() { return extensionId.current ? "authoring?extensionId=" + encodeURIComponent(extensionId.current) : "authoring"; }
+  async function readHostCatalog() {
+    try {
+      const next = await callbacks.current.request<HostCatalog>("extensions/catalog", "GET", undefined, authoringLifetime.current.signal);
+      if (!Array.isArray(next.hooks) || typeof next.model?.dcm !== "string" || !next.model.dcm.trim() || typeof next.model.digest !== "string") throw new Error("Published host model unavailable");
+      if (mounted.current) { setHostCatalog(next); setCatalogError(false); }
+    } catch { if (mounted.current) setCatalogError(true); }
+  }
+  function retainTurn(value: Turn | null) {
+    try {
+      if (value && !sessionStorage.getItem(recoveryKey) && pendingRequests(ownerId).length + pendingGuidedRequests(ownerId).length >= 8) {
+        setAuthoringError("Check an earlier submitted request in Customizations before sending another request.");
+        return false;
+      }
+      if (value) sessionStorage.setItem(recoveryKey, JSON.stringify(value));
+      else sessionStorage.removeItem(recoveryKey);
+    } catch { setRecoveryError("This browser could not save recovery information. Keep this page open until the submitted request is confirmed."); }
+    setPendingTurn(value);
+    return true;
+  }
+  function turnTarget(): TurnTarget {
+    if (!extensionId.current) return { kind: "create" };
+    return conversation ? { kind: "resume", extensionId: extensionId.current }
+      : { kind: "revise", extensionId: extensionId.current, baseRevisionId: state?.draft?.id
+        ?? (state?.selection.revision?.extensionId === extensionId.current ? state.selection.revision.id : null), selectionGeneration: state!.selection.generation };
+  }
   const offer = conversation?.review;
   const offeredEvidence = offer?.eligible === true && !!state?.draft && offer.revisionId === state.draft.id
     && offer.draftVersion === state.draftVersion && offer.suiteDigest === state.draft.suiteDigest
     && offer.evidenceId === evidence?.id && offer.revisionId === evidence?.revisionId;
   const reviewKey = state?.draft && evidence ? `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${evidence.id}` : "";
-  const inspectionKey = state?.draft ? `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${state.draft.suiteDigest ?? ""}` : "";
+  const ownActive = state?.selection.revision?.extensionId === state?.extension?.id ? state?.selection.revision : null;
+  const inspectionRevision = activeView ? ownActive : state?.draft ?? ownActive;
+  const inspectionKey = inspectionRevision ? `${state!.owner.id}/${state!.extension!.id}/${inspectionRevision.id}/${inspectionRevision.suiteDigest ?? ""}` : "";
   const currentEvidence = !!state?.draft && evidence?.revisionId === state.draft.id && (evidence?.id === state.evidence?.id || offeredEvidence);
   const observationsKnown = !!evidence?.reports.length && evidence.reports.every(item => knownObservation(item.expected.consumption) && knownObservation(item.report.consumption));
   const canReview = trusted && currentEvidence && evidence?.passed && observationsKnown && (offeredEvidence || state?.evidence?.passed);
   const activeAuthoring = running(conversation);
-  const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn;
+  const legacyConversation = !!conversation && conversation.extensionId === null;
+  const staleConversation = !!conversation && !!state?.extension && (conversation.extensionId !== state.extension.id
+    || conversation.draft.draftVersion !== state.draftVersion || conversation.draft.revisionId !== (state.draft?.id ?? null));
+  const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn || !!pendingExample;
+  const sendDisabled = disabled || legacyConversation || staleConversation || activeView;
   const reviewReady = reviewed.current?.kind !== "authored" || !!reviewSource && reviewSource.key === review && reviewSource.ownerId === state?.owner.id && reviewSource.revisionId === state?.draft?.id && reviewSource.suiteDigest === state?.draft?.suiteDigest;
   const reviewedApproved = !!state?.approved && state.approvedEvidenceId === evidence?.id && review === reviewKey;
   const exampleLabel = (item: Evidence["reports"][number], index: number) => item.taskStatus === "OPEN" ? "Unfinished task" : item.taskStatus === "COMPLETED" ? "Completed task"
@@ -302,6 +407,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     });
   }
   function closeReview() {
+    setActiveView(false);
     readingRevision.current++;
     if (canvas.current) canvasScroll.current = canvas.current.scrollTop;
     setReviewOpen(false); setPane("conversation");
@@ -328,6 +434,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     });
   }
   function apply(next: State) {
+    if (next.owner.id !== ownerId || next.extension?.id !== extensionId.current && !(next.extension === null && extensionId.current === null)) throw new Error("Customization identity mismatch");
+    setActivation(null); setRestart(null);
     const bounds = canvas.current?.getBoundingClientRect();
     const anchor = bounds && bounds.height > 0 && Array.from(canvas.current!.querySelectorAll<HTMLElement>(".rs-example")).find(row => {
       const rect = row.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
@@ -352,14 +460,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   async function openReview(evidenceId?: string) {
     if (locked.current) return;
     if (!state?.draft || !trusted || disabled || (!evidenceId && !canReview)) {
-      say("The examples need to match this proposal before you can approve it. Your current advice has not changed.");
+      say("The examples need to match this proposal before you can approve it. Your current setup has not changed.");
       return;
     }
     locked.current = true;
     const turn = ++serial.current;
     setBusy("Checking the saved proposal and examples…"); setReviewError(""); setConfirmed(false); setCompletion(false);
     try {
-      const proof = evidenceId ? await callbacks.current.request<Evidence>(`extensions/evidence/${encodeURIComponent(evidenceId)}`, "GET", undefined, authoringLifetime.current.signal) : evidence!;
+      const proof = evidenceId ? await callbacks.current.request<Evidence>(`${extensionPath()}/evidence/${encodeURIComponent(evidenceId)}`, "GET", undefined, authoringLifetime.current.signal) : evidence!;
       if (!mounted.current || serial.current !== turn) return;
       if (!proof.passed || !proof.reports.length || !proof.reports.every(item => knownObservation(item.expected.consumption) && knownObservation(item.report.consumption)) || proof.revisionId !== state.draft.id || (evidenceId && proof.id !== evidenceId)
         || !(proof.id === state.evidence?.id && state.evidence.passed || offeredEvidence && proof.id === offer?.evidenceId)) throw new Error("Ineligible evidence");
@@ -369,12 +477,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       setReviewOpen(false); setPane("conversation");
       if (state.draft.kind !== "authored") return;
       const target = { ownerId: state.owner.id, revisionId: state.draft.id, suiteDigest: state.draft.suiteDigest, key };
-      const saved = await callbacks.current.request<SavedSource>(`extensions/revisions/${encodeURIComponent(target.revisionId)}`);
+      const saved = await callbacks.current.request<SavedSource>(`${extensionPath()}/revisions/${encodeURIComponent(target.revisionId)}`);
       if (!mounted.current || serial.current !== turn) return;
-      if (saved.revisionId !== target.revisionId || !target.suiteDigest || saved.suiteDigest !== target.suiteDigest || typeof saved.source !== "string" || !saved.source.trim() || !Array.isArray(saved.cases) || !saved.cases.length || saved.cases.some(item => typeof item !== "string" || !item.trim())) throw new Error("Saved review mismatch");
+      if (saved.revisionId !== target.revisionId || !target.suiteDigest || saved.suiteDigest !== target.suiteDigest || typeof saved.source !== "string" || !saved.source.trim()
+        || typeof saved.artifact !== "string" || !saved.artifact.trim() || !saved.pins || typeof saved.pins !== "object"
+        || !Array.isArray(saved.cases) || !saved.cases.length || saved.cases.some(item => typeof item !== "string" || !item.trim())) throw new Error("Saved review mismatch");
       setReviewSource({ ...saved, ownerId: target.ownerId, key: target.key });
     } catch {
-      if (mounted.current && serial.current === turn) { setReviewError("Exact saved source and examples could not be checked. Approval is unavailable. Your conversation draft has not changed."); setError("The saved proposal or its observations could not be confirmed. Approval is unavailable. Your current advice has not changed."); }
+      if (mounted.current && serial.current === turn) { setReviewError("Exact saved source and examples could not be checked. Approval is unavailable. Your conversation draft has not changed."); setError("The saved proposal or its observations could not be confirmed. Approval is unavailable. Your current setup has not changed."); }
     } finally {
       if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
@@ -385,27 +495,39 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const turn = ++serial.current;
     setBusy("Checking saved customizations…"); setError("");
     try {
-      const next = await callbacks.current.request<State>("extensions");
-      if (mounted.current && serial.current === turn) { apply(next); setNotice(announce ? "Saved state checked." : ""); }
-    } catch {
-      if (mounted.current && serial.current === turn) { setTrusted(false); setError("Saved advice could not be checked. Reload saved state before making another change."); }
+      let next: State;
+      if (extensionId.current) next = await callbacks.current.request<State>(extensionPath());
+      else {
+        const collection = await callbacks.current.request<Collection>("extensions");
+        next = { owner: collection.owner, selection: collection.selection, catalog: collection.catalog, extension: null,
+          draftVersion: 0, draft: null, evidence: null, approved: false, approvedEvidenceId: null, restoreTargets: [], history: [], evidenceHistory: [] };
+      }
+      if (mounted.current && serial.current === turn) { apply(next); setNotice(announce ? "Saved state checked." : ""); return next; }
+    } catch (failure) {
+      if (mounted.current && serial.current === turn) {
+        if ((failure as { status?: number }).status === 404 && extensionId.current) callbacks.current.unavailable();
+        setTrusted(false); setError("Saved customization could not be checked. Reload saved state before making another change.");
+      }
     } finally {
       if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
   }
   async function adoptConversation(next: Conversation, turn: number, creationOperationId?: string) {
     if (!mounted.current || serial.current !== turn) return;
-    if (!running(next)) {
-      const saved = await callbacks.current.request<State>("extensions", "GET", undefined, authoringLifetime.current.signal);
+    if (extensionId.current && next.extensionId !== extensionId.current || initialTarget.current.conversationId && !initialTarget.current.extensionId && next.extensionId !== null) throw new Error("Conversation customization mismatch");
+    if (next.extensionId && (!running(next) || state?.extension?.id !== next.extensionId)) {
+      extensionId.current = next.extensionId;
+      const saved = await callbacks.current.request<State>(extensionPath(next.extensionId), "GET", undefined, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
       apply(saved);
     }
     setConversation(next);
+    callbacks.current.targeted({ extensionId: next.extensionId, conversationId: next.id });
     setAuthoring(index => {
       if (!index) return index;
       const previous = index.conversations.find(item => item.id === next.id);
       if (!previous && !creationOperationId) return index;
-      const summary = { id: next.id, version: next.version, status: next.status, runId: next.runId, operationId: next.operation.id, creationOperationId: previous?.creationOperationId ?? creationOperationId! };
+      const summary = { extensionId: next.extensionId, purpose: next.purpose, id: next.id, version: next.version, status: next.status, runId: next.runId, operationId: next.operation.id, creationOperationId: previous?.creationOperationId ?? creationOperationId! };
       return { ...index, conversations: [summary, ...index.conversations.filter(item => item.id !== next.id)] };
     });
     const incoming: Message[] = next.messages.map(item => ({ id: `ai:${next.id}:${item.id}`, who: item.role === "user" ? "You" : "Studio",
@@ -427,42 +549,46 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const turn = ++serial.current;
     setBusy("Checking authoring status…"); setAuthoringError("");
     try {
-      const next = await callbacks.current.request<Authoring>("authoring", "GET", undefined, authoringLifetime.current.signal);
+      const next = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
       setAuthoring(next);
-      const selected = id === undefined ? next.current?.id : id;
+      const selected = id === undefined && extensionId.current ? next.current?.id : id;
       if (selected) {
         const current = next.current?.id === selected ? next.current : await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(selected)}`, "GET", undefined, authoringLifetime.current.signal);
-        if (current?.id !== selected) throw new Error("Unconfirmed conversation");
+        if (current?.id !== selected || current.extensionId !== extensionId.current) throw new Error("Unconfirmed conversation");
         await adoptConversation(current!, turn);
       }
       if (mounted.current && serial.current === turn) setObservationPaused(false);
-    } catch {
-      if (mounted.current && serial.current === turn) { setAuthoring(null); setObservationPaused(true); setAuthoringError("AI authoring status could not be checked. Retry status before continuing a conversation. Saved advice remains available."); }
+    } catch (failure) {
+      if (mounted.current && serial.current === turn && (failure as { status?: number }).status === 404 && id) callbacks.current.unavailable();
+      if (mounted.current && serial.current === turn) { setAuthoring(null); setObservationPaused(true); setAuthoringError("AI authoring status could not be checked. Retry status before continuing a conversation. Saved work remains available."); }
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   function newConversation() {
-    if (locked.current || activeAuthoring || pendingTurn || (authoring?.conversations.length ?? 0) >= 8) return;
-    setConversation(null); setScripted(false); setCompletion(false); setMessages(old => old.filter(item => typeof item.id !== "string")); setObservationPaused(false); setAuthoringError("");
+    if (locked.current || activeAuthoring || pendingTurn || pendingExample || legacyConversation || (authoring?.conversations.length ?? 0) >= 8) return;
+    setConversation(null); setScripted(false); setCompletion(false); setReview(""); setEvidence(null); setActiveView(false);
+    setMessages([{ id: ++messageId.current, who: "Studio", text: "Continue your current saved changes here. What would you like to change or check?" }]); initialized.current = true; setObservationPaused(false); setAuthoringError("");
+    callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
   }
   function continueSaved() {
-    if (!conversation || !authoring?.availability.available || disabled || (authoring.conversations.length >= 8)) return;
+    if (!conversation || !authoring?.availability.available || disabled || staleConversation || legacyConversation || (authoring.conversations.length >= 8)) return;
     const input = continuationText(conversation);
     newConversation();
-    void submitAuthoring({ conversationId: null, operationId: crypto.randomUUID(), text: input, expectedVersion: 0, expectedDraftVersion: state!.draftVersion });
+    void submitAuthoring({ target: { kind: "revise", extensionId: extensionId.current!, baseRevisionId: state?.draft?.id ?? null, selectionGeneration: state!.selection.generation }, conversationId: null, operationId: crypto.randomUUID(), text: input, expectedVersion: 0, expectedDraftVersion: state!.draftVersion });
   }
   async function recoverTurn(input: Turn, turn: number) {
-    const index = await callbacks.current.request<Authoring>("authoring", "GET", undefined, authoringLifetime.current.signal);
+    const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
     if (!mounted.current || serial.current !== turn) return;
     setAuthoring(index);
     const summary = index.conversations.find(item => input.conversationId ? item.id === input.conversationId : item.creationOperationId === input.operationId);
     if (summary) {
+      if (input.target.kind !== "create" && summary.extensionId !== input.target.extensionId) throw new Error("Operation customization mismatch");
       const current = await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(summary.id)}`, "GET", undefined, authoringLifetime.current.signal);
       if (current.id !== summary.id) throw new Error("Unconfirmed conversation");
       await adoptConversation(current, turn);
       if (!mounted.current || serial.current !== turn) return;
       if (summary.creationOperationId === input.operationId || current.operation.id === input.operationId) {
-        setPendingTurn(null); setRetryTurn(false); setAuthoringError("");
+        retainTurn(null); setRetryTurn(false); setAuthoringError("");
         setText(value => value === input.text ? "" : value);
         return;
       }
@@ -471,11 +597,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setAuthoringError("Saved state was checked, but acceptance of this request is unconfirmed. You may explicitly retry the same submitted request; it keeps its operation identity.");
   }
   async function submitAuthoring(input: Turn, recoveryOnly = false) {
-    if (locked.current || !trusted) return;
+    if (locked.current || !trusted && !recoveryOnly) return;
+    if (!retainTurn(input)) return;
     locked.current = true;
     const turn = ++serial.current;
     setBusy(recoveryOnly ? "Checking submitted request…" : "Sending description…");
-    setAuthoringError(""); setRetryTurn(false); setPendingTurn(input);
+    setAuthoringError(""); setRetryTurn(false);
     try {
       if (recoveryOnly) await recoverTurn(input, turn);
       else {
@@ -485,13 +612,29 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           if (accepted.operation.id !== input.operationId || accepted.operation.version !== input.expectedVersion + 1 || accepted.conversation.version < accepted.operation.version || !accepted.operation.runId || input.conversationId && accepted.conversation.id !== input.conversationId) throw new Error("Unconfirmed authoring receipt");
           await adoptConversation(accepted.conversation, turn, input.conversationId === null ? input.operationId : undefined);
           if (!mounted.current || serial.current !== turn) return;
-          setPendingTurn(null); setText(value => value === input.text ? "" : value); setObservationPaused(false);
+          retainTurn(null); setText(value => value === input.text ? "" : value); setObservationPaused(false);
         } catch (failure) {
           if (!mounted.current || serial.current !== turn) return;
+          if ((failure as { status?: number }).status === 409 && ["STALE_DRAFT", "STALE_CONVERSATION", "STALE_CONTEXT"].includes((failure as { code?: string }).code ?? "") && input.target.kind !== "create") {
+            const saved = await callbacks.current.request<State>(extensionPath(input.target.extensionId), "GET", undefined, authoringLifetime.current.signal);
+            if (!mounted.current || serial.current !== turn) return;
+            apply(saved);
+            const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
+            if (!mounted.current || serial.current !== turn) return;
+            setAuthoring(index);
+            if (input.conversationId) {
+              const current = index.current?.id === input.conversationId ? index.current : await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(input.conversationId)}`, "GET", undefined, authoringLifetime.current.signal);
+              await adoptConversation(current, turn);
+              if (!mounted.current || serial.current !== turn) return;
+            }
+            retainTurn(null); setText(value => value || input.text);
+            setAuthoringError("This request was rejected because saved work changed. Your text is kept. Inspect the current proposal, then explicitly continue its changes.");
+            return;
+          }
           if ((failure as { status?: number })?.status === 409 && (failure as { code?: string })?.code === "CONFIG_CHANGED") {
-            setPendingTurn(null); setRetryTurn(false); setAuthoringError(authoringReason("CONFIG_CHANGED"));
+            retainTurn(null); setRetryTurn(false); setAuthoringError(authoringReason("CONFIG_CHANGED"));
             try {
-              const index = await callbacks.current.request<Authoring>("authoring", "GET", undefined, authoringLifetime.current.signal);
+              const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
               if (mounted.current && serial.current === turn) setAuthoring(index);
             } catch {
               if (mounted.current && serial.current === turn) setAuthoringError(authoringReason("CONFIG_CHANGED") + " Current status could not be checked; use Check authoring status.");
@@ -521,7 +664,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   useEffect(() => {
     mounted.current = true;
     document.getElementById("studio-title")?.focus();
-    void refresh().then(() => { if (mounted.current) void loadAuthoring(); });
+    void refresh().then(async loaded => {
+      if (!mounted.current || !loaded) return;
+      if (pendingTurn) await submitAuthoring(pendingTurn, true);
+      else if (pendingExample) await checkExampleRequest();
+      else await loadAuthoring(initialTarget.current.conversationId ?? (initialTarget.current.extensionId ? undefined : null));
+      if (mounted.current && entry === "start") document.getElementById("studio-message")?.focus();
+    });
+    void readHostCatalog();
     const visibility = () => setVisible(!document.hidden);
     document.addEventListener("visibilitychange", visibility);
     return () => { mounted.current = false; authoringLifetime.current.abort(); document.removeEventListener("visibilitychange", visibility); ++serial.current; locked.current = false; };
@@ -557,13 +707,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     initialized.current = true;
     const selected = state.selection.eligible && state.selection.revision?.id === state.draft?.id;
     const text = state.draft ? state.approved
-      ? selected ? "Your task advice is on. What would you like to change?"
-        : "Your saved draft is approved. Choose Turn on for my tasks when you are ready. Your current advice has not changed."
-      : state.draft.kind === "authored" && !state.draft.suiteDigest
-        ? "Your saved draft is here. We can continue checking it. Your current advice has not changed."
-        : "Your saved draft is here. What would you like to change or check? Your current advice has not changed."
-      : "What would you like the advice on your tasks to say?";
-    setMessages([{ id: ++messageId.current, who: "Studio", text: `${task ? `From your ${task.status} task “${task.title}”. ` : ""}${text}\n\nAdvice appears when you choose Check task advice on a saved task. Your tasks are not edited.` }]);
+      ? selected ? "This customization is on. What would you like to change?" : "Your saved changes are approved. Turning them on is a separate decision."
+      : "Your saved changes are here. What would you like to change or check?"
+      : "What would you like to change about your work?";
+    setMessages([{ id: ++messageId.current, who: "Studio", text: `${task ? `From your ${task.status} task “${task.title}”. ` : ""}${text}` }]);
   }, [entry, state, trusted]);
   useEffect(() => {
     const observer = new ResizeObserver(() => {
@@ -589,6 +736,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }, [conversation?.review?.evidenceId, review, completion, scripted]);
   useEffect(() => { if (review) document.getElementById("studio-review")?.focus(); }, [review]);
   useEffect(() => {
+    if (activation) document.getElementById("studio-activation-confirm")?.focus();
+    else if (restart) document.getElementById("studio-restart-confirm")?.focus();
+  }, [activation, restart]);
+  useEffect(() => {
     if (!busy && focusUse.current) { focusUse.current = false; document.getElementById("use-task-advice")?.focus(); }
     if (!busy && focusCompletion.current !== null) {
       if (readingRevision.current === focusCompletion.current) document.getElementById("studio-completion")?.focus();
@@ -597,7 +748,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }, [busy]);
 
   async function mutate(operation: string, body: object, message: string, selection = false) {
-    if (locked.current || !trusted || activeAuthoring || pendingTurn) return;
+    if (locked.current || !trusted || activeAuthoring || pendingTurn || !extensionId.current || legacyConversation) return;
     locked.current = true;
     const turn = ++serial.current;
     const reading = readingRevision.current;
@@ -605,16 +756,20 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setError(""); setNotice(""); setConfirmed(false);
     try {
       if (selection) callbacks.current.beforeSelectionChange();
-      const next = await callbacks.current.request<State>(`extensions/${operation}`, "POST", body);
+      const next = await callbacks.current.request<State>(`${extensionPath()}/${operation}`, "POST", body);
       if (!mounted.current || serial.current !== turn) return;
       const followReading = readingRevision.current === reading;
       if (operation === "approve" && followReading) focusUse.current = true;
       if (operation === "activate" && followReading) { setCompletion(true); focusCompletion.current = reading; setReviewOpen(false); setPane("conversation"); }
       apply(next);
+      if (operation === "restart") {
+        setConversation(null); setMessages([]); initialized.current = false; setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
+        callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
+      }
       say(message);
       setNotice(message);
       if (operation === "simulate" && next.evidence) {
-        const proof = await callbacks.current.request<Evidence>(`extensions/evidence/${encodeURIComponent(next.evidence.id)}`);
+        const proof = await callbacks.current.request<Evidence>(`${extensionPath()}/evidence/${encodeURIComponent(next.evidence.id)}`);
         if (mounted.current && serial.current === turn) {
           say(proof.passed ? `The sample run passed. Review ${proof.reports.length} ${proof.reports.length === 1 ? "example" : "examples"} when you are ready.`
             : "This sample run did not pass. It cannot be approved or put in use.", "Studio", proof.id, proof.reports.length);
@@ -627,7 +782,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       setError(conflict ? "The saved proposal or selection changed. Checking the server before you try again."
         : "The request did not finish here. It may have reached the server. Checking saved state before you try again.");
       try {
-        const next = await callbacks.current.request<State>("extensions");
+        const next = await callbacks.current.request<State>(extensionPath());
         if (mounted.current && serial.current === turn) {
           apply(next);
           setNotice("Saved state reloaded. Check the proposal, approval and In use choice before making another request.");
@@ -640,14 +795,16 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     }
   }
   async function inspectSource() {
-    if (locked.current || disabled || state?.draft?.kind !== "authored") return;
+    if (locked.current || disabled || !inspectionRevision) return;
     locked.current = true; const turn = ++serial.current;
-    const identity = inspectionKey, revision = state.draft.id, suite = state.draft.suiteDigest ?? null;
+    const identity = inspectionKey, revision = inspectionRevision.id, suite = inspectionRevision.suiteDigest ?? null;
     setBusy("Inspecting saved source and examples…"); setError(""); setInspection(null);
     try {
-      const next = await callbacks.current.request<SavedSource>(`extensions/revisions/${encodeURIComponent(revision)}`, "GET", undefined, authoringLifetime.current.signal);
+      const next = await callbacks.current.request<SavedSource>(`${extensionPath()}/revisions/${encodeURIComponent(revision)}`, "GET", undefined, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
-      if (next.revisionId !== revision || next.suiteDigest !== suite || typeof next.source !== "string" || !next.source.trim() || !Array.isArray(next.cases) || next.cases.some(item => typeof item !== "string" || !item.trim())) throw new Error("Saved inspection mismatch");
+      if (next.revisionId !== revision || next.suiteDigest !== suite || typeof next.source !== "string" || !next.source.trim()
+        || typeof next.artifact !== "string" || !next.artifact.trim() || !next.pins || typeof next.pins !== "object"
+        || !Array.isArray(next.cases) || next.cases.some(item => typeof item !== "string" || !item.trim())) throw new Error("Saved inspection mismatch");
       setInspection({ ...next, key: identity });
     } catch { if (mounted.current && serial.current === turn) setError("Exact saved source and examples could not be checked. No proposal or approval was changed."); }
     finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
@@ -660,13 +817,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const invoker = document.activeElement;
     setBusy("Opening saved sample results…"); setError(""); setReview(""); setConfirmed(false);
     try {
-      const proof = await callbacks.current.request<Evidence>(`extensions/evidence/${encodeURIComponent(id.trim())}`);
+      const proof = await callbacks.current.request<Evidence>(`${extensionPath()}/evidence/${encodeURIComponent(id.trim())}`);
       if (mounted.current && serial.current === turn && readingRevision.current === reading) {
         if (evidence?.id !== proof.id) { canvasScroll.current = 0; managementReturn.current = null; }
         setEvidence(proof); openPane("results", invoker);
       }
     } catch {
-      if (mounted.current && serial.current === turn) setError("Those saved sample results are unavailable for this person. No advice was changed.");
+      if (mounted.current && serial.current === turn) setError("Those saved sample results are unavailable for this person. No customization was changed.");
     } finally {
       if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
@@ -677,10 +834,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const turn = ++serial.current;
     setBusy("Opening earlier selections…"); setError("");
     try {
-      const next = await callbacks.current.request<{ rows: History[]; next: number | null }>(`extensions/history?before=${historyNext}`);
+      const next = await callbacks.current.request<{ rows: History[]; next: number | null }>(`${extensionPath()}/history?before=${historyNext}`);
       if (mounted.current && serial.current === turn) { setHistory(old => [...old, ...next.rows]); setHistoryNext(next.next); }
     } catch {
-      if (mounted.current && serial.current === turn) setError("Earlier selections could not be loaded. No advice was changed.");
+      if (mounted.current && serial.current === turn) setError("Earlier selections could not be loaded. No customization was changed.");
     } finally {
       if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
@@ -694,17 +851,18 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       const next = await callbacks.current.request<Example>("authoring/example", "GET", undefined, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
       exampleRevision.current = null;
-      if (state?.draft && !await recognizeExample(state, next, turn)) { say("You have a saved proposal. You can continue it here; the guided example will not replace it."); return; }
+      if (extensionId.current && (!state?.draft || !await recognizeExample(state, next, turn))) { say("Continue this customization here. To try a separate guided example, choose New customization from the collection; this example will not replace your saved work."); return; }
       if (!mounted.current || serial.current !== turn) return;
+      personalStart.current = extensionId.current === null;
       initialized.current = true; setExample(next); setScripted(true); setCompletion(false); setEntry("item");
-      say(state?.draft ? "The saved part of this example is here. You can continue checking it; your current advice has not changed."
+      say(state?.draft ? "The saved part of this example is here. You can continue checking it; your current setup has not changed."
         : "In this example, open tasks show Needs attention when you check their advice. Should completed tasks still say Done?");
-    } catch { if (mounted.current && serial.current === turn) setError("The guided example could not be opened. Your saved advice has not changed."); }
+    } catch { if (mounted.current && serial.current === turn) setError("The guided example could not be opened. Your saved work has not changed."); }
     finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   async function recognizeExample(saved: State, sample: Example, turn: number) {
     if (saved.draft?.kind !== "authored" || saved.draft.label !== sample.label) return false;
-    const documents = await callbacks.current.request<SavedSource>(`extensions/revisions/${encodeURIComponent(saved.draft.id)}`, "GET", undefined, authoringLifetime.current.signal);
+    const documents = await callbacks.current.request<SavedSource>(`${extensionPath()}/revisions/${encodeURIComponent(saved.draft.id)}`, "GET", undefined, authoringLifetime.current.signal);
     if (!mounted.current || serial.current !== turn) return false;
     const matches = documents.revisionId === saved.draft.id && documents.source === sample.source
       && documents.suiteDigest === (saved.draft.suiteDigest ?? null) && Array.isArray(documents.cases)
@@ -713,8 +871,46 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     if (matches) exampleRevision.current = saved.draft.id;
     return matches;
   }
+  function clearExampleRequest() {
+    setPendingExample(null); setExampleRetry(false);
+    try { sessionStorage.removeItem(recoveryKey + ":example"); } catch { /* The exact operation still prevents duplicate creation. */ }
+  }
+  async function readExampleRequest(operationId: string, personal: boolean, turn: number) {
+    const [collection, sample] = await Promise.all([
+      callbacks.current.request<Collection>("extensions", "GET", undefined, authoringLifetime.current.signal),
+      callbacks.current.request<Example>("authoring/example", "GET", undefined, authoringLifetime.current.signal),
+    ]);
+    if (!mounted.current || serial.current !== turn) return;
+    if (collection.owner.id !== ownerId) throw new Error("Example owner mismatch");
+    const item = collection.items.find(saved => saved.extension?.creationOperationId === operationId);
+    personalStart.current = personal; exampleOperation.current = operationId; setExample(sample); setScripted(true); setEntry("item"); initialized.current = true;
+    if (!item?.extension) {
+      if (extensionId.current) throw new Error("Example item unavailable");
+      setExampleRetry(true); setTrusted(true);
+      setError("Saved state was checked, but acceptance of this example is unconfirmed. You can explicitly retry the same save; its request identity is kept.");
+      return;
+    }
+    if (extensionId.current && extensionId.current !== item.extension.id) throw new Error("Example customization mismatch");
+    extensionId.current = item.extension.id;
+    const saved = await callbacks.current.request<State>(extensionPath(), "GET", undefined, authoringLifetime.current.signal);
+    if (!mounted.current || serial.current !== turn) return;
+    apply(saved); callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null }); clearExampleRequest();
+    if (await recognizeExample(saved, sample, turn)) {
+      say("The saved example was found. You can continue checking it without creating another customization.");
+    } else {
+      setScripted(false); say("The saved customization was found with later changes. Inspect the current proposal before making another change.");
+    }
+  }
+  async function checkExampleRequest() {
+    if (locked.current || !pendingExample) return;
+    locked.current = true; const turn = ++serial.current;
+    setBusy("Checking the submitted example…"); setError(""); setExampleRetry(false);
+    try { await readExampleRequest(pendingExample.operationId, pendingExample.personal, turn); }
+    catch { if (mounted.current && serial.current === turn) { setTrusted(false); setError("The submitted example could not be checked. Check its saved status before retrying."); } }
+    finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
+  }
   async function prepareExample() {
-    if (!example || locked.current || disabled || !state || state.draft && state.draft.id !== exampleRevision.current) return;
+    if (!example || locked.current || !!busy || !trusted || activeAuthoring || pendingTurn || pendingExample && !exampleRetry || !state || state.draft && state.draft.id !== exampleRevision.current) return;
     locked.current = true;
     const turn = ++serial.current;
     setBusy("Checking the examples…"); setError("");
@@ -723,32 +919,48 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     try {
       let next = state;
       if (!next.draft) {
-        next = await callbacks.current.request<State>("extensions/compile", "POST", { source: example.source, label: example.label, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
+        exampleOperation.current ??= crypto.randomUUID();
+        const retained = { entryId: recoveryKey.slice(recoveryKey.lastIndexOf(":") + 1), operationId: exampleOperation.current, personal: personalStart.current };
+        try {
+          if (!sessionStorage.getItem(recoveryKey + ":example") && pendingRequests(ownerId).length + pendingGuidedRequests(ownerId).length >= 8) {
+            setError("Check an earlier submitted request in Customizations before saving another example."); return;
+          }
+          sessionStorage.setItem(recoveryKey + ":example", JSON.stringify(retained));
+        } catch { setRecoveryError("This browser could not save recovery information. Keep this page open until the example is confirmed."); }
+        setPendingExample(retained); setExampleRetry(false);
+        next = await callbacks.current.request<State>("extensions", "POST", { operationId: exampleOperation.current, source: example.source, label: example.label }, authoringLifetime.current.signal);
         if (!mounted.current || serial.current !== turn) return;
+        extensionId.current = next.extension!.id;
+        callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
         exampleRevision.current = next.draft!.id; apply(next);
+        clearExampleRequest();
       }
       if (!next.draft!.suiteDigest) {
-        next = await callbacks.current.request<State>("extensions/scenarios", "POST", { revisionId: next.draft!.id, cases: example.cases, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
+        next = await callbacks.current.request<State>(`${extensionPath()}/scenarios`, "POST", { revisionId: next.draft!.id, cases: example.cases, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
         if (!mounted.current || serial.current !== turn) return;
         exampleRevision.current = next.draft!.id; apply(next);
       }
-      next = await callbacks.current.request<State>("extensions/simulate", "POST", { revisionId: next.draft!.id, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
+      next = await callbacks.current.request<State>(`${extensionPath()}/simulate`, "POST", { revisionId: next.draft!.id, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
       apply(next);
-      const proof = await callbacks.current.request<Evidence>(`extensions/evidence/${encodeURIComponent(next.evidence!.id)}`, "GET", undefined, authoringLifetime.current.signal);
+      const proof = await callbacks.current.request<Evidence>(`${extensionPath()}/evidence/${encodeURIComponent(next.evidence!.id)}`, "GET", undefined, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
       if (proof.id !== next.evidence!.id || proof.revisionId !== next.draft!.id) throw new Error("Unconfirmed examples");
       setEvidence(proof);
       const observed = !!proof.reports.length && proof.reports.every(item => knownObservation(item.expected.consumption) && knownObservation(item.report.consumption));
-      say(proof.passed && observed ? "The examples match: open tasks show Needs attention, completed tasks show Done, and unavailable tasks show no advice. This is only a proposal; your current advice is unchanged."
-        : observed ? "An example did not match what you wanted. Your current advice is unchanged; this proposal cannot be approved."
-          : "Some example results were not observed. Your current advice is unchanged; this proposal cannot be approved.", "Studio", proof.id, proof.reports.length);
+      say(proof.passed && observed ? "The examples match: open tasks show Needs attention, completed tasks show Done, and unavailable tasks show no advice. This is only a proposal; your current setup is unchanged."
+        : observed ? "An example did not match what you wanted. Your current setup is unchanged; this proposal cannot be approved."
+          : "Some example results were not observed. Your current setup is unchanged; this proposal cannot be approved.", "Studio", proof.id, proof.reports.length);
     } catch {
       if (!mounted.current || serial.current !== turn) return;
       setTrusted(false);
       say("The example could not finish here. Some preparation may have been saved. I'll check saved state before you decide what to do next.");
       try {
-        const saved = await callbacks.current.request<State>("extensions", "GET", undefined, authoringLifetime.current.signal);
+        if (!extensionId.current && exampleOperation.current) {
+          await readExampleRequest(exampleOperation.current, personalStart.current, turn);
+          return;
+        }
+        const saved = await callbacks.current.request<State>(extensionPath(), "GET", undefined, authoringLifetime.current.signal);
         if (!mounted.current || serial.current !== turn) return;
         apply(saved); exampleRevision.current = null;
         if (await recognizeExample(saved, example, turn)) say("The saved part of this example is ready. You can explicitly continue checking it without replacing your proposal.");
@@ -756,18 +968,28 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       catch { if (mounted.current && serial.current === turn) setError("Saved state could not be confirmed. Reload saved state before another change."); }
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
+  async function returnToPersonal() {
+    if (locked.current || busy || pendingExample) return;
+    setScripted(false); setCompletion(false); setReview(""); setEvidence(null); setExample(null); exampleRevision.current = null;
+    if (personalStart.current) {
+      extensionId.current = null; setConversation(null); setMessages([]); initialized.current = false; setEntry("start");
+      callbacks.current.targeted({ extensionId: null, conversationId: null });
+      await refresh();
+      if (mounted.current) await loadAuthoring(null);
+    } else say("Back to your request. Tell me what you would like to change.");
+  }
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!text.trim() || disabled || scripted || !authoring?.availability.available) return;
+    if (locked.current || !text.trim() || sendDisabled || scripted || !authoring?.availability.available) return;
     if (authoring?.availability.available) {
       if (/[\uD800-\uDFFF]/u.test(text) || new TextEncoder().encode(text).length > 8192) { setAuthoringError("Use valid text within the 8 KiB description limit."); return; }
       setCompletion(false);
-      void submitAuthoring({ conversationId: conversation?.id ?? null, operationId: crypto.randomUUID(), text,
+      void submitAuthoring({ target: turnTarget(), conversationId: conversation?.id ?? null, operationId: crypto.randomUUID(), text,
         expectedVersion: conversation?.version ?? 0, expectedDraftVersion: state!.draftVersion });
       return;
     }
   }
-  const target = state?.restoreTargets.find(item => item.id === restore);
+  const restoreTarget = state?.restoreTargets.find(item => item.id === restore);
   const selectedDraft = !!state?.selection.eligible && state.selection.revision?.id === state.draft?.id;
   function view(next: "advice" | "results" | "review") { openPane(next); }
   function openSetup() {
@@ -791,17 +1013,18 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       (invoker?.isConnected && invoker.getClientRects().length ? invoker : document.getElementById("assistant-configure") ?? document.getElementById("studio-message"))?.focus({ preventScroll: true });
     });
   }
-  return <section className={`read-studio${reviewOpen ? " rs-review-open" : ""}`} aria-label="Advice Studio">
+  return <section className={`read-studio${reviewOpen ? " rs-review-open" : ""}`} aria-label="Customization Studio">
     <div className="sr-only" role="status">{busy || notice}</div>
-    <header className="rs-header"><h1 id="studio-title" tabIndex={-1}>Studio</h1>
+    <header className="rs-header"><div><p className="rs-breadcrumb">Customizations / Studio</p><h1 id="studio-title" tabIndex={-1}>{state?.extension?.name ?? (legacyConversation ? "Earlier conversation" : "New customization")}</h1></div>
       <div className="rs-header-actions">{activeAuthoring && <button className="rs-stop" disabled={!!busy || conversation?.status === "CANCELLING"} onClick={() => void stopAuthoring()}>{conversation?.status === "CANCELLING" ? "Stopping…" : "Stop"}</button>}<button id="studio-manage" onClick={openTools}>Manage</button><button onClick={back} disabled={!!busy}>{backLabel}</button></div></header>
     {error && <div role="alert" className="rs-error">{error} <button onClick={() => void refresh(true)} disabled={!!busy}>Retry</button></div>}
     {state && <div className="rs-status-summary" aria-label="Customization status">
-      <div><strong>{state.selection.revision ? state.selection.eligible ? `In use · ${state.selection.revision.label}` : "Unavailable" : "Off"}</strong>
+      <div><strong>{state.selection.revision ? state.selection.eligible ? `In use · ${state.selection.revision.extensionName}` : "Couldn’t check what’s in use" : "Off"}</strong>
         {state.draft && !selectedDraft && <span>{state.approved ? "Approved" : "Proposed"} · {state.draft.label}</span>}</div>
       <div className="rs-summary-actions">
         {state.approved && state.draft && !selectedDraft && <button id="use-task-advice" className="rs-primary" disabled={disabled}
-          onClick={() => void mutate("activate", { revisionId: state.draft!.id, draftVersion: state.draftVersion, generation: state.selection.generation }, "Your approved advice is now in use. Return to Tasks and choose Check task advice on a saved task to see it.", true)}>Turn on for my tasks</button>}
+          onClick={() => setActivation({ revisionId: state.draft!.id, draftVersion: state.draftVersion, generation: state.selection.generation,
+            incoming: state.extension!.name, outgoing: state.selection.revision && state.selection.revision.extensionId !== state.extension!.id ? state.selection.revision.extensionName : null })}>Turn on</button>}
       </div>
     </div>}
     <div className={`rs-room rs-show-${pane}${reviewOpen ? "" : " rs-review-closed"}`} ref={room} style={{ "--rs-chat": Math.max(limits.min, Math.min(limits.max, width)) } as CSSProperties}>
@@ -813,31 +1036,50 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         }}>
           {entry === "start" && <article className="rs-message rs-start">
             <strong>Studio</strong><h2>What would you like to change about your work?</h2>
-            <p>I can help change the advice you see when checking a task. Tell me what you want, and we'll work through a few examples together.</p>
+            <p>Tell me what you want to happen. We’ll check what Daymark can support and work through useful examples together.</p>
+            {catalogError ? <p role="status">What Daymark supports could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p> : hostCatalog && <details><summary>What Daymark supports</summary>{hostCatalog.hooks.map(hook => <p key={hook.id}><strong>{hook.label}</strong> · {hook.description}</p>)}</details>}
+          </article>}
+          {legacyConversation && <p role="status">Earlier discussion · read-only. No customization link has been confirmed.</p>}
+          {staleConversation && !activeAuthoring && <article className="rs-message rs-decision"><p>This earlier discussion belongs to saved changes in History. It cannot change the current proposal.</p>
+            <button disabled={disabled} onClick={newConversation}>Continue current changes</button></article>}
+          {state?.extension && state.selection.revision?.extensionId === state.extension.id && state.draft?.id !== state.selection.revision.id && !activeView && <article className="rs-message rs-decision">
+            <p>In use: {state.selection.revision.label}. Saved changes: {state.draft?.label ?? "No proposal"}.</p>
+            <button id="studio-view-active" disabled={!!busy} onClick={() => { setActiveView(true); openPane("advice"); }}>View what’s in use</button>
+          </article>}
+          {activation && <article id="studio-activation-confirm" tabIndex={-1} className="rs-message rs-decision" aria-label="Turn on customization">
+            <h3>{activation.outgoing ? `Switch to “${activation.incoming}”?` : `Turn on these changes to “${activation.incoming}”?`}</h3>
+            <p>{activation.outgoing ? `“${activation.outgoing}” will turn off and stay saved. Only one customization can supply task advice at a time.` : "Your approved changes will be used when you check task advice."}</p>
+            <button className="rs-primary" disabled={disabled} onClick={() => void mutate("activate", { revisionId: activation.revisionId, draftVersion: activation.draftVersion, generation: activation.generation }, `“${activation.incoming}” is now in use. Check task advice on a saved task to see it.`, true)}>{activation.outgoing ? `Switch to ${activation.incoming}` : "Turn on these changes"}</button>
+            <button disabled={!!busy} onClick={() => { setActivation(null); document.getElementById("use-task-advice")?.focus(); }}>Cancel</button>
+          </article>}
+          {restart && <article id="studio-restart-confirm" tabIndex={-1} className="rs-message rs-decision" aria-label="Start from version in use">
+            <h3>Start changes from this version?</h3><p>You’ll start with “{restart.activeLabel}”. Your unfinished “{restart.draftLabel}” changes and their discussion will stay in History. Your current setup will keep running.</p>
+            <button className="rs-primary" disabled={disabled} onClick={() => void mutate("restart", { draftVersion: restart.draftVersion, revisionId: restart.revisionId, generation: restart.generation }, "New changes start from the version in use. Earlier changes and discussion remain in History. Check and approve this proposal before turning it on.")}>Start from this version</button>
+            <button disabled={!!busy} onClick={() => { setRestart(null); document.getElementById("studio-view-active")?.focus(); }}>Cancel</button>
           </article>}
           {messages.map(message => <article className={`rs-message ${message.who === "You" ? "rs-yours" : ""}`} key={message.id}>
             <strong>{message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}{message.evidenceId && <button disabled={!!busy} className="rs-link"
               onClick={() => void showEvidence(message.evidenceId!)}>See {message.exampleCount} sample {message.exampleCount === 1 ? "task" : "tasks"}</button>}
           </article>)}
           {!conversation && !scripted && <button className="rs-link" disabled={disabled} onClick={() => void loadExample()}>{state?.draft?.label === "Scripted example: task advice" ? "Continue guided example · no AI" : "Try a guided example · no AI"}</button>}
-          {scripted && <article className="rs-message rs-scripted" aria-label="Scripted example"><small>Scripted example · no AI. Saved advice and checks are kept.</small>
-            {example && !state?.draft && <button className="rs-primary" disabled={disabled} onClick={() => void prepareExample()}>Yes, keep Done for completed tasks</button>}
+          {scripted && <article className="rs-message rs-scripted" aria-label="Scripted example"><small>Scripted example · no AI. Saved work and checks are kept.</small>
+            {example && !state?.draft && !pendingExample && <button className="rs-primary" disabled={disabled} onClick={() => void prepareExample()}>Yes, keep Done for completed tasks</button>}
             {example && state?.draft?.id === exampleRevision.current && !state?.evidence?.passed && <button className="rs-primary" disabled={disabled} onClick={() => void prepareExample()}>Continue checking this example</button>}
-            <button disabled={!!busy} onClick={() => { setScripted(false); setCompletion(false); setReview(""); say("Back to your request. Tell me what you would like to change; your saved proposal and current advice stay as they are."); }}>Return to my request</button></article>}
+            <button disabled={!!busy || !!pendingExample} onClick={() => void returnToPersonal()}>Return to my request</button></article>}
           {state?.draft && !state.approved && (offeredEvidence || state.evidence?.passed) && (!review || review !== reviewKey) && <article className="rs-message rs-decision"><p>Review the checked behavior and decide whether this is what you want.</p>
             <button className="rs-primary" disabled={disabled} onClick={() => void openReview(offeredEvidence ? offer!.evidenceId : state.evidence!.id)}>See what will change</button>
           </article>}
           {conversation?.review && <article className="rs-message"><button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>See the checked examples</button>
             {!conversation.review.eligible && <p>You can inspect these saved examples. They do not yet support approval of this proposal.</p>}</article>}
           {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
-          {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT"].includes(conversation?.code ?? "") && !activeAuthoring && <button disabled={disabled || !authoring?.availability.available || (authoring?.conversations.length ?? 0) >= 8} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue from saved proposal"}</button>}
+          {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT"].includes(conversation?.code ?? "") && !activeAuthoring && !legacyConversation && !staleConversation && <button disabled={disabled || !authoring?.availability.available || (authoring?.conversations.length ?? 0) >= 8} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue from saved proposal"}</button>}
           {completion && selectedDraft && <article className="rs-message rs-decision" aria-label="Advice is on"><h3 id="studio-completion" tabIndex={-1}>On for your tasks</h3><p>Choose Check task advice on a saved task to see the change. Your tasks are unchanged.</p>
             <button className="rs-primary" onClick={back}>{task ? "Return to my task" : "Return to customizations"}</button>
             {state?.approvedEvidenceId && <button className="rs-link" onClick={() => void showEvidence(state.approvedEvidenceId!)}>See approved examples</button>}</article>}
           {state && review && reviewed.current && !completion && <article hidden={reviewOpen && canvasView === "results"} id="studio-review" tabIndex={-1} className="rs-sheet rs-review" aria-label="Review exact advice">
             <span className="rs-kicker">For {reviewed.current.owner} only</span><h3>{reviewedApproved ? selectedDraft ? "On for your tasks" : "Approved for your tasks" : "This is what will change"}</h3><p><strong>{reviewed.current.label}</strong> · for {reviewed.current.owner}, when checking task advice. Your tasks are not edited.</p>
-            {reviewedApproved ? <p>{selectedDraft ? "This advice is on. Its reviewed examples remain available below." : "Your current advice has not changed. Turning this on is your separate decision."}</p>
-              : <p>These examples show the checked behavior. Other situations remain untested. Your current advice has not changed.</p>}
+            {reviewedApproved ? <p>{selectedDraft ? "This advice is on. Its reviewed examples remain available below." : "Your current setup has not changed. Turning this on is your separate decision."}</p>
+              : <p>These examples show the checked behavior. Other situations remain untested. Your current setup has not changed.</p>}
             <details open={!reviewedApproved}><summary>Reviewed examples and exact details</summary>
             <details><summary>Exact proposal and reviewed evidence</summary><p>Revision: {reviewed.current.revisionId}</p><p>Evidence: {reviewed.current.evidenceId}</p></details>
             <ul className="rs-review-examples">{evidence?.reports.map((item, index) => <li key={item.id}><strong>{exampleLabel(item, index)}</strong><span>You wanted: {expectedAdvice(item.expected)}</span><span>Observed: {observedAdvice(item.report.consumption)}</span></li>)}</ul>
@@ -845,6 +1087,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               <p>These read-only saved documents belong to the exact revision above. Approval applies only to these saved documents and sample results.</p>
               {reviewReady && reviewSource && <>
                 <h4>Saved source</h4><pre aria-label="Saved source for approval">{reviewSource.source}</pre>
+                <details><summary>Exact compiled artifact and pins</summary><pre aria-label="Compiled artifact for approval">{reviewSource.artifact}</pre><pre aria-label="Artifact pins for approval">{JSON.stringify(reviewSource.pins, null, 2)}</pre></details>
                 <section aria-label="Saved expected examples for approval"><h4>Saved independent expected examples</h4>{reviewSource.cases.map((item, index) => <pre key={index} aria-label={`Saved example ${index + 1} for approval`}>{item}</pre>)}</section>
               </>}
               {reviewError && <><p role="alert">{reviewError}</p><button disabled={disabled || !canReview || review !== reviewKey} onClick={() => void openReview()}>Reload exact saved source</button></>}
@@ -854,9 +1097,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {review !== reviewKey && <p>This earlier review cannot approve the current proposal. Open its latest run to review the current examples.</p>}
             {!reviewedApproved && <><label className="rs-confirm"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} disabled={disabled || !canReview || review !== reviewKey || !reviewReady} /> I reviewed these sample results and want this advice for my tasks.</label>
             <div className="rs-actions"><button className="rs-primary" disabled={disabled || !canReview || review !== reviewKey || !reviewReady || !confirmed || state.approvedEvidenceId === evidence?.id}
-              onClick={() => void mutate("approve", { revisionId: state.draft!.id, draftVersion: state.draftVersion, evidenceId: evidence!.id }, "This is approved. Your current advice has not changed; turning this on is a separate decision.")}>This is what I want</button></div></>}
+              onClick={() => void mutate("approve", { revisionId: state.draft!.id, draftVersion: state.draftVersion, evidenceId: evidence!.id }, "This is approved. Your current setup has not changed; turning this on is a separate decision.")}>This is what I want</button></div></>}
           </article>}
           {authoringError && <p role="alert">{authoringError}</p>}
+          {recoveryError && <p role="alert">{recoveryError}</p>}
+          {pendingTurn && <article className="rs-message"><strong>Submitted request</strong><p>{pendingTurn.text}</p></article>}
+          {pendingExample && <div className="rs-recovery"><button disabled={!!busy} onClick={() => void checkExampleRequest()}>Check submitted example</button>
+            {exampleRetry && <button disabled={!!busy || !trusted} onClick={() => void prepareExample()}>Retry submitted example save</button>}</div>}
           {(authoringError || observationPaused || pendingTurn) && <div className="rs-recovery"><button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring(conversation?.id ?? null)}>{!authoring && authoringError ? "Retry status" : "Check authoring status"}</button>
             {pendingTurn && retryTurn && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}</div>}
           <div ref={chatEnd} />
@@ -866,12 +1113,17 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!scripted && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
         {!scripted && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
-        <form hidden={scripted} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Studio</label>
-          <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder="Describe task advice or answer a question…" />
-          <button disabled={scripted || !authoring?.availability.available || disabled || !text.trim()}>Send</button></form>
+        <form hidden={scripted || legacyConversation} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Studio</label>
+          <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder="Describe what you want or answer a question…"
+            onKeyDown={event => {
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+              event.preventDefault();
+              if (!event.repeat && !sendDisabled && !scripted && authoring?.availability.available && text.trim() && !locked.current) event.currentTarget.form?.requestSubmit();
+            }} />
+          <button disabled={scripted || !authoring?.availability.available || sendDisabled || !text.trim()}>Send</button></form>
         <p hidden={scripted} className="rs-chat-note">{authoring?.availability.available ? "Messages use your configured assistant. Your messages are saved." : "You decide whether to approve and turn on a change."}</p>
       </section>
-      <div hidden={!reviewOpen} className="rs-divider" role="separator" tabIndex={0} aria-label="Resize conversation and advice" aria-orientation="vertical"
+      <div hidden={!reviewOpen} className="rs-divider" role="separator" tabIndex={0} aria-label="Resize conversation and proposal" aria-orientation="vertical"
         aria-valuemin={limits.min} aria-valuemax={limits.max} aria-valuenow={width}
         onKeyDown={event => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
           event.preventDefault(); readingRevision.current++; setWidth(old => event.key === "Home" ? limits.min : event.key === "End" ? limits.max : Math.max(limits.min, Math.min(limits.max, old + (event.key === "ArrowLeft" ? -2 : 2))));
@@ -880,15 +1132,21 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId) && room.current) {
           const bounds = room.current.getBoundingClientRect(); setWidth(Math.round(Math.max(limits.min, Math.min(limits.max, (event.clientX - bounds.left) / (bounds.width - 14) * 100))));
         } }} onPointerUp={event => event.currentTarget.releasePointerCapture(event.pointerId)} />
-      <section hidden={!reviewOpen} className="rs-preview" aria-label="Advice preview">
+      <section hidden={!reviewOpen} className="rs-preview" aria-label="Customization preview">
         <button className="rs-close-review" onClick={closeReview}>Back to conversation</button>
-        <nav className="rs-canvas-tabs" aria-label="Advice views"><button aria-pressed={canvasView === "advice"} onClick={() => view("advice")}>Current advice</button><button aria-pressed={canvasView === "results"} disabled={!evidence} onClick={() => view("results")}>Examples</button></nav>
-      <section id="studio-canvas" ref={canvas} tabIndex={0} className="rs-canvas" aria-label="Advice and sample results"
+        <nav className="rs-canvas-tabs" aria-label="Customization views"><button aria-pressed={canvasView === "advice"} onClick={() => view("advice")}>Current setup</button><button aria-pressed={canvasView === "results"} disabled={!evidence} onClick={() => view("results")}>Examples</button></nav>
+      <section id="studio-canvas" ref={canvas} tabIndex={0} className="rs-canvas" aria-label="Customization and sample results"
         onWheel={() => { readingRevision.current++; }} onKeyDown={() => { readingRevision.current++; }} onPointerDown={() => { readingRevision.current++; }}
         onScroll={event => { if (reviewOpen) canvasScroll.current = event.currentTarget.scrollTop; }}>
         {state && <>
-          <div className="rs-comparison rs-sheet" hidden={canvasView !== "advice"}>
-            <article aria-label="Current advice">
+          {activeView && state.selection.revision?.extensionId === state.extension?.id && <article className="rs-sheet" aria-label="Version in use">
+            <h3>In use: {state.selection.revision!.label}</h3><p>This view is read-only. Saved changes and earlier discussion are kept.</p>
+            <button disabled={disabled} onClick={() => { void inspectSource(); openTools(); }}>Inspect this version’s source</button>
+            <button disabled={disabled} onClick={() => { setRestart({ draftVersion: state.draftVersion, revisionId: state.selection.revision!.id, generation: state.selection.generation, activeLabel: state.selection.revision!.label, draftLabel: state.draft?.label ?? "saved" }); closeReview(); }}>Start changes from this version</button>
+            <button onClick={() => { setActiveView(false); closeReview(); }}>Continue saved changes</button>
+          </article>}
+          <div className="rs-comparison rs-sheet" hidden={canvasView !== "advice" || activeView}>
+            <article hidden={!state.extension?.hookId} aria-label="Current advice">
               <span className="rs-kicker">Current advice</span><span className="state-badge">{state.selection.revision ? state.selection.eligible ? "In use" : "Unavailable" : "Off"}</span>
               <h3>{state.selection.revision ? state.selection.eligible ? state.selection.revision.label : "Advice is unavailable" : "Advice is off"}</h3>
               <p>{state.selection.revision ? state.selection.eligible ? state.selection.revision.kind === "authored" ? "This read-only program is in use. Its saved examples describe the exercised behavior; other tasks remain untested." : `Open tasks: ${state.selection.revision.label}. Completed tasks: Done.`
@@ -897,14 +1155,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             </article>
             <article hidden={selectedDraft} className="rs-proposed" aria-label="Proposed advice"><span className="rs-kicker">Proposed</span>
               <h3>{state.draft?.label ?? "No proposal yet"}</h3>
-              <p>{state.draft ? state.draft.kind === "authored" ? state.draft.suiteDigest ? "Authored read-only program with independent saved examples. No task is edited." : "Source compiled and saved. Continue in the conversation to prepare independent examples before running checks." : `For your tasks: open → ${state.draft.label}; completed → Done. No task is edited.` : "Describe the advice you want in the conversation to prepare a proposal."}</p>
+              <p>{state.draft ? state.draft.kind === "authored" ? state.draft.suiteDigest ? "Authored read-only program with independent saved examples. No task is edited." : "Source compiled and saved. Continue in the conversation to prepare independent examples before running checks." : `For your tasks: open → ${state.draft.label}; completed → Done. No task is edited.` : "Describe what you want to happen in the conversation."}</p>
               {state.draft && <><p>{selectedDraft ? "This approved choice is in use." : state.approved ? "Approved. Use is a separate decision." : "This proposal is not approved."}</p>
                 <div className="rs-actions">
                   {state.evidence && <button className={!currentEvidence && !state.approved ? "rs-primary" : undefined} disabled={!!busy} onClick={() => void showEvidence(state.evidence!.id)}>Open current sample results</button>}
-                  {state.evidence && <button className={canReview && !state.approved ? "rs-primary" : undefined} disabled={disabled || !canReview} onClick={() => void openReview()}>Review this advice</button>}</div></>}
+                  {state.evidence && <button className={canReview && !state.approved ? "rs-primary" : undefined} disabled={disabled || !canReview} onClick={() => void openReview()}>Review this change</button>}</div></>}
             </article>
           </div>
           {evidence && <article hidden={canvasView !== "results"} className="rs-sheet rs-results" aria-label="Sample results">
+            <p>SYNTHETIC examples · no live task changes.</p>
             <h3 id="studio-results-heading" tabIndex={-1}>{!observationsKnown ? "Some results were not observed" : evidence.passed ? "The examples match" : "An example needs a correction"}</h3>
             <section aria-label="Expected and actual sample results">{evidence.reports.map((item, index) => {
               const observed = knownObservation(item.report.consumption), expected = knownObservation(item.expected.consumption);
@@ -915,36 +1174,49 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
                 <details><summary>Technical run details</summary><pre>{JSON.stringify({ id: item.id, expected: item.expected, actual: item.report }, null, 2)}</pre></details>
               </article>;
             })}</section>
-            <details><summary>About these examples</summary><span>Saved sample run · {currentEvidence ? "Current proposal" : evidence.revisionId === state.draft?.id ? "Earlier run for current proposal" : "Earlier proposal"}</span>
+            <details><summary>About these examples</summary><span>SYNTHETIC · Saved sample run · {currentEvidence ? "Current proposal" : evidence.revisionId === state.draft?.id ? "Earlier run for current proposal" : "Earlier proposal"}</span>
               {evidence.id === state.approvedEvidenceId && <p>Approved run</p>}{evidence.id === state.evidence?.id && <p>Latest run</p>}
               <p>These are synthetic sample tasks, not live task changes. Expected results were defined independently of this run. Only the listed cases are exercised; other inputs and situations remain untested.</p></details>
             <details><summary>Saved run identity</summary><p>Evidence: {evidence.id}</p><p>Revision: {evidence.revisionId}</p><pre>{JSON.stringify(evidence.identity, null, 2)}</pre></details>
-            <div className="rs-actions"><button className={canReview ? "rs-primary" : undefined} disabled={disabled || !canReview} onClick={() => void openReview()}>Review this advice</button><button onClick={() => view("advice")}>Return to current proposal</button></div>
+            <details><summary>Exact saved simulation report · SYNTHETIC</summary><pre aria-label="Saved synthetic simulation report">{JSON.stringify(evidence, null, 2)}</pre></details>
+            <div className="rs-actions"><button className={canReview ? "rs-primary" : undefined} disabled={disabled || !canReview} onClick={() => void openReview()}>Review this change</button><button onClick={() => view("advice")}>Return to current proposal</button></div>
           </article>}
 
         </>}
-        <details className="rs-sheet rs-tools"><summary>Details and recovery</summary>
+        <details className="rs-sheet rs-tools"><summary>History, details and recovery</summary>
+          <details><summary>Published host model and supported hooks</summary>
+            {catalogError && <p role="status">The published host model could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p>}
+            {hostCatalog && <>
+              <p>This is Daymark’s published host contract. A saved revision’s exact pins appear with its source; the current model does not certify historical compatibility.</p>
+              <pre aria-label="Published host hooks">{JSON.stringify(hostCatalog.hooks, null, 2)}</pre>
+              <pre aria-label="Published host model identity">{JSON.stringify({ ...hostCatalog.model, dcm: undefined }, null, 2)}</pre>
+              <pre aria-label="Published host DCM">{hostCatalog.model.dcm}</pre>
+            </>}
+          </details>
           <section className="rs-authoring" aria-label="AI authoring">
             <h3>Saved conversations</h3>
-            {authoring && authoring.conversations.length > 0 && <label>Saved authoring conversation<select aria-label="Saved authoring conversation" value={conversation?.id ?? ""} disabled={!!busy || activeAuthoring || !!pendingTurn}
-              onChange={event => { if (event.target.value) { setScripted(false); void loadAuthoring(event.target.value); } }}><option value="" disabled>Choose a saved conversation</option>{authoring.conversations.map((item, index) => <option key={item.id} value={item.id}>Conversation {index + 1}</option>)}</select></label>}
+            {authoring && (extensionId.current || legacyConversation) && authoring.conversations.length > 0 && <label>Saved authoring conversation<select aria-label="Saved authoring conversation" value={conversation?.id ?? ""} disabled={!!busy || activeAuthoring || !!pendingTurn || !!pendingExample}
+              onChange={event => { if (event.target.value) { setScripted(false); setMessages([]); void loadAuthoring(event.target.value); } }}><option value="" disabled>Choose a saved conversation</option>{authoring.conversations.filter(item => item.extensionId === extensionId.current).map((item, index) => <option key={item.id} value={item.id}>Conversation {index + 1}</option>)}</select></label>}
             {conversation && <><p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>
-              {!activeAuthoring && <button disabled={!!busy || !!pendingTurn || (authoring?.conversations.length ?? 0) >= 8} onClick={newConversation}>New conversation</button>}</>}
+              {!activeAuthoring && !legacyConversation && <button disabled={!!busy || !!pendingTurn || !!pendingExample || (authoring?.conversations.length ?? 0) >= 8} onClick={newConversation}>Continue current changes in a new conversation</button>}</>}
             {!authoringError && !observationPaused && !pendingTurn && <button disabled={!!busy} onClick={() => void loadAuthoring(conversation?.id ?? null)}>Check authoring status</button>}
           </section>
           {authoring?.availability.provider && <section aria-label="Assistant connection details"><h3>Assistant connection</h3><p>Provider: {authoring.availability.provider}</p><p>Model: {authoring.availability.model}</p><button onClick={openSetup}>Configure</button></section>}
           {state && <>
-          <section aria-label="Saved proposal checks"><h3>Saved advice and checks</h3>
+          <section aria-label="Saved proposal checks"><h3>Saved changes and checks</h3>
             <button id="studio-open-review" onClick={() => openPane("advice")}>View proposal</button>
             {state.draft && <button disabled={disabled || state.draft.kind === "authored" && !state.draft.suiteDigest} onClick={() => void mutate("simulate", { revisionId: state.draft!.id, draftVersion: state.draftVersion }, "A new sample run was saved.")}>Try on sample tasks</button>}
             {state.approvedEvidenceId && <button disabled={!!busy} onClick={() => void showEvidence(state.approvedEvidenceId!)}>Approved run</button>}
             {state.evidence && <button disabled={!!busy} onClick={() => void showEvidence(state.evidence!.id)}>Latest run</button>}
           </section>
           {state.selection.revision && <p>Current choice provenance: {state.selection.revision.provenance === "operator" ? "Operator-provided starting choice" : "Your approved choice"}</p>}
-          {state.draft?.kind === "authored" && <section aria-label="Saved authored program">
+          {inspectionRevision && <section aria-label="Saved program">
             <button disabled={disabled} onClick={() => void inspectSource()}>Inspect saved source and examples</button>
             {inspection?.key === inspectionKey && <>
+              <p>Exact saved revision: {inspection.revisionId}. Inspection is read-only.</p>
               <h3>Saved source</h3><pre aria-label="Saved source for inspection">{inspection.source}</pre>
+              <h3>Exact compiled artifact</h3><pre aria-label="Compiled artifact for inspection">{inspection.artifact}</pre>
+              <h3>Exact artifact pins</h3><pre aria-label="Artifact pins for inspection">{JSON.stringify(inspection.pins, null, 2)}</pre>
               <h3>Saved independent examples</h3>
               {inspection.cases.length ? inspection.cases.map((item, index) => <pre key={index} aria-label={`Saved example ${index + 1} for inspection`}>{item}</pre>) : <p>Independent examples have not been saved for this source.</p>}
               <p>Inspection is read-only. Approval still requires eligible sample results and a separate decision.</p>
@@ -957,14 +1229,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               <small>{item.id === state.evidence?.id ? "Current proposal" : "Earlier run"} · revision {item.revisionId}</small>
             </li>)}</ol>
           </details>}
-          <details className="rs-sheet rs-secondary" aria-label="Manage saved advice"><summary>Manage saved advice</summary>
-            <button disabled={disabled || !state.selection.revision} onClick={() => void mutate("disable", { generation: state.selection.generation }, "Your advice is off. Your tasks have not changed.", true)}>Turn off my advice</button>
+          <details className="rs-sheet rs-secondary" aria-label="Manage saved customization"><summary>Manage saved customization</summary>
+            <button disabled={disabled || state.selection.revision?.extensionId !== state.extension?.id} onClick={() => void mutate("disable", { generation: state.selection.generation }, "Your advice is off. Your tasks have not changed.", true)}>Turn off my advice</button>
           <h3>Return to an earlier choice</h3>
             <label htmlFor="studio-restore">Previously in use</label><select id="studio-restore" value={restore} disabled={disabled} onChange={e => setRestore(e.target.value)}>
               <option value="">Choose a saved choice…</option>{state.restoreTargets.map((item, index) => <option key={item.id} value={item.id}>{item.label} · {item.provenance === "operator" ? "operator starting choice" : "customer approved"} · choice {index + 1}</option>)}</select>
-            {target && <div className="rs-restore-confirm"><p>Restore <strong>{target.label}</strong>{target.kind === "authored" ? " with its exact reviewed source and examples." : " for your open tasks; completed tasks show Done."} {target.provenance === "operator" ? "This was an operator-provided starting choice." : "This choice was approved for you."} No task or earlier action is undone.</p>
-              <details><summary>Exact choice to restore</summary><p>Revision: {target.id}</p><pre>{JSON.stringify(target.pins, null, 2)}</pre></details>
-              <button disabled={disabled} onClick={() => void mutate("rollback", { revisionId: target.id, generation: state.selection.generation }, `Restored ${target.label} for your tasks.`, true)}>Restore {target.label} for me</button></div>}
+            {restoreTarget && <div className="rs-restore-confirm"><p>Restore <strong>{restoreTarget.label}</strong>{restoreTarget.kind === "authored" ? " with its exact reviewed source and examples." : " for your open tasks; completed tasks show Done."} {restoreTarget.provenance === "operator" ? "This was an operator-provided starting choice." : "This choice was approved for you."} No task or earlier action is undone.</p>
+              <details><summary>Exact choice to restore</summary><p>Revision: {restoreTarget.id}</p><pre>{JSON.stringify(restoreTarget.pins, null, 2)}</pre></details>
+              <button disabled={disabled} onClick={() => void mutate("rollback", { revisionId: restoreTarget.id, generation: state.selection.generation }, `Restored ${restoreTarget.label} for your tasks.`, true)}>Restore {restoreTarget.label} for me</button></div>}
             <details><summary>Selection history and exact identities</summary><p>Current generation: {state.selection.generation}</p>
               <ol>{history.map(item => <li key={item.id}>{item.operation} · generation {item.generation} · {item.revisionId ?? "Advice off"}</li>)}</ol>
               {historyNext !== null && <button disabled={!!busy} onClick={() => void earlierHistory()}>Load earlier selections</button>}
