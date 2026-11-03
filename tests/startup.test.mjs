@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
@@ -8,6 +8,8 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { acquireDataLock, openData, resetData } from '../src/data.mjs';
 import { start } from '../src/server.mjs';
+import { createApp } from '../src/app.mjs';
+import { createAuthoringSettings } from '../src/authoring-settings.mjs';
 
 test('real startup refuses another server/reset and release preserves persisted data', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'keir-startup-'));
@@ -93,4 +95,28 @@ test('stale locks are never guessed safe or removed by startup', t => {
   writeFileSync(join(directory, 'app.lock'), marker);
   assert.throws(() => acquireDataLock(directory), /stale lock/);
   assert.equal(readFileSync(join(directory, 'app.lock'), 'utf8'), marker);
+});
+
+test('anonymous static requests cannot follow an asset junction into private AI settings', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'keir-static-settings-'));
+  const staticRoot = join(directory, 'public'), data = join(directory, 'private-data');
+  mkdirSync(staticRoot); mkdirSync(data); writeFileSync(join(staticRoot, 'index.html'), '<p>Public app</p>');
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  try { symlinkSync(data, join(staticRoot, 'alias'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('this Windows account cannot create junctions');
+    throw error;
+  }
+  const file = join(data, 'ai-authoring.json'), settings = createAuthoringSettings({ file, env: {} });
+  settings.prepare({ provider: 'openai', model: 'gpt-5.6-terra', apiKey: 'synthetic-private-junction-key', maxUsd: '1' }).persist();
+  const db = openData(':memory:'), app = await createApp({ db, staticRoot, origin: 'http://127.0.0.1:32123', authoringSettingsFile: file });
+  try {
+    for (const path of ['/alias/ai-authoring.json', '/alias/%61i-authoring.json']) {
+      const response = await app.inject({ url: path, headers: { host: '127.0.0.1:32123' } });
+      assert.ok([403, 404].includes(response.statusCode));
+      assert.equal(response.body.includes('synthetic-private-junction-key'), false);
+    }
+    const publicPage = await app.inject({ url: '/', headers: { host: '127.0.0.1:32123' } });
+    assert.equal(publicPage.statusCode, 200); assert.equal(publicPage.body, '<p>Public app</p>');
+  } finally { await app.close(); db.close(); }
 });

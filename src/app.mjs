@@ -2,7 +2,8 @@ import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import staticFiles from '@fastify/static';
 import { randomBytes } from 'node:crypto';
-import { resolve } from 'node:path';
+import { resolve, join, relative, isAbsolute, sep } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { AppError, USERS, taskService } from './data.mjs';
 import { createTaskRead } from './task-read.mjs';
 import { createLifecycle } from './extension-lifecycle.mjs';
@@ -13,6 +14,8 @@ import { assertAuthoringSettingsLocation, createAuthoringSettings } from './auth
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
+// Encoded URL aliases must share the matched route's security and privacy checks.
+const routePath = request => request.routeOptions.url ?? request.url.split('?')[0];
 
 export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler, authoring = {}, authoringSettingsFile }) {
   assertAuthoringSettingsLocation(authoringSettingsFile, staticRoot);
@@ -48,7 +51,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     if (request.headers.host !== url.host) return done(new AppError(403, 'Unexpected request host.'));
     request.scope = current(request) ?? null;
-    if (request.url.startsWith('/api/')) {
+    if (routePath(request).startsWith('/api/')) {
       reply.header('Cache-Control', 'no-store');
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         if (request.headers.origin !== origin) return done(new AppError(403, 'Use the same local app origin.'));
@@ -59,7 +62,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   });
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof AppError ? error.status : error.statusCode ?? 500;
-    if (request.url.split('?')[0] === '/api/authoring/setup') {
+    if (routePath(request) === '/api/authoring/setup') {
       const message = error instanceof AppError ? error.message : ({ 400: 'Send valid JSON settings using the supported fields.',
         413: 'Settings exceed the request size limit.', 415: 'Send application/json.' }[status] ?? 'Settings could not be processed safely.');
       return reply.code(status).send({ message, ...(AUTHORING_CODES.includes(error.code) ? { code: error.code } : {}) });
@@ -191,6 +194,13 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     if (!request.body || Object.keys(request.body).length) throw new AppError(400, 'Completion takes no fields.');
     return service.completeTask(session.userId, request.params.id);
   });
-  await app.register(staticFiles, { root: staticRoot, index: ['index.html'], dotfiles: 'deny' });
+  await app.register(staticFiles, { root: staticRoot, index: ['index.html'], dotfiles: 'deny',
+    allowedPath(path, root) {
+      try {
+        const location = relative(realpathSync(root), realpathSync(join(root, path)));
+        return location === '' || !isAbsolute(location) && location !== '..' && !location.startsWith('..' + sep);
+      } catch { return false; }
+    },
+  });
   return app;
 }

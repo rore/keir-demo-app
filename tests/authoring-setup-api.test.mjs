@@ -70,6 +70,40 @@ test('setup API is owner authenticated, exact-origin, query-free and returns onl
   assert.equal((await call('', undefined, auth)).statusCode, 401);
 });
 
+test('encoded setup aliases retain route authentication, origin, content-type and privacy guards', async t => {
+  const { directory, file } = fixture(); t.after(() => cleanup(directory));
+  const { app, login, getAuth } = await appFor(t, file); await login();
+  const aliases = ['/%61pi/authoring/setup', '/api/authoring/%73etup'];
+  const send = (url, { method = 'GET', payload, auth = getAuth(), originHeader = origin, contentType = 'application/json' } = {}) => {
+    const headers = { host: '127.0.0.1:32123', 'content-type': contentType, ...auth };
+    if (originHeader !== null) headers.origin = originHeader;
+    return app.inject({ url, method, headers, ...(payload === undefined ? {} : { payload }) });
+  };
+  const initial = (await send(aliases[0])).json();
+  assertSafeSetup(initial);
+  for (const alias of aliases) {
+    const noOrigin = await send(alias, { method: 'POST', payload: JSON.stringify(setup()), originHeader: null });
+    assert.equal(noOrigin.statusCode, 403);
+    const foreignOrigin = await send(alias, { method: 'POST', payload: JSON.stringify(setup()), originHeader: 'http://foreign.invalid' });
+    assert.equal(foreignOrigin.statusCode, 403);
+    const wrongType = await send(alias, { method: 'POST', payload: JSON.stringify(setup()), contentType: 'text/plain' });
+    assert.equal(wrongType.statusCode, 415);
+    const unauthorized = await send(alias, { method: 'POST', payload: JSON.stringify(setup()), auth: {} });
+    assert.equal(unauthorized.statusCode, 401);
+    const get = await send(alias);
+    assert.equal(get.statusCode, 200); assert.equal(get.headers['cache-control'], 'no-store');
+    assert.deepEqual(get.json(), initial);
+    const malformed = await send(alias, { method: 'POST', payload: '{"apiKey":"' + sentinel + '",' });
+    assert.equal(malformed.statusCode, 400); assertPrivate(malformed.body, file);
+    assert.equal(existsSync(file), false);
+  }
+  for (const alias of aliases) {
+    const accepted = await send(alias, { method: 'POST', payload: JSON.stringify(setup()) });
+    assert.equal(accepted.statusCode, 200); assertSafeSetup(accepted.json());
+  }
+  assert.ok(existsSync(file));
+});
+
 test('valid setup saves without provider traffic, applies immediately, survives reopen and dispatches with the new key', async t => {
   const { directory, file } = fixture(); t.after(() => cleanup(directory));
   const seenKeys = [];
@@ -105,6 +139,9 @@ test('invalid, malformed and oversized saves have fixed errors and never disclos
   const invalid = await call('', setup(sentinel, { model: 'wrong-model' }));
   assert.equal(invalid.statusCode, 400); assert.equal(invalid.json().code, 'AI_CONFIG_INVALID');
   assertPrivate(invalid.json(), file); assert.equal(existsSync(file), false);
+  const emptyProvider = await call('', setup(sentinel, { provider: '' }));
+  assert.equal(emptyProvider.statusCode, 400); assert.equal(emptyProvider.json().code, 'AI_CONFIG_INVALID');
+  assertPrivate(emptyProvider.json(), file); assert.equal(existsSync(file), false);
   const extra = await call('', { ...setup(), endpoint: 'https://attacker.invalid' });
   assert.equal(extra.statusCode, 400); assertPrivate(extra.json(), file); assert.equal(existsSync(file), false);
   const missing = await call('', { provider: 'openai', model: 'gpt-5.6-terra', maxUsd: '3' });

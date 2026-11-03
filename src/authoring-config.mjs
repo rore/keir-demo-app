@@ -10,8 +10,9 @@ export const authoringChoices = Object.freeze(Object.entries(tariffs).map(([prov
 export function readSetupConfig(input, settingsRevision) {
   const fields = ['provider', 'model', 'apiKey', 'maxUsd'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== fields.length
-      || fields.some(field => !Object.hasOwn(input, field) || typeof input[field] !== 'string')) return unavailable('AI_CONFIG_INVALID');
-  const key = Object.hasOwn(tariffs, input.provider) ? tariffs[input.provider].key : 'unsupported';
+      || fields.some(field => !Object.hasOwn(input, field) || typeof input[field] !== 'string')
+      || !Object.hasOwn(tariffs, input.provider)) return unavailable('AI_CONFIG_INVALID');
+  const key = tariffs[input.provider].key;
   return readAuthoringConfig({ KEIR_AI_PROVIDER: input.provider, KEIR_AI_MODEL: input.model, KEIR_AI_MAX_USD: input.maxUsd,
     [key]: input.apiKey }, settingsRevision);
 }

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { inspect } from 'node:util';
+import { tmpdir } from 'node:os';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,8 +12,8 @@ const setup = (apiKey = 'synthetic-test-key', overrides = {}) => ({ provider: 'o
 const environment = (apiKey = 'environment-test-key') => ({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '2.25', OPENAI_API_KEY: apiKey });
 
 function tempDir(t) {
-  const root = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), '.tools');
-  const directory = mkdtempSync(join(root, 'authoring-settings-test-'));
+  const root = tmpdir();
+  const directory = mkdtempSync(join(root, 'keir-authoring-settings-test-'));
   t.after(() => {
     const path = relative(resolve(root), resolve(directory));
     assert.ok(path && path !== '..' && !path.startsWith('..' + sep), 'cleanup stays inside the test temporary root');
