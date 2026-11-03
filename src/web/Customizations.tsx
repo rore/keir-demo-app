@@ -54,7 +54,7 @@ export default function Customizations({ request, changed, open, focusAction = "
           <div className="customization-copy"><h2>{item.extension!.name}</h2>
             <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{status}</span></p>
             {selectedItem && <p>{inUse ? "In use" : "Saved choice"}: {selected!.label}</p>}
-            {changes && <p className="draft-status">Saved changes (version {item.draftVersion}): {item.draft!.label}</p>}
+            {changes && <p className="draft-status">Saved changes (version {item.draftVersion}): {item.draft!.label}{item.approved ? " · Approved" : ""}</p>}
             {!item.extension!.hookId && <p>Describe the goal and check what Daymark can support.</p>}
           </div>
           <button id={`edit-${item.extension!.id}`} className="primary" onClick={() => open({ extensionId: item.extension!.id })}>{changes ? "Continue changes" : "Edit"}<span aria-hidden="true"> →</span></button>

@@ -53,6 +53,15 @@
 .rs-scripted, .rs-decision { padding: 16px; border-left: 3px solid var(--green); background: #f4f7f7; }
 .rs-scripted { padding: 0; border: 0; background: transparent; }
 .rs-scripted button, .rs-decision button { margin: 10px 8px 0 0; }
+.read-studio .rs-current-decision { flex: none; max-width: none; max-height: calc(100% - 80px); overflow: auto; margin: 0 24px 8px; padding: 12px; font-size: 14px; line-height: 1.4; }
+.rs-current-decision > strong { display: none; }
+.rs-current-decision h3 { margin-bottom: 6px; font-size: 16px; }
+.rs-current-decision p + p { margin-top: 6px; }
+.rs-current-decision details { margin-top: 8px; }
+.rs-current-decision .rs-link { margin-top: 6px; }
+.rs-decision-actions { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; }
+.rs-decision-actions > button { margin: 6px 0 0; }
+.read-studio #studio-restart-confirm, .read-studio .rs-current-decision:has(#studio-completion) { max-height: 100%; }
 .rs-working { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 24px; font-size: 13px; }
 .rs-review-examples { list-style: none; padding: 0; margin: 16px 0; }
 .rs-review-examples li { padding: 10px 0; border-bottom: 1px solid var(--line); }
@@ -147,12 +156,15 @@
   .rs-chat-head p { font-size: 12px; margin: 0; }
   .rs-chat-head h2 { font-size: 17px; }
   .rs-messages { padding: 16px 16px 8px; }
+  .read-studio .rs-current-decision { margin-inline: 16px; }
   .read-studio .rs-composer { margin: 0 16px 8px; padding: 8px; }
   .rs-chat-note { display: none; }
   .read-studio .rs-composer textarea { min-height: 36px; max-height: 64px; }
   .rs-results th, .rs-results td { padding-inline: 6px; }
 }
 @media (max-height: 500px) {
+  .read-studio .rs-current-decision { margin: 0 12px 6px; padding: 8px 10px; font-size: 13px; line-height: 1.35; }
+  #studio-review > h3 { display: none; }
   .rs-canvas { padding: 10px 12px; }
   .rs-results { padding: 12px; }
   .rs-results h3 { margin-bottom: 6px; font-size: 16px; }
