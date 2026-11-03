@@ -54,6 +54,7 @@ function authoringReason(code: string | null | undefined) {
   if (["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(code)) return "AI authoring is not configured.";
   if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved advice and review remain available.";
   if (code === "BUDGET_EXHAUSTED") return "This conversation reached its work limit. Your saved proposal and examples are kept. You can start a new conversation to continue; this does not add to the shared allowance.";
+  if (code === "PROVIDER_RATE_LIMIT") return "The AI service refused this request because of a request or account limit; the exact limit is unknown. Your saved work is kept. Check your provider's usage and limits, then explicitly try again later. Nothing is retried automatically.";
   if (code === "CONFIG_CHANGED") return "Assistant settings changed. Start a new conversation to continue; your saved customization remains available.";
   if (code === "CONVERSATION_LIMIT") return "The saved conversation limit has been reached. Existing conversations are retained.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
@@ -70,8 +71,35 @@ type Props = {
   task?: { title: string; status: "open" | "completed" };
 };
 const advice = (code?: string) => ({ PENDING: "Pending", NEEDS_ATTENTION: "Needs attention", DONE: "Done" })[code ?? ""] ?? code;
-const expectedAdvice = (value: Outcome) => value.consumption?.status === "NOT_DISPLAYED" ? "No advice"
-  : value.consumption?.status === "DISPLAYED" ? advice(value.consumption.code) : value.classification === "COMPLETED" ? advice(value.code) : "No advice";
+const knownObservation = (value?: { status: string; code?: string }) => value?.status === "NOT_DISPLAYED"
+  || value?.status === "DISPLAYED" && ["DONE", "PENDING", "NEEDS_ATTENTION"].includes(value.code ?? "");
+const observedAdvice = (value?: { status: string; code?: string }) => !knownObservation(value) ? "Not observed" : value?.status === "NOT_DISPLAYED" ? "No advice" : advice(value?.code);
+const expectedAdvice = (value: Outcome) => knownObservation(value.consumption) ? observedAdvice(value.consumption) : "Expected advice not recorded";
+
+function continuationText(previous: Conversation) {
+  const encoder = new TextEncoder();
+  const messages = previous.messages.map(({ role, text }) => ({ role, text }));
+  let truncated = false;
+  const render = () => "Continue my saved proposal and examples using these earlier messages. If the context is incomplete, ask before changing the examples.\n\n"
+    + messages.map(item => `${item.role === "user" ? "You" : "Studio"}: ${item.text}`).join("\n\n")
+    + (truncated ? "\n\n[Some earlier conversation was omitted to fit this request.]" : "");
+  while (encoder.encode(render()).length > 8192 && messages.length > 1) {
+    const lastUser = messages.map(item => item.role).lastIndexOf("user");
+    messages.splice(lastUser === 0 ? 1 : 0, 1); truncated = true;
+  }
+  if (encoder.encode(render()).length > 8192 && messages.length) {
+    truncated = true;
+    const points = Array.from(messages[0].text);
+    let low = 0, high = points.length;
+    while (low < high) {
+      const count = Math.ceil((low + high) / 2);
+      messages[0].text = points.slice(-count).join("");
+      if (encoder.encode(render()).length <= 8192) low = count; else high = count - 1;
+    }
+    messages[0].text = low ? points.slice(-low).join("") : "";
+  }
+  return render();
+}
 
 function AssistantSetup({ request, close, saved, beginSave }: { request: Props["request"]; close: (uncertain: boolean) => void; saved: (value: Setup) => void; beginSave: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -247,7 +275,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const reviewKey = state?.draft && evidence ? `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${evidence.id}` : "";
   const inspectionKey = state?.draft ? `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${state.draft.suiteDigest ?? ""}` : "";
   const currentEvidence = !!state?.draft && evidence?.revisionId === state.draft.id && (evidence?.id === state.evidence?.id || offeredEvidence);
-  const canReview = trusted && currentEvidence && evidence?.passed && (offeredEvidence || state?.evidence?.passed);
+  const observationsKnown = !!evidence?.reports.length && evidence.reports.every(item => knownObservation(item.expected.consumption) && knownObservation(item.report.consumption));
+  const canReview = trusted && currentEvidence && evidence?.passed && observationsKnown && (offeredEvidence || state?.evidence?.passed);
   const activeAuthoring = running(conversation);
   const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn;
   const reviewReady = reviewed.current?.kind !== "authored" || !!reviewSource && reviewSource.key === review && reviewSource.ownerId === state?.owner.id && reviewSource.revisionId === state?.draft?.id && reviewSource.suiteDigest === state?.draft?.suiteDigest;
@@ -331,7 +360,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     try {
       const proof = evidenceId ? await callbacks.current.request<Evidence>(`extensions/evidence/${encodeURIComponent(evidenceId)}`, "GET", undefined, authoringLifetime.current.signal) : evidence!;
       if (!mounted.current || serial.current !== turn) return;
-      if (!proof.passed || proof.revisionId !== state.draft.id || (evidenceId && proof.id !== evidenceId)
+      if (!proof.passed || !proof.reports.length || !proof.reports.every(item => knownObservation(item.expected.consumption) && knownObservation(item.report.consumption)) || proof.revisionId !== state.draft.id || (evidenceId && proof.id !== evidenceId)
         || !(proof.id === state.evidence?.id && state.evidence.passed || offeredEvidence && proof.id === offer?.evidenceId)) throw new Error("Ineligible evidence");
       const key = `${state.owner.id}/${state.draft.id}/${state.draftVersion}/${proof.id}`;
       setEvidence(proof); setReview(key); setReviewSource(null);
@@ -344,7 +373,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (saved.revisionId !== target.revisionId || !target.suiteDigest || saved.suiteDigest !== target.suiteDigest || typeof saved.source !== "string" || !saved.source.trim() || !Array.isArray(saved.cases) || !saved.cases.length || saved.cases.some(item => typeof item !== "string" || !item.trim())) throw new Error("Saved review mismatch");
       setReviewSource({ ...saved, ownerId: target.ownerId, key: target.key });
     } catch {
-      if (mounted.current && serial.current === turn) setReviewError("Exact saved source and examples could not be checked. Approval is unavailable. Your conversation draft has not changed.");
+      if (mounted.current && serial.current === turn) { setReviewError("Exact saved source and examples could not be checked. Approval is unavailable. Your conversation draft has not changed."); setError("The saved proposal or its observations could not be confirmed. Approval is unavailable. Your current advice has not changed."); }
     } finally {
       if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
@@ -414,9 +443,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setConversation(null); setScripted(false); setCompletion(false); setMessages(old => old.filter(item => typeof item.id !== "string")); setObservationPaused(false); setAuthoringError("");
   }
   function continueSaved() {
-    if (!authoring?.availability.available || disabled || (authoring.conversations.length >= 8)) return;
+    if (!conversation || !authoring?.availability.available || disabled || (authoring.conversations.length >= 8)) return;
+    const input = continuationText(conversation);
     newConversation();
-    void submitAuthoring({ conversationId: null, operationId: crypto.randomUUID(), text: "Continue with what we discussed and the saved examples.", expectedVersion: 0, expectedDraftVersion: state!.draftVersion });
+    void submitAuthoring({ conversationId: null, operationId: crypto.randomUUID(), text: input, expectedVersion: 0, expectedDraftVersion: state!.draftVersion });
   }
   async function recoverTurn(input: Turn, turn: number) {
     const index = await callbacks.current.request<Authoring>("authoring", "GET", undefined, authoringLifetime.current.signal);
@@ -545,11 +575,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     if (chatEnd.current?.parentElement) observer.observe(chatEnd.current.parentElement);
     return () => observer.disconnect();
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const log = chatEnd.current?.parentElement;
     if (log && followConversation.current) log.scrollTop = log.scrollHeight;
     else setNewMessages(true);
-  }, [messages]);
+  }, [messages, activeAuthoring]);
   useLayoutEffect(() => {
     const log = chatEnd.current?.parentElement;
     if (log && followConversation.current) log.scrollTop = log.scrollHeight;
@@ -654,34 +684,51 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   async function loadExample() {
     if (locked.current || disabled) return;
-    if (state?.draft) { say("You have a saved proposal. You can continue it here; the guided example will not replace it."); return; }
     locked.current = true;
     const turn = ++serial.current;
     setBusy("Opening the guided example…"); setError("");
     try {
       const next = await callbacks.current.request<Example>("authoring/example", "GET", undefined, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
-      initialized.current = true; exampleRevision.current = null; setExample(next); setScripted(true); setCompletion(false); setEntry("item");
-      say("In this example, open tasks show Needs attention when you check their advice. Should completed tasks still say Done?");
+      exampleRevision.current = null;
+      if (state?.draft && !await recognizeExample(state, next, turn)) { say("You have a saved proposal. You can continue it here; the guided example will not replace it."); return; }
+      if (!mounted.current || serial.current !== turn) return;
+      initialized.current = true; setExample(next); setScripted(true); setCompletion(false); setEntry("item");
+      say(state?.draft ? "The saved part of this example is here. You can continue checking it; your current advice has not changed."
+        : "In this example, open tasks show Needs attention when you check their advice. Should completed tasks still say Done?");
     } catch { if (mounted.current && serial.current === turn) setError("The guided example could not be opened. Your saved advice has not changed."); }
     finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
+  async function recognizeExample(saved: State, sample: Example, turn: number) {
+    if (saved.draft?.kind !== "authored" || saved.draft.label !== sample.label) return false;
+    const documents = await callbacks.current.request<SavedSource>(`extensions/revisions/${encodeURIComponent(saved.draft.id)}`, "GET", undefined, authoringLifetime.current.signal);
+    if (!mounted.current || serial.current !== turn) return false;
+    const matches = documents.revisionId === saved.draft.id && documents.source === sample.source
+      && documents.suiteDigest === (saved.draft.suiteDigest ?? null) && Array.isArray(documents.cases)
+      && (documents.cases.length === 0 && !saved.draft.suiteDigest
+        || !!saved.draft.suiteDigest && documents.cases.length === sample.cases.length && documents.cases.every((item, index) => item === sample.cases[index]));
+    if (matches) exampleRevision.current = saved.draft.id;
+    return matches;
+  }
   async function prepareExample() {
-    if (!example || locked.current || disabled || !state || state.draft) return;
+    if (!example || locked.current || disabled || !state || state.draft && state.draft.id !== exampleRevision.current) return;
     locked.current = true;
     const turn = ++serial.current;
     setBusy("Checking the examples…"); setError("");
-    say("Yes, keep Done for completed tasks.", "You");
+    say(state.draft ? "Continue checking this example." : "Yes, keep Done for completed tasks.", "You");
     say("I'll check an open task, a completed task, and unavailable tasks without changing your tasks. The expected advice is fixed before these checks.");
     try {
-      let next = await callbacks.current.request<State>("extensions/compile", "POST", { source: example.source, label: example.label, draftVersion: state.draftVersion }, authoringLifetime.current.signal);
-      if (!mounted.current || serial.current !== turn) return;
-      exampleRevision.current = next.draft!.id;
-      apply(next);
-      next = await callbacks.current.request<State>("extensions/scenarios", "POST", { revisionId: next.draft!.id, cases: example.cases, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
-      if (!mounted.current || serial.current !== turn) return;
-      exampleRevision.current = next.draft!.id;
-      apply(next);
+      let next = state;
+      if (!next.draft) {
+        next = await callbacks.current.request<State>("extensions/compile", "POST", { source: example.source, label: example.label, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
+        if (!mounted.current || serial.current !== turn) return;
+        exampleRevision.current = next.draft!.id; apply(next);
+      }
+      if (!next.draft!.suiteDigest) {
+        next = await callbacks.current.request<State>("extensions/scenarios", "POST", { revisionId: next.draft!.id, cases: example.cases, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
+        if (!mounted.current || serial.current !== turn) return;
+        exampleRevision.current = next.draft!.id; apply(next);
+      }
       next = await callbacks.current.request<State>("extensions/simulate", "POST", { revisionId: next.draft!.id, draftVersion: next.draftVersion }, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
       apply(next);
@@ -689,13 +736,20 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (!mounted.current || serial.current !== turn) return;
       if (proof.id !== next.evidence!.id || proof.revisionId !== next.draft!.id) throw new Error("Unconfirmed examples");
       setEvidence(proof);
-      say(proof.passed ? "The examples match: open tasks show Needs attention, completed tasks show Done, and unavailable tasks show no advice. This is only a proposal; your current advice is unchanged."
-        : "An example did not match what you wanted. Your current advice is unchanged; this proposal cannot be approved.", "Studio", proof.id, proof.reports.length);
+      const observed = !!proof.reports.length && proof.reports.every(item => knownObservation(item.expected.consumption) && knownObservation(item.report.consumption));
+      say(proof.passed && observed ? "The examples match: open tasks show Needs attention, completed tasks show Done, and unavailable tasks show no advice. This is only a proposal; your current advice is unchanged."
+        : observed ? "An example did not match what you wanted. Your current advice is unchanged; this proposal cannot be approved."
+          : "Some example results were not observed. Your current advice is unchanged; this proposal cannot be approved.", "Studio", proof.id, proof.reports.length);
     } catch {
       if (!mounted.current || serial.current !== turn) return;
       setTrusted(false);
       say("The example could not finish here. Some preparation may have been saved. I'll check saved state before you decide what to do next.");
-      try { const saved = await callbacks.current.request<State>("extensions", "GET", undefined, authoringLifetime.current.signal); if (mounted.current && serial.current === turn) apply(saved); }
+      try {
+        const saved = await callbacks.current.request<State>("extensions", "GET", undefined, authoringLifetime.current.signal);
+        if (!mounted.current || serial.current !== turn) return;
+        apply(saved); exampleRevision.current = null;
+        if (await recognizeExample(saved, example, turn)) say("The saved part of this example is ready. You can explicitly continue checking it without replacing your proposal.");
+      }
       catch { if (mounted.current && serial.current === turn) setError("Saved state could not be confirmed. Reload saved state before another change."); }
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
@@ -762,9 +816,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <strong>{message.who}</strong><p>{message.text}</p>{message.evidenceId && <button disabled={!!busy} className="rs-link"
               onClick={() => void showEvidence(message.evidenceId!)}>See {message.exampleCount} sample {message.exampleCount === 1 ? "task" : "tasks"}</button>}
           </article>)}
-          {!conversation && !scripted && <button className="rs-link" disabled={disabled} onClick={() => void loadExample()}>Try a guided example · no AI</button>}
+          {!conversation && !scripted && <button className="rs-link" disabled={disabled} onClick={() => void loadExample()}>{state?.draft?.label === "Scripted example: task advice" ? "Continue guided example · no AI" : "Try a guided example · no AI"}</button>}
           {scripted && <article className="rs-message rs-scripted" aria-label="Scripted example"><small>Scripted example · no AI. Saved advice and checks are kept.</small>
             {example && !state?.draft && <button className="rs-primary" disabled={disabled} onClick={() => void prepareExample()}>Yes, keep Done for completed tasks</button>}
+            {example && state?.draft?.id === exampleRevision.current && !state?.evidence?.passed && <button className="rs-primary" disabled={disabled} onClick={() => void prepareExample()}>Continue checking this example</button>}
             <button disabled={!!busy} onClick={() => { setScripted(false); setCompletion(false); setReview(""); say("Back to your request. Tell me what you would like to change; your saved proposal and current advice stay as they are."); }}>Return to my request</button></article>}
           {state?.draft && !state.approved && (offeredEvidence || state.evidence?.passed) && (!review || review !== reviewKey) && <article className="rs-message rs-decision"><p>Review the checked behavior and decide whether this is what you want.</p>
             <button className="rs-primary" disabled={disabled} onClick={() => void openReview(offeredEvidence ? offer!.evidenceId : state.evidence!.id)}>See what will change</button>
@@ -772,7 +827,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {conversation?.review && <article className="rs-message"><button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>See the checked examples</button>
             {!conversation.review.eligible && <p>You can inspect these saved examples. They do not yet support approval of this proposal.</p>}</article>}
           {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>}
-          {conversation?.code === "BUDGET_EXHAUSTED" && !activeAuthoring && <button disabled={disabled || !authoring?.availability.available || (authoring?.conversations.length ?? 0) >= 8} onClick={continueSaved}>Continue from saved proposal</button>}
+          {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT"].includes(conversation?.code ?? "") && !activeAuthoring && <button disabled={disabled || !authoring?.availability.available || (authoring?.conversations.length ?? 0) >= 8} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue from saved proposal"}</button>}
           {completion && selectedDraft && <article className="rs-message rs-decision" aria-label="Advice is on"><h3 id="studio-completion" tabIndex={-1}>On for your tasks</h3><p>Choose Check task advice on a saved task to see the change. Your tasks are unchanged.</p>
             <button className="rs-primary" onClick={back}>{task ? "Return to my task" : "Return to customizations"}</button>
             {state?.approvedEvidenceId && <button className="rs-link" onClick={() => void showEvidence(state.approvedEvidenceId!)}>See approved examples</button>}</article>}
@@ -782,7 +837,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               : <p>These examples show the checked behavior. Other situations remain untested. Your current advice has not changed.</p>}
             <details open={!reviewedApproved}><summary>Reviewed examples and exact details</summary>
             <details><summary>Exact proposal and reviewed evidence</summary><p>Revision: {reviewed.current.revisionId}</p><p>Evidence: {reviewed.current.evidenceId}</p></details>
-            <ul className="rs-review-examples">{evidence?.reports.map((item, index) => <li key={item.id}><strong>{exampleLabel(item, index)}</strong><span>You wanted: {expectedAdvice(item.expected)}</span><span>Observed: {item.report.consumption?.status === "DISPLAYED" ? advice(item.report.consumption.code) : "No advice"}</span></li>)}</ul>
+            <ul className="rs-review-examples">{evidence?.reports.map((item, index) => <li key={item.id}><strong>{exampleLabel(item, index)}</strong><span>You wanted: {expectedAdvice(item.expected)}</span><span>Observed: {observedAdvice(item.report.consumption)}</span></li>)}</ul>
             {reviewed.current.kind === "authored" && <details><summary>Exact saved source and examples</summary>
               <p>These read-only saved documents belong to the exact revision above. Approval applies only to these saved documents and sample results.</p>
               {reviewReady && reviewSource && <>
@@ -847,13 +902,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             </article>
           </div>
           {evidence && <article hidden={canvasView !== "results"} className="rs-sheet rs-results" aria-label="Sample results">
-            <h3 id="studio-results-heading" tabIndex={-1}>{evidence.passed ? "The examples match" : "An example needs a correction"}</h3>
+            <h3 id="studio-results-heading" tabIndex={-1}>{!observationsKnown ? "Some results were not observed" : evidence.passed ? "The examples match" : "An example needs a correction"}</h3>
             <section aria-label="Expected and actual sample results">{evidence.reports.map((item, index) => {
               const situation = evidence.revisionId === exampleRevision.current ? example?.situations.find(value => value.id === item.id) : undefined;
+              const observed = knownObservation(item.report.consumption), expected = knownObservation(item.expected.consumption);
               return <article className="rs-example" key={item.id} aria-label={`Example: ${item.label}`}>
                 <div className="rs-example-task"><span className="rs-task-mark" aria-hidden="true">{situation?.taskStatus === "COMPLETED" ? "✓" : situation?.taskStatus === "OPEN" ? "○" : "–"}</span><div><small>Sample task{situation?.taskStatus ? ` · ${situation.taskStatus === "OPEN" ? "Open" : "Completed"}` : ""}</small><h4>{exampleLabel(item, index)}</h4></div></div>
-                <dl><div><dt>You wanted</dt><dd>{expectedAdvice(item.expected)}</dd></div><div><dt>In this example</dt><dd>{item.report.consumption?.status === "DISPLAYED" ? advice(item.report.consumption.code) : "No advice"}</dd></div></dl>
-                <p className={item.report.status === "PASS" ? "rs-match" : "rs-mismatch"}>{item.report.status === "PASS" ? "Matches what you wanted" : "This example needs a correction"}</p>
+                <dl><div><dt>You wanted</dt><dd>{expectedAdvice(item.expected)}</dd></div><div><dt>In this example</dt><dd>{observedAdvice(item.report.consumption)}</dd></div></dl>
+                <p className={observed && expected && item.report.status === "PASS" ? "rs-match" : "rs-mismatch"}>{!observed ? "This result was not observed" : !expected ? "The expected advice was not recorded" : item.report.status === "PASS" ? "Matches what you wanted" : "This example needs a correction"}</p>
                 <details><summary>Technical run details</summary><pre>{JSON.stringify({ expected: item.expected, actual: item.report }, null, 2)}</pre></details>
               </article>;
             })}</section>
