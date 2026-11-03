@@ -4,9 +4,20 @@
 
 Daymark is a task app with customization as a normal workspace destination. Use the stacked host identity **Daymark** with **A KEIR Demo** immediately below it. A person can open **Customizations** to see their saved setups, start a new change, or return to review and manage an existing one.
 
-The next iteration follows [Designing and managing customizations in Daymark](studio-on-demand-review.md). **New customization** opens the intended authoring entry. Discovery leads to working starting points. Free-form creation is visibly marked **To be implemented** until Daymark can create a draft from a description. The first available starting point is task advice, with real sample checks, exact approval, separate activation and recovery. Within a selected customization, conversation leads and review opens on demand. This distinction lets the collection grow as Daymark gains capabilities.
+**Current direction supersedes the delivered interaction below.** Both the running Studio and the [guided-example proposal](studio-guided-example.md) were rejected as unclear and complicated. A business user must be able to develop a customization through an agent that carries the application context and guides the process in simple, nontechnical language. A different example or more polished labels alone do not resolve this.
 
-## Current functional Daymark experience
+## Interaction requirements after the reset
+
+- The customer describes what they want, answers necessary business questions and judges concrete outcomes. The agent knows the scoped application context, available capabilities and process; it explains what is possible and what to do next. Do not ask the customer to operate discovery, compilation or simulation tools.
+- Keep one ordinary conversation and a contextual canvas. The canvas shows a recognizable application object, a proposed effect or a useful example when needed. It supports the conversation; it is not a permanent results dashboard or a second workflow to manage.
+- Explain checking in everyday language: “Let's try a few examples without changing your tasks, to check this does what you want.” Introduce each relevant situation and explain why it matters. Ask about expected outcomes where intent is unclear, then compare them with actual observations. Cover when the customization should act and when it should do nothing; never silently change expectations to make a check pass.
+- The agent handles authoring, bounded repair and check orchestration. No Start/Try/Review carousel, technical stage navigation or toolbar of pipeline operations. Failures and mismatches lead to a brief explanation and a meaningful choice, not an unexplained technical status.
+- Summarize the exact checked behavior for explicit human approval and a separate decision to turn it on. Keep these protections without requiring customers to learn revisions, artifacts or evidence identifiers. A changed proposal requires the applicable renewed review.
+- Apply the same interaction to live AI and one clearly labeled scripted example. Do not ask for secrets in chat or imply that scripted replies are generated. Preserve existing customizations and unsaved work. Unsupported actions remain honestly unavailable; illustrative task creation is not implemented native execution.
+
+Before another detailed prototype, settle this division of responsibility and show how the agent explains a scenario. Keep the [customer assistant guidance](https://github.com/rore/keir-core/blob/main/docs/agents/extension-assistant.md) and implemented prompt/tool orchestration aligned; prose alone does not implement the experience.
+
+## Delivered Daymark baseline awaiting interaction replacement
 
 Persistent Tasks and Customizations destinations share the owner context, sans-serif controls, mineral backgrounds and blue-black actions. The delivered Customizations overview distinguishes an untouched empty state from saved items and their In use, Off or Unavailable status, and exposes working Task advice discovery, setup/continue draft and open-existing paths. **New customization** starts a nonmutating conversation; description-based creation and its composer remain disabled with a visible accessible **To be implemented** explanation. A selected item's conversation presents choices and consequences inline. A separate status summary distinguishes In use, Off or Unavailable from Proposed and Approved states. Prepared read-only alternatives apply across the owner's projects.
 

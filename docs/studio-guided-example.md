@@ -1,5 +1,7 @@
 # Show Maya what her customization does
 
+**Rejected design — retained for reference.** The user found the interaction and visual design unclear and not self-explanatory. This proposal is not an implementation baseline; its production handoff below is superseded. The core Studio design roadmap owns the reset.
+
 [Walk through the clickable design](studio-guided-example.html). The standalone preview uses illustrative outcomes throughout, including the final task check. It can be opened directly without starting a service. The production handoff below identifies where real saved results must replace the illustration.
 
 Design proposal for the customer Studio. The example changes the advice Maya sees when she checks a saved task. The task itself stays open or completed. The conversation is scripted and works without an AI connection. Sample checks, approval, turning the change on and checking a real task use Daymark's existing behavior.
