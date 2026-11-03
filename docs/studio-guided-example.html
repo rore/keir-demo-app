@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daymark · Guided example design preview</title>
+<style>
+*{box-sizing:border-box}body{margin:0;color:#26353d;font:16px/1.5 "Segoe UI",Arial,sans-serif}button,summary{font:inherit;cursor:pointer}button{color:#253e4b;background:white;border:1px solid #acb8bb;border-radius:5px;padding:8px 14px}button:focus-visible,summary:focus-visible,[role=separator]:focus-visible{outline:3px solid #2376aa;outline-offset:2px}.primary{background:#253e4b;border-color:#253e4b;color:white;font-weight:600}.primary:hover{background:#172c36}.shell,.title{display:flex;align-items:center;justify-content:space-between;padding:12px clamp(16px,4vw,64px);gap:10px}.shell{border-bottom:1px solid #d5dddf}.brand{font-size:20px;font-weight:650;line-height:1.1}.brand small{display:block;font-size:10px;font-weight:500;letter-spacing:.08em}.title{background:#304651;color:white}.title small{font-size:12px}.title h1{font-size:23px;margin:0}.label{font-size:13px;font-weight:600;letter-spacing:.025em}.notice{padding:6px 16px;margin:0;background:#edf2f3;text-align:center;font-size:13px}.workspace{display:flex;min-height:calc(100dvh - 160px)}main{width:100%;padding:clamp(20px,4vw,62px);min-width:0}main>div{max-width:600px;margin:auto}h2{font-size:clamp(23px,2.3vw,32px);line-height:1.17;margin:8px 0 16px}h3{font-size:21px;margin:8px 0}p{margin:8px 0 16px}.past{font-size:15px;color:#4b616b;margin:12px 0 24px}.past div{margin:10px 0}.past strong{display:block}.split main{width:var(--chat,53%)}aside{flex:1;min-width:0;padding:clamp(20px,3vw,45px);background:#eef2f2}aside section{margin-top:18px;padding:20px;background:white;border:1px solid #c4cece;border-radius:7px}.status{display:inline-block;padding:2px 9px;background:#e6edef;border-radius:4px;font-size:13px}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:baseline;padding:10px 0;border-top:1px solid #dce3e3}.row b{font-weight:600}.row small{display:block}.divider{width:9px;cursor:col-resize;background:#d4dede;touch-action:none}.quiet{background:transparent;border:0;text-decoration:underline;padding:7px 0}.mobile{display:none}[hidden]{display:none!important}details{margin:14px 0;font-size:14px}ul{padding-left:20px}button+button{margin-left:8px}
+@media(max-width:730px){.shell,.title{padding:9px 16px}.workspace{display:block;min-height:0}.split main,main{width:100%;padding:24px 18px}.split aside{padding:20px 18px}.divider{display:none}.mobile{display:inline-block}.split.canvas main,.split:not(.canvas) aside{display:none}.notice{text-align:left}.past{margin:8px 0 16px}}
+</style>
+<header class="shell"><span class="brand">Daymark<small>A KEIR Demo</small></span><span>Maya</span></header>
+<header class="title"><div><small id="crumb">Customizations / Studio</small><h1 id="title">Task advice</h1></div><span class="label">Guided example</span></header>
+<p class="notice">Design preview · sample data only. No AI connection or changes to your app.</p>
+<div id="work" class="workspace"><main><div><details class="past" id="history" hidden><summary>Earlier conversation</summary><div id="log"></div></details>
+<span id="speaker" class="label">Studio</span><h2 id="heading" tabindex="-1"></h2><p id="line"></p>
+<button class="primary" id="next"></button> <button class="mobile" id="peek" hidden>View sample</button></div></main>
+<div id="divider" class="divider" role="separator" aria-label="Conversation width" aria-orientation="vertical" aria-valuemin="35" aria-valuemax="65" aria-valuenow="53" tabindex="0" hidden></div>
+<aside id="sheet" hidden><button id="back" class="quiet mobile">Back to conversation</button><div id="view"></div><button id="mobileNext" class="mobile primary"></button></aside></div>
+<script>
+const by=id=>document.getElementById(id);
+const turns=[
+ ['Try changing the advice on an open task','This example starts with Maya’s saved open tasks showing “Pending” when she checks their advice. Follow a short scripted conversation to try a different message.','Start the example'],
+ ['What would you like open tasks to say?','Choose the example reply below.','Show “Needs attention” when I check an open task'],
+ ['Here’s how that would look','The task stays open. Only the advice changes. A completed task would still say “Done”. Would you like to check a few examples?','Try it on sample tasks'],
+ ['The open sample showed “Needs attention”','The completed sample showed “Done”. You can see what we expected next to what the check showed.','Review this change'],
+ ['Is this the advice you want?','Open tasks across your projects would say “Needs attention” when you check them. Completed tasks would say “Done”. Approving keeps your current advice in use until you turn the change on.','Approve this change'],
+ ['Approved. Your current advice still says “Pending”.','Would you like to turn on the new advice for your tasks?','Turn on for my tasks'],
+ ['Your new advice is on','Open a task and check its advice to see what changed.','Open an example task'],
+ ['Gather material references','The spring collection','Check task advice'],
+ ['Gather material references','The spring collection','Restart the example']
+];
+const sampleTitle='<span class="label">Sample task</span><h3>Gather material references</h3><p><span class="status">Open</span> &nbsp; The spring collection</p>';
+const row=(a,b)=>'<div class="row"><span>'+a+'</span><b>'+b+'</b></div>';
+const task=(a,b)=>'<section>'+sampleTitle+row(a,b)+'</section>';
+const cases='<details><summary>See all checked examples (6)</summary><ul><li>Open task — Needs attention</li><li>Completed task — Done</li><li>Task missing — No advice</li><li>Task access denied — No advice</li><li>Advice permission denied — No advice</li><li>Task could not be read — No advice</li></ul></details>';
+const sheets={
+ 2:'<span class="label">Preview</span><section>'+sampleTitle+row('Advice today','Pending')+row('Proposed advice','Needs attention')+'</section>',
+ 3:'<span class="label">Sample check</span><section>'+sampleTitle+row('You wanted','Needs attention')+row('The check showed','Needs attention')+'</section><section><h3>Completed sample</h3>'+row('You wanted','Done')+row('The check showed','Done')+'</section>'+cases,
+ 4:'<span class="label">For Maya only</span><h3>Advice when I check a task</h3><section>'+row('Open task','Needs attention')+row('Completed task','Done')+'</section>'+cases,
+ 5:'<span class="label">Approved · waiting to turn on</span>'+task('Approved advice','Needs attention'),
+ 6:'<span class="label">In use for Maya</span>'+task('Advice on an open task','Needs attention')
+};
+let step=0;
+function render(){
+ const [heading,line,action]=turns[step],hasSheet=Boolean(sheets[step]),native=step>=7;
+ by('title').textContent=native?'Task details':'Task advice';by('crumb').textContent=native?'Tasks / The spring collection':'Customizations / Studio';
+ by('speaker').textContent=native?'Sample task · Open':'Studio';by('heading').textContent=heading;by('line').textContent=line;
+ if(step===8)by('line').innerHTML='The spring collection'+row('Task advice','Needs attention');
+ by('next').textContent=action;by('mobileNext').textContent=action;by('sheet').hidden=by('divider').hidden=by('peek').hidden=!hasSheet;
+ by('work').className='workspace'+(hasSheet?' split':'');by('view').innerHTML=sheets[step]||'';
+ by('history').hidden=step<2||native;by('history').open=false;by('log').textContent='';
+ for(const t of turns.slice(1,step)){const item=document.createElement('div');item.textContent='Studio: '+t[0]+' · Maya: '+t[2];by('log').append(item)}
+ if((step===3||step===4)&&matchMedia('(max-width:730px)').matches)by('work').classList.add('canvas');
+}
+function focusTurn(){(by('work').classList.contains('canvas')?by('back'):by('heading')).focus()}
+function advance(){step=(step+1)%turns.length;render();focusTurn()}
+by('next').onclick=by('mobileNext').onclick=advance;
+by('peek').onclick=()=>{by('work').classList.add('canvas');by('back').focus()};
+by('back').onclick=()=>{by('work').classList.remove('canvas');by('peek').focus()};
+function resize(value){const n=Math.min(65,Math.max(35,value));by('work').style.setProperty('--chat',n+'%');by('divider').setAttribute('aria-valuenow',Math.round(n))}
+by('divider').onpointerdown=e=>by('divider').setPointerCapture(e.pointerId);
+by('divider').onpointermove=e=>{if(by('divider').hasPointerCapture(e.pointerId))resize(100*e.clientX/by('work').clientWidth)};
+by('divider').onkeydown=e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();resize(Number(by('divider').getAttribute('aria-valuenow'))+(e.key==='ArrowLeft'?-2:2))}};
+render();
+</script></html>
