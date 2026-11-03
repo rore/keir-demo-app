@@ -34,6 +34,21 @@ Keep the existing Daymark shell, readable transcript and resizable desktop divid
 
 Name a collection row for the person’s goal, for example *Flag unfinished work*. Put what runs today before pending work: “In use · Changes in progress” means an earlier version still runs. “Approved · Ready to turn on” means the reviewed change is saved and awaits a decision. “Off” keeps a previously used item available to open again. When current behavior cannot be verified, say “Couldn’t check what’s in use” and offer a read-only retry. Names and badges never identify the backing item.
 
+### What belongs in the conversation, and when a sample opens
+
+Maya should be able to finish in the conversation. Studio asks about her work, explains what it tried, and leaves the one decision that needs her. A sample is something Studio shows her to answer a specific question. Its title should make sense when spoken aloud, for example **What a completed task would show**. The customer need not learn the term “canvas”.
+
+| Moment | What happens in the conversation | What happens to the sample |
+| --- | --- | --- |
+| Understanding the request | Ask only for the missing business choice. If Maya already supplied it, carry it forward. She can type a correction at any time. | Start closed. Knowing the current task or starting a check is no reason to open a panel. |
+| Explaining a result | Use a single reply. For example, “I tried a completed task because you wanted its advice to stay ‘Done’. It showed ‘Pending’. I’ll correct that and try the same example again.” A compact task excerpt can sit beneath this sentence. | If seeing the task would help, offer **Show the completed example** on that reply. Clicking it, or explicitly asking “Show me that task,” opens that exact saved example. Show task status, wanted advice and observed advice. Other cases are a secondary list inside this same view. No decision to approve a failing or unknown result. |
+| Deciding on checked behavior | After a verified match, put scope, consequence and one explicit decision together. For example, “When you check advice, unfinished tasks would say ‘Needs attention’ and completed tasks would say ‘Done’. This changes only your advice.” **Approve this change**. An optional **See the examples** belongs to this same turn. | Looking at examples never approves anything. No approval button inside the sample. Maya can stay in the conversation to correct the rule. Show approval only when the exact proposal and its saved evidence are eligible and available. Bind the human decision to that exact pair. |
+| Putting it into use | Replace the current action in place after confirmation. “Approved. ‘My usual advice’ is still on.” Offer the separate named switch when another item is active, otherwise **Turn on for my tasks**. After confirmed activation, show **On for your tasks** and a return action. | Opening history or an older sample preserves the original evidence. Clearly mark it as an earlier example. It cannot change the current decision. |
+
+**One route back.** On a wide screen the sample sits beside the originating exchange with a draggable divider. On a phone it takes the workspace with **Back to conversation**. Closing restores the invoking turn, focus, scroll position and any unsent text. New messages, reruns and delayed results never silently replace an open example. To inspect a different result, Maya selects its invitation. Changing owner or customization clears the previous item's sample.
+
+**Controls to remove from the ordinary path.** The existing journey offers **See sample tasks** and **See what will change** after the same check. From the sample, **Review this advice** then sends Maya back into a different review surface. Replace those routes with the single decision and optional example described above. Remove the extra checkbox that repeats assent when the explicit approval button itself records the exact decision. If a separate attestation is technically required, collect it once in that same turn, with its consequence stated. Keep **Manage**, history and technical inspection secondary. A user opening an ordinary sample should see the task before any report header, tabs, identifiers or explanatory boilerplate.
+
 ### From a request to a decision
 
 - **Discover the intent.** If Maya says “Help me notice work that needs attention,” use the available app context and ask the one question that changes the behavior, for example “What makes a task need attention for you?” The assistant discovers what this host can actually do. Only after Maya asks about checking an unfinished task should Studio explain where task advice appears. A guided example is labeled as scripted, keeps personal text separate, and never borrows or overwrites an unrelated saved item.
@@ -68,6 +83,8 @@ If several conversations belong to one item, returning to a specifically opened 
 | Desktop, phone and short landscape. Type with Enter, Shift+Enter and an input method. Open a sample, return, approve, turn on and go back to an unsaved native task. | Exactly one intentional send, newline and composition preserved. Focus follows the decision. Completion and return are visible together. Native edits survive. |
 
 Use isolated synthetic owners and a deliberately delayed or lost response for these checks. Judge the actual interaction as well as the stored state. A screenshot alone cannot establish which item received a turn or which version ran.
+
+For usability, give a fresh reviewer a goal in everyday language and a starting account, without naming controls. Ask them to change one behavior, find out what happened with a completed task, correct a wrong result, and decide when their old behavior should stop. Observe their first action and any backtracking. Can they say what the last reply established, why the sample opened, whether they are looking at old or current work, and whether anything is on yet? Repeat on a narrow screen and with a newer message arriving while they inspect an earlier sample. Record the specific hesitation, change the responsible interaction, and repeat that task on the corrected build.
 
 ## Historical single-item baseline
 
