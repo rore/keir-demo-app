@@ -161,6 +161,26 @@ test('example source and independent cases pass the real compiler/runtime with s
   t.after(() => db.close());
   const example = authoringExample(), initial = lifecycle.state('maya'), selection = initial.selection;
   let state = await lifecycle.compile('maya', { source: example.source, label: example.label, draftVersion: initial.draftVersion }, () => true);
+  const wrongConsumption = JSON.parse(example.cases[0]);
+  wrongConsumption.expect.consumption = { status: 'NOT_DISPLAYED' };
+  const wrongConsumptionCase = JSON.stringify(wrongConsumption);
+  state = await lifecycle.proposeScenarios('maya', { ...input(state), cases: [wrongConsumptionCase, ...example.cases.slice(1)] }, () => true);
+  const consumptionSuite = lifecycle.source('maya', state.draft.id).cases;
+  assert.deepEqual(consumptionSuite, [wrongConsumptionCase, ...example.cases.slice(1)]);
+  state = await lifecycle.simulate('maya', input(state), () => true);
+  const consumptionProof = lifecycle.evidence('maya', state.evidence.id);
+  assert.equal(consumptionProof.passed, false);
+  const consumerReport = consumptionProof.reports[0].report;
+  assert.deepEqual(consumerReport.native, { classification: 'COMPLETED' });
+  assert.deepEqual(consumerReport.consumption, { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' });
+  assert.deepEqual(consumerReport.mismatches.map(item => [item.stage, item.code]), [['CONSUMER', 'CONSUMPTION_MISMATCH']]);
+  const consumerSummary = evidenceSummary(consumptionProof, consumptionSuite).cases[0];
+  assert.equal(consumerSummary.expected.code, 'NEEDS_ATTENTION');
+  assert.deepEqual(consumerSummary.expected.consumption, { status: 'NOT_DISPLAYED' });
+  assert.deepEqual(consumerSummary.actual.consumption, { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' });
+  assert.deepEqual(lifecycle.source('maya', state.draft.id).cases, consumptionSuite);
+  await assert.rejects(Promise.resolve().then(() => lifecycle.approve('maya', { ...input(state), evidenceId: state.evidence.id }, () => true)), { status: 409 });
+
   const wrong = JSON.parse(example.cases[0]);
   wrong.expect.outcome.result.classification = 'DONE'; wrong.expect.consumption.code = 'DONE';
   const wrongCase = JSON.stringify(wrong);
@@ -210,6 +230,10 @@ test('mismatch receipts keep independent expectations and actual results without
   assert.equal(summary.cases[0].mismatches[0].code, 'VALUE_MISMATCH');
   assert.equal(summary.cases[0].taskStatus, 'OPEN');
   assert.equal(summary.truncated, false);
+  const changing = structuredClone(incorrect);
+  changing.stubs.push({ ...structuredClone(changing.stubs[0]), response: { kind: 'SUCCESS', value: { id: 'sample-task', status: 'COMPLETED' } } });
+  assert.equal(evidenceSummary(proof, [JSON.stringify(changing)]).cases[0].taskStatus, null,
+    'several synthetic reads must not be presented as one known task state');
   assert.equal(JSON.stringify(summary).includes('synthetic-key'), false);
   assert.equal(JSON.parse(original).expect.outcome.result.classification, 'DONE');
   const clipped = evidenceSummary({ reports: Array.from({ length: 9 }, (_, index) => ({ id: 'case-' + index, label: 'x'.repeat(140), expected: {},

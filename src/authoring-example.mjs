@@ -22,7 +22,8 @@ export function authoringExample() {
 }
 
 function situation(example) {
-  const response = example?.stubs?.find(stub => stub.capability === 'tasks.get')?.response;
+  const reads = example?.stubs?.filter(stub => stub.capability === 'tasks.get');
+  const response = reads?.length === 1 ? reads[0].response : undefined;
   return { taskStatus: response?.kind === 'SUCCESS' && ['OPEN', 'COMPLETED'].includes(response.value?.status) ? response.value.status : null };
 }
 
@@ -37,11 +38,12 @@ export function evidenceSummary(proof, originals) {
   const fields = (value, names) => Object.fromEntries(names.filter(name => typeof value?.[name] === 'string').map(name => [name, text(value[name])]));
   const examples = originals.map(original => JSON.parse(original));
   const cases = proof.reports.slice(0, 8).map(item => {
+    const example = examples.find(example => example.id === item.id);
     if (item.report.mismatches.length > 8) truncated = true;
     return {
       id: text(item.id), label: text(item.label), status: text(item.report.status),
-      ...situation(examples.find(example => example.id === item.id)),
-      expected: fields(item.expected, ['classification', 'code']),
+      ...situation(example),
+      expected: { ...fields(item.expected, ['classification', 'code']), consumption: fields(example?.expect?.consumption, ['status', 'code']) },
       actual: { native: fields(item.report.native, ['classification', 'code']), consumption: fields(item.report.consumption, ['status', 'code']) },
       mismatches: item.report.mismatches.slice(0, 8).map(item => ({ ...fields(item, ['stage', 'code']),
         ...(Number.isSafeInteger(item.ordinal) && item.ordinal >= 0 ? { ordinal: item.ordinal } : {}) })),
