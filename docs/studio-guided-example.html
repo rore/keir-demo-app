@@ -19,7 +19,7 @@ body{height:100dvh;display:flex;flex-direction:column}.shell,.title,.notice{flex
 <script>
 const by=id=>document.getElementById(id);
 const turns=[
- ['Let’s try changing your task advice.','In this example, checking an open task shows “Pending”.','Start the example'],
+ ['Let’s try changing your task advice.','Open a task and look under Task advice. In this example, choosing “Check task advice” there shows “Pending”.','Start the example'],
  ['What would you like open tasks to say instead?','','Show “Needs attention” when I check an open task'],
  ['Here’s how that would look.','The task stays open. Only the advice changes. A completed task would still say “Done”. Would you like to check a few examples?','Try it on sample tasks'],
  ['The open sample showed “Needs attention”.','The completed sample showed “Done”. You can see what we expected next to what the check showed.','Review this change'],
@@ -51,7 +51,7 @@ function render(){
  by('title').textContent=native?'Task details':'Task advice';by('crumb').textContent=native?'Tasks / The spring collection':'Customizations / Studio';
  by('heading').textContent=native?heading:'Conversation';
  by('hint').textContent=native?'Sample task · Open · The spring collection':'Follow the conversation using the suggested replies.';
- if(native){by('log').replaceChildren();if(step===8)by('log').innerHTML=row('Task advice','Needs attention')}
+ if(native){by('log').innerHTML='<h3>Task advice</h3>';if(step===8)by('log').insertAdjacentHTML('beforeend','<p role="status">Task advice: <strong>Needs attention</strong></p>')}
  else{
    if(step===0)by('log').replaceChildren();
    else addTurn('Maya',turns[step-1][2]);
