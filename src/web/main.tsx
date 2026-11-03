@@ -22,6 +22,7 @@ class ApiError extends Error {
     message: string,
     public status: number,
     public diagnostics?: unknown[],
+    public code?: string,
   ) {
     super(message);
   }
@@ -51,6 +52,7 @@ async function api<T>(
       data.message ?? "The request could not be completed.",
       response.status,
       Array.isArray(data.diagnostics) ? data.diagnostics : undefined,
+      typeof data.code === "string" ? data.code : undefined,
     );
   return data;
 }

@@ -69,7 +69,7 @@ type Props = {
 const advice = (code?: string) => ({ PENDING: "Pending", NEEDS_ATTENTION: "Needs attention", DONE: "Done" })[code ?? ""] ?? code;
 const expectedAdvice = (value: Outcome) => value.classification === "COMPLETED" ? advice(value.code) : "No advice";
 
-function AssistantSetup({ request, close, saved }: { request: Props["request"]; close: (uncertain: boolean) => void; saved: (value: Setup) => void }) {
+function AssistantSetup({ request, close, saved, beginSave }: { request: Props["request"]; close: (uncertain: boolean) => void; saved: (value: Setup) => void; beginSave: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const key = useRef<HTMLInputElement>(null);
   const lifetime = useRef(new AbortController());
@@ -85,8 +85,8 @@ function AssistantSetup({ request, close, saved }: { request: Props["request"]; 
   const [waiting, setWaiting] = useState(false);
   const [reading, setReading] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
-  const callbacks = useRef({ request, close, saved });
-  callbacks.current = { request, close, saved };
+  const callbacks = useRef({ request, close, saved, beginSave });
+  callbacks.current = { request, close, saved, beginSave };
   async function read(initial = false) {
     setReading(true); setReadFailed(false);
     try {
@@ -118,6 +118,7 @@ function AssistantSetup({ request, close, saved }: { request: Props["request"]; 
     const micros = Number(whole) * 1_000_000 + Number(fraction.padEnd(6, "0"));
     if (!/^\d+(?:\.\d{1,6})?$/.test(maxUsd) || !Number.isSafeInteger(micros) || micros <= 0) return reject("allowance", "Enter a positive USD allowance with up to six decimal places.");
     saving.current = true; setWaiting(true);
+    callbacks.current.beginSave();
     const apiKey = key.current.value;
     key.current.value = "";
     try {
@@ -126,8 +127,11 @@ function AssistantSetup({ request, close, saved }: { request: Props["request"]; 
     } catch (failure) {
       if (!alive.current) return;
       const status = (failure as { status?: number })?.status;
+      const code = (failure as { code?: string })?.code;
       uncertain.current ||= ![400, 401, 403, 409, 413, 415, 503].includes(status ?? 0);
-      setError(status === 409 ? "Settings were not saved. Wait for running authoring to settle and check that the total allowance covers prior reservations. Re-enter the key before explicitly saving again."
+      setError(status === 409 ? code === "AI_BUSY" ? "Settings were not saved. Authoring is still running or stopping. Wait for it to settle, then re-enter the key before explicitly saving again."
+        : code === "SPEND_LIMIT" ? "Settings were not saved. The total allowance must cover previous reservations. Re-enter the key before explicitly saving a larger total allowance."
+        : "Settings were not saved. Wait for running authoring to settle and check that the total allowance covers prior reservations. Re-enter the key before explicitly saving again."
         : status === 401 || status === 403 ? "The session or host check rejected these settings. Existing settings remain unchanged."
         : status === 400 || status === 413 || status === 415 ? "These settings were rejected. Check the supported service, model and allowance, then re-enter the key."
         : status === 503 ? "Settings could not be saved. Existing settings remain unchanged. Re-enter the key before explicitly trying again."
@@ -176,6 +180,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupNotice, setSetupNotice] = useState("");
   const setupInvoker = useRef<HTMLElement | null>(null);
+  const setupGeneration = useRef(0);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [state, setState] = useState<State | null>(null);
   const [trusted, setTrusted] = useState(false);
@@ -420,8 +425,18 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           await adoptConversation(accepted.conversation, turn, input.conversationId === null ? input.operationId : undefined);
           if (!mounted.current || serial.current !== turn) return;
           setPendingTurn(null); setText(value => value === input.text ? "" : value); setObservationPaused(false);
-        } catch {
+        } catch (failure) {
           if (!mounted.current || serial.current !== turn) return;
+          if ((failure as { status?: number })?.status === 409 && (failure as { code?: string })?.code === "CONFIG_CHANGED") {
+            setPendingTurn(null); setRetryTurn(false); setAuthoringError(authoringReason("CONFIG_CHANGED"));
+            try {
+              const index = await callbacks.current.request<Authoring>("authoring", "GET", undefined, authoringLifetime.current.signal);
+              if (mounted.current && serial.current === turn) setAuthoring(index);
+            } catch {
+              if (mounted.current && serial.current === turn) setAuthoringError(authoringReason("CONFIG_CHANGED") + " Current status could not be checked; use Check authoring status.");
+            }
+            return;
+          }
           await recoverTurn(input, turn);
         }
       }
@@ -611,19 +626,20 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const selectedDraft = !!state?.selection.eligible && state.selection.revision?.id === state.draft?.id;
   function view(next: "advice" | "results" | "review") { readingRevision.current++; setCanvasView(next); }
   function openSetup() {
+    ++setupGeneration.current;
     setupInvoker.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSetupOpen(true);
   }
   function closeSetup(uncertain = false) {
+    const generation = ++setupGeneration.current;
     setSetupOpen(false);
-    void loadAuthoring(conversation?.id ?? null);
     if (uncertain) {
       setSetupNotice("Saving could not be confirmed. Checking current settings without resubmitting; no message will be sent.");
       void callbacks.current.request<Setup>("authoring/setup", "GET", undefined, authoringLifetime.current.signal).then(next => {
-        if (!mounted.current) return;
+        if (!mounted.current || setupGeneration.current !== generation) return;
         setAuthoring(old => old ? { ...old, availability: next.availability } : old);
         setSetupNotice("Current settings checked. The interrupted save's key replacement cannot be confirmed. Open Configure to explicitly save again if needed.");
-      }).catch(() => { if (mounted.current) setSetupNotice("Settings could not be checked. Open Configure to retry status before saving again."); });
+      }).catch(() => { if (mounted.current && setupGeneration.current === generation) setSetupNotice("Settings could not be checked. Open Configure to retry status before saving again."); });
     }
     requestAnimationFrame(() => {
       const invoker = setupInvoker.current;
@@ -804,7 +820,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       </section>
       </section>
     </div>
-    {setupOpen && <AssistantSetup request={request} close={closeSetup} saved={next => {
+    {setupOpen && <AssistantSetup request={request} close={closeSetup} beginSave={() => { ++setupGeneration.current; }} saved={next => {
       setAuthoring(old => old ? { ...old, availability: next.availability } : old);
       setSetupNotice("Settings saved. Send a message when you’re ready.");
       if (reviewOpen) closeReview();

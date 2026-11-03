@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 // Offline native provider responses; every application/compiler/lifecycle operation is real.
@@ -14,16 +14,46 @@ const send = async (page, text) => {
 for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
   test(`offline ${provider} native loop reaches real exact human review and Use (${width}px)`, async ({ page }) => {
     test.setTimeout(60_000);
-    const fixture = await startAuthoringFixture({ provider });
+    const fixture = await startAuthoringFixture({ provider, unconfigured: provider === 'openai' });
     try {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       await page.goto(fixture.origin);
       await page.getByRole('button', { name: 'Continue as Maya' }).click();
+      if (provider === 'openai') {
+        await page.getByRole('button', { name: 'Customizations', exact: true }).click();
+        await page.getByRole('button', { name: 'New customization', exact: true }).click();
+        await expect(authoring(page)).toContainText('AI authoring is not configured.');
+        const setupRequests = [];
+        page.on('request', request => { if (new URL(request.url()).pathname === '/api/authoring/setup' && request.method() === 'POST') setupRequests.push(request); });
+        await studio(page).getByRole('button', { name: 'Configure', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Set up the assistant', exact: true });
+        const syntheticKey = 'synthetic-real-popup-key';
+        await dialog.getByLabel('Service', { exact: true }).selectOption(provider);
+        await dialog.getByLabel('API key', { exact: true }).fill(syntheticKey);
+        await dialog.getByLabel('Shared allowance (USD)', { exact: true }).fill('3');
+        await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
+        await expect(dialog).toHaveCount(0);
+        await expect(authoring(page)).toContainText('Assistant configured');
+        expect(setupRequests).toHaveLength(1);
+        expect(fixture.requests).toEqual([]);
+        const stored = JSON.parse(readFileSync(join(fixture.directory, 'ai-authoring.json'), 'utf8'));
+        expect(stored).toMatchObject({ provider, model: 'gpt-5.6-terra', apiKey: syntheticKey, maxUsd: '3' });
+        const projection = await page.evaluate(async () => {
+          const session = await (await fetch('/api/session')).json();
+          return (await fetch('/api/authoring/setup', { headers: { 'X-Session-Context': session.contextToken } })).json();
+        });
+        expect(projection.configuration).toMatchObject({ status: 'ready', source: 'local', provider, model: 'gpt-5.6-terra', maxUsd: '3' });
+        expect(JSON.stringify(projection)).not.toContain(syntheticKey);
+        expect(await page.evaluate(() => [...Object.values(localStorage), ...Object.values(sessionStorage)].join('\n'))).not.toContain(syntheticKey);
+        await page.reload();
+        expect(fixture.requests).toEqual([]);
+      }
       await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
       await page.getByLabel('Task title', { exact: true }).fill('Unsaved native title during offline authoring');
       await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
       const ui = studio(page), panel = authoring(page);
       await expect(panel.getByText('Assistant configured', { exact: true })).toBeVisible();
+      expect(fixture.requests).toEqual([]);
       await expect(panel).not.toContainText(provider);
       const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya'").get();
       await panel.getByRole('button', { name: 'Details', exact: true }).click();
@@ -117,6 +147,38 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect((await read('authoring')).current.review.evidenceId).toBe(conversation.review.evidenceId);
       expect((await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
       expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(2);
+      if (provider === 'openai') {
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+        await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+        const intended = 'Refine the saved advice after replacing assistant settings.';
+        await ui.getByLabel('Message to Studio', { exact: true }).fill(intended);
+        await panel.getByRole('button', { name: 'Details', exact: true }).click();
+        await ui.getByRole('button', { name: 'Configure', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Set up the assistant', exact: true });
+        await dialog.getByLabel('API key', { exact: true }).fill('synthetic-replacement-key');
+        await dialog.getByLabel('Shared allowance (USD)', { exact: true }).fill('6');
+        const held = fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
+        await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
+        await expect(dialog).toHaveCount(0);
+        await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue(intended);
+        expect(fixture.requests.length).toBe(callCount);
+        expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(held);
+        await send(page, intended);
+        await expect(panel.getByRole('alert')).toContainText('Start a new conversation');
+        await expect(panel.getByRole('button', { name: 'New conversation', exact: true })).toBeEnabled();
+        await expect(panel.getByRole('button', { name: 'Retry submitted request', exact: true })).toHaveCount(0);
+        await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue(intended);
+        await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible();
+        expect((await read('authoring')).current.id).toBe(conversation.id);
+        expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(3);
+        await panel.getByRole('button', { name: 'New conversation', exact: true }).click();
+        await send(page, intended);
+        await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
+        expect(fixture.requests.slice(callCount).map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+        expect((await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
+        expect(turns).toBe(4);
+      }
     } finally { await fixture.close(); }
   });
 }

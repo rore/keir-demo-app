@@ -324,9 +324,16 @@ test('mount, reload, readback and New conversation never submit; saved messages 
 
 for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test(`an offered review preserves its actual evidence and host eligibility (${eligible}, ${width}px)`, async ({ page, demo }) => {
   await page.setViewportSize({ width, height: width === 683 ? 384 : 1000 });
-  const guide = readFileSync(new URL('../../docs/authored-extension-drafts.md', import.meta.url), 'utf8');
-  const source = guide.match(/```yaml\r?\n([\s\S]*?)\r?\n```/)[1];
-  const example = guide.match(/```json\r?\n([\s\S]*?)\r?\n```/)[1];
+  const source = JSON.stringify({ language: 'keir/v0', domain: { id: 'demo.tasks', version: '1',
+    fingerprint: JSON.parse(readFileSync(new URL('../../extensions/task-read/selection.json', import.meta.url))).modelDigest },
+    entrypoint: 'ClassifyTask', name: 'offered-task-advice',
+    steps: [{ id: 'readTask', call: 'tasks.get', args: { taskId: { cel: 'input.taskId' } } }],
+    return: { record: { classification: { cel: 'readTask.status == "COMPLETED" ? "PENDING" : "DONE"' } } } });
+  const example = JSON.stringify({ format: 'keir-read-simulation/1', id: 'open-task', input: { taskId: 'sample-task' },
+    stubs: [{ step: 'readTask', capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' },
+      response: { kind: 'SUCCESS', value: { id: 'sample-task', status: 'OPEN' } } }],
+    expect: { calls: [{ step: 'readTask', capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' } }],
+      outcome: { classification: 'COMPLETED', result: { classification: 'DONE' } }, consumption: { status: 'DISPLAYED', code: 'DONE' } } });
   await page.goto(demo.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
   await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');

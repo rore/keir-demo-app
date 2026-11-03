@@ -83,7 +83,7 @@ async function unusedLoopbackPort() {
 }
 
 // Synthetic offline transport only; app, compiler, lifecycle and simulator are real.
-export async function startAuthoringFixture({ provider = 'openai', port, staticRoot = fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
+export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, staticRoot = fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
@@ -99,9 +99,9 @@ export async function startAuthoringFixture({ provider = 'openai', port, staticR
   });
   cases.push(...simulationCases('pending').filter(item => ['missing', 'business-denied', 'transient'].includes(item.id)).map(item => item.bytes.toString('utf8')));
   const metadata = Object.freeze({ synthetic: true, offline: true, compatibility: 'unqualified', provider, question, offerText, source, cases: Object.freeze(cases) });
-  const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
+  const config = readAuthoringConfig(unconfigured ? {} : { KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
-  assert.equal(config.status, 'ready');
+  assert.equal(config.status, unconfigured ? 'unavailable' : 'ready');
   const prefix = join(resolve(tmpdir()), 'keir-authoring-offline-');
   const directory = await mkdtemp(prefix), origin = `http://127.0.0.1:${port}`, requests = [];
   let app, db, release, closing;
@@ -123,7 +123,8 @@ export async function startAuthoringFixture({ provider = 'openai', port, staticR
     release = acquireDataLock(directory);
     db = openData(join(directory, 'app.sqlite'));
     const compiler = createCompiler({ modelBytes: loadHost().dcmBytes, javaExecutable: process.env.KEIR_JAVA_BIN });
-    app = await createApp({ db, origin, staticRoot: resolve(staticRoot), compiler, authoring: { config, fetchImpl: scriptedTransport(provider, source, cases, requests) } });
+    app = await createApp({ db, origin, staticRoot: resolve(staticRoot), compiler,
+      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, source, cases, requests) } });
     await app.listen({ host: '127.0.0.1', port });
     return { app, db, origin, directory, metadata, requests, close };
   } catch (error) { await close(); throw error; }

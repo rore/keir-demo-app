@@ -1,5 +1,5 @@
 import { test as base, expect } from '@playwright/test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
@@ -123,6 +123,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(model.locator('option')).toHaveText(['claude-haiku-5-5']);
     await service.selectOption('openai');
     await expect(model.locator('option')).toHaveText(['gpt-5.6-terra']);
+    mkdirSync('build/screens', { recursive: true });
+    await page.screenshot({ path: join('build/screens', `assistant-setup-${viewport.width}x${viewport.height}.png`), fullPage: true });
     const key = dialog.getByLabel('API key', { exact: true }), allowance = dialog.getByLabel('Shared allowance (USD)', { exact: true });
     await expect(key).toHaveAttribute('type', 'password');
     await expect(key).toHaveAttribute('autocomplete', 'off');
@@ -324,4 +326,51 @@ test('an owner switch fences a pending setup response and clears the old key fro
     expect(calls.setupPosts).toHaveLength(1);
     expect(calls.turns).toHaveLength(0);
   } finally { release?.(); await other.close(); }
+});
+
+test('a held old setup recovery read cannot overwrite a reopened successful save', async ({ page, demo }) => {
+  let releaseSave, releaseRead, arrivedSave, arrivedRead;
+  const posted = new Promise(resolve => { arrivedSave = resolve; });
+  const reading = new Promise(resolve => { arrivedRead = resolve; });
+  const { calls } = await scriptSetup(page, {
+    onSetupSave: async (route, body, calls, state) => {
+      if (calls.setupPosts.length === 1) {
+        arrivedSave(); await new Promise(resolve => { releaseSave = resolve; });
+        try { await json(route, setupDto()); } catch { /* The first component was deliberately closed. */ }
+        return;
+      }
+      state.projection = setupDto(body); state.availability = state.projection.availability;
+      return json(route, state.projection);
+    },
+    onSetupRead: async calls => {
+      if (calls.setupReads === 2) {
+        arrivedRead(); await new Promise(resolve => { releaseRead = resolve; });
+        return setupDto();
+      }
+      return null;
+    },
+  });
+  await enterStudio(page, demo.origin);
+  const ui = studio(page), first = await openConfigure(page);
+  try {
+    await first.getByLabel('API key', { exact: true }).fill('synthetic-first-held-key');
+    await first.getByLabel('Shared allowance (USD)', { exact: true }).fill('1');
+    await first.getByRole('button', { name: 'Save settings', exact: true }).click();
+    await posted;
+    await first.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await reading;
+    const next = await openConfigure(page);
+    await next.getByLabel('API key', { exact: true }).fill('synthetic-newer-saved-key');
+    await next.getByLabel('Shared allowance (USD)', { exact: true }).fill('2');
+    await next.getByRole('button', { name: 'Save settings', exact: true }).click();
+    const saved = ui.getByRole('status').filter({ hasText: 'Settings saved. Send a message when you’re ready.' });
+    await expect(saved).toBeVisible();
+    await expect(authoring(page)).toContainText('Assistant configured');
+    const delivered = page.waitForResponse(response => new URL(response.url()).pathname === '/api/authoring/setup' && response.request().method() === 'GET');
+    releaseRead(); await (await delivered).finished();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(saved).toBeVisible();
+    await expect(authoring(page)).toContainText('Assistant configured');
+    expect(calls.setupPosts).toHaveLength(2); expect(calls.turns).toHaveLength(0);
+  } finally { releaseSave?.(); releaseRead?.(); }
 });
