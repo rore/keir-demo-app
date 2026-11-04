@@ -26,9 +26,10 @@ async function signIn(page, origin) {
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
 }
-async function api(page, origin, path) {
+async function api(page, origin, path, body) {
   const session = await (await page.request.get(origin + '/api/session')).json();
-  const response = await page.request.get(origin + '/api/' + path, { headers: { origin, 'x-session-context': session.contextToken } });
+  const response = await page.request.fetch(origin + '/api/' + path, { method: body === undefined ? 'GET' : 'POST',
+    headers: { origin, 'x-session-context': session.contextToken }, ...(body === undefined ? {} : { data: body }) });
   expect(response.ok(), await response.text()).toBe(true);
   return response.json();
 }
@@ -197,6 +198,173 @@ test('Details discovers displaced history, sample runs, all revisions and only e
   expect(calls).toContain(`/api/extensions/${demo.extensionId}/history?before=11`);
   expect(calls).toContain(`/api/extensions/${demo.extensionId}/evidence?before=evidence-older`);
   expect(calls).toContain(`/api/extensions/${demo.extensionId}/restore-targets?before=restore-older`);
+});
+
+test('a failed earlier page retries locally at the same cursor without disturbing current work or the open canvas', async ({ page, demo }, testInfo) => {
+  await signIn(page, demo.origin);
+  const saved = await api(page, demo.origin, `extensions/${demo.extensionId}`);
+  const recent = Array.from({ length: 20 }, (_, index) => message(`recent-${index}`, `Retained current message ${index}`));
+  const current = { ...discussion(saved, 'retry-history', 1, recent), messagesBefore: 'retry-exact-page' };
+  const pages = [], turns = [];
+  await page.route('**/api/authoring**', route => {
+    const url = new URL(route.request().url());
+    if (route.request().method() !== 'GET') { turns.push(route.request().url()); return reply(route, {}, 500); }
+    if (url.pathname.endsWith('/messages')) {
+      pages.push(url.searchParams.get('before'));
+      if (pages.length === 1) return reply(route, { message: 'Temporarily unavailable' }, 503);
+      return reply(route, { messages: [message('earlier', 'Recovered earlier message'), recent[0]], next: 'next-older-page' });
+    }
+    if (url.pathname === '/api/authoring') return reply(route, { availability: available, current, conversations: [summary(current)], next: null });
+    return reply(route, current);
+  });
+  await openItem(page, demo.extensionId);
+  const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+  await expect(ui.getByText('Retained current message 0', { exact: true })).toBeVisible();
+  await composer.fill('Keep this unsent correction');
+  await details(page);
+  const log = ui.getByRole('log', { name: 'Studio conversation', exact: true });
+  await log.evaluate(element => { element.scrollTop = 0; });
+  const currentMessage = ui.getByText('Retained current message 0', { exact: true });
+  const readingTop = (await currentMessage.boundingBox()).y;
+  await ui.getByRole('button', { name: 'Load earlier messages', exact: true }).click();
+  const retry = ui.getByRole('button', { name: 'Retry earlier messages', exact: true });
+  await expect(retry).toBeFocused();
+  await expect(log.getByText('Couldn’t load earlier messages.', { exact: true })).toBeVisible();
+  await expect(ui.getByRole('alert')).toHaveCount(0);
+  await expect(ui.getByText(/^Retained current message /)).toHaveCount(20);
+  expect(Math.abs((await currentMessage.boundingBox()).y - readingTop)).toBeLessThan(3);
+  // Older history failed; the current discussion, unsent correction and open Details stay available.
+  await page.screenshot({ path: testInfo.outputPath('earlier-messages-load-error.png'), fullPage: true });
+  await retry.click();
+  await expect(ui.getByText('Recovered earlier message', { exact: true })).toBeVisible();
+  await expect(ui.getByText('Retained current message 0', { exact: true })).toHaveCount(1);
+  await expect(ui.getByText('Couldn’t load earlier messages.', { exact: true })).toHaveCount(0);
+  expect(pages).toEqual(['retry-exact-page', 'retry-exact-page']);
+  expect(Math.abs((await currentMessage.boundingBox()).y - readingTop)).toBeLessThan(3);
+  await expect(composer).toHaveValue('Keep this unsent correction');
+  await expect(ui.locator('.rs-tools')).toHaveJSProperty('open', true);
+  await expect(ui.locator('.rs-preview')).toBeVisible();
+  await expect(ui.locator('.sr-only[role="status"]')).toHaveText('Earlier messages loaded.');
+  expect(new URL(page.url()).hash).toContain('conversation=retry-history');
+  expect(turns).toEqual([]);
+});
+
+for (const status of [200, 503]) test(`a late earlier-page ${status} response cannot enter another owner's Studio`, async ({ page, demo }) => {
+  await signIn(page, demo.origin);
+  const saved = await api(page, demo.origin, `extensions/${demo.extensionId}`);
+  const current = { ...discussion(saved, 'owner-private-history'), messagesBefore: 'private-page' };
+  let release, entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  await page.route('**/api/authoring**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/messages')) {
+      entered(); await new Promise(resolve => { release = resolve; });
+      return reply(route, status === 200 ? { messages: [message('private', 'Late owner-private earlier message')], next: null } : { message: 'Late private failure' }, status);
+    }
+    if (url.pathname === '/api/authoring') return reply(route, { availability: available,
+      current: url.searchParams.get('extensionId') === demo.extensionId ? current : null, conversations: [], next: null });
+    return reply(route, current);
+  });
+  try {
+    await openItem(page, demo.extensionId);
+    await studio(page).getByLabel('Message to Studio', { exact: true }).fill('Private unsent correction');
+    await studio(page).getByRole('button', { name: 'Load earlier messages', exact: true }).click();
+    await held;
+    await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+    const leoId = demo.db.prepare('SELECT id FROM extensions WHERE owner_id=?').get('leo').id;
+    await openItem(page, leoId);
+    release();
+    await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toHaveValue('');
+    await expect(studio(page).getByText('Late owner-private earlier message', { exact: true })).toHaveCount(0);
+    await expect(studio(page).getByText('Couldn’t load earlier messages.', { exact: true })).toHaveCount(0);
+    await expect(studio(page).getByRole('button', { name: 'Retry earlier messages', exact: true })).toHaveCount(0);
+  } finally { release?.(); }
+});
+
+for (const approved of [false, true]) test(`a current context boundary owns recovery until its explicit continuation settles (${approved ? 'approved' : 'eligible'} proof)`, async ({ page, demo }, testInfo) => {
+  await signIn(page, demo.origin);
+  let saved = await api(page, demo.origin, 'extensions', { operationId: crypto.randomUUID(), source: demo.metadata.source, label: 'Retained checked proposal' });
+  const extensionId = saved.extension.id;
+  saved = await api(page, demo.origin, `extensions/${extensionId}/scenarios`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion, cases: demo.metadata.cases });
+  saved = await api(page, demo.origin, `extensions/${extensionId}/simulate`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
+  if (approved) saved = await api(page, demo.origin, `extensions/${extensionId}/approve`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion, evidenceId: saved.evidence.id });
+  const before = await api(page, demo.origin, `extensions/${extensionId}`);
+  const review = { revisionId: saved.draft.id, draftVersion: saved.draftVersion, suiteDigest: saved.draft.suiteDigest, evidenceId: saved.evidence.id, eligible: true };
+  const archived = { ...discussion(saved, 'archived-context-boundary'), status: 'BLOCKED', code: 'CONTEXT_LIMIT', review };
+  let current = { ...discussion(saved, 'context-boundary'), status: 'BLOCKED', code: 'CONTEXT_LIMIT', review };
+  const turns = [], recoveries = [], mutations = [];
+  let releaseSettled, pollEntered, failedPoll = false;
+  const heldPoll = new Promise(resolve => { pollEntered = resolve; });
+  page.on('request', request => { if (request.method() === 'POST' && /\/(approve|activate)$/.test(new URL(request.url()).pathname)) mutations.push(request.url()); });
+  await page.route('**/api/authoring**', async route => {
+    const request = route.request(), url = new URL(request.url());
+    if (url.pathname === '/api/authoring') return reply(route, { availability: available, current, conversations: [summary(current), summary(archived)], next: null });
+    if (url.pathname.endsWith('/archived-context-boundary')) return reply(route, archived);
+    if (url.pathname.endsWith('/turn')) {
+      const body = request.postDataJSON(); turns.push(body);
+      current = { ...current, version: 2, status: 'RUNNING', code: null,
+        operation: { id: body.operationId, version: 2, runId: 'continued-context-run' }, runId: 'continued-context-run' };
+      if (approved) return route.abort('failed');
+      return reply(route, { operation: current.operation, conversation: current }, 202);
+    }
+    if (url.pathname.endsWith('/recover')) {
+      recoveries.push(request.postDataJSON());
+      const originalOperation = current.operation;
+      pollEntered(); await new Promise(resolve => { releaseSettled = resolve; });
+      current = { ...current, version: 3, status: 'REVIEW_AVAILABLE', code: 'CONTEXT_LIMIT',
+        operation: { id: 'later-settled-operation', version: 3, runId: 'later-settled-run' }, runId: 'later-settled-run',
+        messages: [message('settled-later', 'A later turn settled in the same discussion.')] };
+      return reply(route, { operation: originalOperation, conversation: current });
+    }
+    if (current.status === 'RUNNING') {
+      if (!failedPoll) { failedPoll = true; return reply(route, { message: 'Status temporarily unavailable' }, 503); }
+      pollEntered(); await new Promise(resolve => { releaseSettled = resolve; });
+      current = { ...current, status: 'REVIEW_AVAILABLE', code: 'CONTEXT_LIMIT', messages: [message('settled', 'The explicit continuation settled.')] };
+    }
+    return reply(route, current);
+  });
+  try {
+    await openItem(page, extensionId);
+    const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+    const recovery = ui.getByRole('article', { name: 'Continue saved work', exact: true });
+    await expect(recovery).toHaveCount(1);
+    await expect(recovery.getByRole('button', { name: 'Continue here from saved work', exact: true })).toBeEnabled();
+    await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
+    await expect(ui.getByRole('button', { name: 'Continue current changes in a new conversation', exact: true })).toHaveCount(0);
+    await composer.fill('Keep this independent unsent correction');
+    expect(turns).toEqual([]);
+    // Saved approval remains intact; this unfinished discussion offers only explicit continuation.
+    if (approved) await page.screenshot({ path: testInfo.outputPath('context-limit-recovery-approved-proof.png'), fullPage: true });
+    await recovery.getByRole('button', { name: 'Continue here from saved work', exact: true }).click();
+    if (!approved) {
+      await expect(ui.getByRole('alert')).toContainText('Authoring progress could not be checked.');
+      await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
+      await ui.getByRole('button', { name: 'Check authoring status', exact: true }).click();
+    }
+    await heldPoll;
+    await expect(recovery).toHaveCount(1);
+    await expect(recovery.getByRole('button', { name: 'Continue here from saved work', exact: true })).toBeDisabled();
+    await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
+    expect(turns).toEqual([{ target: { kind: 'resume', extensionId }, conversationId: 'context-boundary', operationId: expect.any(String),
+      text: 'Continue from saved work. Ask before changing any independent examples.', expectedVersion: 1, expectedDraftVersion: before.draftVersion }]);
+    releaseSettled();
+    const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
+    await expect(decision).toBeVisible();
+    await expect(recovery).toHaveCount(0);
+    await expect(decision.getByRole('button', { name: approved ? 'Switch to this customization' : 'Approve this change', exact: true })).toBeEnabled();
+    if (approved) await page.screenshot({ path: testInfo.outputPath('context-limit-settled-decision.png'), fullPage: true });
+    await expect(composer).toHaveValue('Keep this independent unsent correction');
+    expect(recoveries).toEqual(approved ? [turns[0]] : []);
+    expect(turns).toHaveLength(1);
+    expect(await api(page, demo.origin, `extensions/${extensionId}`)).toEqual(before);
+    expect(mutations).toEqual([]);
+    expect(demo.requests).toEqual([]);
+    await details(page);
+    await ui.getByLabel('Saved authoring conversation', { exact: true }).selectOption('archived-context-boundary');
+    await expect(recovery).toHaveCount(0);
+    await expect(decision).toHaveCount(0);
+    await expect(ui.getByText('Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.', { exact: true })).toBeVisible();
+  } finally { releaseSettled?.(); }
 });
 
 test('a later status projection reopens a skipped message gap and inserts it in server order', async ({ page, demo }) => {

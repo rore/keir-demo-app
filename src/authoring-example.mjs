@@ -8,6 +8,8 @@ export const businessContext = Object.freeze({
   unavailable: 'Creating or editing tasks, follow-ups, project-based rules, dates, notes and background automation are not available to this assistant.',
   checking: 'Try synthetic examples without changing tasks. Include open, completed and unavailable tasks; ask what should happen when intent is unclear.',
   decisions: 'The person decides the intended behavior and expectations. Explain actual differences. Human approval and turning on the exact checked change are separate decisions.',
+  currentUse: 'currentUse describes the selected version separately from currentProposal, which is the draft. Only checkedSummary supports describing what the selected version did in its synthetic examples; it does not describe live task observations or untested inputs. Preserve its scope and truncation. If unavailableReason is present, keep the known selected identity, explain that checked behavior is unavailable and never infer behavior from names, source or draft evidence. Another item’s selection is identity only.',
+  navigation: 'Use actual conditional controls. View what’s in use is offered for this item’s selected version outside earlier-discussion or stale views. Inspect these saved examples requires an existing saved review receipt that is not eligible for the current draft; Inspect saved examples from this message opens that exact earlier evidence. History and details contains the separate Inspect saved source and examples action for a saved revision, not a comparison screen. Never invent Compare versions, View history or a version comparison view. If checked active behavior is unavailable, the person can open a saved task and choose Check task advice to observe that task’s actual result without changing it.',
 });
 
 export function authoringExample() {
@@ -36,7 +38,7 @@ export function evidenceSummary(proof, originals) {
     if (item.report.mismatches.length > 8) truncated = true;
     return {
       id: text(item.id), label: text(item.label), status: text(item.report.status),
-      taskStatus: item.taskStatus ?? null, readFailure: item.readFailure ?? null,
+      taskStatus: text(item.taskStatus) ?? null, readFailure: text(item.readFailure) ?? null,
       expected: { ...fields(item.expected, ['classification', 'code']), consumption: fields(example?.expect?.consumption, ['status', 'code']) },
       actual: { native: fields(item.report.native, ['classification', 'code']), consumption: fields(item.report.consumption, ['status', 'code']) },
       mismatches: item.report.mismatches.slice(0, 8).map(item => ({ ...fields(item, ['stage', 'code']),

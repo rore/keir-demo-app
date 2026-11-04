@@ -361,6 +361,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [authoringError, setAuthoringError] = useState("");
   const [needsFreshDiscussion, setNeedsFreshDiscussion] = useState(false);
+  const [contextContinuation, setContextContinuation] = useState<{ conversationId: string; expectedVersion: number } | null>(null);
   const [pendingTurn, setPendingTurn] = useState<Turn | null>(() => pendingRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId))?.turn ?? null);
   const [retryTurn, setRetryTurn] = useState(false);
   const [observationPaused, setObservationPaused] = useState(false);
@@ -375,6 +376,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [revisionsNext, setRevisionsNext] = useState<string | null | undefined>(undefined);
   const [messagesBefore, setMessagesBefore] = useState<string | null>(null);
+  const [messagePageError, setMessagePageError] = useState<{ conversationId: string; before: string } | null>(null);
   const messageHistory = useRef<{ conversationId: string; anchor: string | number | null; snapshotBefore: string | null; ids: Set<string | number> } | null>(null);
   const prependedMessages = useRef<{ height: number; top: number; focus: HTMLElement | null; anchor: { element: HTMLElement; top: number } | null } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -451,6 +453,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const legacyConversation = !!conversation && conversation.extensionId === null;
   const staleConversation = !!conversation && !!state?.extension && (conversation.extensionId !== state.extension.id
     || conversation.draft.draftVersion !== state.draftVersion || conversation.draft.revisionId !== (state.draft?.id ?? null));
+  const contextRecovery = (conversation?.status === "BLOCKED" && conversation.code === "CONTEXT_LIMIT"
+    || !!contextContinuation && contextContinuation.conversationId === conversation?.id)
+    && !legacyConversation && !staleConversation && !historyView && !needsFreshDiscussion;
+  const earlierMessagesFailed = messagePageError?.conversationId === conversation?.id && messagePageError?.before === messagesBefore;
   const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn || !!pendingExample;
   const sendDisabled = disabled || legacyConversation || staleConversation || historyView || activeView;
   const reviewReady = reviewed.current?.kind !== "authored" || !!reviewSource && reviewSource.key === review && reviewSource.ownerId === state?.owner.id && reviewSource.revisionId === state?.draft?.id && reviewSource.suiteDigest === state?.draft?.suiteDigest;
@@ -641,6 +647,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       apply(saved);
     }
     if (next.id !== conversation?.id) setNeedsFreshDiscussion(false);
+    setContextContinuation(old => old && (old.conversationId !== next.id || next.version > old.expectedVersion && !running(next)) ? null : old);
     setConversation(next);
     callbacks.current.targeted({ extensionId: next.extensionId, conversationId: next.id, history: historyMode.current });
     setAuthoring(index => {
@@ -656,6 +663,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       messageHistory.current = { conversationId: next.id, anchor: incoming[0]?.id ?? null,
         snapshotBefore: next.messagesBefore ?? null, ids: new Set([...(page?.conversationId === next.id ? page.ids : []), ...incoming.map(item => item.id)]) };
       setMessagesBefore(next.messagesBefore ?? null);
+      setMessagePageError(null);
     } else {
       page.snapshotBefore = next.messagesBefore ?? null;
       incoming.forEach(item => page.ids.add(item.id));
@@ -697,6 +705,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   function newConversation(keepExample = false) {
     if (locked.current || activeAuthoring || pendingTurn || pendingExample || legacyConversation) return;
     messageHistory.current = null; setMessagesBefore(null);
+    setContextContinuation(null);
     setConversation(null); setScripted(false); setCompletion(false); setReview(""); if (!keepExample) setEvidence(null); setActiveView(false);
     historyMode.current = false; setHistoryView(false); reviewAttempt.current = "";
     setMessages([{ id: ++messageId.current, who: "Studio", text: "Continue your current saved changes here. What would you like to change or check?" }]); initialized.current = true; setObservationPaused(false); setAuthoringError(""); setNeedsFreshDiscussion(false);
@@ -706,6 +715,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     if (locked.current || pendingTurn || pendingExample) return;
     historyMode.current = false; setHistoryView(false); setConversation(null); setReview(""); reviewAttempt.current = "";
     messageHistory.current = null; setMessagesBefore(null);
+    setContextContinuation(null);
     setMessages([{ id: ++messageId.current, who: "Studio", text: `These are your current saved changes${state?.draft ? ` (version ${state.draftVersion})` : ""}. What would you like to change or check?` }]);
     initialized.current = true; setEntry("item");
     callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
@@ -714,8 +724,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   function continueSaved() {
     if (!conversation || !authoring?.availability.available || disabled || staleConversation || legacyConversation) return;
+    const operationId = crypto.randomUUID();
+    if (contextRecovery) setContextContinuation({ conversationId: conversation.id, expectedVersion: conversation.version });
     void submitAuthoring({ target: { kind: "resume", extensionId: extensionId.current! }, conversationId: conversation.id,
-      operationId: crypto.randomUUID(), text: "Continue from saved work. Ask before changing any independent examples.",
+      operationId, text: "Continue from saved work. Ask before changing any independent examples.",
       expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion });
   }
   async function recoverTurn(input: Turn, turn: number) {
@@ -880,7 +892,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     }
     if (log && followConversation.current) log.scrollTop = log.scrollHeight;
     else setNewMessages(true);
-  }, [messages, activeAuthoring]);
+  }, [messages, activeAuthoring, messagePageError]);
   useLayoutEffect(() => {
     const log = chatEnd.current?.parentElement;
     if (log && followConversation.current) log.scrollTop = log.scrollHeight;
@@ -918,7 +930,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       apply(next);
       if (operation === "restart") {
         historyMode.current = false; setHistoryView(false); reviewAttempt.current = "";
-        setConversation(null); setMessages([]); messageHistory.current = null; setMessagesBefore(null); initialized.current = false; setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
+        setConversation(null); setContextContinuation(null); setMessages([]); messageHistory.current = null; setMessagesBefore(null); initialized.current = false; setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
         callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
       }
       say(message);
@@ -1006,13 +1018,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   async function earlierMessages() {
     if (locked.current || !conversation || !messagesBefore || !messageHistory.current) return;
     locked.current = true;
-    const turn = ++serial.current, id = conversation.id, anchor = messageHistory.current.anchor;
+    const turn = ++serial.current, id = conversation.id, before = messagesBefore, anchor = messageHistory.current.anchor;
     const invoker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setBusy("Opening earlier messages…"); setAuthoringError("");
-    try {
-      const next = await callbacks.current.request<{ messages: Conversation["messages"]; next: string | null }>(
-        `authoring/conversations/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(messagesBefore)}`, "GET", undefined, authoringLifetime.current.signal);
-      if (!mounted.current || serial.current !== turn || messageHistory.current?.conversationId !== id) return;
+    function preserveReading() {
       const log = chatEnd.current?.parentElement;
       const focus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : invoker;
       if (log) {
@@ -1023,6 +1031,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         prependedMessages.current = { height: log.scrollHeight, top: log.scrollTop, focus,
           anchor: visible ? { element: visible, top: visible.getBoundingClientRect().top } : null };
       }
+    }
+    setBusy("Opening earlier messages…"); setNotice("");
+    try {
+      const next = await callbacks.current.request<{ messages: Conversation["messages"]; next: string | null }>(
+        `authoring/conversations/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(before)}`, "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn || messageHistory.current?.conversationId !== id) return;
+      preserveReading();
       followConversation.current = false;
       const incoming = conversationMessages(id, next.messages);
       const ids = new Set(incoming.map(item => item.id));
@@ -1034,9 +1049,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       });
       messageHistory.current.anchor = incoming[0]?.id ?? anchor;
       incoming.forEach(item => messageHistory.current!.ids.add(item.id));
-      setMessagesBefore(next.next);
+      setMessagesBefore(next.next); setMessagePageError(null); setNotice("Earlier messages loaded.");
     } catch {
-      if (mounted.current && serial.current === turn) setAuthoringError("Earlier messages could not be loaded. The current discussion and saved work are unchanged.");
+      if (mounted.current && serial.current === turn) { preserveReading(); setMessagePageError({ conversationId: id, before }); }
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   async function earlierConversations() {
@@ -1270,7 +1285,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           const log = event.currentTarget; followConversation.current = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
           if (followConversation.current) setNewMessages(false);
         }}>
-          {messagesBefore && <button id="studio-earlier-messages" disabled={!!busy} onClick={() => void earlierMessages()}>Load earlier messages</button>}
+          {messagesBefore && <div aria-label="Earlier messages">
+            {earlierMessagesFailed && <p role="status">Couldn’t load earlier messages.</p>}
+            <button id="studio-earlier-messages" disabled={!!busy} onClick={() => void earlierMessages()}>{earlierMessagesFailed ? "Retry earlier messages" : "Load earlier messages"}</button>
+          </div>}
           {entry === "start" && <article className="rs-message rs-start">
             <strong>Studio</strong><h2>What would you like to change about your work?</h2>
             <p>Tell me what you want to happen. We’ll check what Daymark can support and work through useful examples together.</p>
@@ -1290,8 +1308,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button disabled={!!busy || !!pendingTurn || !!pendingExample} onClick={returnToCurrent}>Return to current changes</button></article>}
           {conversation?.review && !eligibleOffer && <article className="rs-message"><p>These saved examples do not support approval of the current changes.</p>
             <button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>Inspect these saved examples</button></article>}
-          {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
-          {["BUDGET_EXHAUSTED", "CONTEXT_LIMIT", "PROVIDER_RATE_LIMIT", "EXPIRED"].includes(conversation?.code ?? "") && !activeAuthoring && !legacyConversation && !staleConversation && !historyView && <button disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue here from saved work"}</button>}
+          {conversation && !contextRecovery && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
+          {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT", "EXPIRED"].includes(conversation?.code ?? "") && !activeAuthoring && !legacyConversation && !staleConversation && !historyView && <button disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue here from saved work"}</button>}
           {state?.extension && ownActive && !historyView && !staleConversation && <article className="rs-message">
             <p>{state.draft && state.draft.id !== ownActive.id ? "Your current setup is still on. Your saved changes are not in use yet." : "This setup is in use."}</p>
             {state.draft && state.draft.id !== ownActive.id && checkedDraftSummary && <p>In the checked examples for your saved changes, {checkedDraftSummary}.</p>}
@@ -1309,6 +1327,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           <div ref={chatEnd} />
         </div>
         {newMessages && <button className="rs-new-messages" onClick={() => { const log = chatEnd.current?.parentElement; if (log) log.scrollTop = log.scrollHeight; followConversation.current = true; setNewMessages(false); }}>New messages ↓</button>}
+          {contextRecovery && <article className="rs-message rs-decision rs-current-decision" aria-label="Continue saved work">
+            <p role="status">{contextContinuation && activeAuthoring ? "Continuing from saved work. Waiting for accepted work to settle." : authoringReason("CONTEXT_LIMIT")}</p>
+            <button className="rs-primary" disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>Continue here from saved work</button>
+          </article>}
           {needsFreshDiscussion && <article className="rs-message rs-decision rs-current-decision" aria-label="Assistant settings changed">
             <p role="status">The assistant settings changed, so your message wasn’t sent. Start a new conversation to continue. Your message and saved work are kept.</p>
             <button className="rs-primary" disabled={disabled || legacyConversation} onClick={() => {
@@ -1321,7 +1343,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button className="rs-primary" disabled={disabled} onClick={() => void mutate("restart", { draftVersion: restart.draftVersion, revisionId: restart.revisionId, generation: restart.generation }, "New changes start from the version in use. Earlier changes and discussion remain in History. Check and approve this proposal before turning it on.")}>Start from this version</button>
             <button disabled={!!busy} onClick={() => { setRestart(null); document.getElementById("studio-view-active")?.focus(); }}>Cancel</button>
           </article>}
-          {!needsFreshDiscussion && !restart && decisionEvidenceId && state?.draft && !selectedDraft && !legacyConversation && !staleConversation && !historyView && <article id="studio-review" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Current decision">
+          {!contextRecovery && !needsFreshDiscussion && !restart && decisionEvidenceId && state?.draft && !selectedDraft && !legacyConversation && !staleConversation && !historyView && <article id="studio-review" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Current decision">
             <strong>Studio</strong>
             {review !== reviewKey || reviewEvidence?.id !== decisionEvidenceId || !reviewReady ? <>
               <p>{reviewError || "Checking the saved change and its examples before you decide…"}</p>
@@ -1443,7 +1465,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {authoring && (extensionId.current || legacyConversation) && authoring.conversations.length > 0 && <label>Saved authoring conversation<select aria-label="Saved authoring conversation" value={conversation?.id ?? ""} disabled={!!busy || activeAuthoring || !!pendingTurn || !!pendingExample}
               onChange={event => { if (event.target.value) { historyMode.current = true; setHistoryView(true); setScripted(false); setMessages([]); messageHistory.current = null; setMessagesBefore(null); void loadAuthoring(event.target.value).then(() => { if (mounted.current) closeReview(); }); } }}><option value="" disabled>Choose a saved conversation</option>{authoring.conversations.filter(item => item.extensionId === extensionId.current).map((item, index) => <option key={item.id} value={item.id}>Conversation {index + 1}</option>)}</select></label>}
             {conversation && <><p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>
-              {!activeAuthoring && !legacyConversation && !historyView && !staleConversation && <button disabled={!!busy || !!pendingTurn || !!pendingExample} onClick={() => newConversation()}>Continue current changes in a new conversation</button>}</>}
+              {!contextRecovery && !activeAuthoring && !legacyConversation && !historyView && !staleConversation && <button disabled={!!busy || !!pendingTurn || !!pendingExample} onClick={() => newConversation()}>Continue current changes in a new conversation</button>}</>}
             {authoring?.next && <button disabled={!!busy} onClick={() => void earlierConversations()}>Load earlier conversations</button>}
             {!authoringError && !observationPaused && !pendingTurn && <button disabled={!!busy} onClick={() => void loadAuthoring(conversation?.id ?? null)}>Check authoring status</button>}
           </section>

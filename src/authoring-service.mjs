@@ -284,6 +284,37 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       return { ...current, evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest, eligible: proof.passed,
         summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases) };
     };
+    const currentUse = current => {
+      const selection = current.selection, revision = selection.revision;
+      const result = { generation: selection.generation,
+        relation: !revision ? 'none' : revision.extensionId === ctx.extensionId ? 'thisitem' : 'anotheritem',
+        selected: revision ? { extensionId: revision.extensionId, name: revision.extensionName, revisionId: revision.id,
+          provenance: revision.provenance, eligible: selection.eligible === true, approvedEvidenceId: selection.approvedEvidenceId ?? null } : null,
+        checkedSummary: null, unavailableReason: null };
+      const unavailable = reason => { result.unavailableReason = reason; return result; };
+      // Legacy display names may exceed current admission bounds; never truncate an exact name silently.
+      if (length(result) > 16384 - 128) { result.selected.name = null; result.nameOmittedReason = 'SELECTION_METADATA_TOO_LARGE'; }
+      if (!revision) return unavailable('NO_SELECTION');
+      if (result.relation !== 'thisitem') return unavailable('ANOTHER_ITEM_SELECTED');
+      if (!selection.eligible) return unavailable('SELECTION_INELIGIBLE');
+      if (revision.provenance !== 'customer') return unavailable('NO_CUSTOMER_APPROVAL');
+      if (!selection.approvedEvidenceId) return unavailable('APPROVAL_UNAVAILABLE');
+      try {
+        const proof = lifecycle.evidence(ctx.owner, selection.approvedEvidenceId, ctx.extensionId);
+        if (proof.id !== selection.approvedEvidenceId || proof.revisionId !== revision.id) return unavailable('APPROVED_PROOF_MISMATCH');
+        if (proof.passed !== true || !Array.isArray(proof.reports) || !proof.reports.length
+            || proof.reports.some(item => !object(item) || typeof item.id !== 'string' || !object(item.expected) || typeof item.expected.classification !== 'string'
+              || !object(item.report) || item.report.status !== 'PASS' || !object(item.report.native) || typeof item.report.native.classification !== 'string'
+              || !object(item.report.consumption) || typeof item.report.consumption.status !== 'string'
+              || !Array.isArray(item.report.mismatches) || item.report.mismatches.length)) return unavailable('APPROVED_PROOF_UNUSABLE');
+        const source = lifecycle.source(ctx.owner, revision.id, ctx.extensionId);
+        if (source.extensionId !== ctx.extensionId || source.revisionId !== revision.id || !Array.isArray(source.cases) || !source.cases.length) return unavailable('APPROVED_SOURCE_MISMATCH');
+        result.checkedSummary = { scope: 'synthetic examples, not live task observations', evidenceId: proof.id,
+          ...evidenceSummary(proof, source.cases) };
+        if (length(result) > 16384) { result.checkedSummary = null; return unavailable('CHECKED_SUMMARY_TOO_LARGE'); }
+        return result;
+      } catch { return unavailable('APPROVED_PROOF_UNAVAILABLE'); }
+    };
     return {
       readDraft: () => { authorize(); return mapped(); },
       discover: () => {
@@ -301,7 +332,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           recent.unshift({ role, text });
         }
         return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...definition.pins,
-          currentDraft: mapped(), currentProposal, extension: current.extension, purpose: ctx.purpose,
+          currentDraft: draftHandles(current), currentProposal, currentUse: currentUse(current), extension: current.extension, purpose: ctx.purpose,
           supportedHooks: lifecycle.hostCatalog().hooks, conversationContext: { messages: recent, truncated },
           businessContext, sourceExample: example.source, scenarioExample: example.cases[0], scenarioExamples: example.cases };
       },
