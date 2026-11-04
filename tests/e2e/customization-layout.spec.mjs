@@ -511,14 +511,30 @@ for (const operation of ['simulate', 'approve', 'activate']) {
         await studio.getByRole('button', { name: operation === 'approve' ? 'Approve this change' : 'Turn on for my tasks', exact: true }).click();
       }
       await started;
-      if (operation !== 'simulate') await openRun(page, original.evidence.id);
-      const results = await selectOtherExample(page); await results.locator('.rs-example-details > summary').click();
-      const content = await results.locator('[aria-label="Expected and actual sample results"]').textContent(), canvas = studio.locator('.rs-canvas');
+      let results, proof;
+      if (operation === 'simulate') {
+        results = await selectOtherExample(page);
+        await results.locator('.rs-example-details > summary').click();
+      } else {
+        results = studio.getByRole('article', { name: 'Current decision', exact: true });
+        await results.getByText(/^Other checked examples/).click();
+        await results.getByText('Exact saved change and checks', { exact: true }).click();
+        proof = await results.getByLabel('Exact checked examples', { exact: true }).textContent();
+      }
+      const anchor = results.getByRole('article', { name: 'Example: Completed task', exact: true });
+      const content = await anchor.textContent(), canvas = studio.locator('.rs-canvas');
       await canvas.evaluate(node => node.scrollTop = 0); await canvas.focus(); await wheel(page, canvas, 100);
-      const anchor = results.locator('.rs-example'); await expect(anchor).toBeInViewport(); const position = (await anchor.boundingBox()).y;
+      await expect(anchor).toBeInViewport(); const position = (await anchor.boundingBox()).y;
       release(); await finished; await expect(results).toBeVisible(); await expect(results).toContainText(`Evidence: ${original.evidence.id}`);
-      expect(await results.locator('[aria-label="Expected and actual sample results"]').textContent()).toBe(content); await expect(canvas).toBeFocused(); expect(await scrollTop(canvas)).toBeGreaterThan(0);
-      expect(Math.abs((await anchor.boundingBox()).y - position)).toBeLessThanOrEqual(1); await openExampleDetails(results);
+      expect(await anchor.textContent()).toBe(content); await expect(canvas).toBeFocused(); expect(await scrollTop(canvas)).toBeGreaterThan(0);
+      expect(Math.abs((await anchor.boundingBox()).y - position)).toBeLessThanOrEqual(1);
+      if (operation !== 'simulate') {
+        await openRun(page, original.evidence.id);
+        results = await selectOtherExample(page);
+        await expect(results.getByRole('article', { name: 'Example: Completed task', exact: true })).toHaveText(content);
+      }
+      await openExampleDetails(results);
+      if (proof) expect(await results.getByLabel('Saved synthetic simulation report', { exact: true }).textContent()).toBe(proof);
       await expect(results).toContainText(operation === 'simulate' ? 'Earlier run for current proposal' : 'Current proposal');
       await expect(results.getByRole('button', { name: /Review this|Approve|Turn on/ })).toHaveCount(0);
       if (operation === 'activate') expect((await savedState(page)).selection.revision.id).toBe(original.draft.id);
