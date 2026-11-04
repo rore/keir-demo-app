@@ -1343,7 +1343,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button className="rs-primary" disabled={disabled} onClick={() => void mutate("restart", { draftVersion: restart.draftVersion, revisionId: restart.revisionId, generation: restart.generation }, "New changes start from the version in use. Earlier changes and discussion remain in History. Check and approve this proposal before turning it on.")}>Start from this version</button>
             <button disabled={!!busy} onClick={() => { setRestart(null); document.getElementById("studio-view-active")?.focus(); }}>Cancel</button>
           </article>}
-          {!contextRecovery && !needsFreshDiscussion && !restart && decisionEvidenceId && state?.draft && !selectedDraft && !legacyConversation && !staleConversation && !historyView && <article id="studio-review" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Current decision">
+          {!activeAuthoring && !contextRecovery && !needsFreshDiscussion && !restart && decisionEvidenceId && state?.draft && !selectedDraft && !legacyConversation && !staleConversation && !historyView && <article id="studio-review" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Current decision">
             <strong>Studio</strong>
             {review !== reviewKey || reviewEvidence?.id !== decisionEvidenceId || !reviewReady ? <>
               <p>{reviewError || "Checking the saved change and its examples before you decide…"}</p>

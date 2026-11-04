@@ -367,6 +367,56 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
   } finally { releaseSettled?.(); }
 });
 
+test('reloading an accepted context continuation keeps the prior decision hidden until settlement', async ({ page, demo }, testInfo) => {
+  await signIn(page, demo.origin);
+  let saved = await api(page, demo.origin, 'extensions', { operationId: crypto.randomUUID(), source: demo.metadata.source, label: 'Retained approved proposal' });
+  const extensionId = saved.extension.id;
+  saved = await api(page, demo.origin, `extensions/${extensionId}/scenarios`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion, cases: demo.metadata.cases });
+  saved = await api(page, demo.origin, `extensions/${extensionId}/simulate`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
+  saved = await api(page, demo.origin, `extensions/${extensionId}/approve`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion, evidenceId: saved.evidence.id });
+  const before = await api(page, demo.origin, `extensions/${extensionId}`);
+  const review = { revisionId: saved.draft.id, draftVersion: saved.draftVersion, suiteDigest: saved.draft.suiteDigest, evidenceId: saved.evidence.id, eligible: true };
+  let current = { ...discussion(saved, 'reload-context-continuation'), status: 'BLOCKED', code: 'CONTEXT_LIMIT', review };
+  const turns = [], mutations = [];
+  page.on('request', request => { if (request.method() === 'POST' && /\/(approve|activate)$/.test(new URL(request.url()).pathname)) mutations.push(request.url()); });
+  await page.route('**/api/authoring**', route => {
+    const request = route.request(), path = new URL(request.url()).pathname;
+    if (path === '/api/authoring') return reply(route, { availability: available, current, conversations: [summary(current)], next: null });
+    if (path.endsWith('/turn')) {
+      const input = request.postDataJSON(); turns.push(input);
+      current = { ...current, version: 2, status: 'RUNNING', code: null, review: null, runId: 'accepted-context-run',
+        operation: { id: input.operationId, version: 2, runId: 'accepted-context-run' } };
+      return reply(route, { operation: current.operation, conversation: current }, 202);
+    }
+    return reply(route, current);
+  });
+  await openItem(page, extensionId);
+  const ui = studio(page);
+  await ui.getByRole('article', { name: 'Continue saved work', exact: true }).getByRole('button', { name: 'Continue here from saved work', exact: true }).click();
+  await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+  expect(turns).toHaveLength(1);
+  expect(turns[0]).toMatchObject({ target: { kind: 'resume', extensionId }, conversationId: 'reload-context-continuation', expectedVersion: 1 });
+  expect(new URL(page.url()).hash).toContain('conversation=reload-context-continuation');
+  await page.reload();
+  await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+  await expect(ui.locator('.rs-working')).toContainText('Working on your request');
+  await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
+  await expect(ui.getByRole('button', { name: 'Switch to this customization', exact: true })).toHaveCount(0);
+  await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
+  await expect(ui.getByText('Approved · Not in use', { exact: true })).toBeVisible();
+  // Compiled UI with a synthetic accepted run; reload reads status without repeating the paid request.
+  await page.screenshot({ path: testInfo.outputPath('context-continuation-running-after-reload.png'), fullPage: true });
+  expect(turns).toHaveLength(1);
+  current = { ...current, status: 'REVIEW_AVAILABLE', review, messages: [message('settled-reloaded', 'The accepted continuation settled.')] };
+  const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
+  await expect(decision.getByRole('button', { name: 'Switch to this customization', exact: true })).toBeEnabled();
+  await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
+  expect(turns).toHaveLength(1);
+  expect(mutations).toEqual([]);
+  expect(await api(page, demo.origin, `extensions/${extensionId}`)).toEqual(before);
+  expect(demo.requests).toEqual([]);
+});
+
 test('a later status projection reopens a skipped message gap and inserts it in server order', async ({ page, demo }) => {
   await signIn(page, demo.origin);
   const saved = await api(page, demo.origin, `extensions/${demo.extensionId}`);
