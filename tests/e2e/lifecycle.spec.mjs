@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -64,6 +65,7 @@ async function checkSaved(page) {
   const saved = await savedLifecycle(page, page.url());
   const checked = await lifecyclePost(page, 'simulate', { revisionId: saved.revisionId, draftVersion: saved.draftVersion });
   await reloadStudio(page);
+  if (checked.evidence.passed || checked.approved) await openSavedChanges(page);
   return checked;
 }
 async function prepare(page, label = 'Needs attention') {
@@ -71,22 +73,23 @@ async function prepare(page, label = 'Needs attention') {
   await lifecyclePost(page, 'draft', { templateId: label === 'Pending' ? 'pending' : 'attention', draftVersion: saved.draftVersion });
   expect((await checkSaved(page)).evidence.passed).toBe(true);
   await expect(approval(page)).toBeEnabled();
-  await expect(decision(page).getByRole('button', { name: /^Show the .* example$/ })).toHaveCount(1);
+  await expect(decision(page).locator('.rs-example:visible')).toHaveCount(1);
   await latestExamples(page);
-  await expect(studio(page).locator('.rs-example')).toHaveCount(1);
-  await expect(studio(page).locator('.rs-example').getByText('Matches what you wanted', { exact: true })).toHaveCount(1);
+  await expect(studio(page).locator('.rs-example:visible')).toHaveCount(1);
+  await expect(studio(page).locator('.rs-example:visible').getByText('Matches what you wanted', { exact: true })).toHaveCount(1);
   const otherExamples = studio(page).getByText('Other checked examples', { exact: true });
   if (!await otherExamples.locator('..').evaluate(node => node.open)) await otherExamples.click();
   const alternatives = studio(page).getByRole('button', { name: /^What (a completed task would show|happens with)/ });
   await expect(alternatives).toHaveCount(5);
   for (const label of await alternatives.allTextContents()) {
     await studio(page).getByRole('button', { name: label, exact: true }).click();
-    await expect(studio(page).locator('.rs-example').getByText('Matches what you wanted', { exact: true })).toHaveCount(1);
+    await expect(studio(page).locator('.rs-example:visible').getByText('Matches what you wanted', { exact: true })).toHaveCount(1);
   }
   await closeDetails(page);
+  await openSavedChanges(page);
 }
 async function approve(page) {
-  await closeDetails(page);
+  await openSavedChanges(page);
   await expect(approval(page)).toBeEnabled();
   expect((await savedLifecycle(page, page.url())).approved).toBe(false);
   await expect(studio(page).getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
@@ -133,7 +136,7 @@ test('real sample review separates typed assent, approval and use; native edits 
   const ui = studio(page);
   await ui.getByLabel('Message to Studio').fill('Yes, use this advice');
   await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
-  await expect(decision(page)).toContainText('In the checked examples, unfinished tasks showed Needs attention; completed tasks showed Done. This changes only your advice.');
+  await expect(decision(page)).toContainText('In these example tasks, unfinished tasks showed Needs attention; completed tasks showed Done. Your tasks have not changed.');
   expect((await savedLifecycle(page, demo.origin)).owner.id).toBe('maya');
   await expect(approval(page)).toBeEnabled();
   expect((await savedLifecycle(page, demo.origin)).approved).toBe(false);
@@ -141,12 +144,14 @@ test('real sample review separates typed assent, approval and use; native edits 
   await openDetails(page);
   await inspectActive(page, 'Pending');
   await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+  await openSavedChanges(page);
   await expect(decision(page)).toBeVisible();
   await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
   await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
   await openDetails(page);
   await inspectActive(page, 'Pending');
   await closeDetails(page);
+  await openSavedChanges(page);
   await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
   await openDetails(page);
   await inspectActive(page, 'Needs attention');
@@ -225,7 +230,7 @@ test('narrow Studio reviews a named operator restore and keeps it after server r
   await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByLabel('Destination', { exact: true }).selectOption('customizations');
   const saved = await savedLifecycle(page, demo.origin);
-  await page.getByRole('article', { name: saved.extension.name, exact: true }).getByRole('button', { name: /^Edit/ }).click();
+  await page.getByRole('article', { name: saved.extension.name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/ }).click();
   const ui = studio(page); await openDetails(page);
   await ui.getByText('Manage saved customization', { exact: true }).click();
   await ui.getByRole('button', { name: 'Turn off my advice', exact: true }).click();
@@ -246,9 +251,10 @@ test('a stale second-tab simulation and chat approval fail closed and reload the
   try {
     await other.goto(demo.origin);
     await other.getByRole('button', { name: 'Gather material references', exact: true }).click(); await open(other);
+    await openSavedChanges(other);
     await expect(approval(other)).toBeEnabled();
     const stale = await savedLifecycle(other, demo.origin);
-    await decision(page).getByRole('button', { name: /^Show the .* example$/ }).first().click();
+    await openSavedChanges(page);
     const divider = studio(page).getByRole('separator', { name: 'Resize conversation and proposal' });
     await divider.focus(); await divider.press('ArrowLeft'); await expect(divider).toHaveAttribute('aria-valuenow', '50');
     await prepare(page);
@@ -258,6 +264,7 @@ test('a stale second-tab simulation and chat approval fail closed and reload the
     await approval(other).click();
     await expect(studio(other).getByRole('alert').filter({ hasText: 'saved proposal or selection changed' })).toBeVisible();
     await expect(studio(other).getByRole('status').filter({ hasText: 'Saved state reloaded' })).toBeVisible();
+    await openSavedChanges(other);
     await expect(decision(other)).toContainText('Needs attention'); await inspectActive(other, 'Pending');
   } finally { await other.close(); }
 });
@@ -337,10 +344,9 @@ for (const width of [1440, 390]) test(`real authored source, independent example
   await lifecyclePost(page, 'scenarios', { revisionId: mismatch.draft.id, cases: [expectedExample('DONE')], draftVersion: mismatch.draftVersion });
   expect((await checkSaved(page)).evidence.passed).toBe(true);
   await expect(approval(page)).toBeEnabled();
-  await expect(decision(page).getByRole('button', { name: 'Show the unfinished task example', exact: true })).toHaveCount(1);
-  await decision(page).getByRole('button', { name: 'Show the unfinished task example', exact: true }).click();
-  await expect(ui.locator('.rs-example')).toHaveCount(1);
-  await expect(ui.getByText('Matches what you wanted', { exact: true })).toHaveCount(1);
+  await expect(decision(page).locator('.rs-example:visible')).toHaveCount(1);
+  await expect(ui.locator('.rs-example:visible')).toHaveCount(1);
+  await expect(decision(page).getByText('Matches what you wanted', { exact: true })).toHaveCount(1);
   await approve(page);
   expect((await savedLifecycle(page, demo.origin)).selection.revision.label).toBe('Pending');
   await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
@@ -398,6 +404,7 @@ test('exact authored review shows saved A, preserves unsent conversation B, and 
   await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
   await open(page);
   await expect(ui.getByLabel('Message to Studio')).toHaveValue('');
+  await openSavedChanges(page);
   await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
   await ui.getByText('Exact saved change and checks', { exact: true }).click();
   await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(authoredProgram);
@@ -449,6 +456,7 @@ test('a held exact-source review cannot enter a different owner or a re-entered 
     release(); await finished; await page.unroute('**/api/extensions/*/revisions/*');
     expect((await savedLifecycle(page, demo.origin)).approved).toBe(false);
     await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
+    await openSavedChanges(page);
     await expect(approval(page)).toBeEnabled();
     await ui.getByText('Exact saved change and checks', { exact: true }).click();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(authoredProgram);

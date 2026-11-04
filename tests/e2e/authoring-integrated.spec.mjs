@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
@@ -93,8 +94,9 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     expect(passedProof.passed).toBe(true); expect(passedProof.reports.every(item => item.report.status === 'PASS')).toBe(true);
     expect((await read(`extensions/evidence/${failed.review.evidenceId}`))).toEqual(failedProof);
     expect((await read(`extensions/revisions/${failed.review.revisionId}`))).toEqual(wrong);
+    await openSavedChanges(page);
     await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
-    await expect(decision(page).getByRole('button', { name: /^Show the .* example$/ })).toHaveCount(1);
+    await expect(decision(page).locator('.rs-example:visible')).toHaveCount(1);
     await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
     for (let index = 0; index < saved.cases.length; index++)
@@ -104,7 +106,9 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect((await read('extensions')).selection).toEqual(selection);
     await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
-    await expect(ui.getByRole('article', { name: 'Advice is on', exact: true }).locator('h3#studio-completion')).toBeFocused();
+    await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
+    await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
+    await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeVisible();
     await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(repaired.review.revisionId);
     expect(mutations).toHaveLength(2);
     await openDetails(page);
@@ -189,10 +193,10 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
       await send(page, 'Confirmed: OPEN means PENDING and COMPLETED means DONE. Use the independent synthetic cases.');
       await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
-      await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+      await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
       if (provider === 'openai') {
         await page.setViewportSize({ width: 683, height: 384 });
-        await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeInViewport({ ratio: 1 });
+        await expect(ui.getByRole('button', { name: 'View saved changes', exact: true }).first()).toBeInViewport({ ratio: 1 });
         mkdirSync(resolve('build/screens'), { recursive: true });
         await page.screenshot({ path: resolve('build/screens', 'authoring-offer-short-finished.png'), fullPage: true });
         await page.setViewportSize({ width: 1440, height: 1000 });
@@ -223,31 +227,26 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         if (/^\/api\/extensions\/[^/]+\/evidence\//.test(path)) evidenceRequests.push(path.split('/').at(-1));
       });
       await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent refinement while reviewing');
+      await openSavedChanges(page);
+      await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
       const situationLabels = ['Unfinished task', 'Completed task', 'Missing task', 'Task access denied', 'Read temporarily unavailable'];
-      const invitation = decision(page).getByRole('button', { name: 'Show the unfinished task example', exact: true });
-      await invitation.click();
+      await ui.getByText(/^Other checked examples/).click();
       for (const [index, label] of situationLabels.entries()) {
-        if (await ui.locator('.rs-example h4').innerText() !== label) {
-          const other = ui.getByText('Other checked examples', { exact: true }).locator('..');
-          if (!await other.evaluate(node => node.open)) await other.locator(':scope > summary').click();
-          const title = index === 0 ? 'What an unfinished task would show' : index === 1 ? 'What a completed task would show' : `What happens with ${label.toLowerCase()}`;
-          await other.getByRole('button', { name: title, exact: true }).click();
-        }
-        await expect(ui.locator('.rs-example')).toHaveCount(1);
-        await expect(ui.locator('.rs-example h4')).toHaveText(label);
-        await expect(ui.locator('.rs-example')).toHaveAttribute('aria-label', `Example: ${label}`);
-        await expect(ui.locator('.rs-example .rs-match')).toHaveCount(1);
+        const example = decision(page).getByRole('article', { name: `Example: ${label}`, exact: true });
+        await expect(example).toBeVisible();
+        await expect(example.locator('h4')).toHaveText(label);
+        await expect(example.locator('.rs-match')).toHaveCount(1);
         if (!index) {
-          await expect(ui.locator('.rs-example-details pre').first()).toBeHidden();
-          await ui.locator('.rs-example-details > summary').click();
-          await expect(ui.locator('.rs-example-details pre').first()).toContainText('synthetic-open');
+          const exact = decision(page).getByLabel('Exact checked examples', { exact: true });
+          await expect(exact).toBeHidden();
+          await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
+          await expect(exact).toContainText('synthetic-open');
+          await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
         }
       }
-      await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
-      await expect(invitation).toBeFocused();
       expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
       await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
-      await expect(decision(page)).toContainText('This changes only your advice.');
+      await expect(decision(page)).toContainText('Your tasks have not changed.');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
       for (let index = 0; index < fixture.metadata.cases.length; index++)
@@ -261,7 +260,12 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
       expect((await read('extensions')).selection.revision.id).toBe(selectedA.revision_id);
       await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
-      await expect(ui.getByRole('article', { name: 'Advice is on', exact: true }).locator('h3#studio-completion')).toBeFocused();
+      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
+      await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
+      if (!await ui.getByLabel('Message to Studio', { exact: true }).isVisible())
+        await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+      await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeVisible();
+      await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
       await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
       expect((await read('extensions')).selection.generation).toBe(selectedA.generation + 1);
       await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();

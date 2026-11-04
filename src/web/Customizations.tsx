@@ -147,18 +147,14 @@ export default function Customizations({ request, changed, beforeSelectionChange
         const selectedItem = selected?.extensionId === item.extension!.id;
         const inUse = selectedItem && state.selection.eligible;
         const changes = !!item.draft && (!selectedItem || item.draft.id !== selected?.id);
-        const status = selectedItem ? inUse ? changes ? "In use · Changes in progress" : "In use" : "Couldn’t check what’s in use"
-          : item.approved ? "Approved · Ready to turn on" : item.draft ? "Draft" : item.extension!.hookId ? "Off" : "In discussion";
+        const status = selectedItem ? inUse ? changes ? item.approved ? "In use · Approved changes ready to turn on" : "In use · Changes in progress" : "In use" : "Couldn’t check what’s in use"
+          : item.approved ? "Approved · Not in use" : item.draft ? "Saved changes · Not in use" : item.extension!.hookId ? "Not in use" : "In discussion";
         return <article key={item.extension!.id} className="customization-card" aria-label={item.extension!.name}>
-          <div className="customization-icon" aria-hidden="true">✓</div>
           <div className="customization-copy"><h2>{item.extension!.name}</h2>
             <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{status}</span></p>
             {item.extension!.name === "Untitled customization" && untitledCount > 1 && item.requestExcerpt && <p className="customization-request">Request: {item.requestExcerpt}</p>}
-            {selectedItem && <p>{inUse ? "Your current setup is still on." : "The saved selection could not be verified."}</p>}
-            {changes && <p className="draft-status">{item.approved ? "Your saved changes are approved and ready to turn on." : "Your saved changes are not in use yet."}</p>}
-            {!item.extension!.hookId && <p>Describe the goal and check what Daymark can support.</p>}
           </div>
-          <div className="customization-actions"><button id={`edit-${item.extension!.id}`} className="primary" disabled={deleting} onClick={() => open({ extensionId: item.extension!.id })}>{changes ? "Continue changes" : "Edit"}<span aria-hidden="true"> →</span></button>
+          <div className="customization-actions"><button id={`edit-${item.extension!.id}`} className="primary" disabled={deleting} onClick={() => open({ extensionId: item.extension!.id })}>{changes ? "Continue changes" : "Open"}<span aria-hidden="true"> →</span></button>
             <button id={`delete-${item.extension!.id}`} className="quiet-button" disabled={deleting || !!loadingMore} onClick={() => {
               setDeletion({ id: item.extension!.id, name: item.extension!.name, draftVersion: item.draftVersion, generation: state.selection.generation, selected: selectedItem, message: "", blocked: false, uncertain: false });
               const turn = lifetime.current;
@@ -187,6 +183,5 @@ export default function Customizations({ request, changed, beforeSelectionChange
       {legacyNext && <button disabled={!!loadingMore} onClick={() => void loadMore("conversations")}>Load earlier conversations</button>}
     </details>}
     {historyError && <p role="status">Earlier conversations could not be checked. <button onClick={() => setRetry(old => old + 1)}>Try again</button></p>}
-    <p className="customization-note">Describe your customization in Studio. Review its sample results, approve the exact proposal, then choose whether to use it. No task is changed by authoring.</p>
   </main>;
 }

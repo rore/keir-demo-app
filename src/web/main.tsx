@@ -422,6 +422,12 @@ function Workspace({
       setDestination("customizations");
     }
   }
+  function returnToTasks() {
+    if (studioOrigin === "detail") { returnFromStudio(); return; }
+    studioEntrySerial.current++;
+    currentStudioEntry.current = null;
+    setDestination("tasks");
+  }
   useEffect(() => {
     if (destinationFocus.current) {
       document.getElementById(destinationFocus.current)?.focus({ preventScroll: true });
@@ -847,7 +853,7 @@ function Workspace({
           target={studioTarget} ownerId={session.user.id} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId}
           targeted={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) rememberStudio({ ...next, entryId: studioTarget.entryId }); }}
           unavailable={() => { if (currentStudioEntry.current !== studioTarget.entryId || lifetime.current.signal.aborted) return; currentStudioEntry.current = null; setCustomizationNotice("That customization or conversation is unavailable. Choose a saved item or start a new one."); setDestination("customizations"); }} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
-          back={returnFromStudio} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
+          back={returnFromStudio} backToTasks={returnToTasks} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
       </div>
       <dialog
         ref={detailRef}

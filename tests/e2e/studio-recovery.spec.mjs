@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -100,6 +101,8 @@ for (const failure of [
     expect(calls.reads.source).toBeGreaterThan(beforeReads.source);
     expect(await api(page, 'extensions')).toEqual(partial);
     await ui.getByRole('button', { name: 'Continue checking this example', exact: true }).click();
+    await expect(ui.getByRole('button', { name: 'Continue checking this example', exact: true })).toHaveCount(0);
+    await openSavedChanges(page);
     const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     const completed = await api(page, 'extensions');
@@ -115,21 +118,15 @@ for (const failure of [
     expect(proof.revisionId).toBe(completed.draft.id);
     expect(proof.reports).toHaveLength(5);
     expect(proof.reports.every(item => item.report.status === 'PASS')).toBe(true);
-    const invitations = decision.getByRole('button', { name: /^Show the .* example$/ });
-    await expect(invitations).toHaveCount(1);
-    await invitations.click();
-    const preview = ui.getByRole('region', { name: 'Customization preview', exact: true });
-    for (const title of ['What an unfinished task would show', 'What a completed task would show', 'What happens with missing task', 'What happens with task access denied', 'What happens with read temporarily unavailable']) {
-      if (await preview.locator('#studio-results-heading').innerText() !== title) {
-        const other = preview.getByText('Other checked examples', { exact: true }).locator('..');
-        if (!await other.evaluate(node => node.open)) await other.locator(':scope > summary').click();
-        await other.getByRole('button', { name: title, exact: true }).click();
-      }
-      await expect(preview.locator('.rs-example')).toHaveCount(1);
-      await expect(preview.getByText('Matches what you wanted', { exact: true })).toBeVisible();
+    await expect(decision.locator('.rs-example:visible')).toHaveCount(1);
+    await decision.getByText(/^Other checked examples/).click();
+    for (const label of ['Unfinished task', 'Completed task', 'Missing task', 'Task access denied', 'Read temporarily unavailable']) {
+      const example = decision.getByRole('article', { name: `Example: ${label}`, exact: true });
+      await expect(example).toBeVisible();
+      await expect(example.getByText('Matches what you wanted', { exact: true })).toBeVisible();
     }
-    await preview.getByRole('button', { name: 'Back to conversation', exact: true }).click();
-    await expect(invitations).toBeFocused();
+    await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+    await expect(ui.getByRole('button', { name: 'View saved changes', exact: true }).first()).toBeFocused();
     expect((await api(page, 'extensions')).approved).toBe(false);
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }

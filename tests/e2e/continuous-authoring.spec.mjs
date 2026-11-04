@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 // Public UI protocol fakes only. The isolated server has no configured provider.
@@ -348,6 +349,8 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
     expect(turns).toEqual([{ target: { kind: 'resume', extensionId }, conversationId: 'context-boundary', operationId: expect.any(String),
       text: 'Continue from saved work. Ask before changing any independent examples.', expectedVersion: 1, expectedDraftVersion: before.draftVersion }]);
     releaseSettled();
+    await expect(recovery).toHaveCount(0);
+    await openSavedChanges(page);
     const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(decision).toBeVisible();
     await expect(recovery).toHaveCount(0);
@@ -408,6 +411,8 @@ test('reloading an accepted context continuation keeps the prior decision hidden
   await page.screenshot({ path: testInfo.outputPath('context-continuation-running-after-reload.png'), fullPage: true });
   expect(turns).toHaveLength(1);
   current = { ...current, status: 'REVIEW_AVAILABLE', review, messages: [message('settled-reloaded', 'The accepted continuation settled.')] };
+  await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
+  await openSavedChanges(page);
   const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
   await expect(decision.getByRole('button', { name: 'Switch to this customization', exact: true })).toBeEnabled();
   await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);

@@ -99,6 +99,17 @@ test('discovery separates exact checked active v1 from checked Pending draft v2 
   assert.match(context.businessContext.navigation, /View what’s in use.*outside earlier-discussion or stale views/);
   assert.match(context.businessContext.navigation, /Inspect these saved examples.*saved review receipt/);
   assert.match(context.businessContext.navigation, /Inspect saved source and examples.*not a comparison screen/);
+  assert.match(context.businessContext.checking, /example tasks.*your tasks have not changed/);
+  assert.match(requests[0].instructions, /Call checks example tasks.*Your tasks have not changed/);
+  for (const guidance of [context.businessContext.navigation, requests[0].instructions]) {
+    for (const label of ['View saved changes', 'Your saved changes', 'View latest changes', 'Back to conversation',
+      'Approve this change', 'Turn on for my tasks', 'Switch to this customization']) assert.ok(guidance.includes(label));
+    assert.doesNotMatch(guidance, /beside Current decision|Show the unfinished task example/);
+    assert.match(guidance, /do not open or replace.*automatically|never open or replace.*automatically/);
+    assert.match(guidance, /read-only navigation|without creating or restoring changes/);
+    assert.match(guidance, /uncertain outcomes explicit/);
+    assert.match(guidance, /chat.*(?:neither approval nor activation|grants neither approval nor activation)/i);
+  }
 });
 
 test('an explicitly approved customer catalog version retains its exact checked synthetic summary', async t => {

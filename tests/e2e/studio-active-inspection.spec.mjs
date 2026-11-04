@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -59,9 +60,10 @@ test('active behavior uses its approved proof and a failed reread cannot show ca
     expect(reads.at(-1)).toBe(active.approvedEvidenceId);
     expect(await api(page, path)).toEqual(state);
     await activeView(page).getByRole('button', { name: 'Continue saved changes', exact: true }).click();
+    await openSavedChanges(page);
     const decision = studio(page).getByRole('article', { name: 'Current decision', exact: true });
-    await decision.getByRole('button', { name: 'Show the unfinished task example', exact: true }).click();
-    await expect(studio(page).locator('.rs-example dd')).toHaveText(['Pending', 'Pending']);
+    await expect(decision.getByRole('heading', { name: 'Your saved changes', exact: true })).toBeVisible();
+    await expect(decision.getByRole('article', { name: 'Example: Unfinished task', exact: true }).locator('dd')).toHaveText(['Pending', 'Pending']);
     expect(reads.at(-1)).toBe(draftProof);
     expect(await api(page, path)).toEqual(state);
     await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync } from 'node:fs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
@@ -11,7 +12,7 @@ async function openSaved(page, fixture, name) {
   await expect.poll(async () => await navigation.isVisible() || await destination.isVisible()).toBe(true);
   if (await navigation.isVisible()) await navigation.getByRole('button', { name: 'Customizations', exact: true }).click();
   else await destination.selectOption('customizations');
-  await page.getByRole('article', { name, exact: true }).getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('article', { name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/, exact: true }).click();
   await expect(studio(page).getByRole('heading', { name, exact: true })).toBeVisible();
 }
 
@@ -119,14 +120,16 @@ test('unfinished advice remains the primary exact example when completed cases w
     expect(saved.evidence.passed).toBe(true);
     await page.goto(fixture.origin + '/#customization=' + id);
     const ui = studio(page), decision = ui.getByRole('article', { name: 'Current decision', exact: true });
-    const invitation = decision.getByRole('button', { name: 'Show the unfinished task example', exact: true });
-    await invitation.click();
-    await expect(ui.getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
-    await expect(ui.locator('.rs-example')).toHaveCount(1);
-    await expect(ui.locator('.rs-example').getByText('Pending', { exact: true })).toHaveCount(2);
-    await expect(ui.locator('.rs-example-details')).toHaveJSProperty('open', false);
-    await ui.locator('.rs-example-details > summary').click();
-    await expect(ui.getByLabel('Saved synthetic simulation report', { exact: true })).toContainText(saved.evidence.id);
+    const invitation = ui.getByRole('button', { name: 'View saved changes', exact: true }).first();
+    await openSavedChanges(page);
+    await expect(decision.getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
+    const example = decision.getByRole('article', { name: 'Example: Unfinished task', exact: true });
+    await expect(example).toHaveCount(1);
+    await expect(example.getByText('Pending', { exact: true })).toHaveCount(2);
+    const exact = decision.getByLabel('Exact checked examples', { exact: true });
+    await expect(exact).toBeHidden();
+    await decision.getByText('Exact saved change and checks', { exact: true }).click();
+    await expect(exact).toContainText(saved.evidence.id);
     await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
     await expect(invitation).toBeFocused();
     expect(fixture.requests).toHaveLength(0);

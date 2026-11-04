@@ -105,9 +105,9 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     const oldConversationId = index.current.id;
     expect(index.current.status).toBe('AWAITING_USER');
 
-    const checked = studio(page).getByRole('button', { name: 'Show the unfinished task example', exact: true });
-    await expect(checked).toBeEnabled();
-    await checked.click();
+    await studio(page).getByRole('button', { name: 'History and details', exact: true }).click();
+    await studio(page).getByText('Saved sample runs', { exact: true }).click();
+    await studio(page).getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     await expect(studio(page).locator('.rs-preview')).toBeVisible();
     await expect(studio(page).getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
 

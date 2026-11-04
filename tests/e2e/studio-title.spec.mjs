@@ -14,7 +14,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }
       await page.goto(fixture.origin);
       await page.getByRole('button', { name: 'Continue as Maya' }).click();
       await page.getByLabel('Destination', { exact: true }).selectOption('customizations');
-      await page.getByRole('article', { name, exact: true }).getByRole('button', { name: 'Edit', exact: true }).click();
+      await page.getByRole('article', { name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/, exact: true }).click();
       const heading = page.getByRole('heading', { name, exact: true });
       await expect(heading).toBeVisible();
       await expect(page.getByText('This setup is in use.', { exact: true })).toBeVisible();

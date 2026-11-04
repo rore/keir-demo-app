@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -43,8 +44,13 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       await page.goto(`${fixture.origin}/#customization=${state.extension.id}`);
       const ui = studio(page);
       await expect(ui.getByRole('heading', { name: 'History integration', exact: true })).toBeVisible();
-      if (checked) await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+      if (checked) {
+        await openSavedChanges(page);
+        await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+      }
       const beginRestart = async () => {
+        if (await ui.locator('.rs-preview').isVisible())
+          await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
         await ui.getByRole('button', { name: 'View what’s in use', exact: true }).click();
         await ui.getByRole('button', { name: 'Start changes from this version', exact: true }).click();
         const confirmation = ui.getByRole('article', { name: 'Start from version in use', exact: true });

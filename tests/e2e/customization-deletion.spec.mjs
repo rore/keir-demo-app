@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 const navigation = page => page.getByRole('navigation', { name: 'Main navigation' });
@@ -61,15 +62,17 @@ test('a guided customization is created, checked, approved, used and deleted thr
     const ui = page.getByRole('region', { name: 'Customization Studio', exact: true });
     await ui.getByRole('button', { name: 'Try a guided example · no AI', exact: true }).click();
     await ui.getByRole('button', { name: 'Yes, keep Done for completed tasks', exact: true }).click();
+    await openSavedChanges(page);
     await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
     const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     const approved = await api(page, 'extensions/' + id); expect(approved.approved).toBe(true); expect(approved.evidence.passed).toBe(true);
     const proof = await api(page, `extensions/${id}/evidence/${approved.evidence.id}`);
     expect(proof.reports).toHaveLength(5); expect(proof.reports.every(item => item.report.status === 'PASS')).toBe(true);
     await ui.getByRole('button', { name: /^(Turn on for my tasks|Switch to this customization)$/ }).click();
-    await expect(ui.getByRole('heading', { name: 'On for your tasks', exact: true })).toBeVisible();
+    await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
+    await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeVisible();
     const active = await api(page, 'extensions/' + id); expect(active.selection.revision.id).toBe(approved.draft.id);
-    await ui.getByRole('button', { name: 'Return to customizations', exact: true }).click();
+    await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
     const saved = card(page, id); await saved.getByRole('button', { name: 'Delete', exact: true }).click(); await saved.locator('#customization-delete-confirm').click();
     await expect(saved).toHaveCount(0); expect((await api(page, 'extensions')).selection.revision).toBeNull();
     await api(page, 'extensions/' + id, undefined, 404); expect(fixture.requests).toHaveLength(0);

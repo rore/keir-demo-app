@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -382,7 +383,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   await expect(heading).toContainText('Messages use your configured assistant');
   await expect(heading).not.toContainText(available.provider);
   await expect(heading).not.toContainText(available.model);
-  const offerButton = authoring(page).getByRole('button', { name: eligible ? 'Show the unfinished task example' : 'Inspect these saved examples', exact: true });
+  const offerButton = authoring(page).getByRole('button', { name: eligible ? 'View saved changes' : 'Inspect these saved examples', exact: true }).first();
   await expect(offerButton).toBeInViewport();
   await expect(offerButton).toBeEnabled();
   if (width === 683) {
@@ -405,7 +406,6 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   expect(requested).toEqual([first.evidence.id]);
   expect((await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json()).approved).toBe(false);
   if (eligible) {
-    await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await ui.getByText('Exact saved change and checks', { exact: true }).click();
     const savedSource = ui.getByLabel('Saved source for approval', { exact: true });
@@ -419,6 +419,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     await ui.locator('.rs-example-details > summary').click();
     await expect(ui.getByText(/Earlier run for current proposal/)).toBeVisible();
     await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+    await openSavedChanges(page);
     const currentDecision = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(currentDecision).toBeVisible();
     await currentDecision.getByText('Exact saved change and checks', { exact: true }).click();
