@@ -71,7 +71,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     const diagnostics = error instanceof AppError && Array.isArray(error.diagnostics)
       && Buffer.byteLength(JSON.stringify(error.diagnostics)) <= 16384 ? error.diagnostics : undefined;
     reply.code(status).send({ message: status >= 500 && !(error instanceof AppError) ? 'Something could not be saved. Please try again.' : error.message,
-      ...(diagnostics ? { diagnostics } : {}), ...(AUTHORING_CODES.includes(error.code) ? { code: error.code } : {}) });
+      ...(diagnostics ? { diagnostics } : {}), ...([...AUTHORING_CODES, 'CUSTOMIZATION_DELETED', 'CUSTOMIZATION_BUSY'].includes(error.code) ? { code: error.code } : {}) });
   });
   app.get('/api/session', request => {
     const session = current(request);
@@ -160,6 +160,12 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 2
         || !['name', 'expectedName'].every(field => Object.hasOwn(input, field))) throw new AppError(400, 'Use only the name and expected name.');
     return lifecycleResponse(lifecycle.rename(session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request)));
+  });
+  app.post('/api/extensions/:extensionId/delete', request => {
+    noQuery(request); const session = authorize(request), input = request.body;
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 3
+        || !['expectedName', 'draftVersion', 'generation'].every(field => Object.hasOwn(input, field))) throw new AppError(400, 'Use only the exact name, draft version and selection generation.');
+    return lifecycleResponse(lifecycle.delete(session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request), () => ai.assertItemIdle(session.userId, request.params.extensionId)));
   });
   app.get('/api/extensions/:extensionId/evidence/:id', request => { noQuery(request); return lifecycleResponse(lifecycle.evidence(authorize(request).userId, request.params.id, request.params.extensionId)); });
   for (const [path, method] of [['evidence', 'evidencePage'], ['revisions', 'revisionPage'], ['restore-targets', 'restorePage']]) {

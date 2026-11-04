@@ -18,12 +18,13 @@ const legacyAuthoringDDL = `CREATE TABLE authoring_conversations(id TEXT PRIMARY
   CREATE INDEX authoring_conversations_owner ON authoring_conversations(owner_id,updated_at);
   PRAGMA user_version=5;`;
 const snapshot = db => Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
-  .map(({ name }) => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
+  .map(({ name }) => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all().map(({ deleted_at, ...row }) => row)]));
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'keir-continuous-migration-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'app.sqlite');
   const db = openData(path);
+  db.exec('ALTER TABLE extensions DROP COLUMN deleted_at');
   db.exec('DROP TABLE authoring_dispatches; DROP TABLE authoring_messages; DROP TABLE authoring_operations; DROP TABLE authoring_conversations;');
   db.exec(legacyAuthoringDDL);
   return { db, path };
@@ -59,7 +60,7 @@ test('V5 history migration preserves exact messages, receipts, operations, holds
   const before = snapshot(db);
   db.close();
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 7);
   assert.equal(upgraded.prepare('PRAGMA foreign_keys').get().foreign_keys, 1);
   const after = snapshot(upgraded);
   for (const [table, rows] of Object.entries(before)) if (table !== 'authoring_conversations') assert.deepEqual(after[table], rows, table);

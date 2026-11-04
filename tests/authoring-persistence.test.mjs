@@ -41,7 +41,7 @@ test('populated v3 migrates once, retaining every native/lifecycle byte and exis
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
   assert.equal(db.prepare("SELECT draft_revision_id FROM extensions WHERE owner_id='owner-a'").get().draft_revision_id, revision);
   assert.deepEqual(snapshot(db, existingTables), original);
   assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 0 });

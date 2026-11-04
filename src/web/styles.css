@@ -761,6 +761,7 @@ p {
 }
 .customization-card {
   display:flex;
+  flex-wrap:wrap;
   align-items:flex-start;
   gap:20px;
   padding:24px;
@@ -770,6 +771,11 @@ p {
   max-width:1000px;
   margin-top:32px;
 }
+.customization-actions, .customization-delete-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.customization-actions { align-items:flex-start; }
+.customization-delete { flex-basis:100%; padding:16px; border:1px solid var(--line); border-radius:6px; background:#faf8f5; }
+.customization-delete p { margin:12px 0; }
+.customization-delete-actions .primary { white-space:normal; overflow-wrap:anywhere; max-width:100%; }
 .customization-icon {
   display:grid;
   place-items:center;
@@ -842,7 +848,7 @@ p {
   .customization-card {
     flex-wrap:wrap;
   }
-  .customization-card>.primary {
+  .customization-card>.customization-actions {
     margin-left:64px;
   }
   .welcome-main {
@@ -984,7 +990,7 @@ p {
     width:36px;
     height:40px;
   }
-  .customization-card>.primary {
+  .customization-card>.customization-actions {
     margin-left:48px;
   }
   .customization-copy {

@@ -5,6 +5,7 @@ import { AppError, notFound, transaction } from './data.mjs';
 import { loadCatalog, loadHost, admitArtifact, hostBindings, digest, json, consumer, hook } from './extension-catalog.mjs';
 
 const conflict = () => { throw new AppError(409, 'This extension changed. Review the current version before trying again.'); };
+const deleted = () => { const error = new AppError(410, 'This customization was deleted. Return to your customizations.'); error.code = 'CUSTOMIZATION_DELETED'; throw error; };
 const suite = 'task-advice-lifecycle/1', fixtureVersion = 'task-advice-fixtures/1';
 const authoredSuite = 'task-advice-authored/1', authoredFixture = 'task-advice-authored-fixtures/1';
 const safeCodes = new Set(['AUTHORITY_DENIED', 'AUTHORITY_CHECK_FAILED', 'HOST_CONTEXT_INVALID', 'HOST_BINDING_INVALID', 'INPUT_INVALID',
@@ -83,11 +84,12 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       label: item?.label ?? 'Unavailable advice', pins, provenance: row.provenance,
       suiteDigest: row.template_id === 'authored' ? item?.pins.suiteDigest ?? null : null };
   }
-  function draft(owner, extensionId) {
+  function draft(owner, extensionId, terminal = false) {
     if (typeof extensionId !== 'string' || !extensionId) throw notFound();
     // BLOB reads preserve embedded NUL in legacy names; SQLite TEXT readback truncates it.
     const state = db.prepare('SELECT *,CAST(name AS BLOB) AS name_bytes,draft_revision_id AS draft_id FROM extensions WHERE owner_id=? AND id=?').get(owner, extensionId);
     if (!state) throw notFound();
+    if (state.deleted_at !== null) { if (terminal) deleted(); throw notFound(); }
     return { ...state, name: Buffer.from(state.name_bytes).toString('utf8') };
   }
   function selection(owner) {
@@ -132,6 +134,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     } catch { return false; }
   }
   function eligible(row) {
+    if (row && !db.prepare('SELECT 1 FROM extensions e JOIN extension_revision_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=? AND e.deleted_at IS NULL').get(row.owner_id, row.id)) return false;
     if (!valid(row)) return false;
     if (row.provenance === 'operator') return !!db.prepare("SELECT 1 FROM extension_history WHERE owner_id=? AND revision_id=? AND operation='operator'").get(row.owner_id, row.id);
     const approval = db.prepare('SELECT * FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(row.owner_id, row.id);
@@ -246,6 +249,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
   function creation(owner, operationId, hash) {
     const row = db.prepare('SELECT id,creation_hash FROM extensions WHERE owner_id=? AND creation_operation_id=?').get(owner, operationId);
     if (row && row.creation_hash !== hash) conflict();
+    if (row) draft(owner, row.id, true);
     return row;
   }
   function creationInput(operationId, hash, name) {
@@ -289,6 +293,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       responseCheck: (capability, args, response) => capability === 'tasks.get' && (response.kind !== 'SUCCESS' || response.value.id === args.taskId) };
   }
   const api = {
+    assertAvailable(owner, extensionId, terminal = false) { draft(owner, extensionId, terminal); },
     hostCatalog() {
       return host ? { ...host.catalog, model: { dcm: host.dcmBytes.toString('utf8'), digest: host.pins.modelDigest,
         profile: host.pins.profile, hook: host.pins.hook, consumer: host.pins.consumer, compiler: host.pins.compiler } } : { hooks: [] };
@@ -297,7 +302,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       const base = { owner: ownerView(owner), selection: selectionView(owner), catalog: choices(), hostCatalog: host?.catalog ?? { hooks: [] } };
       const anchor = readCursor(before, 'collection', owner);
       if (anchor && !db.prepare('SELECT 1 FROM extensions WHERE owner_id=? AND created_at=? AND id=?').get(owner, anchor.at, anchor.id)) invalidCursor();
-      const rows = db.prepare(`SELECT id,created_at AS at FROM extensions WHERE owner_id=?
+      const rows = db.prepare(`SELECT id,created_at AS at FROM extensions WHERE owner_id=? AND deleted_at IS NULL
         ${anchor ? 'AND (created_at<? OR (created_at=? AND id<?))' : ''} ORDER BY created_at DESC,id DESC LIMIT 21`)
         .all(owner, ...(anchor ? [anchor.at, anchor.at, anchor.id] : []));
       return boundedPage(rows, row => {
@@ -313,6 +318,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       if (typeof operationId !== 'string' || !operationId || operationId.length > 128) throw new AppError(400, 'Use a valid creation operation.');
       const row = db.prepare('SELECT id FROM extensions WHERE owner_id=? AND creation_operation_id=?').get(owner, operationId);
       if (!row) throw notFound();
+      draft(owner, row.id, true);
       return api.state(owner, row.id);
     },
     evidencePage(owner, extensionId, before) {
@@ -351,7 +357,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       if (existing) return api.state(owner, existing.id);
       if (typeof extensionId !== 'string' || !extensionId || extensionId.length > 128) throw new AppError(400, 'Use a valid extension identity.');
       if (db.prepare('SELECT 1 FROM extensions WHERE id=?').get(extensionId)) conflict();
-      db.prepare('INSERT INTO extensions VALUES (?,?,NULL,?,?,?,?,0,NULL)').run(extensionId, owner, name.trim(), Date.now(), operationId, hash);
+      db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,creation_operation_id,creation_hash,draft_version,draft_revision_id) VALUES (?,?,NULL,?,?,?,?,0,NULL)').run(extensionId, owner, name.trim(), Date.now(), operationId, hash);
       authorize(); return api.state(owner, extensionId);
     },
     async createFromSource(owner, input, authorize, { signal } = {}) {
@@ -369,6 +375,28 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         api.admit(owner, { extensionId, operationId: input.operationId, hash, name }, authorize);
         saveAuthored(owner, extensionId, value);
         authorize(); return api.state(owner, extensionId);
+      });
+    },
+    delete(owner, input, authorize, assertIdle = () => {}) {
+      return transaction(db, () => {
+        authorize();
+        if (typeof input.expectedName !== 'string' || !input.expectedName.isWellFormed()
+            || !Number.isSafeInteger(input.draftVersion) || input.draftVersion < 0
+            || !Number.isSafeInteger(input.generation) || input.generation < 0) throw new AppError(400, 'Use the exact name, draft version and selection generation.');
+        const retained = db.prepare('SELECT deleted_at FROM extensions WHERE owner_id=? AND id=?').get(owner, input.extensionId);
+        if (!retained) throw notFound();
+        if (retained.deleted_at !== null) return { extensionId: input.extensionId, deletedAt: retained.deleted_at };
+        const state = draft(owner, input.extensionId), active = selection(owner);
+        if (state.name !== input.expectedName || state.draft_version !== input.draftVersion || active.generation !== input.generation) conflict();
+        assertIdle();
+        if (db.prepare("SELECT 1 FROM authoring_conversations c JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE l.owner_id=? AND l.extension_id=? AND c.status IN ('RUNNING','CANCELLING')").get(owner, input.extensionId)) {
+          const error = new AppError(409, 'Open this customization and use Stop, then wait for authoring to settle before deleting it.'); error.code = 'CUSTOMIZATION_BUSY'; throw error;
+        }
+        if (active.revision_id && db.prepare('SELECT 1 FROM extension_revision_links WHERE owner_id=? AND extension_id=? AND revision_id=?').get(owner, input.extensionId, active.revision_id)) change(owner, active.generation, null, 'disable');
+        const deletedAt = Date.now();
+        db.prepare('UPDATE extensions SET deleted_at=? WHERE owner_id=? AND id=?').run(deletedAt, owner, input.extensionId);
+        authorize();
+        return { extensionId: input.extensionId, deletedAt };
       });
     },
     rename(owner, input, authorize) {
@@ -530,7 +558,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         if (!anchor) invalidCursor();
       }
       const rows = extensionId === undefined
-        ? db.prepare('SELECT id,generation,operation,revision_id AS revisionId FROM extension_history WHERE owner_id=? AND id<? ORDER BY id DESC LIMIT 21').all(owner, before ?? Number.MAX_SAFE_INTEGER)
+        ? db.prepare('SELECT h.id,h.generation,h.operation,h.revision_id AS revisionId FROM extension_history h WHERE h.owner_id=? AND h.id<? AND (h.revision_id IS NULL OR EXISTS(SELECT 1 FROM extension_revision_links l JOIN extensions e ON e.id=l.extension_id AND e.owner_id=l.owner_id WHERE l.owner_id=h.owner_id AND l.revision_id=h.revision_id AND e.deleted_at IS NULL)) ORDER BY h.id DESC LIMIT 21').all(owner, before ?? Number.MAX_SAFE_INTEGER)
         : db.prepare('SELECT h.id,h.generation,h.operation,h.revision_id AS revisionId FROM extension_history h JOIN extension_revision_links l ON l.revision_id=h.revision_id AND l.owner_id=h.owner_id WHERE h.owner_id=? AND h.id<? AND l.extension_id=? ORDER BY h.id DESC LIMIT 21').all(owner, before ?? Number.MAX_SAFE_INTEGER, extensionId);
       return boundedPage(rows, row => ({ ...row, label: row.revisionId ? view(revision(owner, row.revisionId, extensionId)).label : null }), row => row.id);
     },

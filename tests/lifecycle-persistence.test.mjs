@@ -37,7 +37,7 @@ function legacy(path) {
 test('populated v1 migrates once, preserving every native row with explicit operator provenance and no fake approval', t => {
   const { path } = fixture(t), original = legacy(path);
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
   assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), original);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
@@ -82,7 +82,7 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
   db.close();
 
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 7);
   assert.deepEqual(upgraded.prepare('SELECT * FROM tasks ORDER BY id').all(), native);
   for (const [table, rows] of Object.entries(lifecycle)) {
     if (table === 'extension_states') {

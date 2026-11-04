@@ -335,6 +335,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [pendingExample, setPendingExample] = useState(() => pendingGuidedRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId)) ?? null);
   const [exampleRetry, setExampleRetry] = useState(false);
   const [recoveryError, setRecoveryError] = useState("");
+  const [deleted, setDeleted] = useState(false);
+  const deletedRef = useRef(false);
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupNotice, setSetupNotice] = useState("");
   const setupInvoker = useRef<HTMLElement | null>(null);
@@ -424,6 +426,21 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       else sessionStorage.removeItem(recoveryKey);
     } catch { setRecoveryError("This browser could not save recovery information. Keep this page open until the submitted request is confirmed."); }
     setPendingTurn(value);
+  }
+  function deletedOutcome(failure: unknown, kind: "turn" | "example", operationId: string) {
+    const problem = failure as { status?: number; code?: string };
+    if (problem?.status !== 410 || problem.code !== "CUSTOMIZATION_DELETED") return false;
+    const key = recoveryKey + (kind === "example" ? ":example" : "");
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key) ?? "null");
+      if (saved?.operationId === operationId) sessionStorage.removeItem(key);
+    } catch { setRecoveryError("This browser could not clear the matching recovery entry. Returning to it will check the same saved outcome."); }
+    if (kind === "turn") setPendingTurn(old => old?.operationId === operationId ? null : old);
+    else setPendingExample(old => old?.operationId === operationId ? null : old);
+    deletedRef.current = true; setDeleted(true); setTrusted(false); setRetryTurn(false); setExampleRetry(false);
+    setAuthoringError(""); setError(""); setConversation(null); setMessages([]); setState(null);
+    requestAnimationFrame(() => { if (mounted.current) document.getElementById("studio-deleted-title")?.focus(); });
+    return true;
   }
   function turnTarget(): TurnTarget {
     if (!extensionId.current) return { kind: "create" };
@@ -731,9 +748,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion });
   }
   async function recoverTurn(input: Turn, turn: number) {
-    const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
-    if (!mounted.current || serial.current !== turn) return;
-    setAuthoring(index);
     try {
       const recovered = await callbacks.current.request<{ operation: Operation; conversation: Conversation }>("authoring/recover", "POST", input, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
@@ -741,12 +755,17 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         || !recovered.operation.runId || recovered.conversation.version < recovered.operation.version
         || input.conversationId && recovered.conversation.id !== input.conversationId
         || input.target.kind !== "create" && recovered.conversation.extensionId !== input.target.extensionId) throw new Error("Operation customization mismatch");
+      const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn) return;
+      setAuthoring(index);
       await adoptConversation(recovered.conversation, turn, input.conversationId === null ? input.operationId : undefined);
       if (!mounted.current || serial.current !== turn) return;
       retainTurn(null); setRetryTurn(false); setAuthoringError("");
       setText(value => value === input.text ? "" : value);
       return;
     } catch (failure) {
+      if (!mounted.current || serial.current !== turn) return;
+      if (deletedOutcome(failure, "turn", input.operationId)) return;
       if ((failure as { status?: number }).status !== 404) throw failure;
     }
     if (!mounted.current || serial.current !== turn) return;
@@ -773,6 +792,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           retainTurn(null); setText(value => value === input.text ? "" : value); setObservationPaused(false);
         } catch (failure) {
           if (!mounted.current || serial.current !== turn) return;
+          if (deletedOutcome(failure, "turn", input.operationId)) return;
           if ((failure as { status?: number }).status === 409 && ["STALE_DRAFT", "STALE_CONVERSATION", "STALE_CONTEXT"].includes((failure as { code?: string }).code ?? "") && input.target.kind !== "create") {
             const saved = await callbacks.current.request<State>(extensionPath(input.target.extensionId), "GET", undefined, authoringLifetime.current.signal);
             if (!mounted.current || serial.current !== turn) return;
@@ -802,7 +822,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           await recoverTurn(input, turn);
         }
       }
-    } catch {
+    } catch (failure) {
+      if (mounted.current && serial.current === turn && deletedOutcome(failure, "turn", input.operationId)) return;
       if (mounted.current && serial.current === turn) setAuthoringError("The submitted request's outcome could not be checked. Check authoring status before retrying; nothing will be sent automatically.");
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
@@ -822,13 +843,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   useEffect(() => {
     mounted.current = true;
     document.getElementById("studio-title")?.focus();
-    void refresh().then(async loaded => {
-      if (!mounted.current || !loaded) return;
+    void (async () => {
       if (pendingTurn) await submitAuthoring(pendingTurn, true);
       else if (pendingExample) await checkExampleRequest();
-      else await loadAuthoring(initialTarget.current.conversationId ?? (initialTarget.current.extensionId ? undefined : null), loaded);
+      if (!mounted.current || deletedRef.current) return;
+      const loaded = await refresh();
+      if (!mounted.current || !loaded) return;
+      if (!pendingTurn && !pendingExample) await loadAuthoring(initialTarget.current.conversationId ?? (initialTarget.current.extensionId ? undefined : null), loaded);
       if (mounted.current && entry === "start") document.getElementById("studio-message")?.focus();
-    });
+    })();
     void readHostCatalog();
     const visibility = () => setVisible(!document.hidden);
     document.addEventListener("visibilitychange", visibility);
@@ -1158,7 +1181,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     locked.current = true; const turn = ++serial.current;
     setBusy("Checking the submitted example…"); setError(""); setExampleRetry(false);
     try { await readExampleRequest(pendingExample.operationId, pendingExample.personal, turn); }
-    catch { if (mounted.current && serial.current === turn) { setTrusted(false); setError("The submitted example could not be checked. Check its saved status before retrying."); } }
+    catch (failure) { if (mounted.current && serial.current === turn && !deletedOutcome(failure, "example", pendingExample.operationId)) { setTrusted(false); setError("The submitted example could not be checked. Check its saved status before retrying."); } }
     finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   async function prepareExample() {
@@ -1199,8 +1222,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       say(proof.passed && observed ? "The examples match: open tasks show Needs attention, completed tasks show Done, and unavailable tasks show no advice. This is only a proposal; your current setup is unchanged."
         : observed ? "An example did not match what you wanted. Your current setup is unchanged; this proposal cannot be approved."
           : "Some example results were not observed. Your current setup is unchanged; this proposal cannot be approved.", "Studio", proof.id, proof.reports.length);
-    } catch {
+    } catch (failure) {
       if (!mounted.current || serial.current !== turn) return;
+      if (exampleOperation.current && deletedOutcome(failure, "example", exampleOperation.current)) return;
       setTrusted(false);
       say("The example could not finish here. Some preparation may have been saved. I'll check saved state before you decide what to do next.");
       try {
@@ -1213,7 +1237,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         apply(saved); exampleRevision.current = null;
         if (await recognizeExample(saved, example, turn)) say("The saved part of this example is ready. You can explicitly continue checking it without replacing your proposal.");
       }
-      catch { if (mounted.current && serial.current === turn) setError("Saved state could not be confirmed. Reload saved state before another change."); }
+      catch (failure) { if (mounted.current && serial.current === turn && !(exampleOperation.current && deletedOutcome(failure, "example", exampleOperation.current))) setError("Saved state could not be confirmed. Reload saved state before another change."); }
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   async function returnToPersonal() {
@@ -1262,6 +1286,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       (invoker?.isConnected && invoker.getClientRects().length ? invoker : document.getElementById("assistant-configure") ?? document.getElementById("studio-message"))?.focus({ preventScroll: true });
     });
   }
+  if (deleted) return <section className="read-studio" aria-label="Customization Studio"><header className="rs-header"><h1 id="studio-deleted-title" tabIndex={-1}>Customization deleted</h1></header>
+    <p role="status">This submitted request belongs to a deleted customization. It cannot be continued. Nothing was retried or created.</p>
+    {recoveryError && <p role="alert">{recoveryError}</p>}
+    <button className="quiet-button" onClick={() => callbacks.current.unavailable()}>Back to Customizations</button></section>;
   return <section className={`read-studio${reviewOpen ? " rs-review-open" : ""}`} aria-label="Customization Studio">
     <div className="sr-only" role="status">{busy || notice}</div>
     <header className="rs-header"><div><p className="rs-breadcrumb">Customizations / Studio</p><div className="rs-title"><h1 id="studio-title" tabIndex={-1} title={state?.extension?.name}>{state?.extension?.name ?? (target.extensionId ? "Opening customization…" : legacyConversation ? "Earlier conversation" : target.conversationId ? "Opening conversation…" : "New customization")}</h1>

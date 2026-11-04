@@ -79,6 +79,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   }
   function messagePage(owner, id, before, maxBytes = 262144) {
     if (!rowFor(owner, id)) throw error(404, 'STALE_CONVERSATION');
+    const link = linkFor(owner, id);
+    if (link) lifecycle.assertAvailable(owner, link.extension_id);
     const scope = encode(['messages', owner, id]);
     const anchor = before === undefined ? null : parseCursor(before, scope);
     if (anchor && (Object.keys(anchor).length !== 3 || !integer(anchor.sequence) || typeof anchor.inclusive !== 'boolean'
@@ -127,7 +129,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const args = [owner, ...(extensionId === undefined ? [] : [extensionId])];
     if (anchor && (Object.keys(anchor).length !== 3 || !token(anchor.id) || !integer(anchor.createdAt)
         || !db.prepare(`SELECT 1 FROM authoring_conversations c LEFT JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE c.owner_id=?${filter} AND c.id=? AND c.created_at=?`).get(...args, anchor.id, anchor.createdAt))) throw error(400, 'INVALID_TOOL_ARGUMENTS');
-    const query = `SELECT c.* FROM authoring_conversations c LEFT JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE c.owner_id=?${filter}`;
+    const query = `SELECT c.* FROM authoring_conversations c LEFT JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE c.owner_id=?${filter} AND (l.extension_id IS NULL OR EXISTS(SELECT 1 FROM extensions e WHERE e.owner_id=l.owner_id AND e.id=l.extension_id AND e.deleted_at IS NULL))`;
     const rows = db.prepare(`${query}${anchor ? ' AND (c.created_at<? OR (c.created_at=? AND c.id<?))' : ''} ORDER BY c.created_at DESC,c.id DESC LIMIT 21`)
       .all(...args, ...(anchor ? [anchor.createdAt, anchor.createdAt, anchor.id] : []));
     const page = rows.slice(0, 20), last = page.at(-1);
@@ -191,7 +193,10 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
             { extensionId: ctx.extensionId, operationId: ctx.input.operationId, hash: ctx.hash, name: 'Untitled customization' }, () => assertLease(ctx.lease));
           const current = lifecycle.state(ctx.owner, ctx.extensionId); if (current.draftVersion !== ctx.input.expectedDraftVersion) stop('STALE_DRAFT');
           state.runLedger = { base: prior?.state.usage.reservedMicros ?? 0, reserved: 0, ordinal: 0 };
-        } else if (!row || row.run_id !== ctx.runId || row.version !== state.version || row.cancel_requested || row.status !== 'RUNNING') stop('STALE_CONTEXT');
+        } else {
+          if (!row || row.run_id !== ctx.runId || row.version !== state.version || row.cancel_requested || row.status !== 'RUNNING') stop('STALE_CONTEXT');
+          lifecycle.assertAvailable(ctx.owner, ctx.extensionId);
+        }
         const previous = cp.phase === 'ADMIT' ? prior?.state ?? state : prior.state;
         for (const group of ['counts', 'usage']) for (const [key, n] of Object.entries(state[group])) {
           if (!integer(n) || n < previous[group][key]) stop('HOST_RESULT_INVALID');
@@ -362,6 +367,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const priorOperation = row && db.prepare('SELECT operation_id AS id,body_hash AS hash,run_id AS runId,admitted_version AS version FROM authoring_operations WHERE conversation_id=? AND owner_id=? AND operation_id=?').get(row.id, owner, input.operationId);
     if (priorOperation) {
       if (priorOperation.hash !== hash) throw error(409, 'STALE_CONVERSATION');
+      const link = linkFor(owner, row.id);
+      if (link) lifecycle.assertAvailable(owner, link.extension_id, true);
       return { duplicate: { operation: operation(priorOperation.id, priorOperation.runId, priorOperation.version), conversation: dto(row) } };
     }
     if (row && db.prepare('SELECT 1 FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(row.id, input.operationId)) throw error(409, 'STALE_CONVERSATION');
@@ -402,6 +409,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       budget: { remainingMicros: Math.max(0, config.maxMicros - held()) },
       current: () => {
         if (closing || controller.signal.aborted || lease.current() !== true) return false;
+        if (ctx.admitted || input.target.kind !== 'create') {
+          try { lifecycle.assertAvailable(owner, extensionId); } catch { return false; }
+        }
         const saved = rowFor(owner, id);
         return ctx.admitted ? saved?.run_id === runId && saved.cancel_requested === 0 && linkFor(owner, id)?.extension_id === extensionId
           : !saved || saved.version === input.expectedVersion;
@@ -459,6 +469,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     assertLease(lease);
     if (!object(input) || Object.keys(input).length !== 2 || !token(input.runId) || !integer(input.expectedVersion)) throw error(400, 'INVALID_TOOL_ARGUMENTS');
     const row = rowFor(owner, id); if (!row) throw error(404, 'STALE_CONVERSATION');
+    const link = linkFor(owner, id);
+    if (link) lifecycle.assertAvailable(owner, link.extension_id);
     if (row.run_id !== input.runId || row.version !== input.expectedVersion) throw error(409, 'STALE_CONVERSATION');
     if (['RUNNING', 'CANCELLING'].includes(row.status)) {
       db.prepare("UPDATE authoring_conversations SET cancel_requested=1,status='CANCELLING' WHERE id=? AND owner_id=? AND run_id=? AND version=?")
@@ -469,6 +481,12 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   }
   return {
     list, read, turn, cancel, availability, messages: messagePage,
+    assertItemIdle(owner, extensionId) {
+      if ([...live.values()].some(ctx => ctx.owner === owner && ctx.extensionId === extensionId)) {
+        const failure = new AppError(409, 'Open this customization and use Stop, then wait for authoring to settle before deleting it.');
+        failure.code = 'CUSTOMIZATION_BUSY'; throw failure;
+      }
+    },
     recover(owner, input) {
       validate(input);
       const row = input.conversationId ? rowFor(owner, input.conversationId)
@@ -478,6 +496,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       if (receipt.body_hash !== digest(Buffer.from(json(input)))) throw error(409, 'STALE_CONVERSATION');
       const link = linkFor(owner, row.id);
       if (!link || input.target.kind !== 'create' && input.target.extensionId !== link.extension_id) throw error(404, 'STALE_CONVERSATION');
+      lifecycle.assertAvailable(owner, link.extension_id, true);
       return { operation: operation(receipt.operation_id, receipt.run_id, receipt.admitted_version), conversation: dto(row) };
     },
     configure(next, persist) {

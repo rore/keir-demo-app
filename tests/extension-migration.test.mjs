@@ -33,7 +33,7 @@ test('V4 migration preserves immutable rows and budgets, links only proven legac
   db.close();
 
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 7);
   const after = snapshot(upgraded, preservedTables);
   for (const table of preservedTables.filter(table => table !== 'authoring_conversations')) assert.deepEqual(after[table], before[table], table);
   assert.deepEqual(after.authoring_conversations.map(row => ({ ...row })), before.authoring_conversations.map(row =>

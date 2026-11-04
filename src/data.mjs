@@ -19,7 +19,7 @@ function seedLifecycle(db) {
       db.prepare('INSERT INTO extension_revisions VALUES (?, ?, ?, ?, ?)').run(revisionId, user.id, template.id, template.identity, 'operator');
       if (scoped) {
         const extensionId = randomUUID();
-        db.prepare('INSERT INTO extensions VALUES (?,?,?,?,?,NULL,NULL,0,NULL)').run(extensionId, user.id, 'ClassifyTask', 'Task advice (saved setup)', Date.now());
+        db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,creation_operation_id,creation_hash,draft_version,draft_revision_id) VALUES (?,?,?,?,?,NULL,NULL,0,NULL)').run(extensionId, user.id, 'ClassifyTask', 'Task advice (saved setup)', Date.now());
         db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(revisionId, user.id, extensionId);
       }
     }
@@ -118,7 +118,7 @@ function migrateExtensions(db) {
         continue;
       }
       const id = randomUUID();
-      db.prepare('INSERT INTO extensions VALUES (?,?,?,?,?,NULL,NULL,0,NULL)').run(id, state.owner_id, 'ClassifyTask', 'Task advice (saved setup)', Date.now());
+      db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,creation_operation_id,creation_hash,draft_version,draft_revision_id) VALUES (?,?,?,?,?,NULL,NULL,0,NULL)').run(id, state.owner_id, 'ClassifyTask', 'Task advice (saved setup)', Date.now());
       for (const row of revisions) db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(row.id, state.owner_id, id);
       db.prepare('UPDATE extensions SET draft_version=?,draft_revision_id=? WHERE id=?').run(state.draft_version, state.draft_id, id);
     }
@@ -290,12 +290,15 @@ export function openData(path) {
         `);
         seedRows(db);
       });
-    } else if (![1, 2, 3, 4, 5, 6].includes(version)) throw new Error('Unsupported database version; no data was reset.');
+    } else if (![1, 2, 3, 4, 5, 6, 7].includes(version)) throw new Error('Unsupported database version; no data was reset.');
     if (version < 2) migrateLifecycle(db);
     if (version < 3) migrateAuthored(db);
     if (version < 4) migrateAuthoring(db);
     if (version < 5) migrateExtensions(db);
     if (version < 6) migrateAuthoringHistory(db);
+    if (version < 7) transaction(db, () => {
+      db.exec('ALTER TABLE extensions ADD COLUMN deleted_at INTEGER CHECK(deleted_at IS NULL OR deleted_at>=0); PRAGMA user_version=7;');
+    });
     return db;
   } catch (error) { db.close(); throw error; }
 }
