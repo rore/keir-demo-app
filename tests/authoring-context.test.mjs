@@ -115,6 +115,9 @@ test('agent discovery sends static supported context and worked source/scenario 
   assert.equal(requests.length, 2);
   assert.match(requests[0].instructions, /plain text, without Markdown, tool names, UUIDs/);
   assert.match(requests[0].instructions, /two or three concise sentences/);
+  assert.match(requests[0].instructions, /display name through Rename/);
+  assert.match(requests[0].instructions, /Authoring tools do not rename it/);
+  assert.match(requests[0].instructions, /never claim it was saved or invent a naming tool/);
   const receipt = JSON.parse(requests[1].input.find(item => item.type === 'function_call_output').output).result;
   assert.deepEqual(receipt.businessContext, businessContext);
   assert.ok(receipt.sourceExample.includes('NEEDS_ATTENTION'));

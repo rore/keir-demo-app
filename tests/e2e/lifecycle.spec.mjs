@@ -98,7 +98,10 @@ async function inspectActive(page, label) {
   const view = studio(page).getByRole('button', { name: 'View what’s in use', exact: true });
   if (await view.isVisible()) {
     await view.click();
-    await expect(studio(page).getByRole('article', { name: 'Version in use' })).toContainText('“' + label + '”');
+    const active = studio(page).getByRole('article', { name: 'Version in use' });
+    await active.getByText('Saved version details', { exact: true }).click();
+    await expect(active.getByText('Label: ' + label, { exact: true })).toBeVisible();
+    expect((await savedLifecycle(page, page.url())).selection.revision.label).toBe(label);
   } else {
     await expect(studio(page).getByLabel('Customization status', { exact: true })).toContainText('In use');
     expect((await savedLifecycle(page, page.url())).selection.revision.label).toBe(label);
@@ -179,13 +182,13 @@ test('lost activation response is read back before retry; historical evidence ca
   const selected = await savedLifecycle(page, demo.origin);
   await lifecyclePost(page, 'draft', { templateId: 'pending', draftVersion: selected.draftVersion });
   await reloadStudio(page); await latestExamples(page);
-  await ui.getByText('About these examples', { exact: true }).click();
+  await ui.locator('.rs-example-details > summary').click();
   await expect(ui.getByText(/Saved sample run · Earlier proposal/)).toBeVisible();
   await expect(approval(page)).toHaveCount(0);
   await latestExamples(page); await expect(approval(page)).toHaveCount(0);
   await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
   await page.reload(); await expect(ui).toBeVisible(); await latestExamples(page);
-  await ui.getByText('About these examples', { exact: true }).click();
+  await ui.locator('.rs-example-details > summary').click();
   await expect(ui.getByText(/Saved sample run · Earlier proposal/)).toBeVisible();
   await expect(approval(page)).toHaveCount(0);
 });

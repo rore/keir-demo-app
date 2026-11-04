@@ -48,7 +48,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
         await ui.getByRole('button', { name: 'View what’s in use', exact: true }).click();
         await ui.getByRole('button', { name: 'Start changes from this version', exact: true }).click();
         const confirmation = ui.getByRole('article', { name: 'Start from version in use', exact: true });
-        await expect(confirmation).toContainText(`version ${displaced.draftVersion}`);
+        await confirmation.getByText('Saved version details', { exact: true }).click();
+        await expect(confirmation).toContainText(`Saved draft version: ${displaced.draftVersion}`);
+        await confirmation.getByText('Saved version details', { exact: true }).click();
         await expect(confirmation.getByRole('button', { name: 'Start from this version', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);

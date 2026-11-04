@@ -790,6 +790,12 @@ p {
 .customization-copy>p {
   margin-top:8px;
 }
+.customization-request {
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:2;
+  overflow:hidden;
+}
 .customization-copy small {
   display:block;
   font-size:13px;

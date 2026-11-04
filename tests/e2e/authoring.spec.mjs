@@ -408,7 +408,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     expect(state.approvedEvidenceId).toBe(first.evidence.id);
     expect(state.evidence.id).toBe(latest.evidence.id); expect(state.selection).toEqual(latest.selection);
   } else {
-    await ui.getByText('About these examples', { exact: true }).click();
+    await ui.locator('.rs-example-details > summary').click();
     await expect(ui.getByText(/Earlier run for current proposal/)).toBeVisible();
     await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
     const currentDecision = ui.getByRole('article', { name: 'Current decision', exact: true });

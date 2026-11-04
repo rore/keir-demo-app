@@ -121,6 +121,7 @@ test('a late actual simulation receipt cannot enter a new owner workspace after 
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Tasks', exact: true }).click();
     await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await expect(page).toHaveURL(/[#&]customization=[A-Za-z0-9-]+/);
     await expect(studio(page).locator('.rs-example')).toHaveCount(0);
     await expect(studio(page).getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
     expect((await savedState(page)).selection.revision.templateId).toBe('attention');

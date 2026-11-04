@@ -221,7 +221,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       });
       await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent refinement while reviewing');
       const situationLabels = ['Unfinished task', 'Completed task', 'Missing task', 'Task access denied', 'Read temporarily unavailable'];
-      const invitation = decision(page).getByRole('button', { name: 'Show the completed task example', exact: true });
+      const invitation = decision(page).getByRole('button', { name: 'Show the unfinished task example', exact: true });
       await invitation.click();
       for (const [index, label] of situationLabels.entries()) {
         if (await ui.locator('.rs-example h4').innerText() !== label) {
@@ -235,9 +235,9 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await expect(ui.locator('.rs-example')).toHaveAttribute('aria-label', `Example: ${label}`);
         await expect(ui.locator('.rs-example .rs-match')).toHaveCount(1);
         if (!index) {
-          await expect(ui.locator('.rs-example pre')).toBeHidden();
-          await ui.locator('.rs-example').getByText('Technical run details', { exact: true }).click();
-          await expect(ui.locator('.rs-example pre')).toContainText('synthetic-open');
+          await expect(ui.locator('.rs-example-details pre').first()).toBeHidden();
+          await ui.locator('.rs-example-details > summary').click();
+          await expect(ui.locator('.rs-example-details pre').first()).toContainText('synthetic-open');
         }
       }
       await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
@@ -297,16 +297,16 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         expect(fixture.requests.length).toBe(callCount);
         expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(held);
         await send(page, intended);
-        await expect(panel.getByRole('alert')).toContainText('Start a new conversation');
-        await openDetails(page);
-        await expect(panel.getByRole('button', { name: 'Continue current changes in a new conversation', exact: true })).toBeEnabled();
+        const recovery = ui.getByRole('article', { name: 'Assistant settings changed', exact: true });
+        await expect(recovery.getByRole('status')).toContainText('Start a new conversation');
+        await expect(recovery.getByRole('button', { name: 'Start new conversation', exact: true })).toBeEnabled();
         await expect(panel.getByRole('button', { name: 'Retry submitted request', exact: true })).toHaveCount(0);
         await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue(intended);
         await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible();
         expect((await read('authoring')).current.id).toBe(conversation.id);
         expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(3);
-        await panel.getByRole('button', { name: 'Continue current changes in a new conversation', exact: true }).click();
-        await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+        await recovery.getByRole('button', { name: 'Start new conversation', exact: true }).click();
+        await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeFocused();
         await send(page, intended);
         await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
         expect(fixture.requests.slice(callCount).map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);

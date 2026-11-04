@@ -475,6 +475,12 @@ function Workspace({
     return () => abort.abort();
   }, [projectId]);
   useLayoutEffect(() => {
+    if (destination === "customizations") {
+      document.scrollingElement?.scrollTo(0, 0);
+      document.querySelector<HTMLElement>(".customizations-main")?.scrollTo(0, 0);
+    }
+  }, [destination]);
+  useLayoutEffect(() => {
     if (destination === "tasks" && taskScroller.current) taskScroller.current.scrollTop = taskScroll.current;
     if (detail && destination === "tasks") {
       detailRef.current?.showModal();

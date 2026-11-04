@@ -143,6 +143,12 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     const result = await withSignal(request, reply, signal => lifecycle.createFromSource(session.userId, input, () => authorize(request), { signal }));
     authorize(request); return lifecycleResponse(result);
   });
+  app.post('/api/extensions/:extensionId/rename', request => {
+    noQuery(request); const session = authorize(request), input = request.body;
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 2
+        || !['name', 'expectedName'].every(field => Object.hasOwn(input, field))) throw new AppError(400, 'Use only the name and expected name.');
+    return lifecycleResponse(lifecycle.rename(session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request)));
+  });
   app.get('/api/extensions/:extensionId/evidence/:id', request => { noQuery(request); return lifecycleResponse(lifecycle.evidence(authorize(request).userId, request.params.id, request.params.extensionId)); });
   app.get('/api/extensions/:extensionId/revisions/:id', request => {
     noQuery(request); const value = lifecycle.source(authorize(request).userId, request.params.id, request.params.extensionId);

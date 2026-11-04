@@ -115,17 +115,18 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       mkdirSync('build/studio-extension-creation', { recursive: true });
       await page.screenshot({ path: `build/studio-extension-creation/agent-led-checked-${viewport.width}x${viewport.height}.png` });
 
-      const exampleLink = decision.getByRole('button', { name: 'Show the completed task example', exact: true });
+      const exampleLink = decision.getByRole('button', { name: 'Show the unfinished task example', exact: true });
       await expect(exampleLink).toBeVisible();
       await exampleLink.click();
       await expect(ui.locator('.rs-example')).toHaveCount(1);
+      await expect(ui.getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
+      await expect(ui.locator('.rs-example').first()).toContainText('Needs attention');
+      await expect(ui.locator('.rs-preview')).toContainText('Example only — your tasks were not changed.');
+      await ui.getByText('Other checked examples', { exact: true }).click();
+      await ui.getByRole('button', { name: 'What a completed task would show', exact: true }).click();
+      await expect(ui.locator('.rs-example')).toHaveCount(1);
       await expect(ui.getByRole('heading', { name: 'What a completed task would show', exact: true })).toBeVisible();
       await expect(ui.locator('.rs-example').first()).toContainText('Done');
-      await expect(ui.locator('.rs-preview')).toContainText('SYNTHETIC · no live task changes.');
-      await ui.getByText('Other checked examples', { exact: true }).click();
-      await ui.getByRole('button', { name: 'What an unfinished task would show', exact: true }).click();
-      await expect(ui.locator('.rs-example')).toHaveCount(1);
-      await expect(ui.getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
       await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
       await expect(exampleLink).toBeFocused();
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
@@ -138,7 +139,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const approved = await saved(page, newId);
       expect(approved.approvedEvidenceId).toBe(prepared.evidence.id);
       expect(approved.selection).toEqual(before.selection);
-      await expect(decision.getByRole('button', { name: 'Switch to synthetic-offline-task-advice', exact: true })).toBeFocused().catch(() => {});
+      await expect(decision.getByRole('button', { name: 'Switch to this customization', exact: true })).toBeFocused().catch(() => {});
       const activation = decision.getByRole('button', { name: /^(Turn on for my tasks|Switch to )/ });
       await activation.click();
       await expect.poll(async () => (await saved(page, newId)).selection.revision.id).toBe(prepared.draft.id);

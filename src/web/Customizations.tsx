@@ -36,6 +36,7 @@ export default function Customizations({ request, changed, open, focusAction = "
     return () => { current = false; };
   }, [retry]);
   useEffect(() => { if (state && focusAction) document.getElementById(focusAction)?.focus({ preventScroll: true }); }, [state, focusAction]);
+  const untitledCount = state?.items.filter(item => item.extension?.name === "Untitled customization").length ?? 0;
   return <main className="customizations-main" aria-labelledby="customizations-heading">
     <h1 id="customizations-heading" tabIndex={-1}>Customizations</h1>
     <p className="page-intro">Make Daymark work your way. Start a change or return to a saved customization.</p>
@@ -53,8 +54,9 @@ export default function Customizations({ request, changed, open, focusAction = "
           <div className="customization-icon" aria-hidden="true">✓</div>
           <div className="customization-copy"><h2>{item.extension!.name}</h2>
             <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{status}</span></p>
-            {selectedItem && <p>{inUse ? "In use" : "Saved choice"}: {selected!.label}</p>}
-            {changes && <p className="draft-status">Saved changes (version {item.draftVersion}): {item.draft!.label}{item.approved ? " · Approved" : ""}</p>}
+            {item.extension!.name === "Untitled customization" && untitledCount > 1 && item.requestExcerpt && <p className="customization-request">Request: {item.requestExcerpt}</p>}
+            {selectedItem && <p>{inUse ? "Your current setup is still on." : "The saved selection could not be verified."}</p>}
+            {changes && <p className="draft-status">{item.approved ? "Your saved changes are approved and ready to turn on." : "Your saved changes are not in use yet."}</p>}
             {!item.extension!.hookId && <p>Describe the goal and check what Daymark can support.</p>}
           </div>
           <button id={`edit-${item.extension!.id}`} className="primary" onClick={() => open({ extensionId: item.extension!.id })}>{changes ? "Continue changes" : "Edit"}<span aria-hidden="true"> →</span></button>

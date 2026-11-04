@@ -141,7 +141,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
               || !row && ctx.input.expectedVersion !== 0 || state.version !== ctx.input.expectedVersion + 1) stop('STALE_CONVERSATION');
           if (!row && db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=?').get(ctx.owner).n >= 8) stop('CONVERSATION_LIMIT');
           if (ctx.input.target.kind === 'create') lifecycle.admit(ctx.owner,
-            { extensionId: ctx.extensionId, operationId: ctx.input.operationId, hash: ctx.hash, name: Array.from(ctx.input.text.trim()).slice(0, 80).join('') }, () => assertLease(ctx.lease));
+            { extensionId: ctx.extensionId, operationId: ctx.input.operationId, hash: ctx.hash, name: 'Untitled customization' }, () => assertLease(ctx.lease));
           const current = lifecycle.state(ctx.owner, ctx.extensionId); if (current.draftVersion !== ctx.input.expectedDraftVersion) stop('STALE_DRAFT');
           state.runLedger = { base: prior?.state.usage.reservedMicros ?? 0, reserved: 0, ordinal: 0 };
           state.journal = prior?.state.journal ?? [];

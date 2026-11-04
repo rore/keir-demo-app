@@ -78,16 +78,17 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     let pins = {};
     try { pins = JSON.parse(row.identity); } catch { /* Malformed deployment metadata is never eligible. */ }
     const item = executable(row);
-    const extension = db.prepare('SELECT e.id,e.name FROM extensions e JOIN extension_revision_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=?').get(row.owner_id, row.id);
-    return { id: row.id, extensionId: extension?.id ?? null, extensionName: extension?.name ?? null, templateId: row.template_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
+    const extension = db.prepare('SELECT e.id,CAST(e.name AS BLOB) AS name FROM extensions e JOIN extension_revision_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=?').get(row.owner_id, row.id);
+    return { id: row.id, extensionId: extension?.id ?? null, extensionName: extension ? Buffer.from(extension.name).toString('utf8') : null, templateId: row.template_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
       label: item?.label ?? 'Unavailable advice', pins, provenance: row.provenance,
       suiteDigest: row.template_id === 'authored' ? item?.pins.suiteDigest ?? null : null };
   }
   function draft(owner, extensionId) {
     if (typeof extensionId !== 'string' || !extensionId) throw notFound();
-    const state = db.prepare('SELECT *,draft_revision_id AS draft_id FROM extensions WHERE owner_id=? AND id=?').get(owner, extensionId);
+    // BLOB reads preserve embedded NUL in legacy names; SQLite TEXT readback truncates it.
+    const state = db.prepare('SELECT *,CAST(name AS BLOB) AS name_bytes,draft_revision_id AS draft_id FROM extensions WHERE owner_id=? AND id=?').get(owner, extensionId);
     if (!state) throw notFound();
-    return state;
+    return { ...state, name: Buffer.from(state.name_bytes).toString('utf8') };
   }
   function selection(owner) {
     const state = db.prepare('SELECT * FROM extension_selections WHERE owner_id=?').get(owner);
@@ -177,6 +178,19 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     if (!row) throw notFound();
     return row;
   }
+  function requestExcerpt(owner, extensionId) {
+    const rows = db.prepare(`SELECT c.view,c.creation_operation_id,e.creation_operation_id AS item_operation_id
+      FROM extensions e JOIN extension_conversation_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id
+      JOIN authoring_conversations c ON c.id=l.conversation_id AND c.owner_id=l.owner_id
+      WHERE e.owner_id=? AND e.id=? AND l.purpose='CREATE' LIMIT 2`).all(owner, extensionId);
+    if (rows.length !== 1 || !rows[0].item_operation_id || rows[0].creation_operation_id !== rows[0].item_operation_id) return;
+    try {
+      const messages = JSON.parse(rows[0].view).messages;
+      const first = Array.isArray(messages) && messages.find(message => message?.role === 'user');
+      if (first?.id === rows[0].item_operation_id && typeof first.text === 'string' && first.text.isWellFormed() && first.text.trim())
+        return Array.from(first.text.trim()).slice(0, 160).join('');
+    } catch { /* Missing or uncertain original intent has no excerpt. */ }
+  }
   function selectionView(owner) {
     const active = selection(owner), row = active.revision_id ? revision(owner, active.revision_id) : null;
     const available = !!row && eligible(row);
@@ -236,7 +250,10 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         profile: host.pins.profile, hook: host.pins.hook, consumer: host.pins.consumer, compiler: host.pins.compiler } } : { hooks: [] };
     },
     collection(owner) {
-      return { owner: ownerView(owner), items: db.prepare('SELECT id FROM extensions WHERE owner_id=? ORDER BY created_at,id').all(owner).map(row => api.state(owner, row.id)),
+      return { owner: ownerView(owner), items: db.prepare('SELECT id FROM extensions WHERE owner_id=? ORDER BY created_at,id').all(owner).map(row => {
+        const excerpt = requestExcerpt(owner, row.id);
+        return { ...api.state(owner, row.id), ...(excerpt === undefined ? {} : { requestExcerpt: excerpt }) };
+      }),
         selection: selectionView(owner), catalog: choices(), hostCatalog: host?.catalog ?? { hooks: [] } };
     },
     state(owner, extensionId) {
@@ -284,6 +301,18 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         saveAuthored(owner, extensionId, value);
         authorize(); return api.state(owner, extensionId);
       });
+    },
+    rename(owner, input, authorize) {
+      commit(owner, input.extensionId, authorize, () => {
+        for (const [field, value] of Object.entries({ name: input.name, expectedName: input.expectedName })) {
+          if (typeof value !== 'string' || !value.isWellFormed() || field === 'name' && value.includes('\0') || !value.trim() || Array.from(field === 'name' ? value.trim() : value).length > 80)
+            throw new AppError(400, 'Use a name of 1–80 characters.');
+        }
+        const state = draft(owner, input.extensionId);
+        if (state.name !== input.expectedName) conflict();
+        const name = input.name.trim();
+        if (state.name !== name) db.prepare('UPDATE extensions SET name=? WHERE owner_id=? AND id=?').run(name, owner, input.extensionId);
+      }); return api.state(owner, input.extensionId);
     },
     load(owner, input, authorize) {
       commit(owner, input.extensionId, authorize, () => {
