@@ -13,11 +13,17 @@ const preservedTables = ['users', 'projects', 'tasks', 'extension_revisions', 'e
 const snapshot = (db, tables) => Object.fromEntries(tables.map(table =>
   [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 
-function fixture(t) {
+function fixture(t, { missingCreatedAt = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'keir-extension-migration-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'legacy.sqlite');
-  return { path, db: createLegacyV4(path) };
+  const db = createLegacyV4(path);
+  // Supply the persisted original clock in this caller's rows; frozen V4 DDL stays unchanged.
+  for (const [index, row] of db.prepare('SELECT id,state FROM authoring_conversations ORDER BY rowid').all().entries()) {
+    if (!missingCreatedAt || index !== 0) db.prepare('UPDATE authoring_conversations SET state=? WHERE id=?')
+      .run(JSON.stringify({ ...JSON.parse(row.state), createdAt: 90 + index }), row.id);
+  }
+  return { path, db };
 }
 
 test('V4 migration preserves immutable rows and budgets, links only proven legacy lineage, and is idempotent', t => {
@@ -27,8 +33,11 @@ test('V4 migration preserves immutable rows and budgets, links only proven legac
   db.close();
 
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 5);
-  assert.deepEqual(snapshot(upgraded, preservedTables), before);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 6);
+  const after = snapshot(upgraded, preservedTables);
+  for (const table of preservedTables.filter(table => table !== 'authoring_conversations')) assert.deepEqual(after[table], before[table], table);
+  assert.deepEqual(after.authoring_conversations.map(row => ({ ...row })), before.authoring_conversations.map(row =>
+    ({ ...row, created_at: JSON.parse(row.state).createdAt })), 'Original header values and their recorded creation clocks survive exactly.');
   assert.equal(upgraded.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='extension_states'").get().n, 0);
   const entities = upgraded.prepare('SELECT id,owner_id,hook_id,name,draft_version,draft_revision_id FROM extensions ORDER BY owner_id').all();
   assert.equal(entities.length, 2);
@@ -65,12 +74,31 @@ test('V4 migration preserves immutable rows and budgets, links only proven legac
     .run('chat-a-ambiguous', 'owner-a', extensionB, 'REVISE', null, null));
   assert.ok(extensionA);
 
-  const afterFirstOpen = snapshot(upgraded, [...preservedTables, 'extensions', 'extension_revision_links', 'extension_conversation_links']);
+  const allTables = [...preservedTables, 'extensions', 'extension_revision_links', 'extension_conversation_links', 'authoring_messages', 'authoring_operations', 'authoring_dispatches'];
+  const afterFirstOpen = snapshot(upgraded, allTables);
   upgraded.close();
   upgraded = openData(path);
-  assert.deepEqual(snapshot(upgraded, [...preservedTables, 'extensions', 'extension_revision_links', 'extension_conversation_links']), afterFirstOpen);
+  assert.deepEqual(snapshot(upgraded, allTables), afterFirstOpen);
   assert.deepEqual(upgraded.prepare('PRAGMA foreign_key_check').all(), []);
   upgraded.close();
+});
+
+test('missing original creation time fails V5-to-V6 safely without inventing a timestamp or losing prior rows', t => {
+  const { path, db } = fixture(t, { missingCreatedAt: true });
+  const before = snapshot(db, preservedTables); db.close();
+  assert.throws(() => openData(path), /Invalid legacy authoring history/);
+  let unchanged = new DatabaseSync(path);
+  assert.deepEqual(snapshot(unchanged, preservedTables), before);
+  assert.equal(unchanged.prepare('PRAGMA user_version').get().user_version, 5, 'The prior V4-to-V5 migration completed before atomic V5-to-V6 failed.');
+  const tables = [...preservedTables, 'extensions', 'extension_revision_links', 'extension_conversation_links'];
+  const v5 = snapshot(unchanged, tables);
+  assert.equal(unchanged.prepare("SELECT count(*) n FROM sqlite_master WHERE name IN ('authoring_messages','authoring_operations','authoring_dispatches','authoring_conversations_v6')").get().n, 0);
+  assert.equal(unchanged.prepare('PRAGMA table_info(authoring_conversations)').all().some(row => row.name === 'created_at'), false);
+  unchanged.close();
+  assert.throws(() => openData(path), /Invalid legacy authoring history/);
+  unchanged = new DatabaseSync(path);
+  assert.deepEqual(snapshot(unchanged, tables), v5);
+  assert.equal(unchanged.prepare('PRAGMA user_version').get().user_version, 5); unchanged.close();
 });
 
 test('invalid future version fails without resetting legacy rows', t => {

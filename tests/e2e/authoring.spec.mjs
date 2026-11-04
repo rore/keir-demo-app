@@ -34,8 +34,8 @@ function conversation(extensionId, id, version, status, messages, { runId = `run
 
 function message(id, role, text, kind = 'text') { return { id, role, text, kind }; }
 
-async function scriptAuthoring(page, { extensionId, availability = available, onTurn, onRead, onCancel } = {}) {
-  const calls = { turns: [], reads: [], cancels: [] };
+async function scriptAuthoring(page, { extensionId, availability = available, onTurn, onRead, onCancel, onRecover } = {}) {
+  const calls = { turns: [], reads: [], cancels: [], recoveries: [] };
   await page.route('**/api/authoring**', async route => {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     const send = async (body, status = 200) => {
@@ -56,6 +56,10 @@ async function scriptAuthoring(page, { extensionId, availability = available, on
       expect(body.target.kind).toBe(body.conversationId ? 'resume' : 'revise');
       calls.turns.push(body);
       return onTurn ? onTurn(route, body, calls) : send({ message: 'Unexpected turn' }, 500);
+    }
+    if (url.pathname === '/api/authoring/recover' && method === 'POST') {
+      const body = request.postDataJSON(); calls.recoveries.push(body);
+      return onRecover ? onRecover(route, body, calls) : send({ message: 'Operation was not admitted' }, 404);
     }
     const conversationMatch = url.pathname.match(/^\/api\/authoring\/conversations\/([^/]+)$/);
     if (conversationMatch && method === 'GET') {
@@ -193,6 +197,10 @@ for (const width of [1440, 390]) test(`lost accepted turn response is read back 
       ], { runId: 'accepted-run', operation: { id: body.operationId, runId: 'accepted-run', version: body.expectedVersion + 1 }, draftVersion: body.expectedDraftVersion });
       return route.abort('failed');
     },
+    onRecover: (route, body) => {
+      expect(body).toEqual(posted);
+      return route.fulfill({ status: 200, json: { operation: accepted.operation, conversation: accepted } });
+    },
     onRead: async (_calls, id) => id
       ? accepted
       : !accepted ? { availability: available, conversations: [], current: null }
@@ -205,7 +213,7 @@ for (const width of [1440, 390]) test(`lost accepted turn response is read back 
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('The request was saved. What should I clarify?', { exact: true })).toBeVisible({ timeout: 10_000 });
   expect(calls.turns).toHaveLength(1);
-  expect(calls.reads.some(read => read.conversationId === accepted.id)).toBe(true);
+  expect(calls.recoveries).toEqual([posted]);
   await expect.poll(() => calls.turns.length).toBe(1);
 });
 
@@ -421,7 +429,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
 });
 
-test('active observation pauses while hidden, stops at 130 reads and only offers read-only recovery', async ({ page, demo }) => {
+test('active observation pauses while hidden and keeps reading beyond 130 without starting work', async ({ page, demo }) => {
   test.setTimeout(60_000);
   await page.clock.install();
   let reads = 0;
@@ -447,17 +455,12 @@ test('active observation pauses while hidden, stops at 130 reads and only offers
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  for (let count = 1; count <= 130; count++) {
+  for (let count = 1; count <= 135; count++) {
     await page.clock.runFor(1000);
     await expect(studio(page).getByText(`Observed ${count}`, { exact: true })).toBeVisible();
   }
-  await page.clock.runFor(1000);
-  await expect(authoring(page)).toContainText('Automatic observation reached its limit');
-  await page.clock.runFor(5000);
-  expect(reads).toBe(130);
-  const before = calls.reads.length;
-  await authoring(page).getByRole('button', { name: 'Check authoring status', exact: true }).click();
-  await expect.poll(() => calls.reads.length).toBe(before + 1);
+  expect(reads).toBe(135);
+  await expect(authoring(page)).not.toContainText('Automatic observation reached its limit');
   expect(calls.turns).toHaveLength(0);
   expect(calls.cancels).toHaveLength(0);
 });
@@ -525,117 +528,44 @@ test('saved lifecycle receipts preserve the complete loaded conversation when AI
   expect(calls.turns).toHaveLength(0);
 });
 
-for (const [code, oversized] of [['SPEND_LIMIT', false], ['BUDGET_EXHAUSTED', false], ['PROVIDER_RATE_LIMIT', false], ['BUDGET_EXHAUSTED', true]]) test(`public authoring recovery distinguishes ${code}${oversized ? ' with oversized Unicode context' : ''} and only explicit continuation starts fresh work`, async ({ page, demo }) => {
-  const getDraftVersion = captureDraftVersion(page);
-  const correction = 'Keep open tasks at Pending; completed tasks must still show Done. Do not change the independent examples.';
-  let current = { ...conversation(demo.extensionIds.maya, 'limited-conversation', 4, 'BLOCKED', [
-    message('saved-intent', 'user', 'OLD_CONTEXT_ONLY: show read-only advice without editing tasks.'),
-    message('saved-question', 'assistant', 'Should completed tasks still show Done?'),
-    message('latest-correction', 'user', (oversized ? 'Earlier discussion: ' + '🧭אב'.repeat(3000) + '\n' : '') + correction),
-    message('saved-limit', 'assistant', 'The saved examples still describe your request.'),
+for (const code of ['SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'PROVIDER_RATE_LIMIT', 'CONTEXT_LIMIT', 'EXPIRED']) test(`saved ${code} recovery continues only explicitly in the same discussion`, async ({ page, demo }) => {
+  let current = { ...conversation(demo.extensionIds.maya, 'saved-discussion', 4, 'BLOCKED', [
+    message('saved-user', 'user', 'Keep completed tasks at Done. ' + '🧭אב'.repeat(3000)),
+    message('saved-answer', 'assistant', 'The saved examples still describe your request.'),
   ]), code };
   const calls = await scriptAuthoring(page, { extensionId: demo.extensionIds.maya,
     onRead: async (_calls, id) => id ? current : { availability: available, conversations: [{ id: current.id, version: current.version,
-      status: current.status, runId: current.runId, creationOperationId: 'limited-creation', operationId: current.operation.id }], current },
+      status: current.status, runId: current.runId, creationOperationId: 'saved-creation', operationId: current.operation.id }], current },
     onTurn: async (route, body) => {
-      current = conversation(demo.extensionIds.maya, 'explicit-continuation', 1, 'AWAITING_USER', [message('continued-user', 'user', body.text),
-        message('continued', 'assistant', 'The saved proposal is ready for your next choice.', 'clarification')],
-        { operation: { id: body.operationId, runId: 'run-explicit-continuation', version: 1 }, runId: 'run-explicit-continuation', draftVersion: body.expectedDraftVersion });
-      current.draft = { revisionId: saved.revisionId, draftVersion: saved.draftVersion, suiteDigest: saved.suiteDigest };
+      current = conversation(demo.extensionIds.maya, current.id, body.expectedVersion + 1, 'AWAITING_USER', [...current.messages,
+        message('continued-user', 'user', body.text), message('continued', 'assistant', 'Ready for your next choice.', 'clarification')],
+        { operation: { id: body.operationId, runId: 'continued-run', version: body.expectedVersion + 1 }, runId: 'continued-run', draftVersion: body.expectedDraftVersion });
       return route.fulfill({ status: 202, json: { operation: current.operation, conversation: current } });
     },
   });
-  await page.goto(demo.origin);
-  await page.getByRole('button', { name: 'Continue as Maya' }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
-  const session = await (await page.request.get(demo.origin + '/api/session')).json();
-  const headers = { 'x-session-context': session.contextToken, origin: demo.origin };
-  const initial = await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers })).json();
-  const prepared = await page.request.post(demo.origin + '/api/extensions/' + demo.extensionIds.maya + '/draft', { headers,
-    data: { templateId: initial.catalog[0].id, draftVersion: initial.draftVersion } });
-  expect(prepared.ok(), await prepared.text()).toBe(true);
-  const saved = await prepared.json();
-  // The blocked job already owns this partial draft when it is first delivered.
-  current.draft = { revisionId: saved.revisionId, draftVersion: saved.draftVersion, suiteDigest: saved.suiteDigest };
-  await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-  await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+  await enterStudio(page, demo.origin);
   const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
-  await expect.poll(getDraftVersion).toBe(saved.draftVersion);
-  await expect(ui.locator('.rs-yours').filter({ hasText: correction }).locator('p')).toHaveText((oversized ? 'Earlier discussion: ' + '🧭אב'.repeat(3000) + '\n' : '') + correction);
-  await expect(ui.getByText('Earlier discussion included', { exact: true })).toHaveCount(0);
-  await composer.fill('Keep this unsent request');
-  const continuation = ui.getByRole('button', { name: code === 'PROVIDER_RATE_LIMIT' ? 'Try again from saved work' : 'Continue from saved proposal', exact: true });
-  const status = ui.locator('.rs-chat').getByRole('status');
+  await composer.fill('Keep this unsent follow-up');
+  const continuation = ui.getByRole('button', { name: code === 'PROVIDER_RATE_LIMIT' ? 'Try again from saved work' : 'Continue here from saved work', exact: true });
+  expect(calls.turns).toHaveLength(0);
   if (code === 'SPEND_LIMIT') {
-    await expect(status).toContainText('The shared authoring allowance is exhausted.');
-    await expect(status).not.toContainText('conversation reached its work limit');
+    await expect(ui).toContainText('The shared authoring allowance is exhausted.');
     await expect(continuation).toHaveCount(0);
-    expect(calls.turns).toHaveLength(0);
     return;
   }
-  if (code === 'PROVIDER_RATE_LIMIT') {
-    await expect(status).toHaveText('Your AI provider reached a request or account limit. Your discussion and any saved draft are kept. Check provider usage or explicitly try again later. Nothing is retried automatically.');
-    await expect(status).toContainText('Nothing is retried automatically.');
-    await expect(status).not.toContainText('conversation reached its work limit');
-  } else await expect(status).toContainText('This conversation reached its work limit. Your saved proposal and examples are kept.');
-  await expect(status).not.toContainText('allowance is exhausted');
+  if (code === 'BUDGET_EXHAUSTED') await expect(ui).toContainText('An earlier authoring policy stopped this saved run.');
+  if (code === 'CONTEXT_LIMIT') await expect(ui).toContainText('This run reached the assistant’s request size boundary.');
   await expect(continuation).toBeEnabled();
-  expect(calls.turns).toHaveLength(0);
   await continuation.click();
-  await expect(ui.getByText('The saved proposal is ready for your next choice.', { exact: true })).toBeVisible();
-  expect(calls.turns).toHaveLength(1);
-  expect(calls.turns[0]).toEqual({ conversationId: null, operationId: expect.any(String), expectedVersion: 0,
-    expectedDraftVersion: saved.draftVersion, target: { kind: 'revise', extensionId: demo.extensionIds.maya, baseRevisionId: saved.revisionId, selectionGeneration: saved.selection.generation }, text: expect.any(String) });
-  const sent = calls.turns[0].text;
-  const continuedBubble = ui.locator('.rs-yours').filter({ hasText: 'Continue from saved work.' });
-  const included = continuedBubble.getByLabel('Included earlier discussion', { exact: true });
-  await expect(continuedBubble.locator(':scope > p')).toHaveText('Continue from saved work.');
-  await expect(included).toBeHidden();
-  await continuedBubble.getByText('Earlier discussion included', { exact: true }).click();
-  await expect(included).toBeVisible();
-  await expect(included).toHaveText(sent);
-  await continuedBubble.getByText('Earlier discussion included', { exact: true }).click();
-  await expect(included).toBeHidden();
-  expect(sent).toMatch(/^Continue my saved proposal and examples using these earlier messages\. If the context is incomplete, ask before changing the examples\./);
-  expect(sent).toContain(correction);
-  expect(sent).toContain('You:');
-  expect(sent).not.toContain('Gather material references');
-  expect(sent).not.toContain('When you check an open task');
-  expect(sent).not.toContain('Advice appears when you choose');
-  expect(sent).not.toContain('Keep this unsent request');
-  expect(Buffer.byteLength(sent, 'utf8')).toBeLessThanOrEqual(8192);
-  expect(sent.isWellFormed()).toBe(true);
-  expect(Buffer.from(sent, 'utf8').toString('utf8')).toBe(sent);
-  const omitted = '[Some earlier conversation was omitted to fit this request.]';
-  if (oversized) {
-    expect(sent).toContain(omitted);
-    expect(sent).toContain('🧭אב');
-    expect(sent).not.toContain('OLD_CONTEXT_ONLY');
-  } else {
-    expect(sent).toContain('Studio: Should completed tasks still show Done?');
-    expect(sent).not.toContain(omitted);
-  }
-  expect(calls.turns[0].operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
-  expect(calls.turns[0].operationId).not.toBe('operation-limited-conversation');
-  await expect(composer).toHaveValue('Keep this unsent request');
+  await expect(ui.getByText('Ready for your next choice.', { exact: true })).toBeVisible();
+  expect(calls.turns).toEqual([{ conversationId: 'saved-discussion', operationId: expect.any(String), expectedVersion: 4,
+    expectedDraftVersion: 0, target: { kind: 'resume', extensionId: demo.extensionIds.maya },
+    text: 'Continue from saved work. Ask before changing any independent examples.' }]);
+  await expect(composer).toHaveValue('Keep this unsent follow-up');
+  await expect(ui.locator('.rs-yours').first()).toContainText('Keep completed tasks at Done.');
   await expect(continuation).toHaveCount(0);
-  await openDetails(page);
-  await ui.getByRole('button', { name: 'Check authoring status', exact: true }).click();
-  await expect(continuedBubble.locator(':scope > p')).toHaveText('Continue from saved work.');
-  await expect(included).toBeHidden();
+  await page.reload();
+  await expect(ui.getByText('Ready for your next choice.', { exact: true })).toBeVisible();
   expect(calls.turns).toHaveLength(1);
   expect(calls.cancels).toHaveLength(0);
-  if (code === 'BUDGET_EXHAUSTED' && !oversized) {
-    await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
-    await continuedBubble.getByText('Earlier discussion included', { exact: true }).click();
-    await expect(included).toBeVisible();
-    await page.reload();
-    await expect(studio(page)).toBeVisible();
-    await expect(continuedBubble.locator(':scope > p')).toHaveText('Continue from saved work.');
-    await expect(included).toBeHidden();
-    await continuedBubble.getByText('Earlier discussion included', { exact: true }).click();
-    await expect(included).toHaveText(sent);
-    expect(current.messages[0].text).toBe(sent);
-    expect(calls.turns).toHaveLength(1);
-  }
 });

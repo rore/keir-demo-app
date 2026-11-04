@@ -6,12 +6,11 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const token = value => typeof value === 'string' && value === value.trim() && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const digest = value => typeof value === 'string' && value.length === 71 && /^sha256:[0-9a-f]{64}$/.test(value);
 const size = value => Buffer.byteLength(JSON.stringify(value));
-const defaults = Object.freeze({ calls: 8, tools: 8, compiles: 3, simulations: 2, clarifications: 2, inputs: 8, activeMs: 120000, ttlMs: 86400000 });
 const active = new Set();
 const instructions = `You guide a business user through creating and revising extensions in Daymark.
 Own the process: discover the scoped host contract and businessContext yourself before proposing behavior. The person describes their goal and makes business decisions; never ask them to choose hooks, tools, source, compiler steps or internal states.
 Discover the person's intent before choosing a supported extension point from supportedHooks and the scoped host catalog. A new CREATE conversation starts without an executable hook or inherited proposal; never default it to task advice merely because that is today's available hook. An unsupported request may remain a conversation without a program. Explain unavailable behavior honestly; offer a supported alternative only as a choice through ask_clarification, and wait for explicit assent before compiling it. Refusal or no answer means no program, hook, approval or activation. Never invent an app operation, trigger or field.
-When returning to the exact saved extension, use currentProposal and conversationContext to retain the person's choices and independent expectations; the worked example is syntax guidance, never permission to replace their existing draft. If context is marked truncated or a saved source/cases field is null, explain what is unavailable and ask a focused question instead of inventing intent or overwriting it. Resource limits cannot be bypassed; explain an exhausted conversation and recover from saved work explicitly.
+When returning to the exact saved extension, use currentProposal and conversationContext to retain the person's choices and independent expectations; the worked example is syntax guidance, never permission to replace their existing draft. If context is marked truncated or a saved source/cases field is null, explain what is unavailable and ask a focused question instead of inventing intent or overwriting it. Respect the operator spending allowance and individual request boundaries; saved discussions can continue explicitly from current host context.
 Use short everyday language and plain text, without Markdown, tool names, UUIDs or other internal identifiers. Keep success summaries to two or three concise sentences: checked behavior, material limits and the next immediate choice, such as checking an example or approving the change. Do not narrate internal approval rules as “separate human decisions”; the host presents the right controls. Keep real failures and uncertainty visible. Ask one necessary business question at a time through ask_clarification; carry answers forward. If a request is outside the discovered read-only contract, explain the limit and ask whether a useful supported alternative meets their intent. Never silently narrow the request or promise follow-ups, writes or background actions.
 In customer-facing text call tasks unfinished or completed, not OPEN or COMPLETED; enum values belong in source and scenarios. Explain that advice appears only when the person chooses Check task advice on a saved task, not automatically in the background. Ask only one question in each clarification; offer a sensible interpretation to confirm rather than several technical choices.
 The person edits a saved customization’s display name through Rename in the app. Authoring tools do not rename it. If a requested name has not been saved there, explain how to use Rename; never claim it was saved or invent a naming tool or extra naming call.
@@ -70,18 +69,13 @@ function diagnostics(value) {
 }
 
 // State, budget and synchronous checkpoints are host-owned; current is the live owner/session/run fence.
-export async function runAuthoringTurn({ provider, host, context, state, input, signal, limits = {} }) {
+export async function runAuthoringTurn({ provider, host, context, state, input, signal }) {
   if (!object(context) || !object(state) || !integer(state.version) || !object(state.counts) || !object(state.usage)
       || !['inputTokens', 'outputTokens', 'reservedMicros'].every(key => integer(state.usage[key]))
       || !integer(state.dispatchOrdinal) || !Array.isArray(state.inputIds) || !Array.isArray(state.callIds)) return { status: 'BLOCKED', code: 'CONTEXT_INVALID' };
   const scope = JSON.stringify([state?.ownerId, state?.conversationId]);
   if (active.has(scope)) return { status: 'BLOCKED', code: 'AI_BUSY' };
   if (state.status === 'RUNNING') return { status: 'BLOCKED', code: 'RUN_INTERRUPTED' };
-  const cap = { ...defaults };
-  for (const [key, value] of Object.entries(limits)) {
-    if (!Object.hasOwn(defaults, key) || !integer(value) || value > defaults[key] || ['activeMs', 'ttlMs'].includes(key) && !value) return { status: 'BLOCKED', code: 'CONFIG_INVALID' };
-    cap[key] = value;
-  }
   const start = performance.now();
   const elapsed = () => Math.max(0, Math.ceil(performance.now() - start));
   let admitted = false, registered = false, journalOpen = false, checkpointFailed = false, recordedMs = 0;
@@ -137,20 +131,18 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
     if (signal?.aborted || state.status === 'CANCELLED') fail('CANCELLED');
     if (!ownState() || !['ownerId', 'sessionId', 'conversationId', 'runId'].every(key => token(state[key]) && context[key] === state[key])
         || typeof context.current !== 'function' || context.current() !== true) fail('STALE_CONTEXT');
-    if (!integer(state.createdAt) || !integer(state.activeMs) || Date.now() - state.createdAt >= cap.ttlMs) fail('EXPIRED');
-    if (state.activeMs + elapsed() - recordedMs >= cap.activeMs) fail('TIME_LIMIT');
+    if (!integer(state.createdAt) || !integer(state.activeMs)) fail('CONTEXT_INVALID');
   };
   const consume = key => {
-    if (!integer(state.counts[key]) || state.counts[key] >= cap[key]) fail('BUDGET_EXHAUSTED');
+    if (!integer(state.counts[key]) || !integer(state.counts[key] + 1)) fail('HOST_RESULT_INVALID');
     state.counts[key]++;
   };
-  const timer = AbortSignal.timeout(Math.max(1, cap.activeMs - (state?.activeMs ?? 0)));
-  const combined = signal ? AbortSignal.any([signal, timer]) : timer;
+  const combined = signal ?? new AbortController().signal;
   const wait = async work => {
     check();
     let result;
     try { result = await abortable(Promise.resolve().then(() => { check(); return work(); }), combined); }
-    catch (error) { if (combined.aborted) fail(signal?.aborted ? 'CANCELLED' : 'TIME_LIMIT'); throw error; }
+    catch (error) { if (combined.aborted) fail('CANCELLED'); throw error; }
     check(); return result;
   };
   const currentDraft = async () => {
@@ -184,6 +176,10 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
     await currentDraft();
     let message = input.text;
     for (;;) {
+      check();
+      const request = { input: message, continuation: state.continuation, toolResult: state.pending,
+        tools: AUTHORING_TOOLS, instructions, signal: combined };
+      if (typeof provider.preflight === 'function') provider.preflight(request);
       check(); consume('calls');
       if (context.budget.remainingMicros < provider.reserveMicros) fail('SPEND_LIMIT');
       if (!integer(state.usage.reservedMicros + provider.reserveMicros)) fail('BUDGET_EXHAUSTED');
@@ -198,8 +194,7 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
         }
         throw error;
       }
-      const response = await wait(() => provider.complete({ input: message, continuation: state.continuation, toolResult: state.pending,
-        tools: AUTHORING_TOOLS, instructions, signal: combined }));
+      const response = await wait(() => provider.complete(request));
       if (!object(response) || !Array.isArray(response.calls) || response.calls.length > 1 || typeof response.text !== 'string'
           || size(response) > 262144 || !object(response.usage) || !integer(response.usage.inputTokens) || !integer(response.usage.outputTokens)
           || response.usage.inputTokens > 135168 || response.usage.outputTokens > 4096) fail('PROVIDER_RESPONSE_INVALID');
@@ -207,14 +202,15 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
       state.usage.inputTokens += response.usage.inputTokens; state.usage.outputTokens += response.usage.outputTokens;
       state.continuation = response.continuation; state.pending = undefined; message = undefined;
       resultCheckpoint('SUCCESS');
+      if (state.contextFull) fail('CONTEXT_LIMIT');
       if (!response.calls.length) return terminal({ status: 'IDLE', message: response.text });
       const call = response.calls[0];
       check(); consume('tools');
       if (!token(call?.id) || state.callIds.includes(call.id)) fail('PROVIDER_RESPONSE_INVALID');
       state.callIds.push(call.id);
-      const quota = call.name === 'compile_draft' ? 'compiles' : call.name === 'simulate_draft' ? 'simulations'
+      const counter = call.name === 'compile_draft' ? 'compiles' : call.name === 'simulate_draft' ? 'simulations'
         : call.name === 'ask_clarification' ? 'clarifications' : null;
-      if (quota) consume(quota);
+      if (counter) consume(counter);
       dispatch('tool', call.id);
       let output, event, outcome = 'SUCCESS';
       try {
@@ -272,8 +268,9 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
         state.pending = { id: call.id, output: JSON.stringify({ ok: false, code: error.code }) };
         outcome = 'REJECTED';
       }
-      if (size({ continuation: state.continuation, pending: state.pending }) > 262144) fail('BYTE_LIMIT');
+      const contextFull = size({ continuation: state.continuation, pending: state.pending }) > 262144;
       resultCheckpoint(outcome);
+      if (contextFull || state.contextFull) fail('CONTEXT_LIMIT');
       if (event) return terminal(event);
     }
   } catch (error) {

@@ -15,10 +15,13 @@ export type State = {
   approvedEvidenceId: string | null;
   selection: { generation: number; revision: (Revision & { extensionId: string; extensionName: string }) | null; eligible: boolean; approvedEvidenceId: string | null };
   restoreTargets: Revision[];
+  restoreTargetsNext?: string | null;
+  evidenceHistoryNext?: string | null;
+  historyNext?: number | null;
   history: History[];
   evidenceHistory: { id: string; revisionId: string }[];
 };
-export type Collection = { items: State[]; owner: State["owner"]; selection: State["selection"]; catalog: State["catalog"] };
+export type Collection = { items: Pick<State, "extension" | "draftVersion" | "draft" | "approved" | "requestExcerpt">[]; owner: State["owner"]; selection: State["selection"]; catalog: State["catalog"]; next: string | null };
 export type StudioTarget = { extensionId: string | null; conversationId?: string | null; recoveryId?: string; history?: boolean };
 type HostCatalog = {
   hooks: { id: string; label: string; description: string; effect: string; trigger: string }[];
@@ -38,13 +41,15 @@ type Conversation = {
   id: string; version: number; status: "IDLE" | "RUNNING" | "CANCELLING" | "AWAITING_USER" | "REVIEW_AVAILABLE" | "CANCELLED" | "BLOCKED" | "INTERRUPTED";
   runId: string; operation: Operation; messages: { id: string; role: "user" | "assistant"; text: string; kind: "text" | "clarification" | "review";
     receipt?: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string } }[];
+  messagesBefore?: string | null;
   code: string | null; review: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string; eligible: boolean } | null;
   draft: { revisionId: string | null; draftVersion: number; suiteDigest: string | null }; selection: { revisionId: string | null; generation: number };
 };
 type Authoring = {
   availability: { available: boolean; code: string | null; provider: "openai" | "anthropic" | null; model: string | null };
-  conversations: { extensionId: string | null; purpose: "CREATE" | "REVISE" | null; id: string; version: number; status: Conversation["status"]; runId: string; creationOperationId: string; operationId: string }[];
+  conversations: { extensionId: string | null; purpose: "CREATE" | "REVISE" | null; id: string; version: number; status: Conversation["status"]; runId: string; creationOperationId?: string; operationId: string }[];
   current: Conversation | null;
+  next?: string | null;
 };
 type TurnTarget = { kind: "create" } | { kind: "revise"; extensionId: string; baseRevisionId: string | null; selectionGeneration: number } | { kind: "resume"; extensionId: string };
 type Turn = { target: TurnTarget; conversationId: string | null; operationId: string; text: string; expectedVersion: number; expectedDraftVersion: number };
@@ -69,7 +74,6 @@ export function pendingRequests(ownerId: string) {
         || target.kind === "revise" && (turn.conversationId !== null || !(target.baseRevisionId === null || typeof target.baseRevisionId === "string")
           || !Number.isSafeInteger(target.selectionGeneration) || target.selectionGeneration < 0)) continue;
       entries.push({ entryId, turn });
-      if (entries.length === 8) break;
     }
   } catch { /* The caller can keep an in-memory request when tab storage is unavailable. */ }
   return entries;
@@ -87,7 +91,6 @@ export function pendingGuidedRequests(ownerId: string) {
       try { value = JSON.parse(sessionStorage.getItem(key)!); } catch { continue; }
       if (!value || !/^[0-9a-f-]{36}$/i.test(value.operationId) || typeof value.personal !== "boolean") continue;
       entries.push({ entryId, operationId: value.operationId, personal: value.personal });
-      if (entries.length === 8) break;
     }
   } catch { /* Tab storage can be unavailable. */ }
   return entries;
@@ -108,10 +111,11 @@ function authoringReason(code: string | null | undefined) {
   if (!code) return "";
   if (["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(code)) return "AI authoring is not configured.";
   if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved work and review remain available.";
-  if (code === "BUDGET_EXHAUSTED") return "This conversation reached its work limit. Your saved proposal and examples are kept. You can start a new conversation to continue; this does not add to the shared allowance.";
+  if (["BUDGET_EXHAUSTED", "EXPIRED"].includes(code)) return "An earlier authoring policy stopped this saved run. Your discussion, proposal and examples are kept. You can explicitly continue here under the current settings and shared allowance.";
   if (code === "PROVIDER_RATE_LIMIT") return "Your AI provider reached a request or account limit. Your discussion and any saved draft are kept. Check provider usage or explicitly try again later. Nothing is retried automatically.";
+  if (code === "CONTEXT_LIMIT") return "This run reached the assistant’s request size boundary. Progress is saved. Explicitly continue here to use the current saved proposal and recent discussion; nothing is sent automatically.";
   if (code === "CONFIG_CHANGED") return "Assistant settings changed. Start a new conversation to continue; your saved customization remains available.";
-  if (code === "CONVERSATION_LIMIT") return "The saved conversation limit has been reached. Existing conversations are retained.";
+  if (code === "CONVERSATION_LIMIT") return "An earlier authoring policy stopped this request. Your saved conversations remain available.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
   if (code === "REVIEW_NOT_READY") return "The saved examples do not yet support approval. Inspect their results or discuss the correction.";
   return "AI authoring is unavailable for this request. Check saved state; native tasks and saved work remain available.";
@@ -140,29 +144,11 @@ const summarizeExamples = (proof: Evidence | null) => (["OPEN", "COMPLETED"] as 
 }).filter(Boolean).join("; ");
 
 const continuationPrefix = "Continue my saved proposal and examples using these earlier messages. If the context is incomplete, ask before changing the examples.\n\n";
-function continuationText(previous: Conversation) {
-  const encoder = new TextEncoder();
-  const messages = previous.messages.map(({ role, text }) => ({ role, text }));
-  let truncated = false;
-  const render = () => continuationPrefix
-    + messages.map(item => `${item.role === "user" ? "You" : "Studio"}: ${item.text}`).join("\n\n")
-    + (truncated ? "\n\n[Some earlier conversation was omitted to fit this request.]" : "");
-  while (encoder.encode(render()).length > 8192 && messages.length > 1) {
-    const lastUser = messages.map(item => item.role).lastIndexOf("user");
-    messages.splice(lastUser === 0 ? 1 : 0, 1); truncated = true;
-  }
-  if (encoder.encode(render()).length > 8192 && messages.length) {
-    truncated = true;
-    const points = Array.from(messages[0].text);
-    let low = 0, high = points.length;
-    while (low < high) {
-      const count = Math.ceil((low + high) / 2);
-      messages[0].text = points.slice(-count).join("");
-      if (encoder.encode(render()).length <= 8192) low = count; else high = count - 1;
-    }
-    messages[0].text = low ? points.slice(-low).join("") : "";
-  }
-  return render();
+function conversationMessages(id: string, messages: Conversation["messages"]): Message[] {
+  return messages.map(item => ({ id: `ai:${id}:${item.id}`, who: item.role === "user" ? "You" : "Studio",
+    text: item.role === "user" && item.text.startsWith(continuationPrefix) ? "Continue from saved work." : item.text,
+    evidenceId: item.role === "assistant" ? item.receipt?.evidenceId : undefined,
+    context: item.role === "user" && item.text.startsWith(continuationPrefix) ? item.text : undefined }));
 }
 
 function AssistantSetup({ request, close, saved, beginSave }: { request: Props["request"]; close: (uncertain: boolean) => void; saved: (value: Setup) => void; beginSave: () => void }) {
@@ -379,7 +365,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [retryTurn, setRetryTurn] = useState(false);
   const [observationPaused, setObservationPaused] = useState(false);
   const [visible, setVisible] = useState(!document.hidden);
-  const observation = useRef({ runId: "", reads: 0 });
   const authoringLifetime = useRef(new AbortController());
   const [width, setWidth] = useState(52);
   const [pane, setPane] = useState<"conversation" | "preview">("conversation");
@@ -387,6 +372,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [newMessages, setNewMessages] = useState(false);
   const [history, setHistory] = useState<History[]>([]);
   const [historyNext, setHistoryNext] = useState<number | null>(null);
+  const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [revisionsNext, setRevisionsNext] = useState<string | null | undefined>(undefined);
+  const [messagesBefore, setMessagesBefore] = useState<string | null>(null);
+  const messageHistory = useRef<{ conversationId: string; anchor: string | number | null; snapshotBefore: string | null; ids: Set<string | number> } | null>(null);
+  const prependedMessages = useRef<{ height: number; top: number; focus: HTMLElement | null; anchor: { element: HTMLElement; top: number } | null } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [example, setExample] = useState<Example | null>(null);
   const [scripted, setScripted] = useState(false);
@@ -428,15 +418,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   function retainTurn(value: Turn | null) {
     try {
-      if (value && !sessionStorage.getItem(recoveryKey) && pendingRequests(ownerId).length + pendingGuidedRequests(ownerId).length >= 8) {
-        setAuthoringError("Check an earlier submitted request in Customizations before sending another request.");
-        return false;
-      }
       if (value) sessionStorage.setItem(recoveryKey, JSON.stringify(value));
       else sessionStorage.removeItem(recoveryKey);
     } catch { setRecoveryError("This browser could not save recovery information. Keep this page open until the submitted request is confirmed."); }
     setPendingTurn(value);
-    return true;
   }
   function turnTarget(): TurnTarget {
     if (!extensionId.current) return { kind: "create" };
@@ -582,7 +567,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setTrusted(true);
     setRestore("");
     setHistory(next.history);
-    setHistoryNext(next.history.length === 20 ? next.history.at(-1)!.id : null);
+    setHistoryNext(next.historyNext ?? null);
     callbacks.current.changed(next.selection.generation);
   }
   useLayoutEffect(() => {
@@ -661,14 +646,20 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setAuthoring(index => {
       if (!index) return index;
       const previous = index.conversations.find(item => item.id === next.id);
-      if (!previous && !creationOperationId) return index;
-      const summary = { extensionId: next.extensionId, purpose: next.purpose, id: next.id, version: next.version, status: next.status, runId: next.runId, operationId: next.operation.id, creationOperationId: previous?.creationOperationId ?? creationOperationId! };
+      const summary = { extensionId: next.extensionId, purpose: next.purpose, id: next.id, version: next.version, status: next.status, runId: next.runId, operationId: next.operation.id, creationOperationId: previous?.creationOperationId ?? creationOperationId };
       return { ...index, conversations: [summary, ...index.conversations.filter(item => item.id !== next.id)] };
     });
-    const incoming: Message[] = next.messages.map(item => ({ id: `ai:${next.id}:${item.id}`, who: item.role === "user" ? "You" : "Studio",
-      text: item.role === "user" && item.text.startsWith(continuationPrefix) ? "Continue from saved work." : item.text,
-      evidenceId: item.role === "assistant" ? item.receipt?.evidenceId : undefined,
-      context: item.role === "user" && item.text.startsWith(continuationPrefix) ? item.text : undefined }));
+    const incoming = conversationMessages(next.id, next.messages);
+    const page = messageHistory.current;
+    if (page?.conversationId !== next.id || next.messagesBefore && (incoming.length
+      ? !incoming.some(item => page.ids.has(item.id)) : next.messagesBefore !== page.snapshotBefore)) {
+      messageHistory.current = { conversationId: next.id, anchor: incoming[0]?.id ?? null,
+        snapshotBefore: next.messagesBefore ?? null, ids: new Set([...(page?.conversationId === next.id ? page.ids : []), ...incoming.map(item => item.id)]) };
+      setMessagesBefore(next.messagesBefore ?? null);
+    } else {
+      page.snapshotBefore = next.messagesBefore ?? null;
+      incoming.forEach(item => page.ids.add(item.id));
+    }
     setMessages(old => {
       const ids = new Set(old.map(item => item.id));
       const byId = new Map(incoming.map(item => [item.id, item]));
@@ -694,7 +685,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (selected) {
         const current = next.current?.id === selected ? next.current : await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(selected)}`, "GET", undefined, authoringLifetime.current.signal);
         if (current?.id !== selected || current.extensionId !== extensionId.current) throw new Error("Unconfirmed conversation");
-        if (id === undefined || snapshot && !conversation) setMessages([]);
+        if (id === undefined || snapshot && !conversation) { setMessages([]); messageHistory.current = null; }
         await adoptConversation(current!, turn);
       }
       if (mounted.current && serial.current === turn) setObservationPaused(false);
@@ -704,7 +695,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   function newConversation(keepExample = false) {
-    if (locked.current || activeAuthoring || pendingTurn || pendingExample || legacyConversation || (authoring?.conversations.length ?? 0) >= 8) return;
+    if (locked.current || activeAuthoring || pendingTurn || pendingExample || legacyConversation) return;
+    messageHistory.current = null; setMessagesBefore(null);
     setConversation(null); setScripted(false); setCompletion(false); setReview(""); if (!keepExample) setEvidence(null); setActiveView(false);
     historyMode.current = false; setHistoryView(false); reviewAttempt.current = "";
     setMessages([{ id: ++messageId.current, who: "Studio", text: "Continue your current saved changes here. What would you like to change or check?" }]); initialized.current = true; setObservationPaused(false); setAuthoringError(""); setNeedsFreshDiscussion(false);
@@ -713,6 +705,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   function returnToCurrent() {
     if (locked.current || pendingTurn || pendingExample) return;
     historyMode.current = false; setHistoryView(false); setConversation(null); setReview(""); reviewAttempt.current = "";
+    messageHistory.current = null; setMessagesBefore(null);
     setMessages([{ id: ++messageId.current, who: "Studio", text: `These are your current saved changes${state?.draft ? ` (version ${state.draftVersion})` : ""}. What would you like to change or check?` }]);
     initialized.current = true; setEntry("item");
     callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
@@ -720,34 +713,37 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     void loadAuthoring(undefined, state);
   }
   function continueSaved() {
-    if (!conversation || !authoring?.availability.available || disabled || staleConversation || legacyConversation || (authoring.conversations.length >= 8)) return;
-    const input = continuationText(conversation);
-    newConversation();
-    void submitAuthoring({ target: { kind: "revise", extensionId: extensionId.current!, baseRevisionId: state?.draft?.id ?? null, selectionGeneration: state!.selection.generation }, conversationId: null, operationId: crypto.randomUUID(), text: input, expectedVersion: 0, expectedDraftVersion: state!.draftVersion });
+    if (!conversation || !authoring?.availability.available || disabled || staleConversation || legacyConversation) return;
+    void submitAuthoring({ target: { kind: "resume", extensionId: extensionId.current! }, conversationId: conversation.id,
+      operationId: crypto.randomUUID(), text: "Continue from saved work. Ask before changing any independent examples.",
+      expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion });
   }
   async function recoverTurn(input: Turn, turn: number) {
     const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
     if (!mounted.current || serial.current !== turn) return;
     setAuthoring(index);
-    const summary = index.conversations.find(item => input.conversationId ? item.id === input.conversationId : item.creationOperationId === input.operationId);
-    if (summary) {
-      if (input.target.kind !== "create" && summary.extensionId !== input.target.extensionId) throw new Error("Operation customization mismatch");
-      const current = await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(summary.id)}`, "GET", undefined, authoringLifetime.current.signal);
-      if (current.id !== summary.id) throw new Error("Unconfirmed conversation");
-      await adoptConversation(current, turn);
+    try {
+      const recovered = await callbacks.current.request<{ operation: Operation; conversation: Conversation }>("authoring/recover", "POST", input, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
-      if (summary.creationOperationId === input.operationId || current.operation.id === input.operationId) {
-        retainTurn(null); setRetryTurn(false); setAuthoringError("");
-        setText(value => value === input.text ? "" : value);
-        return;
-      }
+      if (recovered.operation.id !== input.operationId || recovered.operation.version !== input.expectedVersion + 1
+        || !recovered.operation.runId || recovered.conversation.version < recovered.operation.version
+        || input.conversationId && recovered.conversation.id !== input.conversationId
+        || input.target.kind !== "create" && recovered.conversation.extensionId !== input.target.extensionId) throw new Error("Operation customization mismatch");
+      await adoptConversation(recovered.conversation, turn, input.conversationId === null ? input.operationId : undefined);
+      if (!mounted.current || serial.current !== turn) return;
+      retainTurn(null); setRetryTurn(false); setAuthoringError("");
+      setText(value => value === input.text ? "" : value);
+      return;
+    } catch (failure) {
+      if ((failure as { status?: number }).status !== 404) throw failure;
     }
+    if (!mounted.current || serial.current !== turn) return;
     setRetryTurn(true);
     setAuthoringError("Saved state was checked, but acceptance of this request is unconfirmed. You may explicitly retry the same submitted request; it keeps its operation identity.");
   }
   async function submitAuthoring(input: Turn, recoveryOnly = false) {
     if (locked.current || !trusted && !recoveryOnly) return;
-    if (!retainTurn(input)) return;
+    retainTurn(input);
     locked.current = true;
     const turn = ++serial.current;
     setBusy(recoveryOnly ? "Checking submitted request…" : "Sending description…");
@@ -831,15 +827,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const abort = new AbortController();
     const signal = AbortSignal.any([abort.signal, authoringLifetime.current.signal]);
     const id = conversation.id, runId = conversation.runId;
-    if (observation.current.runId !== runId) observation.current = { runId, reads: 0 };
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       if (signal.aborted || !mounted.current) return;
-      if (observation.current.reads >= 130) { setObservationPaused(true); setAuthoringError("Automatic observation reached its limit. Check authoring status explicitly; this never starts another generation."); return; }
       if (locked.current) { timer = setTimeout(poll, 1000); return; }
       const turn = serial.current;
       try {
-        observation.current.reads++;
         const next = await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(id)}`, "GET", undefined, signal);
         if (signal.aborted || !mounted.current || serial.current !== turn) { if (!signal.aborted) timer = setTimeout(poll, 1000); return; }
         if (next.id !== id || next.runId !== runId) { setObservationPaused(true); setAuthoringError("The saved run changed. Check authoring status before continuing."); return; }
@@ -877,6 +870,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }, []);
   useLayoutEffect(() => {
     const log = chatEnd.current?.parentElement;
+    const previous = prependedMessages.current;
+    if (log && previous) {
+      prependedMessages.current = null;
+      if (previous.anchor?.element.isConnected) log.scrollTop += previous.anchor.element.getBoundingClientRect().top - previous.anchor.top;
+      else log.scrollTop = previous.top + log.scrollHeight - previous.height;
+      (previous.focus?.isConnected ? previous.focus : log).focus({ preventScroll: true });
+      return;
+    }
     if (log && followConversation.current) log.scrollTop = log.scrollHeight;
     else setNewMessages(true);
   }, [messages, activeAuthoring]);
@@ -917,7 +918,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       apply(next);
       if (operation === "restart") {
         historyMode.current = false; setHistoryView(false); reviewAttempt.current = "";
-        setConversation(null); setMessages([]); initialized.current = false; setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
+        setConversation(null); setMessages([]); messageHistory.current = null; setMessagesBefore(null); initialized.current = false; setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
         callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
       }
       say(message);
@@ -995,12 +996,88 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setBusy("Opening earlier selections…"); setError("");
     try {
       const next = await callbacks.current.request<{ rows: History[]; next: number | null }>(`${extensionPath()}/history?before=${historyNext}`);
-      if (mounted.current && serial.current === turn) { setHistory(old => [...old, ...next.rows]); setHistoryNext(next.next); }
+      if (mounted.current && serial.current === turn) { setHistory(old => [...old, ...next.rows.filter(row => !old.some(item => item.id === row.id))]); setHistoryNext(next.next); }
     } catch {
       if (mounted.current && serial.current === turn) setError("Earlier selections could not be loaded. No customization was changed.");
     } finally {
       if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
+  }
+  async function earlierMessages() {
+    if (locked.current || !conversation || !messagesBefore || !messageHistory.current) return;
+    locked.current = true;
+    const turn = ++serial.current, id = conversation.id, anchor = messageHistory.current.anchor;
+    const invoker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setBusy("Opening earlier messages…"); setAuthoringError("");
+    try {
+      const next = await callbacks.current.request<{ messages: Conversation["messages"]; next: string | null }>(
+        `authoring/conversations/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(messagesBefore)}`, "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn || messageHistory.current?.conversationId !== id) return;
+      const log = chatEnd.current?.parentElement;
+      const focus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : invoker;
+      if (log) {
+        const bounds = log.getBoundingClientRect();
+        const visible = Array.from(log.querySelectorAll<HTMLElement>(".rs-message")).find(element => {
+          const rect = element.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
+        });
+        prependedMessages.current = { height: log.scrollHeight, top: log.scrollTop, focus,
+          anchor: visible ? { element: visible, top: visible.getBoundingClientRect().top } : null };
+      }
+      followConversation.current = false;
+      const incoming = conversationMessages(id, next.messages);
+      const ids = new Set(incoming.map(item => item.id));
+      setMessages(old => {
+        const retained = old.filter(item => !ids.has(item.id));
+        const position = anchor === null ? retained.length : retained.findIndex(item => item.id === anchor);
+        const index = position < 0 ? 0 : position;
+        return [...retained.slice(0, index), ...incoming, ...retained.slice(index)];
+      });
+      messageHistory.current.anchor = incoming[0]?.id ?? anchor;
+      incoming.forEach(item => messageHistory.current!.ids.add(item.id));
+      setMessagesBefore(next.next);
+    } catch {
+      if (mounted.current && serial.current === turn) setAuthoringError("Earlier messages could not be loaded. The current discussion and saved work are unchanged.");
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
+  }
+  async function earlierConversations() {
+    if (locked.current || !authoring?.next) return;
+    locked.current = true;
+    const turn = ++serial.current;
+    setBusy("Opening earlier conversations…"); setAuthoringError("");
+    try {
+      const next = await callbacks.current.request<Authoring>(`${authoringPath()}${extensionId.current ? "&" : "?"}before=${encodeURIComponent(authoring.next)}`, "GET", undefined, authoringLifetime.current.signal);
+      if (mounted.current && serial.current === turn) setAuthoring(old => old ? { ...old,
+        conversations: [...old.conversations, ...next.conversations.filter(item => !old.conversations.some(row => row.id === item.id))], next: next.next } : old);
+    } catch {
+      if (mounted.current && serial.current === turn) setAuthoringError("Earlier conversations could not be loaded. Your current discussion remains open.");
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
+  }
+  async function earlierSaved(kind: "evidence" | "revisions" | "restore-targets") {
+    if (locked.current || !state?.extension) return;
+    const cursor = kind === "evidence" ? state.evidenceHistoryNext : kind === "restore-targets" ? state.restoreTargetsNext : revisionsNext;
+    if (cursor === null || kind !== "revisions" && !cursor) return;
+    locked.current = true;
+    const turn = ++serial.current;
+    setBusy("Opening saved history…"); setError("");
+    try {
+      const path = `${extensionPath()}/${kind}${cursor ? "?before=" + encodeURIComponent(cursor) : ""}`;
+      if (kind === "revisions") {
+        const next = await callbacks.current.request<{ rows: Revision[]; next: string | null }>(path, "GET", undefined, authoringLifetime.current.signal);
+        if (mounted.current && serial.current === turn) {
+          setRevisions(old => [...old, ...next.rows.filter(item => !old.some(row => row.id === item.id))]); setRevisionsNext(next.next);
+        }
+      } else if (kind === "evidence") {
+        const next = await callbacks.current.request<{ rows: State["evidenceHistory"]; next: string | null }>(path, "GET", undefined, authoringLifetime.current.signal);
+        if (mounted.current && serial.current === turn) setState(old => old ? { ...old,
+          evidenceHistory: [...old.evidenceHistory, ...next.rows.filter(item => !old.evidenceHistory.some(row => row.id === item.id))], evidenceHistoryNext: next.next } : old);
+      } else {
+        const next = await callbacks.current.request<{ rows: Revision[]; next: string | null }>(path, "GET", undefined, authoringLifetime.current.signal);
+        if (mounted.current && serial.current === turn) setState(old => old ? { ...old,
+          restoreTargets: [...old.restoreTargets, ...next.rows.filter(item => !old.restoreTargets.some(row => row.id === item.id))], restoreTargetsNext: next.next } : old);
+      }
+    } catch {
+      if (mounted.current && serial.current === turn) setError("Saved history could not be loaded. No customization was changed.");
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   async function loadExample() {
     if (locked.current || disabled) return;
@@ -1036,24 +1113,24 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     try { sessionStorage.removeItem(recoveryKey + ":example"); } catch { /* The exact operation still prevents duplicate creation. */ }
   }
   async function readExampleRequest(operationId: string, personal: boolean, turn: number) {
-    const [collection, sample] = await Promise.all([
-      callbacks.current.request<Collection>("extensions", "GET", undefined, authoringLifetime.current.signal),
+    const [saved, sample] = await Promise.all([
+      callbacks.current.request<State>(`extensions/creation/${encodeURIComponent(operationId)}`, "GET", undefined, authoringLifetime.current.signal).catch(failure => {
+        if ((failure as { status?: number }).status === 404) return null;
+        throw failure;
+      }),
       callbacks.current.request<Example>("authoring/example", "GET", undefined, authoringLifetime.current.signal),
     ]);
     if (!mounted.current || serial.current !== turn) return;
-    if (collection.owner.id !== ownerId) throw new Error("Example owner mismatch");
-    const item = collection.items.find(saved => saved.extension?.creationOperationId === operationId);
     personalStart.current = personal; exampleOperation.current = operationId; setExample(sample); setScripted(true); setEntry("item"); initialized.current = true;
-    if (!item?.extension) {
+    if (!saved?.extension) {
       if (extensionId.current) throw new Error("Example item unavailable");
       setExampleRetry(true); setTrusted(true);
       setError("Saved state was checked, but acceptance of this example is unconfirmed. You can explicitly retry the same save; its request identity is kept.");
       return;
     }
-    if (extensionId.current && extensionId.current !== item.extension.id) throw new Error("Example customization mismatch");
-    extensionId.current = item.extension.id;
-    const saved = await callbacks.current.request<State>(extensionPath(), "GET", undefined, authoringLifetime.current.signal);
-    if (!mounted.current || serial.current !== turn) return;
+    if (saved.owner.id !== ownerId || saved.extension.creationOperationId !== operationId
+      || extensionId.current && extensionId.current !== saved.extension.id) throw new Error("Example customization mismatch");
+    extensionId.current = saved.extension.id;
     apply(saved); callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null }); clearExampleRequest();
     if (await recognizeExample(saved, sample, turn)) {
       say("The saved example was found. You can continue checking it without creating another customization.");
@@ -1082,9 +1159,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         exampleOperation.current ??= crypto.randomUUID();
         const retained = { entryId: recoveryKey.slice(recoveryKey.lastIndexOf(":") + 1), operationId: exampleOperation.current, personal: personalStart.current };
         try {
-          if (!sessionStorage.getItem(recoveryKey + ":example") && pendingRequests(ownerId).length + pendingGuidedRequests(ownerId).length >= 8) {
-            setError("Check an earlier submitted request in Customizations before saving another example."); return;
-          }
           sessionStorage.setItem(recoveryKey + ":example", JSON.stringify(retained));
         } catch { setRecoveryError("This browser could not save recovery information. Keep this page open until the example is confirmed."); }
         setPendingExample(retained); setExampleRetry(false);
@@ -1196,6 +1270,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           const log = event.currentTarget; followConversation.current = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
           if (followConversation.current) setNewMessages(false);
         }}>
+          {messagesBefore && <button id="studio-earlier-messages" disabled={!!busy} onClick={() => void earlierMessages()}>Load earlier messages</button>}
           {entry === "start" && <article className="rs-message rs-start">
             <strong>Studio</strong><h2>What would you like to change about your work?</h2>
             <p>Tell me what you want to happen. We’ll check what Daymark can support and work through useful examples together.</p>
@@ -1216,7 +1291,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {conversation?.review && !eligibleOffer && <article className="rs-message"><p>These saved examples do not support approval of the current changes.</p>
             <button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>Inspect these saved examples</button></article>}
           {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
-          {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT"].includes(conversation?.code ?? "") && !activeAuthoring && !legacyConversation && !staleConversation && <button disabled={disabled || !authoring?.availability.available || (authoring?.conversations.length ?? 0) >= 8} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue from saved proposal"}</button>}
+          {["BUDGET_EXHAUSTED", "CONTEXT_LIMIT", "PROVIDER_RATE_LIMIT", "EXPIRED"].includes(conversation?.code ?? "") && !activeAuthoring && !legacyConversation && !staleConversation && !historyView && <button disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue here from saved work"}</button>}
           {state?.extension && ownActive && !historyView && !staleConversation && <article className="rs-message">
             <p>{state.draft && state.draft.id !== ownActive.id ? "Your current setup is still on. Your saved changes are not in use yet." : "This setup is in use."}</p>
             {state.draft && state.draft.id !== ownActive.id && checkedDraftSummary && <p>In the checked examples for your saved changes, {checkedDraftSummary}.</p>}
@@ -1236,10 +1311,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {newMessages && <button className="rs-new-messages" onClick={() => { const log = chatEnd.current?.parentElement; if (log) log.scrollTop = log.scrollHeight; followConversation.current = true; setNewMessages(false); }}>New messages ↓</button>}
           {needsFreshDiscussion && <article className="rs-message rs-decision rs-current-decision" aria-label="Assistant settings changed">
             <p role="status">The assistant settings changed, so your message wasn’t sent. Start a new conversation to continue. Your message and saved work are kept.</p>
-            <button className="rs-primary" disabled={disabled || legacyConversation || (authoring?.conversations.length ?? 0) >= 8} onClick={() => {
+            <button className="rs-primary" disabled={disabled || legacyConversation} onClick={() => {
               newConversation(true); requestAnimationFrame(() => { if (mounted.current) document.getElementById("studio-message")?.focus(); });
             }}>Start new conversation</button>
-            {(authoring?.conversations.length ?? 0) >= 8 && <p>The saved discussion limit has been reached. Earlier discussions and your saved work remain available in History.</p>}
           </article>}
           {restart && <article id="studio-restart-confirm" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Start from version in use">
             <h3>Start changes from this version?</h3><p>Version in use: {restart.activeLabel}. Saved changes: {restart.draftLabel}. You’ll start from the version in use. Your unfinished changes and their discussion will stay in History. Your current setup will keep running.</p>
@@ -1367,9 +1441,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           <section className="rs-authoring" aria-label="AI authoring">
             <h3>Saved conversations</h3>
             {authoring && (extensionId.current || legacyConversation) && authoring.conversations.length > 0 && <label>Saved authoring conversation<select aria-label="Saved authoring conversation" value={conversation?.id ?? ""} disabled={!!busy || activeAuthoring || !!pendingTurn || !!pendingExample}
-              onChange={event => { if (event.target.value) { historyMode.current = true; setHistoryView(true); setScripted(false); setMessages([]); void loadAuthoring(event.target.value).then(() => { if (mounted.current) closeReview(); }); } }}><option value="" disabled>Choose a saved conversation</option>{authoring.conversations.filter(item => item.extensionId === extensionId.current).map((item, index) => <option key={item.id} value={item.id}>Conversation {index + 1}</option>)}</select></label>}
+              onChange={event => { if (event.target.value) { historyMode.current = true; setHistoryView(true); setScripted(false); setMessages([]); messageHistory.current = null; setMessagesBefore(null); void loadAuthoring(event.target.value).then(() => { if (mounted.current) closeReview(); }); } }}><option value="" disabled>Choose a saved conversation</option>{authoring.conversations.filter(item => item.extensionId === extensionId.current).map((item, index) => <option key={item.id} value={item.id}>Conversation {index + 1}</option>)}</select></label>}
             {conversation && <><p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>
-              {!activeAuthoring && !legacyConversation && !historyView && !staleConversation && <button disabled={!!busy || !!pendingTurn || !!pendingExample || (authoring?.conversations.length ?? 0) >= 8} onClick={() => newConversation()}>Continue current changes in a new conversation</button>}</>}
+              {!activeAuthoring && !legacyConversation && !historyView && !staleConversation && <button disabled={!!busy || !!pendingTurn || !!pendingExample} onClick={() => newConversation()}>Continue current changes in a new conversation</button>}</>}
+            {authoring?.next && <button disabled={!!busy} onClick={() => void earlierConversations()}>Load earlier conversations</button>}
             {!authoringError && !observationPaused && !pendingTurn && <button disabled={!!busy} onClick={() => void loadAuthoring(conversation?.id ?? null)}>Check authoring status</button>}
           </section>
           {authoring?.availability.provider && <section aria-label="Assistant connection details"><h3>Assistant connection</h3><p>Provider: {authoring.availability.provider}</p><p>Model: {authoring.availability.model}</p><button onClick={openSetup}>Configure</button></section>}
@@ -1395,12 +1470,19 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               <button disabled={!!busy} onClick={() => void showEvidence(item.id)}>Open saved sample run {index + 1}</button>
               <small>{item.id === state.evidence?.id ? "Current proposal" : "Earlier run"} · revision {item.revisionId}</small>
             </li>)}</ol>
+            {state.evidenceHistoryNext && <button disabled={!!busy} onClick={() => void earlierSaved("evidence")}>Load earlier sample runs</button>}
           </details>}
+          <details className="rs-sheet rs-secondary"><summary>All saved versions</summary>
+            <p>Saved versions are read-only. Only eligible previously used choices can be restored below.</p>
+            <ol>{revisions.map(item => <li key={item.id}>{item.label} · {item.id} · read-only <button disabled={!!busy} onClick={() => void inspectSource(item.id)}>Inspect saved version</button></li>)}</ol>
+            {revisionsNext !== null && <button disabled={!!busy} onClick={() => void earlierSaved("revisions")}>{revisionsNext === undefined ? "Load saved versions" : "Load earlier saved versions"}</button>}
+          </details>
           <details className="rs-sheet rs-secondary" aria-label="Manage saved customization"><summary>Manage saved customization</summary>
             <button disabled={disabled || state.selection.revision?.extensionId !== state.extension?.id} onClick={() => void mutate("disable", { generation: state.selection.generation }, "Your advice is off. Your tasks have not changed.", true)}>Turn off my advice</button>
           <h3>Return to an earlier choice</h3>
             <label htmlFor="studio-restore">Previously in use</label><select id="studio-restore" value={restore} disabled={disabled} onChange={e => setRestore(e.target.value)}>
               <option value="">Choose a saved choice…</option>{state.restoreTargets.map((item, index) => <option key={item.id} value={item.id}>{item.label} · {item.provenance === "operator" ? "operator starting choice" : "customer approved"} · choice {index + 1}</option>)}</select>
+            {state.restoreTargetsNext && <button disabled={!!busy} onClick={() => void earlierSaved("restore-targets")}>Load earlier restore choices</button>}
             {restoreTarget && <div className="rs-restore-confirm"><p>Restore <strong>{restoreTarget.label}</strong>{restoreTarget.kind === "authored" ? " with its exact reviewed source and examples." : " for your open tasks; completed tasks show Done."} {restoreTarget.provenance === "operator" ? "This was an operator-provided starting choice." : "This choice was approved for you."} No task or earlier action is undone.</p>
               <details><summary>Exact choice to restore</summary><p>Revision: {restoreTarget.id}</p><pre>{JSON.stringify(restoreTarget.pins, null, 2)}</pre></details>
               <button disabled={disabled} onClick={() => void mutate("rollback", { revisionId: restoreTarget.id, generation: state.selection.generation }, `Restored ${restoreTarget.label} for your tasks.`, true)}>Restore {restoreTarget.label} for me</button></div>}

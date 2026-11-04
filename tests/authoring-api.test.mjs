@@ -42,6 +42,8 @@ const configFor = (provider = 'openai', cap = '3') => readAuthoringConfig({ KEIR
   OPENAI_API_KEY: 'synthetic-secret-key', ANTHROPIC_API_KEY: 'synthetic-secret-key' });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const rowState = db => JSON.parse(db.prepare('SELECT state FROM authoring_conversations ORDER BY rowid DESC LIMIT 1').get().state);
+const dispatches = (db, id = db.prepare('SELECT id FROM authoring_conversations ORDER BY rowid DESC LIMIT 1').get().id) =>
+  db.prepare('SELECT * FROM authoring_dispatches WHERE conversation_id=? ORDER BY rowid').all(id);
 const reserved = db => db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
 const keys = (value, expected) => assert.deepEqual(Object.keys(value).sort(), expected.sort());
 function removeFixture(directory) {
@@ -49,7 +51,8 @@ function removeFixture(directory) {
   rmSync(directory, { recursive: true, force: true });
 }
 function assertDto(value) {
-  keys(value, ['id', 'extensionId', 'purpose', 'version', 'status', 'runId', 'operation', 'messages', 'code', 'review', 'draft', 'selection']);
+  keys(value, ['id', 'extensionId', 'purpose', 'version', 'status', 'runId', 'operation', 'messages', 'messagesBefore', 'code', 'review', 'draft', 'selection']);
+  assert.ok(value.messagesBefore === null || typeof value.messagesBefore === 'string');
   keys(value.operation, ['id', 'runId', 'version']);
   keys(value.draft, ['revisionId', 'draftVersion', 'suiteDigest']);
   keys(value.selection, ['revisionId', 'generation']);
@@ -206,7 +209,9 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
       suiteDigest: review.suiteDigest, evidenceId: exactEvidenceId };
     assert.deepEqual(current.messages.at(-1).receipt, receipt);
     const savedView = JSON.parse(db.prepare('SELECT view FROM authoring_conversations WHERE id=?').get(current.id).view);
-    assert.deepEqual(savedView.messages.at(-1).receipt, receipt, 'The exact turn receipt is durable, not inferred from latest evidence.');
+    assert.deepEqual(savedView.messages, [], 'The current header does not accumulate transcript history.');
+    const savedMessage = JSON.parse(db.prepare('SELECT payload FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(current.id, current.messages.at(-1).id).payload);
+    assert.deepEqual(savedMessage.receipt, receipt, 'The exact turn receipt is durable, not inferred from latest evidence.');
     assert.equal(current.messages[0].receipt, undefined);
     assert.equal(state.evidence.id, latestEvidenceId);
     const proof = (await call(extensionPath(db, 'evidence/' + review.evidenceId))).json();
@@ -221,7 +226,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
     assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
     assert.equal(reserved(db), configFor(provider).reserveMicros * 6);
     assert.equal(rowState(db).counts.compiles, 2);
-    assert.equal(rowState(db).journal.length, 12); assert.ok(rowState(db).journal.every(item => item.outcome === 'SUCCESS'));
+    assert.equal(dispatches(db, current.id).length, 12); assert.ok(dispatches(db, current.id).every(item => item.outcome === 'SUCCESS'));
     const changed = await call(extensionPath(db, 'draft'), { templateId: 'attention', draftVersion: 2 });
     assert.equal(changed.statusCode, 200);
     const historical = (await call('authoring/conversations/' + current.id)).json();
@@ -242,8 +247,8 @@ for (const stage of ['beforeCommit', 'afterCommit']) test(`${stage} DISPATCH fau
   assert.equal(reserved(db), stage === 'beforeCommit' ? 0 : configFor().reserveMicros);
   const state = rowState(db);
   assert.equal(state.usage.reservedMicros, reserved(db));
-  assert.equal(state.journal.length, stage === 'beforeCommit' ? 0 : 1);
-  if (stage === 'afterCommit') assert.equal(state.journal[0].outcome, 'UNKNOWN');
+  assert.equal(dispatches(db, current.id).length, stage === 'beforeCommit' ? 0 : 1);
+  if (stage === 'afterCommit') assert.equal(dispatches(db, current.id)[0].outcome, 'UNKNOWN');
 });
 
 for (const [provider, cap] of [['openai', '0.319488'], ['anthropic', '0.077824']]) test(`${provider} concurrent owners share the durable operator allowance rather than per-conversation credit`, async t => {
@@ -278,7 +283,7 @@ test('file restart never replays interrupted work; a new explicit revision conve
   state.dispatchOrdinal = 3; state.checkpoint = { phase: 'DISPATCH', ...state.inFlight };
   state.counts.calls++; state.usage.reservedMicros += configFor('anthropic').reserveMicros;
   state.runLedger.ordinal = 3; state.runLedger.reserved += configFor('anthropic').reserveMicros;
-  state.journal.push({ runId: saved.runId, ordinal: 3, kind: 'provider', reservedMicros: configFor('anthropic').reserveMicros });
+  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,NULL)').run(saved.id, 'maya', saved.runId, 3, 'provider', null, configFor('anthropic').reserveMicros);
   db.prepare('UPDATE authoring_budget SET reserved_micros=reserved_micros+?').run(configFor('anthropic').reserveMicros);
   db.prepare("UPDATE authoring_conversations SET status='RUNNING',state=? WHERE id=?").run(JSON.stringify(state), saved.id);
   const held = reserved(db); db.close();
@@ -288,7 +293,7 @@ test('file restart never replays interrupted work; a new explicit revision conve
   assert.equal(recovered.status, 'INTERRUPTED'); assert.equal(recovered.code, 'RUN_INTERRUPTED');
   assert.equal(recovered.draft.revisionId, saved.draft.revisionId); assert.equal(recovered.draft.draftVersion, saved.draft.draftVersion); assert.equal(recovered.review, null);
   assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).revisionId, currentB.revisionId);
-  assert.equal(rowState(db).journal.at(-1).outcome, 'UNKNOWN');
+  assert.equal(dispatches(db, saved.id).at(-1).outcome, 'UNKNOWN');
   assert.equal(fake.requests.length, 1); assert.equal(reserved(db), held);
   await assert.rejects(service.turn('maya', input(db, 'stale-recovery', { conversationId: saved.id, expectedVersion: 1 }), lease('new-session')), { code: 'STALE_DRAFT' });
   await assert.rejects(service.turn('maya', input(db, 'same-conversation-cannot-rebase', { conversationId: saved.id, expectedVersion: 1, expectedDraftVersion: 1 }), lease('new-session')), { code: 'STALE_DRAFT' });
@@ -386,13 +391,13 @@ test('independent wrong expectation remains byte-exact and review-ineligible wit
   assert.deepEqual(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection, selection);
 });
 
-test('oversized terminal checkpoint settles BLOCKED with retained credit and allows explicit continuation', async t => {
+test('oversized active native context settles BLOCKED with retained credit and allows explicit continuation', async t => {
   const config = configFor(); let calls = 0, resultSaved = false, resultRow;
   const { db, service } = direct(t, { providerFactory: () => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros,
     async complete() {
       calls++;
       return { continuation: { provider: 'openai', items: calls === 1 ? ['x'.repeat(260825)] : [] }, calls: [],
-        text: calls === 1 ? 'y'.repeat(200) : 'Ready.', usage: { inputTokens: 1, outputTokens: 1 } };
+        text: calls === 1 ? 'y'.repeat(1000) : 'Ready.', usage: { inputTokens: 1, outputTokens: 1 } };
     } }), checkpointFault: point => {
       if (point.phase === 'RESULT' && point.stage === 'afterCommit' && calls === 1) {
         resultSaved = true; resultRow = db.prepare('SELECT * FROM authoring_conversations').get();
@@ -401,7 +406,8 @@ test('oversized terminal checkpoint settles BLOCKED with retained credit and all
   const started = await service.turn('maya', input(db, 'large'), lease('session'));
   const blocked = await service.wait('maya', started.conversation.id);
   assert.equal(resultSaved, true, 'The provider result fits; only terminal state exceeds the byte limit.');
-  assert.equal(blocked.status, 'BLOCKED'); assert.equal(blocked.code, 'BYTE_LIMIT');
+  assert.ok(Buffer.byteLength(resultRow.state) + Buffer.byteLength(resultRow.operations) + Buffer.byteLength(resultRow.view) <= 262144);
+  assert.equal(blocked.status, 'BLOCKED'); assert.equal(blocked.code, 'CONTEXT_LIMIT');
   assert.equal(reserved(db), config.reserveMicros);
   assert.equal(rowState(db).continuation, undefined); assert.equal(rowState(db).pending, undefined);
   const continued = await service.turn('maya', input(db, 'next', { conversationId: blocked.id, expectedVersion: 1 }), lease('session'));
@@ -419,6 +425,24 @@ test('oversized terminal checkpoint settles BLOCKED with retained credit and all
     assert.equal(rowState(db).evidenceHandle, null); assert.equal(calls, 2);
     assert.equal(reserved(db), config.reserveMicros * 2);
   } finally { await recovered.close(); }
+});
+
+test('an individually oversized terminal reply fails BYTE_LIMIT without releasing credit or stranding the conversation', async t => {
+  const config = configFor(); let calls = 0;
+  const { db, service } = direct(t, { providerFactory: () => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros,
+    async complete() {
+      calls++;
+      return { calls: [], text: calls === 1 ? 'x'.repeat(131073) : 'Ready.', usage: { inputTokens: 1, outputTokens: 1 } };
+    } }) });
+  const started = await service.turn('maya', input(db, 'oversized-message'), lease('session'));
+  const blocked = await service.wait('maya', started.conversation.id);
+  assert.equal(blocked.status, 'BLOCKED'); assert.equal(blocked.code, 'BYTE_LIMIT'); assertDto(blocked);
+  assert.equal(reserved(db), config.reserveMicros);
+  assert.ok(dispatches(db, blocked.id).every(item => item.outcome === 'SUCCESS'));
+  assert.equal(blocked.messages.some(message => message.text.length > 131072), false);
+  const resumed = await service.turn('maya', input(db, 'after-oversized-message', { conversationId: blocked.id, expectedVersion: 1 }), lease('session'));
+  assert.equal((await service.wait('maya', resumed.conversation.id)).status, 'IDLE');
+  assert.equal(calls, 2); assert.equal(reserved(db), config.reserveMicros * 2);
 });
 
 for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lost tool-result checkpoint; old chat retains A and a new revision conversation uses B`, async t => {
@@ -448,7 +472,7 @@ for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lo
   const currentB = lifecycle.state('maya', itemId(lifecycle, 'maya')), beforeRestart = rowState(db), held = reserved(db);
   assert.equal(currentB.draftVersion, 2); assert.notEqual(currentB.revisionId, initial.revisionId);
   assert.equal(beforeRestart.handles.revisionId, initial.revisionId, 'Lost result preserves the prior durable A handle.');
-  assert.equal(beforeRestart.journal.at(-1).outcome, 'UNKNOWN');
+  assert.equal(dispatches(db, stopped.id).at(-1).outcome, 'UNKNOWN');
   await service.close(); db.close();
   db = openData(path); lifecycle = createLifecycle(db, { compiler });
   service = createAuthoringService({ db, lifecycle, config: configFor(), fetchImpl: fake.fetchImpl });
@@ -563,33 +587,40 @@ test('public scenario rejection stays HTTP400 and returns only a host-constructe
   }
 });
 
-for (const secondLength of [8192, 6000]) test(`near-full public transcript with ${secondLength}-byte next input stays readable and never strands RUNNING`, async t => {
+for (const secondLength of [8192, 6000]) test(`durable transcript beyond header capacity accepts ${secondLength}-byte next input and remains fully readable through pages`, async t => {
   const config = configFor(); let calls = 0;
   const { db, call, login } = await api(t, { config, providerFactory: () => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros,
     async complete() {
       calls++;
-      if (calls > 1) throw Error('synthetic provider failure');
-      return { calls: [], text: 'x'.repeat(122500), usage: { inputTokens: 1, outputTokens: 1 } };
+      return { calls: [], text: calls === 1 ? 'x'.repeat(122500) : 'Second request completed.', usage: { inputTokens: 1, outputTokens: 1 } };
     } }) });
   await login();
   const first = await call('authoring/turn', input(db, 'near-cap'));
   assert.equal(first.statusCode, 202);
   const saved = await settled(call, first.json().conversation.id);
   assert.equal(saved.status, 'IDLE'); assert.equal(saved.messages.at(-1).text.length, 122500);
+  const retained = Array.from({ length: 2 }, (_, index) => ({ id: `earlier-message-${index}`, role: 'assistant', kind: 'text', text: `${index}`.repeat(122500) }));
+  for (const [index, message] of retained.entries()) db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)')
+    .run(saved.id, 'maya', index + 3, message.id, JSON.stringify(message));
+  assert.ok(db.prepare('SELECT sum(length(CAST(payload AS BLOB))) bytes FROM authoring_messages WHERE conversation_id=?').get(saved.id).bytes > 262144);
   const second = await call('authoring/turn', input(db, 'follow-up', { conversationId: saved.id, expectedVersion: 1, text: 'y'.repeat(secondLength) }));
-  if (secondLength === 8192) {
-    assert.ok([413, 503].includes(second.statusCode)); assert.equal(second.json().code, 'BYTE_LIMIT');
-    assert.equal(calls, 1); assert.equal(reserved(db), config.reserveMicros);
-    const read = await call('authoring/conversations/' + saved.id);
-    assert.equal(read.statusCode, 200); assert.deepEqual(read.json(), saved);
-  } else {
-    assert.equal(second.statusCode, 202);
-    const failed = await settled(call, saved.id);
-    assert.equal(failed.status, 'BLOCKED'); assert.equal(failed.code, 'TOOL_FAILED');
-    assert.equal(failed.messages[1].text.length, 122500);
-    assert.equal(calls, 2); assert.equal(reserved(db), config.reserveMicros * 2);
-    assert.ok(Buffer.byteLength(JSON.stringify(failed)) <= 131072); assertDto(failed);
+  assert.equal(second.statusCode, 202);
+  const finished = await settled(call, saved.id);
+  assert.equal(finished.status, 'IDLE'); assert.equal(finished.messages.at(-1).text, 'Second request completed.');
+  assert.equal(calls, 2); assert.equal(reserved(db), config.reserveMicros * 2);
+  assert.ok(Buffer.byteLength(JSON.stringify(finished)) <= 131072); assertDto(finished);
+  const messages = [...finished.messages]; let before = finished.messagesBefore;
+  while (before) {
+    const page = await call(`authoring/conversations/${saved.id}/messages?before=${encodeURIComponent(before)}`);
+    assert.equal(page.statusCode, 200); assert.ok(Buffer.byteLength(page.body) <= 262144);
+    const value = page.json(); messages.unshift(...value.messages); before = value.next;
   }
+  assert.equal(messages.length, 6); assert.equal(new Set(messages.map(message => message.id)).size, 6);
+  assert.equal(messages[1].text, 'x'.repeat(122500)); assert.deepEqual(messages.slice(2, 4), retained);
+  assert.equal(messages[4].text, 'y'.repeat(secondLength));
+  const row = db.prepare('SELECT view,operations FROM authoring_conversations WHERE id=?').get(saved.id);
+  assert.deepEqual(JSON.parse(row.view).messages, []); assert.equal(JSON.parse(row.operations).length, 1);
+  assert.equal(db.prepare('SELECT count(*) count FROM authoring_operations WHERE conversation_id=?').get(saved.id).count, 2);
 });
 
 test('allowance below one Anthropic reservation cannot dispatch any provider request', async t => {

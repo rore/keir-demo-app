@@ -195,8 +195,12 @@ test('collection excerpts require unique original owner/item creation linkage an
   const id = item.extension.id, original = '  Unsupported calendar request 😀 ' + '😀'.repeat(170) + '  ';
   const messages = [{ id: 'excerpt-create', role: 'user', text: original },
     { id: 'later-request', role: 'user', text: 'Later discussion must not replace the original.' }];
-  const addConversation = (conversationId, operationId, owner = 'maya') => db.prepare(`INSERT INTO authoring_conversations
-    VALUES(?,?,?,0,?,'IDLE',0,0,'{}','[]',?)`).run(conversationId, owner, operationId, 'fixture-run', JSON.stringify({ messages }));
+  const addConversation = (conversationId, operationId, owner = 'maya') => {
+    db.prepare(`INSERT INTO authoring_conversations(id,owner_id,creation_operation_id,version,run_id,status,cancel_requested,updated_at,state,operations,view,created_at)
+      VALUES(?,?,?,0,?,'IDLE',0,0,'{"createdAt":0}','[]','{"messages":[]}',0)`).run(conversationId, owner, operationId, 'fixture-run');
+    for (const [index, message] of messages.entries()) db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)')
+      .run(conversationId, owner, index + 1, message.id, JSON.stringify(message));
+  };
   const link = (conversationId, purpose = 'CREATE') => db.prepare('INSERT INTO extension_conversation_links VALUES (?,?,?,?,NULL,NULL)')
     .run(conversationId, 'maya', id, purpose);
   const read = () => lifecycle.collection('maya').items.find(value => value.extension.id === id);
@@ -217,9 +221,10 @@ test('collection excerpts require unique original owner/item creation linkage an
   addConversation('ambiguous-conversation', 'another-operation'); link('ambiguous-conversation');
   assert.equal(Object.hasOwn(read(), 'requestExcerpt'), false, 'multiple CREATE links remain ambiguous even if one operation matches');
   db.prepare('DELETE FROM extension_conversation_links WHERE conversation_id=?').run('ambiguous-conversation');
-  for (const view of ['not json', '{}', JSON.stringify({ messages: [{ id: 'wrong-operation', role: 'user', text: 'Wrong original' }] }),
-    JSON.stringify({ messages: [{ id: 'excerpt-create', role: 'user', text: '\ud800' }] })]) {
-    db.prepare('UPDATE authoring_conversations SET view=? WHERE id=?').run(view, 'excerpt-conversation');
+  for (const payload of ['not json', '{}', JSON.stringify({ id: 'wrong-operation', role: 'user', text: 'Wrong original' }),
+    JSON.stringify({ id: 'excerpt-create', role: 'user', text: '\ud800' })]) {
+    db.prepare('DELETE FROM authoring_messages WHERE conversation_id=?').run('excerpt-conversation');
+    db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run('excerpt-conversation', 'maya', 1, 'excerpt-create', payload);
     assert.equal(Object.hasOwn(read(), 'requestExcerpt'), false, 'malformed or unproven messages are omitted');
   }
 });

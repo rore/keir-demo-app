@@ -154,7 +154,7 @@ test('bounds request and chunked response bytes and rejects non-JSON content', a
   let fetched = false;
   const provider = createAuthoringProvider(config('openai'), { maxBytes: 1,
     fetchImpl: async () => { fetched = true; return json(openai([])); } });
-  await assert.rejects(provider.complete(request), errorCode('BYTE_LIMIT'));
+  await assert.rejects(provider.complete(request), errorCode('CONTEXT_LIMIT'));
   assert.equal(fetched, false);
   let cancelled = false;
   const stream = new ReadableStream({ pull(controller) { controller.enqueue(new Uint8Array(1024)); },
@@ -166,6 +166,59 @@ test('bounds request and chunked response bytes and rejects non-JSON content', a
   await assert.rejects(createAuthoringProvider(config('openai'), {
     fetchImpl: async () => new Response('{}', { headers: { 'content-type': 'text/html' } }) })
     .complete(request), errorCode('PROVIDER_RESPONSE_INVALID'));
+});
+
+for (const name of ['openai', 'anthropic']) test(`${name} preflight checks the exact full wire envelope at its UTF-8 byte boundary without fetching`, async () => {
+  const native = name === 'openai'
+    ? [{ type: 'reasoning', id: 'native-reasoning', encrypted_content: 'opaque 😀', summary: [] },
+      { type: 'function_call', call_id: 'native-call', name: 'lookup', arguments: '{"id":"original"}' }]
+    : [{ role: 'assistant', content: [{ type: 'thinking', thinking: 'opaque 😀', signature: 'native-signature' },
+      { type: 'tool_use', id: 'native-call', name: 'lookup', input: { id: 'original' } }] }];
+  const full = { input: 'Explain 😀\n"result"', instructions: 'Keep exact instructions 😀\n', tools,
+    continuation: { provider: name, items: native }, toolResult: { id: 'native-call', output: '{"value":"😀\\n"}' } };
+  const expected = JSON.stringify(name === 'openai' ? {
+    model: config(name).model, instructions: full.instructions,
+    input: [...native, { type: 'function_call_output', call_id: full.toolResult.id, output: full.toolResult.output },
+      { role: 'user', content: full.input }], store: false, reasoning: { effort: 'low' }, max_output_tokens: 4096,
+    parallel_tool_calls: false, tools: tools.map(tool => ({ type: 'function', name: tool.name,
+      description: tool.description, parameters: tool.parameters, strict: true })),
+  } : {
+    model: config(name).model, system: full.instructions,
+    messages: [...native, { role: 'user', content: [{ type: 'tool_result', tool_use_id: full.toolResult.id, content: full.toolResult.output },
+      { type: 'text', text: full.input }] }], max_tokens: 4096, tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+    tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters, strict: true })),
+  });
+  let fetches = 0;
+  const exact = createAuthoringProvider(config(name), { maxBytes: Buffer.byteLength(expected), fetchImpl: async (_url, init) => {
+    fetches++;
+    assert.equal(init.body, expected);
+    return json(name === 'openai' ? openai([]) : anthropic([]));
+  } });
+  const original = structuredClone(full);
+  assert.equal(exact.preflight(full), undefined);
+  assert.deepEqual(full, original);
+  assert.equal(fetches, 0);
+  await exact.complete(full);
+  assert.equal(fetches, 1);
+  assert.deepEqual(full, original);
+  for (const oversized of [
+    { ...full, input: full.input + 'x' },
+    { ...full, instructions: full.instructions + 'x' },
+    { ...full, tools: [{ ...tools[0], description: tools[0].description + 'x' }] },
+    { ...full, continuation: { provider: name, items: [...native, { extra: 'x' }] } },
+    { ...full, toolResult: { ...full.toolResult, output: full.toolResult.output + 'x' } },
+  ]) {
+    assert.throws(() => exact.preflight(oversized), errorCode('CONTEXT_LIMIT'));
+    await assert.rejects(exact.complete(oversized), errorCode('CONTEXT_LIMIT'));
+  }
+  assert.equal(fetches, 1, 'all oversized requests fail before fetch');
+  const smaller = createAuthoringProvider(config(name), { maxBytes: Buffer.byteLength(expected) - 1,
+    fetchImpl: async () => { assert.fail('an oversized exact envelope must not fetch'); } });
+  assert.throws(() => smaller.preflight(full), errorCode('CONTEXT_LIMIT'));
+  await assert.rejects(smaller.complete(full), errorCode('CONTEXT_LIMIT'));
+  assert.throws(() => exact.preflight({ ...full, continuation: { provider: 'foreign', items: native } }), errorCode('CONFIG_INVALID'));
+  assert.throws(() => exact.preflight({ ...full, tools: [null] }), errorCode('CONFIG_INVALID'));
+  assert.throws(() => exact.preflight(null), errorCode('CONFIG_INVALID'));
 });
 
 test('rejects invalid setup and upward limit overrides', () => {

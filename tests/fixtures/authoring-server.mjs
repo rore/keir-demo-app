@@ -13,7 +13,7 @@ import { simulationCases } from '../../src/extension-lifecycle.mjs';
 
 const question = 'Should OPEN tasks show PENDING and COMPLETED tasks show DONE?';
 const offerText = 'Review the new source and five independent scenarios. Other inputs are untested. Approval and Use remain your choice.';
-const mismatchText = 'The completed example wanted Done but showed Pending. This did not pass. Keep the original expectations and explicitly ask to correct the source in a new conversation.';
+const mismatchText = 'The completed example wanted Done but showed Pending. This did not pass. Keep the original expectations and explicitly ask to correct the source here.';
 
 function nativeHistory(provider, body) {
   if (provider === 'openai') return {
@@ -49,16 +49,28 @@ function scriptedTransport(provider, source, cases, requests, semanticMismatch) 
       const repairing = discovered.currentProposal?.source === wrongSource;
       if (repairing) {
         assert.deepEqual(discovered.currentProposal.cases, cases, 'Repair keeps the original independent scenarios.');
+        assert.ok(discovered.conversationContext.messages.some(message => message.role === 'assistant' && message.text === mismatchText),
+          'The same discussion retains the failed review before an explicit correction.');
+        assert.equal(discovered.conversationContext.messages.at(-1).role, 'user');
+        assert.match(discovered.conversationContext.messages.at(-1).text, /correct/i);
         assert.match(JSON.stringify(history.users.at(-1).content), /correct/i, 'Only an explicit correction starts the repair.');
       }
       name = 'compile_draft'; args = { sourceJson: repairing ? source : wrongSource, expectedDraftVersion: discovered.currentDraft.draftVersion };
     }
-    else if (previous.name === 'discover_catalog') { name = 'ask_clarification'; args = { question }; }
-    else if (previous.name === 'ask_clarification') {
-      assert.equal(output.status, 'AWAITING_USER');
-      assert.ok(history.users.length >= 2, 'Only an explicit human answer resumes the fixture.');
-      const discovered = history.outputs.find(item => item.id === history.calls.find(call => call.name === 'discover_catalog').id).value.result;
-      name = 'compile_draft'; args = { sourceJson: '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
+    else if (previous.name === 'discover_catalog') {
+      const discovered = output.result, messages = discovered.conversationContext.messages;
+      const asked = messages.findLastIndex(message => message.role === 'assistant' && message.text === question);
+      if (asked < 0) { name = 'ask_clarification'; args = { question }; }
+      else {
+        assert.equal(history.users.length, 1, 'An explicit turn uses a fresh native chain.');
+        assert.ok(asked < messages.length - 1, 'The saved question precedes the explicit answer.');
+        assert.equal(messages.at(-1).role, 'user');
+        assert.match(messages.at(-1).text, /^(?:Confirmed: OPEN means PENDING and COMPLETED means DONE\.|Yes, keep the independent examples and show me Done for completed tasks\.)/,
+          'Only the latest explicit human answer authorizes the fixture to compile.');
+        const input = history.users[0].content;
+        assert.equal(provider === 'openai' ? input : input.find(part => part.type === 'text').text, messages.at(-1).text);
+        name = 'compile_draft'; args = { sourceJson: '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
+      }
     } else if (previous.name === 'compile_draft' && output.result.diagnostics) {
       assert.equal(output.result.diagnostics[0].code, 'SYNTAX_INVALID', 'The real compiler must reject the malformed candidate.');
       name = 'compile_draft'; args = { sourceJson: source, expectedDraftVersion: previous.arguments.expectedDraftVersion };
@@ -81,7 +93,7 @@ function scriptedTransport(provider, source, cases, requests, semanticMismatch) 
         assert.equal(completed.mismatches.length > 0, wrong);
         name = 'offer_review'; args = { summary: wrong ? mismatchText : offerText };
       } else { name = 'offer_review'; args = { summary: offerText }; }
-    } else throw new Error('The synthetic fixture supports one review journey per conversation.');
+    } else throw new Error('The synthetic fixture supports one review journey per explicit turn.');
     const id = 'synthetic-call-' + (history.calls.length + 1);
     requests.push(Object.freeze({ callId: id, name }));
     const raw = provider === 'openai'
@@ -121,7 +133,7 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
     wrongSource: source.replace('completed ? "DONE" : "PENDING"', 'completed ? "PENDING" : "PENDING"'), cases: Object.freeze(cases) });
   assert.notEqual(metadata.wrongSource, source, 'The semantic mismatch variant must change compiled behavior.');
   const config = readAuthoringConfig(unconfigured ? {} : { KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
-    // Ten offline OpenAI reservations total 3.19488 USD across the mismatch and repair conversations.
+    // Ten offline OpenAI reservations total 3.19488 USD across the mismatch and explicit same-discussion repair.
     KEIR_AI_MAX_USD: semanticMismatch ? '3.2' : '3', OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
   assert.equal(config.status, unconfigured ? 'unavailable' : 'ready');
   const prefix = join(resolve(tmpdir()), 'keir-authoring-offline-');

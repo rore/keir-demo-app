@@ -9,7 +9,8 @@ import { createLegacyV4 } from './fixtures/legacy-v4.mjs';
 
 const existingTables = ['users', 'projects', 'tasks', 'extension_revisions', 'extension_selections',
   'extension_evidence', 'extension_approvals', 'extension_history', 'extension_authored'];
-const authoringTables = ['authoring_budget', 'authoring_conversations'];
+const authoringHistoryTables = ['authoring_messages', 'authoring_operations', 'authoring_dispatches'];
+const authoringTables = ['authoring_budget', 'authoring_conversations', ...authoringHistoryTables];
 const allDataTables = [...existingTables, ...authoringTables, 'extensions', 'extension_revision_links', 'extension_conversation_links'];
 const snapshot = (db, tables) => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 function fixture(t) {
@@ -20,7 +21,7 @@ function fixture(t) {
 function insertConversation(db, overrides = {}) {
   const row = { id: 'conversation-1', owner_id: 'maya', creation_operation_id: 'operation-1', version: 1, run_id: 'run-1',
     status: 'RUNNING', cancel_requested: 0, updated_at: 123, state: '{"private":"continuation"}',
-    operations: '[{"id":"operation-1"}]', view: '{"messages":[]}', ...overrides };
+    operations: '[{"id":"operation-1"}]', view: '{"messages":[]}', created_at: 123, ...overrides };
   db.prepare(`INSERT INTO authoring_conversations(${Object.keys(row).join(',')}) VALUES (${Object.keys(row).map(() => '?').join(',')})`).run(...Object.values(row));
 }
 
@@ -40,7 +41,7 @@ test('populated v3 migrates once, retaining every native/lifecycle byte and exis
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
   assert.equal(db.prepare("SELECT draft_revision_id FROM extensions WHERE owner_id='owner-a'").get().draft_revision_id, revision);
   assert.deepEqual(snapshot(db, existingTables), original);
   assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 0 });
@@ -56,7 +57,7 @@ test('populated v3 migrates once, retaining every native/lifecycle byte and exis
   db.close();
 });
 
-test('schema 4 enforces ownership, identity, statuses, integer bounds and byte quotas', t => {
+test('schema 6 retains ownership, identity, statuses, integer bounds and bounded projection bytes', t => {
   const { path } = fixture(t), db = openData(path);
   insertConversation(db);
   assert.throws(() => insertConversation(db, { id: 'conversation-2' }), /UNIQUE/);
@@ -66,6 +67,7 @@ test('schema 4 enforces ownership, identity, statuses, integer bounds and byte q
     { version: -1 }, { version: 9007199254740992 }, { version: 0.5 }, { status: 'FINISHED' },
     { cancel_requested: -1 }, { cancel_requested: 2 }, { cancel_requested: 0.5 },
     { updated_at: -1 }, { updated_at: 0.5 }, { state: null }, { operations: null }, { view: null },
+    { created_at: null }, { created_at: -1 }, { created_at: 0.5 }, { created_at: 9007199254740992 },
   ].entries()) {
     assert.throws(() => insertConversation(db, { id: `invalid-${index}`, creation_operation_id: `invalid-${index}`, ...row }));
   }
@@ -75,7 +77,7 @@ test('schema 4 enforces ownership, identity, statuses, integer bounds and byte q
   }
   db.prepare('UPDATE authoring_conversations SET version=?, cancel_requested=1, updated_at=0 WHERE id=?').run(9007199254740991, 'conversation-1');
   assert.throws(() => db.prepare("DELETE FROM users WHERE id='maya'").run(), /FOREIGN KEY/);
-  assert.deepEqual(db.prepare("PRAGMA index_info('authoring_conversations_owner')").all().map(row => row.name), ['owner_id', 'updated_at']);
+  assert.deepEqual(db.prepare("PRAGMA index_info('authoring_conversations_owner')").all().map(row => row.name), ['owner_id', 'created_at', 'id']);
 
   db.exec('DELETE FROM authoring_conversations');
   const boundary = { state: '\u00e9'.repeat(57344), operations: '\u00e9'.repeat(8192), view: '\u00e9'.repeat(65536) };
@@ -124,15 +126,21 @@ test('schema 4 migration rolls back partial DDL and rejects unsupported versions
   db.close();
 });
 
-test('reset verifies both authoring tables, backs up conversations and preserves all reservations through repeated reset', async t => {
+test('reset verifies every authoring table, backs up historical receipts and preserves all reservations through repeated reset', async t => {
   const { path, directory } = fixture(t);
   let db = openData(path);
   insertConversation(db);
   insertConversation(db, { id: 'conversation-2', creation_operation_id: 'operation-2', status: 'INTERRUPTED' });
+  db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run('conversation-1', 'maya', 1, 'message-1', '{"id":"message-1","receipt":{"evidenceId":"proof"}}');
+  db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run('conversation-1', 'maya', 'operation-1', 'exact-body-hash', 'run-1', 1);
+  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run('conversation-1', 'maya', 'run-1', 1, 'provider', null, 999, 'UNKNOWN');
   db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(987654321);
+  db.prepare("UPDATE tasks SET notes=? WHERE owner_id='maya'").run('original\u0000native notes');
   const original = snapshot(db, allDataTables);
   db.close();
-  for (const sql of ["UPDATE authoring_conversations SET state='different'", 'UPDATE authoring_budget SET reserved_micros=0']) {
+  for (const sql of ["UPDATE authoring_conversations SET state='different'", 'UPDATE authoring_budget SET reserved_micros=0',
+    'DELETE FROM authoring_messages', 'DELETE FROM authoring_dispatches', 'DELETE FROM authoring_dispatches; DELETE FROM authoring_operations',
+    "UPDATE tasks SET notes='original' || char(0) || 'altered' WHERE owner_id='maya'"]) {
     await assert.rejects(resetData(directory, true, async (source, destination) => {
       await backup(source, destination);
       const copy = new DatabaseSync(destination);
@@ -146,10 +154,12 @@ test('reset verifies both authoring tables, backs up conversations and preserves
   const backupPath = await resetData(directory, true);
   const copy = new DatabaseSync(backupPath, { readOnly: true });
   assert.deepEqual(snapshot(copy, allDataTables), original);
+  assert.equal(Buffer.from(copy.prepare("SELECT CAST(notes AS BLOB) notes FROM tasks WHERE owner_id='maya' LIMIT 1").get().notes).toString(), 'original\u0000native notes');
   copy.close();
   for (let attempt = 0; attempt < 2; attempt++) {
     db = openData(path);
     assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 0);
+    for (const table of authoringHistoryTables) assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get().n, 0);
     assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 987654321 });
     assert.equal(db.prepare('SELECT count(*) n FROM tasks').get().n, 9);
     assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
@@ -162,6 +172,9 @@ test('failed reset rolls conversation deletion back without releasing reserved b
   const { path, directory } = fixture(t);
   let db = openData(path);
   insertConversation(db);
+  db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run('conversation-1', 'maya', 1, 'message-1', '{"id":"message-1","receipt":{"evidenceId":"proof"}}');
+  db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run('conversation-1', 'maya', 'operation-1', 'exact-body-hash', 'run-1', 1);
+  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run('conversation-1', 'maya', 'run-1', 1, 'provider', null, 2345, 'UNKNOWN');
   db.exec(`UPDATE authoring_budget SET reserved_micros=2345;
     CREATE TRIGGER fail_authoring_reset BEFORE INSERT ON users BEGIN SELECT RAISE(ABORT, 'seed blocked'); END;`);
   const original = snapshot(db, allDataTables);

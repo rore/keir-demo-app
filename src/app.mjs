@@ -102,6 +102,11 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     return value;
   };
   const noQuery = request => { if (Object.keys(request.query).length) throw new AppError(400, 'This advice request takes no query fields.'); };
+  const pageQuery = request => {
+    if (Object.keys(request.query).some(key => key !== 'before') || request.query.before !== undefined
+        && (typeof request.query.before !== 'string' || !/^[A-Za-z0-9_-]{1,2048}$/.test(request.query.before))) throw new AppError(400, 'Use a valid page cursor.');
+    return request.query.before;
+  };
   function authoringLease(request) {
     const session = authorize(request);
     return { sessionId: session.authoringEpoch, current: () => { try { return authorize(request) === session; } catch { return false; } } };
@@ -119,11 +124,17 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     return setupResponse();
   });
   app.get('/api/authoring', request => {
-    if (Object.keys(request.query).some(key => key !== 'extensionId') || request.query.extensionId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(request.query.extensionId)) throw new AppError(400, 'Use an exact extension identity.');
-    return lifecycleResponse(ai.list(authorize(request).userId, request.query.extensionId));
+    if (Object.keys(request.query).some(key => !['extensionId', 'before'].includes(key))
+        || request.query.extensionId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(request.query.extensionId)
+        || request.query.before !== undefined && !/^[A-Za-z0-9_-]{1,2048}$/.test(request.query.before)) throw new AppError(400, 'Use an exact extension identity and valid page cursor.');
+    return lifecycleResponse(ai.list(authorize(request).userId, request.query.extensionId, request.query.before));
   });
   app.get('/api/authoring/example', request => { authorize(request); noQuery(request); return lifecycleResponse(authoringExample()); });
   app.get('/api/authoring/conversations/:id', request => { noQuery(request); return lifecycleResponse(ai.read(authorize(request).userId, request.params.id)); });
+  app.get('/api/authoring/conversations/:id/messages', request => lifecycleResponse(ai.messages(authorize(request).userId, request.params.id, pageQuery(request))));
+  app.post('/api/authoring/recover', { bodyLimit: 65536 }, request => {
+    noQuery(request); return lifecycleResponse(ai.recover(authorize(request).userId, request.body));
+  });
   app.post('/api/authoring/turn', { bodyLimit: 65536 }, async (request, reply) => {
     noQuery(request); const session = authorize(request), lease = authoringLease(request);
     const result = await ai.turn(session.userId, request.body, lease); authorize(request);
@@ -133,7 +144,8 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     noQuery(request); const session = authorize(request);
     return lifecycleResponse(ai.cancel(session.userId, request.params.id, request.body, authoringLease(request)));
   });
-  app.get('/api/extensions', request => { noQuery(request); return lifecycleResponse(lifecycle.collection(authorize(request).userId)); });
+  app.get('/api/extensions', request => lifecycleResponse(lifecycle.collection(authorize(request).userId, { before: pageQuery(request) })));
+  app.get('/api/extensions/creation/:operationId', request => { noQuery(request); return lifecycleResponse(lifecycle.findCreation(authorize(request).userId, request.params.operationId)); });
   app.get('/api/extensions/catalog', request => { authorize(request); noQuery(request); return lifecycleResponse(lifecycle.hostCatalog()); });
   app.get('/api/extensions/:extensionId', request => { noQuery(request); return lifecycleResponse(lifecycle.state(authorize(request).userId, request.params.extensionId)); });
   app.post('/api/extensions', { bodyLimit: 1048576 }, async (request, reply) => {
@@ -150,6 +162,9 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     return lifecycleResponse(lifecycle.rename(session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request)));
   });
   app.get('/api/extensions/:extensionId/evidence/:id', request => { noQuery(request); return lifecycleResponse(lifecycle.evidence(authorize(request).userId, request.params.id, request.params.extensionId)); });
+  for (const [path, method] of [['evidence', 'evidencePage'], ['revisions', 'revisionPage'], ['restore-targets', 'restorePage']]) {
+    app.get(`/api/extensions/:extensionId/${path}`, request => lifecycleResponse(lifecycle[method](authorize(request).userId, request.params.extensionId, pageQuery(request))));
+  }
   app.get('/api/extensions/:extensionId/revisions/:id', request => {
     noQuery(request); const value = lifecycle.source(authorize(request).userId, request.params.id, request.params.extensionId);
     if (Buffer.byteLength(JSON.stringify(value)) > 1048576) throw new AppError(413, 'Source response exceeds the host limit.');

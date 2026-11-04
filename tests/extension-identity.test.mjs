@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openData, transaction } from '../src/data.mjs';
-import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { createLifecycle, simulationCases } from '../src/extension-lifecycle.mjs';
 import { digest, json, loadCatalog } from '../src/extension-catalog.mjs';
 
 const authorized = () => {};
@@ -173,17 +173,32 @@ test('an admitted unbound item binds its hook only after valid compilation at th
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
 });
 
-test('authored revision quota remains owner-scoped across extension identities', async t => {
+test('authored revisions remain usable beyond 32 saves, including scenarios, creation and restart', async t => {
   let compileCalls = 0;
-  const { lifecycle } = setup(t, { compile: async () => { compileCalls++; return { artifact, diagnostics: [] }; } });
-  let state = await create(lifecycle, 'quota-create', 'source-0', 'Quota item');
-  for (let index = 1; index < 32; index++) {
-    state = await lifecycle.compile('maya', { extensionId: state.extension.id, source: `source-${index}`, label: 'Quota item', draftVersion: state.draftVersion }, authorized);
+  const { db, lifecycle } = setup(t, { compile: async () => { compileCalls++; return { artifact, diagnostics: [] }; } });
+  let state = await create(lifecycle, 'many-saves', 'source-0', 'Saved item');
+  const first = lifecycle.source('maya', state.draft.id, state.extension.id);
+  for (let index = 1; index < 35; index++) {
+    state = await lifecycle.compile('maya', { extensionId: state.extension.id, source: `source-${index}`, label: 'Saved item', draftVersion: state.draftVersion }, authorized);
   }
-  assert.equal(state.draftVersion, 32);
-  assert.equal(compileCalls, 32);
-  const itemCount = lifecycle.collection('maya').items.length;
-  await assert.rejects(create(lifecycle, 'over-quota-create', 'another item', 'Another item'), { status: 409 });
-  assert.equal(compileCalls, 32, 'quota rejection occurs before compilation');
-  assert.equal(lifecycle.collection('maya').items.length, itemCount);
+  assert.equal(state.draftVersion, 35);
+  assert.equal(compileCalls, 35);
+  state = await lifecycle.proposeScenarios('maya', { ...current(state), cases: simulationCases('attention').filter(row => row.id !== 'host-denied').map(row => row.bytes.toString()) }, authorized);
+  state = await lifecycle.simulate('maya', current(state), authorized);
+  state = lifecycle.approve('maya', { ...current(state), evidenceId: state.evidence.id }, authorized);
+  state = lifecycle.activate('maya', { ...current(state), generation: state.selection.generation }, authorized);
+  const proof = lifecycle.evidence('maya', state.evidence.id, state.extension.id), selected = state.selection;
+  state = await lifecycle.compile('maya', { extensionId: state.extension.id, source: 'later source', draftVersion: state.draftVersion }, authorized);
+  const later = lifecycle.source('maya', state.draft.id, state.extension.id);
+  state = lifecycle.restart('maya', { extensionId: state.extension.id, revisionId: selected.revision.id,
+    draftVersion: state.draftVersion, generation: selected.generation }, authorized);
+  assert.equal(state.draftVersion, 38);
+  assert.deepEqual(state.selection, selected);
+  assert.equal(state.approved, false);
+  assert.deepEqual(lifecycle.source('maya', first.revisionId, state.extension.id), first);
+  assert.deepEqual(lifecycle.source('maya', later.revisionId, state.extension.id), later);
+  assert.deepEqual(lifecycle.evidence('maya', proof.id, state.extension.id), proof);
+  const another = await create(lifecycle, 'another-item', 'another source', 'Another item');
+  assert.notEqual(another.extension.id, state.extension.id);
+  assert.equal(db.prepare("SELECT count(*) n FROM extension_authored WHERE owner_id='maya'").get().n, 39);
 });

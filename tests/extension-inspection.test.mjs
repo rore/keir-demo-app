@@ -34,7 +34,7 @@ test('inspection returns exact pinned model, authored artifact and prepared sour
   assert.deepEqual(value.pins, JSON.parse(db.prepare('SELECT identity FROM extension_revisions WHERE id=?').get(state.revisionId).identity));
   assert.ok(Buffer.byteLength(JSON.stringify(value)) < 1048576);
 
-  const preparedState = lifecycle.collection('maya').items[0];
+  const preparedState = lifecycle.state('maya', lifecycle.collection('maya').items[0].extension.id);
   const prepared = lifecycle.source('maya', preparedState.selection.revision.id, preparedState.extension.id);
   const template = loadCatalog().find(item => item.id === 'pending');
   assert.equal(prepared.artifact, template.artifactBytes.toString('utf8'));
@@ -55,7 +55,7 @@ test('inspection rejects another owner/item and unavailable saved model identity
   const pins = JSON.parse(db.prepare('SELECT identity FROM extension_revisions WHERE id=?').get(a.revisionId).identity);
   db.prepare('UPDATE extension_revisions SET identity=? WHERE id=?').run(json({ ...pins, modelDigest: digest('old model') }), a.revisionId);
   assert.throws(() => lifecycle.source('sam', a.revisionId, a.extension.id), { status: 404 });
-  const prepared = lifecycle.collection('maya').items[0];
+  const prepared = lifecycle.state('maya', lifecycle.collection('maya').items[0].extension.id);
   const id = prepared.selection.revision.id;
   const preparedPins = JSON.parse(db.prepare('SELECT identity FROM extension_revisions WHERE id=?').get(id).identity);
   db.prepare('UPDATE extension_revisions SET identity=? WHERE id=?').run(json({ ...preparedPins, modelDigest: digest('old model') }), id);

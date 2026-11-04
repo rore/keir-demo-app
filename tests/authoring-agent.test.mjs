@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import { AUTHORING_TOOLS, createAuthoringState, runAuthoringTurn } from '../src/authoring-agent.mjs';
-import { AuthoringError } from '../src/authoring-provider.mjs';
+import { AuthoringError, createAuthoringProvider } from '../src/authoring-provider.mjs';
+import { readAuthoringConfig } from '../src/authoring-config.mjs';
 
 const suite = 'sha256:' + '1'.repeat(64);
 const call = (name, args = {}, id) => ({ name, arguments: args, ...(id && { id }) });
@@ -135,21 +137,92 @@ test('unknown host failure is a safe blocker; duplicate IDs and false returned h
   assert.equal((await bad.run()).code, 'HOST_RESULT_INVALID');
 });
 
-test('every local cap stops before the next paid request or affected tool', async () => {
-  for (const [limits, steps] of [
-    [{ calls: 1 }, [call('discover_catalog')]], [{ tools: 0 }, [call('discover_catalog')]],
-    [{ compiles: 0 }, [call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 })]],
-    [{ clarifications: 0 }, [call('ask_clarification', { question: 'Question?' })]],
-  ]) {
-    const f = fixture(steps); assert.equal((await f.run({ limits })).code, 'BUDGET_EXHAUSTED');
-    assert.equal(f.requests.length, 1);
-    assert.equal(f.context.budget.remainingMicros, 990);
+test('productive compilation, scenario replacement and simulation continue beyond eight calls and tools', async () => {
+  const steps = [];
+  for (let index = 0; index < 9; index++) {
+    steps.push(call('compile_draft', { sourceJson: `source ${index}`, expectedDraftVersion: index * 2 }),
+      call('propose_scenarios', { revisionId: `revision${index * 2 + 1}`, cases: [`{"id":"case-${index}"}`], expectedDraftVersion: index * 2 + 1 }),
+      call('simulate_draft', { revisionId: `revision${index * 2 + 2}`, expectedDraftVersion: index * 2 + 2 }));
   }
+  const f = fixture(steps);
+  assert.equal((await f.run()).status, 'IDLE');
+  assert.deepEqual(f.state.counts, { calls: 28, tools: 27, compiles: 9, simulations: 9, clarifications: 0, inputs: 1 });
+  assert.deepEqual(f.state.handles, { revisionId: 'revision18', draftVersion: 18, suiteDigest: suite });
+  assert.equal(f.events.filter(event => event[0] === 'scenarios').length, 9);
+  assert.equal(f.context.budget.remainingMicros, 720);
+  assert.equal(f.state.usage.reservedMicros, 280);
+});
+
+test('more than eight user inputs and clarifications remain usable after the old 24-hour age', async () => {
+  const f = fixture(Array.from({ length: 12 }, (_, index) => call('ask_clarification', { question: `Business choice ${index}?` })));
+  f.state.createdAt -= 3 * 86400000;
+  for (let index = 0; index < 12; index++) assert.equal((await f.run()).status, 'AWAITING_USER');
+  assert.equal((await f.run()).status, 'IDLE');
+  assert.equal(f.state.counts.inputs, 13);
+  assert.equal(f.state.counts.clarifications, 12);
+  assert.equal(f.state.counts.calls, 13);
+  assert.equal(f.state.inputIds.length, 13);
+  assert.equal(f.context.budget.remainingMicros, 870);
+  assert.equal(f.requests[12].input, 'Create a read-only rule.');
+  assert.equal(JSON.parse(f.requests[12].toolResult.output).status, 'AWAITING_USER');
+});
+
+test('configured spending still stops before a paid request', async () => {
   const f = fixture(); f.context.budget.remainingMicros = 9;
   assert.equal((await f.run()).code, 'SPEND_LIMIT'); assert.equal(f.requests.length, 0);
-  const expired = fixture(); expired.state.createdAt -= 86400000;
-  assert.equal((await expired.run()).code, 'EXPIRED'); assert.equal(expired.requests.length, 0);
-  const badCap = fixture(); assert.equal((await badCap.run({ limits: { calls: 9 } })).code, 'CONFIG_INVALID');
+  assert.equal(f.context.budget.remainingMicros, 9);
+  assert.equal(f.state.usage.reservedMicros, 0);
+});
+
+for (const provider of ['openai', 'anthropic']) test(`${provider} native preflight rejects oversized context before calls, holds or dispatch`, async () => {
+  const f = fixture(), checkpoints = [];
+  const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider,
+    KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5', KEIR_AI_MAX_USD: '1',
+    OPENAI_API_KEY: 'synthetic-test-key', ANTHROPIC_API_KEY: 'synthetic-test-key' });
+  let fetches = 0;
+  f.provider = createAuthoringProvider(config, { fetchImpl: async () => { fetches++; assert.fail('preflight must prevent fetching'); } });
+  f.state.continuation = { provider, items: provider === 'openai'
+    ? [{ type: 'reasoning', encrypted_content: 'x'.repeat(131072), summary: [] }]
+    : [{ role: 'assistant', content: [{ type: 'thinking', thinking: 'x'.repeat(131072), signature: 'native-signature' }] }] };
+  const continuation = structuredClone(f.state.continuation);
+  f.context.checkpoint = state => checkpoints.push({ ...state.checkpoint });
+  assert.deepEqual(await f.run({ provider: f.provider }), { status: 'BLOCKED', code: 'CONTEXT_LIMIT' });
+  assert.equal(fetches, 0);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.state.counts.calls, 0);
+  assert.equal(f.state.counts.tools, 0);
+  assert.equal(f.state.dispatchOrdinal, 0);
+  assert.equal(f.state.inFlight, null);
+  assert.equal(f.context.budget.remainingMicros, 1000);
+  assert.equal(f.state.usage.reservedMicros, 0);
+  assert.deepEqual(f.state.continuation, continuation);
+  assert.deepEqual(checkpoints.map(record => record.phase), ['ADMIT', 'TERMINAL']);
+  assert.deepEqual(f.events, []);
+});
+
+test('preflight after a successful tool preserves saved context without another hold or unknown dispatch', async () => {
+  const f = fixture([call('discover_catalog')]), checkpoints = [];
+  let checked = 0;
+  f.provider.preflight = request => {
+    assert.deepEqual(request.tools, AUTHORING_TOOLS);
+    if (++checked === 2) {
+      assert.equal(JSON.parse(request.toolResult.output).result.profile, 'keir-read/2');
+      throw new AuthoringError('CONTEXT_LIMIT');
+    }
+  };
+  f.context.checkpoint = state => checkpoints.push({ ...state.checkpoint });
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'CONTEXT_LIMIT' });
+  assert.equal(checked, 2);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.state.counts.calls, 1);
+  assert.equal(f.state.counts.tools, 1);
+  assert.equal(f.state.usage.reservedMicros, 10);
+  assert.equal(f.context.budget.remainingMicros, 990);
+  assert.equal(f.state.dispatchOrdinal, 2);
+  assert.equal(f.state.inFlight, null);
+  assert.deepEqual(f.events, ['discover']);
+  assert.equal(JSON.parse(f.state.pending.output).result.profile, 'keir-read/2');
+  assert.deepEqual(checkpoints.filter(record => record.phase === 'RESULT').map(record => record.outcome), ['SUCCESS', 'SUCCESS']);
 });
 
 test('concurrent runs share atomic budget and same conversation has no overlapping request', async () => {
@@ -193,11 +266,36 @@ test('live context is revalidated after every kind of host await', async () => {
   }
 });
 
-test('active deadline bounds a stuck host await and no subsequent work is dispatched', async () => {
-  const f = fixture([call('discover_catalog')]);
-  f.host.discover = () => new Promise(resolve => setTimeout(() => resolve({ catalog: [] }), 100));
-  assert.equal((await f.run({ limits: { activeMs: 50 } })).code, 'TIME_LIMIT');
-  assert.equal(f.requests.length, 1); assert.equal(f.context.budget.remainingMicros, 990);
+test('productive aggregate work beyond 120 seconds completes with monotonic lifetime telemetry', async t => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const f = fixture([call('discover_catalog'), call('discover_catalog')]), snapshots = [];
+  const complete = f.provider.complete;
+  f.provider.complete = request => { now += 61000; return complete(request); };
+  f.context.checkpoint = state => snapshots.push(state.activeMs);
+  assert.equal((await f.run()).status, 'IDLE');
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.state.activeMs, 183000);
+  assert.ok(snapshots.every((value, index) => !index || value >= snapshots[index - 1]));
+  assert.equal((await f.run()).status, 'IDLE');
+  assert.equal(f.state.activeMs, 244000);
+  assert.equal(f.context.budget.remainingMicros, 960);
+});
+
+test('external cancellation stops a pending host operation without subsequent paid work', async () => {
+  const f = fixture([call('discover_catalog')]), controller = new AbortController();
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  f.host.discover = () => { started(); return new Promise(resolve => { release = resolve; }); };
+  const running = f.run({ signal: controller.signal });
+  await ready;
+  controller.abort();
+  assert.deepEqual(await running, { status: 'CANCELLED', code: 'CANCELLED' });
+  release({ catalog: [] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.context.budget.remainingMicros, 990);
+  assert.equal(f.state.pending, undefined);
 });
 
 test('source/case byte limits and malformed Unicode reject before host mutation', async () => {
@@ -239,10 +337,11 @@ test('scenario diagnostics preserve current handles, enforce the draft fence and
       if (stale) f.setDraft({ revisionId: 'external', draftVersion: 2, suiteDigest: null });
       return { diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }] };
     };
-    const result = await f.run({ limits: { calls: 1 } });
-    assert.equal(result.code, stale ? 'STALE_DRAFT' : 'BUDGET_EXHAUSTED');
-    assert.deepEqual(f.state.handles, ready); assert.equal(f.state.counts.tools, 1); assert.equal(f.state.counts.calls, 1);
-    assert.equal(f.context.budget.remainingMicros, 990); assert.equal(f.requests.length, 1); assert.deepEqual(f.events, []);
+    f.context.budget.remainingMicros = 10;
+    const result = await f.run();
+    assert.equal(result.code, stale ? 'STALE_DRAFT' : 'SPEND_LIMIT');
+    assert.deepEqual(f.state.handles, ready); assert.equal(f.state.counts.tools, 1); assert.equal(f.state.counts.calls, stale ? 1 : 2);
+    assert.equal(f.context.budget.remainingMicros, 0); assert.equal(f.requests.length, 1); assert.deepEqual(f.events, []);
     if (!stale) assert.deepEqual(JSON.parse(f.state.pending.output), { ok: true, result: { diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }] } });
   }
 });
@@ -350,7 +449,7 @@ test('result checkpoint failure prevents tool dispatch and subsequent provider w
   assert.deepEqual(refused.events, []); assert.equal(refused.requests.length, 1);
 });
 
-test('tool-specific quotas are durable before the callback and invalid attempts cannot bypass them', async () => {
+test('tool-specific lifetime counters are durable before the callback and include invalid attempts', async () => {
   const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
   for (const [item, quota] of [
     [call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 1 }), 'compiles'],

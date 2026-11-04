@@ -16,6 +16,9 @@ function itemId(api, owner) {
 function removeItemSchema(db) {
   db.exec('UPDATE extensions SET draft_revision_id=NULL; DROP TABLE extension_conversation_links; DROP TABLE extension_revision_links; DROP TABLE extensions');
 }
+function removeAuthoringSchema(db) {
+  for (const table of ['authoring_dispatches', 'authoring_messages', 'authoring_operations', 'authoring_conversations', 'authoring_budget']) db.exec(`DROP TABLE ${table}`);
+}
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'keir-lifecycle-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -25,7 +28,8 @@ function legacy(path) {
   const db = openData(path);
   const original = db.prepare('SELECT * FROM tasks ORDER BY id').all();
   removeItemSchema(db);
-  for (const table of ['authoring_conversations', 'authoring_budget', ...tables.filter(table => table !== 'extension_states')]) db.exec(`DROP TABLE ${table}`);
+  removeAuthoringSchema(db);
+  for (const table of tables.filter(table => table !== 'extension_states')) db.exec(`DROP TABLE ${table}`);
   db.exec('PRAGMA user_version=1');
   db.close(); return original;
 }
@@ -33,7 +37,7 @@ function legacy(path) {
 test('populated v1 migrates once, preserving every native row with explicit operator provenance and no fake approval', t => {
   const { path } = fixture(t), original = legacy(path);
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
   assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), original);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
@@ -71,13 +75,14 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
     const head = heads.find(row => row.owner_id === owner.id);
     db.prepare('INSERT INTO extension_states VALUES (?,?,?)').run(owner.id, head?.draft_version ?? 0, head?.draft_revision_id ?? null);
   }
-  db.exec('DROP TABLE authoring_conversations; DROP TABLE authoring_budget; DROP TABLE extension_authored; PRAGMA user_version=2');
+  removeAuthoringSchema(db);
+  db.exec('DROP TABLE extension_authored; PRAGMA user_version=2');
   const native = db.prepare('SELECT * FROM tasks ORDER BY id').all();
   const lifecycle = Object.fromEntries(tables.filter(table => table !== 'extension_authored').map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
   db.close();
 
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 6);
   assert.deepEqual(upgraded.prepare('SELECT * FROM tasks ORDER BY id').all(), native);
   for (const [table, rows] of Object.entries(lifecycle)) {
     if (table === 'extension_states') {
@@ -99,7 +104,8 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
 
 test('v2 migration rolls back when the authored table already exists', t => {
   const { path } = fixture(t), db = openData(path);
-  db.exec(`DROP TABLE authoring_conversations; DROP TABLE authoring_budget; DROP TABLE extension_authored; CREATE TABLE extension_authored(conflict TEXT); PRAGMA user_version=2`);
+  removeAuthoringSchema(db);
+  db.exec(`DROP TABLE extension_authored; CREATE TABLE extension_authored(conflict TEXT); PRAGMA user_version=2`);
   db.close();
   assert.throws(() => openData(path), /already exists/);
   const unchanged = new DatabaseSync(path);

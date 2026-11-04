@@ -42,7 +42,7 @@ function observeStages(page, failure) {
   page.on('request', request => {
     if (request.method() !== 'GET') return;
     const path = new URL(request.url()).pathname;
-    if (/^\/api\/extensions(?:\/[^/]+)?$/.test(path)) reads.state++;
+    if (/^\/api\/extensions(?:\/[^/]+|\/creation\/[^/]+)?$/.test(path)) reads.state++;
     if (/^\/api\/extensions\/[^/]+\/revisions\//.test(path)) reads.source++;
     if (path === '/api/authoring/example') reads.example++;
   });

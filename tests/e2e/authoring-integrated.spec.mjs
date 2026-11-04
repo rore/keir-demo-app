@@ -58,6 +58,8 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByText(fixture.metadata.mismatchText, { exact: true })).toBeVisible({ timeout: 20_000 });
     const failed = (await read('authoring')).current;
     expect(failed.status).toBe('REVIEW_AVAILABLE'); expect(failed.review.eligible).toBe(false);
+    const failedMessages = structuredClone(failed.messages);
+    expect(failedMessages.at(-1).receipt.evidenceId).toBe(failed.review.evidenceId);
     const wrong = await read(`extensions/revisions/${failed.review.revisionId}`);
     expect(wrong.source).toBe(fixture.metadata.wrongSource); expect(wrong.cases).toEqual(fixture.metadata.cases);
     const failedProof = await read(`extensions/evidence/${failed.review.evidenceId}`);
@@ -77,21 +79,20 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     expect(mutations).toEqual([]);
     expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 
-    // The eight-call conversation ceiling requires an explicit fresh conversation for this repair.
-    await openDetails(page);
-    await ui.getByRole('button', { name: 'Continue current changes in a new conversation', exact: true }).click();
     await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
     expect(fixture.requests).toHaveLength(5);
     await send(page, 'Correct the saved source so completed tasks show Done. Keep exactly the same independent expected examples.');
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
     const repaired = (await read('authoring')).current;
-    expect(repaired.id).not.toBe(failed.id); expect(repaired.review.eligible).toBe(true);
+    expect(repaired.id).toBe(failed.id); expect(repaired.version).toBe(failed.version + 1); expect(repaired.review.eligible).toBe(true);
+    expect(repaired.messages.slice(0, failedMessages.length)).toEqual(failedMessages);
     expect(repaired.review.evidenceId).not.toBe(failed.review.evidenceId);
     const saved = await read(`extensions/revisions/${repaired.review.revisionId}`);
     expect(saved.source).toBe(fixture.metadata.source); expect(saved.cases).toEqual(wrong.cases);
     const passedProof = await read(`extensions/evidence/${repaired.review.evidenceId}`);
     expect(passedProof.passed).toBe(true); expect(passedProof.reports.every(item => item.report.status === 'PASS')).toBe(true);
     expect((await read(`extensions/evidence/${failed.review.evidenceId}`))).toEqual(failedProof);
+    expect((await read(`extensions/revisions/${failed.review.revisionId}`))).toEqual(wrong);
     await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await expect(decision(page).getByRole('button', { name: /^Show the .* example$/ })).toHaveCount(1);
     await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
@@ -198,7 +199,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       }
       expect(turns).toBe(2);
       expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification',
-        'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+        'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 
       const session = await (await page.request.get(`${fixture.origin}/api/session`)).json();
       const exactItem = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
@@ -209,6 +210,8 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       const conversation = (await read('authoring')).current;
       expect(conversation.status).toBe('REVIEW_AVAILABLE'); expect(conversation.review.eligible).toBe(true);
       expect(conversation.version).toBe(2); expect(conversation.draft.draftVersion).toBe(2);
+      expect(conversation.messages.filter(message => message.role === 'assistant' && message.text === fixture.metadata.question)).toHaveLength(1);
+      expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(8 * (provider === 'openai' ? 319488 : 77824));
       const state = await read('extensions');
       expect(state.selection.revision.id).toBe(selectedA.revision_id);
       expect(state.selection.generation).toBe(selectedA.generation); expect(state.approved).toBe(false);

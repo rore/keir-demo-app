@@ -417,7 +417,7 @@ test('actual compiled zero-call and renamed repeated-read programs use exact bin
   }
 });
 
-test('authored quota/tamper checks retain snapshots and LRU eviction cannot revoke an unchanged in-flight selection', async t => {
+test('authored revisions exceed the former quota, retain snapshots and cannot revoke an unchanged in-flight selection through LRU eviction', async t => {
   const artifact = loadCatalog().find(row => row.id === 'attention').artifactBytes;
   const { db, service } = setup(t);
   const lifecycle = createLifecycle(db, { compiler: { compile: async () => ({ artifact, diagnostics: [] }) } });
@@ -448,9 +448,11 @@ test('authored quota/tamper checks retain snapshots and LRU eviction cannot revo
   }
   while (db.prepare("SELECT count(*) n FROM extension_authored WHERE owner_id='leo'").get().n < 32) await choose('leo');
   const before = lifecycle.state('leo', itemId(lifecycle, 'leo'));
-  await assert.rejects(lifecycle.compile('leo', { extensionId: itemId(lifecycle, 'leo'), source: 'quota', draftVersion: before.draftVersion }, authorized), { status: 409 });
+  const revised = await lifecycle.compile('leo', { extensionId: itemId(lifecycle, 'leo'), source: 'another saved change', draftVersion: before.draftVersion }, authorized);
+  assert.equal(revised.draftVersion, before.draftVersion + 1);
+  assert.equal(lifecycle.source('leo', revised.revisionId, revised.extension.id).source, 'another saved change');
   assert.equal(lifecycle.state('leo', itemId(lifecycle, 'leo')).selection.revision.id, before.selection.revision.id);
-  assert.equal(db.prepare("SELECT count(*) n FROM extension_authored WHERE owner_id='leo'").get().n, 32);
+  assert.equal(db.prepare("SELECT count(*) n FROM extension_authored WHERE owner_id='leo'").get().n, 33);
   assert.ok(service.listProjects('maya').length);
 });
 

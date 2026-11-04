@@ -118,6 +118,22 @@ test('opt-in harness returns only bounded identity/counters and requires configu
   assert.deepEqual(unavailable, { status: 'NOT_RUN', code: 'AI_NOT_CONFIGURED' });
 });
 
+test('qualification accepts more than eight explicit inputs while preserving each input byte limit', async () => {
+  let calls = 0;
+  const f = scenario('openai');
+  const fetchImpl = async () => new Response(JSON.stringify({ status: 'completed', output: [{ type: 'function_call',
+    name: 'ask_clarification', call_id: `clarify-${++calls}`, arguments: JSON.stringify({ question: 'What else should change?' }) }],
+  usage: { input_tokens: 1, output_tokens: 1 } }), { headers: { 'content-type': 'application/json' } });
+  const inputs = Array.from({ length: 9 }, (_, index) => ({ id: `request-${index}`, text: `Explicit request ${index}` }));
+  const result = await checkAuthoringProvider({ live: true, env: env('openai'), ...f, inputs, fetchImpl });
+  assert.equal(result.status, 'AWAITING_USER');
+  assert.equal(result.counts.inputs, 9); assert.equal(calls, 9);
+  const invalid = await checkAuthoringProvider({ live: true, env: env('openai'), ...scenario('openai'), fetchImpl,
+    inputs: [{ id: 'too-large', text: 'x'.repeat(8193) }] });
+  assert.equal(invalid.status, 'BLOCKED'); assert.equal(invalid.code, 'INVALID_TOOL_ARGUMENTS');
+  assert.equal(calls, 9, 'invalid individual input never dispatches a provider request');
+});
+
 test('project qualification fixture uses isolated durable service and remains inert without opt-in', async () => {
   let requests = 0;
   const fixture = createQualificationHost();

@@ -26,10 +26,50 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
       || timeoutMs > 30000 || maxBytes > 131072 || maxOutputTokens > 4096
       || !integer(config.maxMicros) || !integer(config.reserveMicros) || !config.reserveMicros) fail('CONFIG_INVALID');
   const provider = config.provider;
+  function prepare(request) {
+    try {
+      const { input, continuation, toolResult, tools, instructions, signal } = request;
+      if (signal?.aborted) fail('CANCELLED');
+      if (typeof instructions !== 'string' || !Array.isArray(tools)
+          || input !== undefined && typeof input !== 'string'
+          || continuation !== undefined && (!object(continuation) || continuation.provider !== provider || !Array.isArray(continuation.items))
+          || toolResult !== undefined && (!object(toolResult) || !id(toolResult.id) || typeof toolResult.output !== 'string')) fail('CONFIG_INVALID');
+      const items = structuredClone(continuation?.items ?? []);
+      const headers = { 'content-type': 'application/json' };
+      let url, body;
+      if (provider === 'openai') {
+        url = 'https://api.openai.com/v1/responses';
+        headers.authorization = `Bearer ${config.apiKey}`;
+        if (toolResult) items.push({ type: 'function_call_output', call_id: toolResult.id, output: toolResult.output });
+        if (input !== undefined) items.push({ role: 'user', content: input });
+        body = { model: config.model, instructions, input: items, store: false,
+          reasoning: { effort: 'low' }, max_output_tokens: maxOutputTokens, parallel_tool_calls: false,
+          tools: tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters, strict: true })) };
+      } else {
+        url = 'https://api.anthropic.com/v1/messages';
+        headers['x-api-key'] = config.apiKey;
+        headers['anthropic-version'] = '2023-06-01';
+        const content = [];
+        if (toolResult) content.push({ type: 'tool_result', tool_use_id: toolResult.id, content: toolResult.output });
+        if (input !== undefined) content.push({ type: 'text', text: input });
+        if (content.length) items.push({ role: 'user', content });
+        body = { model: config.model, system: instructions, messages: items, max_tokens: maxOutputTokens,
+          tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+          tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters, strict: true })) };
+      }
+      const encoded = JSON.stringify(body);
+      if (Buffer.byteLength(encoded) > maxBytes) fail('CONTEXT_LIMIT');
+      return { url, headers, encoded, items };
+    } catch (error) {
+      if (error instanceof AuthoringError) throw error;
+      fail('CONFIG_INVALID');
+    }
+  }
   return Object.freeze({
     provider, model: config.model, maxMicros: config.maxMicros, reserveMicros: config.reserveMicros,
-    async complete({ input, continuation, toolResult, tools, instructions, signal }) {
-      if (signal?.aborted) fail('CANCELLED');
+    preflight(request) { prepare(request); },
+    async complete(request) {
+      const { url, headers, encoded, items } = prepare(request), { signal } = request;
       if (activeRequests >= 2) fail('AI_BUSY');
       const timeout = AbortSignal.timeout(timeoutMs);
       const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -41,35 +81,6 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
       let reader, response, fetching, reading;
       activeRequests++;
       try {
-        if (typeof instructions !== 'string' || !Array.isArray(tools)
-            || input !== undefined && typeof input !== 'string'
-            || continuation !== undefined && (!object(continuation) || continuation.provider !== provider || !Array.isArray(continuation.items))
-            || toolResult !== undefined && (!object(toolResult) || !id(toolResult.id) || typeof toolResult.output !== 'string')) fail('CONFIG_INVALID');
-        const items = structuredClone(continuation?.items ?? []);
-        const headers = { 'content-type': 'application/json' };
-        let url, body;
-        if (provider === 'openai') {
-          url = 'https://api.openai.com/v1/responses';
-          headers.authorization = `Bearer ${config.apiKey}`;
-          if (toolResult) items.push({ type: 'function_call_output', call_id: toolResult.id, output: toolResult.output });
-          if (input !== undefined) items.push({ role: 'user', content: input });
-          body = { model: config.model, instructions, input: items, store: false,
-            reasoning: { effort: 'low' }, max_output_tokens: maxOutputTokens, parallel_tool_calls: false,
-            tools: tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters, strict: true })) };
-        } else {
-          url = 'https://api.anthropic.com/v1/messages';
-          headers['x-api-key'] = config.apiKey;
-          headers['anthropic-version'] = '2023-06-01';
-          const content = [];
-          if (toolResult) content.push({ type: 'tool_result', tool_use_id: toolResult.id, content: toolResult.output });
-          if (input !== undefined) content.push({ type: 'text', text: input });
-          if (content.length) items.push({ role: 'user', content });
-          body = { model: config.model, system: instructions, messages: items, max_tokens: maxOutputTokens,
-            tool_choice: { type: 'auto', disable_parallel_tool_use: true },
-            tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters, strict: true })) };
-        }
-        const encoded = JSON.stringify(body);
-        if (Buffer.byteLength(encoded) > maxBytes) fail('BYTE_LIMIT');
         try { response = await wait(fetching = Promise.resolve(fetchImpl(url, { method: 'POST', headers, body: encoded, redirect: 'error', signal: combined }))); }
         catch (error) { if (error instanceof AuthoringError) throw error; fail('PROVIDER_UNAVAILABLE'); }
         if ([401, 403].includes(response.status)) fail('CREDENTIALS_INVALID');

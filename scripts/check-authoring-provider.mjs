@@ -8,7 +8,7 @@ import { createAuthoringState, runAuthoringTurn } from '../src/authoring-agent.m
 // Fake transport tests qualify this harness, not real provider compatibility or the application.
 export async function checkAuthoringProvider({ live = false, env = process.env, host, context, inputs, fetchImpl, runCheck } = {}) {
   if (!live) return { status: 'NOT_RUN', code: 'LIVE_OPT_IN_REQUIRED' };
-  if ((!host || !context) && typeof runCheck !== 'function' || !Array.isArray(inputs) || !inputs.length || inputs.length > 8) return { status: 'NOT_RUN', code: 'HOST_FIXTURE_REQUIRED' };
+  if ((!host || !context) && typeof runCheck !== 'function' || !Array.isArray(inputs) || !inputs.length) return { status: 'NOT_RUN', code: 'HOST_FIXTURE_REQUIRED' };
   const config = readAuthoringConfig(env);
   if (config.status !== 'ready') return { status: 'NOT_RUN', code: config.code };
   if (runCheck) {

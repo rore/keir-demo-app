@@ -195,9 +195,9 @@ test('foreign targets fail and an unlinked legacy chat stays readable but cannot
     conversations: count(db, "SELECT count(*) n FROM authoring_conversations WHERE owner_id='maya'"),
     budget: db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros }, before);
 
-  db.prepare('INSERT INTO authoring_conversations VALUES (?,?,?,?,?,?,?,?,?,?,?)').run('legacy-chat', 'maya', 'legacy-operation', 1,
+  db.prepare('INSERT INTO authoring_conversations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run('legacy-chat', 'maya', 'legacy-operation', 1,
     'legacy-run', 'AWAITING_USER', 0, 123, JSON.stringify({ handles: { revisionId: null, draftVersion: 0, suiteDigest: null } }),
-    JSON.stringify([{ id: 'legacy-operation', runId: 'legacy-run', version: 1 }]), JSON.stringify({ messages: [], code: null, review: null }));
+    JSON.stringify([{ id: 'legacy-operation', runId: 'legacy-run', version: 1 }]), JSON.stringify({ messages: [], code: null, review: null }), 123);
   const read = await callApi('authoring/conversations/legacy-chat');
   assert.equal(read.statusCode, 200);
   assert.equal(read.json().extensionId, null);

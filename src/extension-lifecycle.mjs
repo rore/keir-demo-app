@@ -154,12 +154,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     db.prepare('UPDATE extension_selections SET revision_id=?,generation=generation+1 WHERE owner_id=?').run(row?.id ?? null, owner);
     db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)').run(owner, row?.id ?? outgoing, generation + 1, operation);
   }
-  function quota(owner) {
-    if (db.prepare('SELECT count(*) n FROM extension_authored WHERE owner_id=?').get(owner).n >= 32)
-      throw new AppError(409, 'The 32 saved authored-revision limit is reached. Existing advice and history are retained.');
-  }
   function saveAuthored(owner, extensionId, value) {
-    quota(owner);
     const id = randomUUID(), identity = json(authoredPins(value));
     db.prepare('INSERT INTO extension_revisions VALUES (?,?,?,?,?)').run(id, owner, 'authored', identity, 'customer');
     db.prepare('INSERT INTO extension_authored VALUES (?,?,?,?,?,?)').run(id, owner, value.label, value.source, value.artifact, value.suite);
@@ -179,14 +174,18 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     return row;
   }
   function requestExcerpt(owner, extensionId) {
-    const rows = db.prepare(`SELECT c.view,c.creation_operation_id,e.creation_operation_id AS item_operation_id
+    const rows = db.prepare(`SELECT c.id,c.creation_operation_id,e.creation_operation_id AS item_operation_id
       FROM extensions e JOIN extension_conversation_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id
       JOIN authoring_conversations c ON c.id=l.conversation_id AND c.owner_id=l.owner_id
       WHERE e.owner_id=? AND e.id=? AND l.purpose='CREATE' LIMIT 2`).all(owner, extensionId);
     if (rows.length !== 1 || !rows[0].item_operation_id || rows[0].creation_operation_id !== rows[0].item_operation_id) return;
     try {
-      const messages = JSON.parse(rows[0].view).messages;
-      const first = Array.isArray(messages) && messages.find(message => message?.role === 'user');
+      const messages = db.prepare('SELECT message_id,CAST(payload AS BLOB) AS payload FROM authoring_messages WHERE owner_id=? AND conversation_id=? ORDER BY sequence').iterate(owner, rows[0].id);
+      let first;
+      for (const row of messages) {
+        const message = JSON.parse(Buffer.from(row.payload).toString('utf8'));
+        if (message?.role === 'user') { first = message.id === row.message_id ? message : null; break; }
+      }
       if (first?.id === rows[0].item_operation_id && typeof first.text === 'string' && first.text.isWellFormed() && first.text.trim())
         return Array.from(first.text.trim()).slice(0, 160).join('');
     } catch { /* Missing or uncertain original intent has no excerpt. */ }
@@ -199,6 +198,51 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     return { generation: active.generation, revision: view(row), eligible: available, approvedEvidenceId: approval?.evidence_id ?? null };
   }
   function choices() { return catalog.map(({ id, label, openCode }) => ({ id, label, openCode })); }
+  const pageRows = 20, pageBytes = 262144;
+  const invalidCursor = () => { throw new AppError(400, 'Use a valid history cursor for this owner and item.'); };
+  function cursor(kind, owner, extensionId, row) {
+    return Buffer.from(json([kind, owner, extensionId ?? null, row.at, row.id])).toString('base64url');
+  }
+  function readCursor(before, kind, owner, extensionId) {
+    if (before === undefined) return null;
+    try {
+      if (typeof before !== 'string' || before.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(before)) invalidCursor();
+      const bytes = Buffer.from(before, 'base64url'), value = JSON.parse(bytes.toString('utf8'));
+      if (bytes.toString('base64url') !== before || !Array.isArray(value) || value.length !== 5
+          || value[0] !== kind || value[1] !== owner || value[2] !== (extensionId ?? null)
+          || !Number.isSafeInteger(value[3]) || value[3] < 0 || typeof value[4] !== 'string' || !value[4]) invalidCursor();
+      return { at: value[3], id: value[4] };
+    } catch { invalidCursor(); }
+  }
+  function boundedPage(candidates, project, nextCursor, base = {}, field = 'rows') {
+    const rows = [];
+    for (const [index, row] of candidates.entries()) {
+      if (rows.length === pageRows) break;
+      const value = project(row), next = index < candidates.length - 1 ? nextCursor(row) : null;
+      if (Buffer.byteLength(json({ ...base, [field]: [...rows, value], next })) > pageBytes) {
+        if (!rows.length) throw new AppError(413, 'This history entry exceeds the response limit.');
+        break;
+      }
+      rows.push(value);
+    }
+    const more = candidates.length > rows.length;
+    const result = { ...base, [field]: rows, next: more && rows.length ? nextCursor(candidates[rows.length - 1]) : null };
+    if (Buffer.byteLength(json(result)) > pageBytes) throw new AppError(413, 'This history response exceeds the host limit.');
+    return result;
+  }
+  function revisionRows(owner, extensionId, before, restore = false) {
+    draft(owner, extensionId);
+    const kind = restore ? 'restore' : 'revisions', anchor = readCursor(before, kind, owner, extensionId);
+    const linked = 'FROM extension_revisions r JOIN extension_revision_links l ON l.revision_id=r.id AND l.owner_id=r.owner_id WHERE r.owner_id=? AND l.extension_id=?';
+    const history = restore ? " AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id AND h.operation IN ('operator','activate','rollback'))" : '';
+    if (anchor && !db.prepare(`SELECT 1 ${linked}${history} AND r.rowid=? AND r.id=?`).get(owner, extensionId, anchor.at, anchor.id)) invalidCursor();
+    const rows = [], statement = db.prepare(`SELECT r.*,r.rowid AS at ${linked}${history} AND r.rowid<? ORDER BY r.rowid DESC`);
+    for (const row of statement.iterate(owner, extensionId, anchor?.at ?? Number.MAX_SAFE_INTEGER)) {
+      if (!restore || eligible(row)) rows.push(row);
+      if (rows.length > pageRows) break;
+    }
+    return boundedPage(rows, view, row => cursor(kind, owner, extensionId, row));
+  }
   function creation(owner, operationId, hash) {
     const row = db.prepare('SELECT id,creation_hash FROM extensions WHERE owner_id=? AND creation_operation_id=?').get(owner, operationId);
     if (row && row.creation_hash !== hash) conflict();
@@ -249,21 +293,46 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       return host ? { ...host.catalog, model: { dcm: host.dcmBytes.toString('utf8'), digest: host.pins.modelDigest,
         profile: host.pins.profile, hook: host.pins.hook, consumer: host.pins.consumer, compiler: host.pins.compiler } } : { hooks: [] };
     },
-    collection(owner) {
-      return { owner: ownerView(owner), items: db.prepare('SELECT id FROM extensions WHERE owner_id=? ORDER BY created_at,id').all(owner).map(row => {
+    collection(owner, { before } = {}) {
+      const base = { owner: ownerView(owner), selection: selectionView(owner), catalog: choices(), hostCatalog: host?.catalog ?? { hooks: [] } };
+      const anchor = readCursor(before, 'collection', owner);
+      if (anchor && !db.prepare('SELECT 1 FROM extensions WHERE owner_id=? AND created_at=? AND id=?').get(owner, anchor.at, anchor.id)) invalidCursor();
+      const rows = db.prepare(`SELECT id,created_at AS at FROM extensions WHERE owner_id=?
+        ${anchor ? 'AND (created_at<? OR (created_at=? AND id<?))' : ''} ORDER BY created_at DESC,id DESC LIMIT 21`)
+        .all(owner, ...(anchor ? [anchor.at, anchor.at, anchor.id] : []));
+      return boundedPage(rows, row => {
+        const state = draft(owner, row.id), candidate = state.draft_id ? revision(owner, state.draft_id, row.id) : null;
         const excerpt = requestExcerpt(owner, row.id);
-        return { ...api.state(owner, row.id), ...(excerpt === undefined ? {} : { requestExcerpt: excerpt }) };
-      }),
-        selection: selectionView(owner), catalog: choices(), hostCatalog: host?.catalog ?? { hooks: [] } };
+        return { extension: { id: state.id, name: state.name, hookId: state.hook_id, creationOperationId: state.creation_operation_id },
+          draftVersion: state.draft_version, draft: view(candidate), approved: !!candidate && eligible(candidate),
+          ...(excerpt === undefined ? {} : { requestExcerpt: excerpt }) };
+      }, row => cursor('collection', owner, undefined, row), base, 'items');
     },
+    findCreation(owner, operationId) {
+      ownerView(owner);
+      if (typeof operationId !== 'string' || !operationId || operationId.length > 128) throw new AppError(400, 'Use a valid creation operation.');
+      const row = db.prepare('SELECT id FROM extensions WHERE owner_id=? AND creation_operation_id=?').get(owner, operationId);
+      if (!row) throw notFound();
+      return api.state(owner, row.id);
+    },
+    evidencePage(owner, extensionId, before) {
+      draft(owner, extensionId);
+      const anchor = readCursor(before, 'evidence', owner, extensionId);
+      const linked = 'FROM extension_evidence e JOIN extension_revision_links l ON l.revision_id=e.revision_id AND l.owner_id=e.owner_id WHERE e.owner_id=? AND l.extension_id=?';
+      if (anchor && !db.prepare(`SELECT 1 ${linked} AND e.rowid=? AND e.id=?`).get(owner, extensionId, anchor.at, anchor.id)) invalidCursor();
+      const rows = db.prepare(`SELECT e.id,e.revision_id AS revisionId,e.rowid AS at ${linked} AND e.rowid<? ORDER BY e.rowid DESC LIMIT 21`)
+        .all(owner, extensionId, anchor?.at ?? Number.MAX_SAFE_INTEGER);
+      return boundedPage(rows, row => ({ id: row.id, revisionId: row.revisionId }), row => cursor('evidence', owner, extensionId, row));
+    },
+    revisionPage(owner, extensionId, before) { return revisionRows(owner, extensionId, before); },
+    restorePage(owner, extensionId, before) { return revisionRows(owner, extensionId, before, true); },
     state(owner, extensionId) {
       const state = draft(owner, extensionId);
       const candidate = state.draft_id ? revision(owner, state.draft_id, extensionId) : null;
       const latest = candidate && db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(owner, candidate.id);
       const approval = candidate?.provenance === 'customer' && db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, candidate.id);
       const approvedProof = approval && evidence(owner, approval.evidence_id, extensionId);
-      const targets = db.prepare("SELECT r.* FROM extension_revisions r JOIN extension_revision_links l ON l.revision_id=r.id AND l.owner_id=r.owner_id WHERE r.owner_id=? AND l.extension_id=? AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id AND h.operation IN ('operator','activate','rollback')) ORDER BY r.rowid DESC LIMIT 20").all(owner, extensionId).filter(eligible);
-      const evidenceHistory = db.prepare('SELECT e.id,e.revision_id AS revisionId FROM extension_evidence e JOIN extension_revision_links l ON l.revision_id=e.revision_id AND l.owner_id=e.owner_id WHERE e.owner_id=? AND l.extension_id=? ORDER BY e.rowid DESC LIMIT 20').all(owner, extensionId);
+      const targets = api.restorePage(owner, extensionId), proofs = api.evidencePage(owner, extensionId), history = api.history(owner, undefined, extensionId);
       const first = state.creation_operation_id && db.prepare('SELECT revision_id FROM extension_revision_links WHERE owner_id=? AND extension_id=? ORDER BY rowid LIMIT 1').get(owner, extensionId);
       return { owner: ownerView(owner), extension: { id: state.id, name: state.name, hookId: state.hook_id, creationOperationId: state.creation_operation_id },
         creationRevisionId: first?.revision_id ?? null, creationReceipt: first ? { extensionId, revisionId: first.revision_id, draftVersion: 1 } : null,
@@ -271,7 +340,8 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         revisionId: candidate?.id ?? null, suiteDigest: candidate?.template_id === 'authored' ? executable(candidate)?.pins.suiteDigest ?? null : null,
         draft: view(candidate), evidence: latest ? { id: latest.id, revisionId: candidate.id, passed: passing(candidate, latest) } : null,
         approved: !!candidate && eligible(candidate), approvedEvidenceId: approvedProof && passing(candidate, approvedProof) ? approvedProof.id : null,
-        selection: selectionView(owner), restoreTargets: targets.map(view), history: api.history(owner, Number.MAX_SAFE_INTEGER, extensionId).rows, evidenceHistory };
+        selection: selectionView(owner), restoreTargets: targets.rows, restoreTargetsNext: targets.next,
+        history: history.rows, historyNext: history.next, evidenceHistory: proofs.rows, evidenceHistoryNext: proofs.next };
     },
     admit(owner, { extensionId, operationId, hash, name }, authorize) {
       authorize();
@@ -290,7 +360,6 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       creationInput(input.operationId, hash, name);
       const existing = creation(owner, input.operationId, hash);
       if (existing) return api.state(owner, existing.id);
-      quota(owner);
       const value = await compileValue(input, authorize, signal);
       return transaction(db, () => {
         authorize(); abort(signal);
@@ -327,7 +396,6 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     async compile(owner, input, authorize, { signal } = {}) {
       authorize(); abort(signal); const state = draft(owner, input.extensionId);
       if (state.draft_version !== input.draftVersion) conflict();
-      quota(owner);
       const value = await compileValue(input, authorize, signal);
       commit(owner, input.extensionId, authorize, () => {
         abort(signal); if (draft(owner, input.extensionId).draft_version !== input.draftVersion) conflict(); saveAuthored(owner, input.extensionId, value);
@@ -451,14 +519,20 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
       return { id: proof.id, revisionId: proof.revision_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
         ...payload, reports, passed: passing(row, proof) };
     },
-    history(owner, before = Number.MAX_SAFE_INTEGER, extensionId) {
+    history(owner, before, extensionId) {
       ownerView(owner);
       if (extensionId !== undefined) draft(owner, extensionId);
+      if (before !== undefined) {
+        if (!Number.isSafeInteger(before) || before <= 0) invalidCursor();
+        const anchor = extensionId === undefined
+          ? db.prepare('SELECT 1 FROM extension_history WHERE owner_id=? AND id=?').get(owner, before)
+          : db.prepare('SELECT 1 FROM extension_history h JOIN extension_revision_links l ON l.revision_id=h.revision_id AND l.owner_id=h.owner_id WHERE h.owner_id=? AND h.id=? AND l.extension_id=?').get(owner, before, extensionId);
+        if (!anchor) invalidCursor();
+      }
       const rows = extensionId === undefined
-        ? db.prepare('SELECT id,generation,operation,revision_id AS revisionId FROM extension_history WHERE owner_id=? AND id<? ORDER BY id DESC LIMIT 20').all(owner, before)
-        : db.prepare('SELECT h.id,h.generation,h.operation,h.revision_id AS revisionId FROM extension_history h JOIN extension_revision_links l ON l.revision_id=h.revision_id AND l.owner_id=h.owner_id WHERE h.owner_id=? AND h.id<? AND l.extension_id=? ORDER BY h.id DESC LIMIT 20').all(owner, before, extensionId);
-      return { rows: rows.map(row => ({ ...row, label: row.revisionId ? view(revision(owner, row.revisionId, extensionId)).label : null })),
-        next: rows.length === 20 ? rows.at(-1).id : null };
+        ? db.prepare('SELECT id,generation,operation,revision_id AS revisionId FROM extension_history WHERE owner_id=? AND id<? ORDER BY id DESC LIMIT 21').all(owner, before ?? Number.MAX_SAFE_INTEGER)
+        : db.prepare('SELECT h.id,h.generation,h.operation,h.revision_id AS revisionId FROM extension_history h JOIN extension_revision_links l ON l.revision_id=h.revision_id AND l.owner_id=h.owner_id WHERE h.owner_id=? AND h.id<? AND l.extension_id=? ORDER BY h.id DESC LIMIT 21').all(owner, before ?? Number.MAX_SAFE_INTEGER, extensionId);
+      return boundedPage(rows, row => ({ ...row, label: row.revisionId ? view(revision(owner, row.revisionId, extensionId)).label : null }), row => row.id);
     },
     capture(owner) {
       const selected = selection(owner);

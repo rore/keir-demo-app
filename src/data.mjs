@@ -6,6 +6,7 @@ import { loadCatalog } from './extension-catalog.mjs';
 
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
   'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
+const authoringHistoryTables = ['authoring_dispatches', 'authoring_messages', 'authoring_operations'];
 function seedLifecycle(db) {
   let catalog = [];
   try { catalog = loadCatalog(); } catch { /* Invalid deployment leaves native tasks usable with no advice. */ }
@@ -138,6 +139,74 @@ function migrateExtensions(db) {
   });
 }
 
+function migrateAuthoringHistory(db) {
+  // Rebuilding adds a required timestamp without inventing a default for old rows.
+  db.exec('PRAGMA foreign_keys=OFF');
+  try {
+    transaction(db, () => {
+      db.exec(`CREATE TABLE authoring_conversations_v6(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
+        creation_operation_id TEXT NOT NULL, version INTEGER NOT NULL CHECK(version BETWEEN 0 AND 9007199254740991),
+        run_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('IDLE','RUNNING','CANCELLING','AWAITING_USER','REVIEW_AVAILABLE','CANCELLED','BLOCKED','INTERRUPTED')),
+        cancel_requested INTEGER NOT NULL CHECK(cancel_requested IN (0,1)), updated_at INTEGER NOT NULL CHECK(updated_at>=0),
+        state TEXT NOT NULL, operations TEXT NOT NULL, view TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),
+        UNIQUE(id,owner_id), UNIQUE(owner_id,creation_operation_id),
+        CHECK(length(CAST(state AS BLOB))+length(CAST(operations AS BLOB))+length(CAST(view AS BLOB))<=262144),
+        CHECK(length(CAST(view AS BLOB))<=131072), CHECK(length(CAST(operations AS BLOB))<=16384)) STRICT;
+        CREATE TABLE authoring_messages(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 9007199254740991), message_id TEXT NOT NULL,
+          payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB))<=131072),
+          PRIMARY KEY(conversation_id,sequence), UNIQUE(conversation_id,message_id),
+          FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id)) STRICT;
+        CREATE TABLE authoring_operations(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+          body_hash TEXT NOT NULL, run_id TEXT NOT NULL, admitted_version INTEGER NOT NULL CHECK(admitted_version BETWEEN 0 AND 9007199254740991),
+          PRIMARY KEY(conversation_id,operation_id), UNIQUE(conversation_id,owner_id,run_id),
+          FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id)) STRICT;
+        CREATE TABLE authoring_dispatches(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL, run_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 9007199254740991), kind TEXT NOT NULL CHECK(kind IN ('provider','tool')),
+          call_id TEXT, reserved_micros INTEGER NOT NULL CHECK(reserved_micros BETWEEN 0 AND 9007199254740991),
+          outcome TEXT CHECK(outcome IN ('SUCCESS','REJECTED','UNKNOWN')),
+          PRIMARY KEY(conversation_id,run_id,ordinal), UNIQUE(conversation_id,run_id,call_id),
+          FOREIGN KEY(conversation_id,owner_id,run_id) REFERENCES authoring_operations(conversation_id,owner_id,run_id)) STRICT;`);
+      const insertMessage = db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)');
+      const insertOperation = db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)');
+      const insertDispatch = db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)');
+      for (const row of db.prepare('SELECT * FROM authoring_conversations ORDER BY rowid').all()) {
+        const state = JSON.parse(row.state), operations = JSON.parse(row.operations), view = JSON.parse(row.view);
+        if (!state || typeof state !== 'object' || Array.isArray(state) || !Number.isSafeInteger(state.createdAt) || state.createdAt < 0
+            || !Array.isArray(operations) || !view || typeof view !== 'object' || Array.isArray(view) || !Array.isArray(view.messages)
+            || state.journal !== undefined && !Array.isArray(state.journal)) throw new Error('Invalid legacy authoring history; no data was reset.');
+        for (const [index, value] of view.messages.entries()) {
+          if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string') throw new Error('Invalid legacy authoring message.');
+          insertMessage.run(row.id, row.owner_id, index + 1, value.id, JSON.stringify(value));
+        }
+        for (const item of operations) insertOperation.run(row.id, row.owner_id, item.id, item.hash, item.runId, item.version);
+        for (const item of state.journal ?? []) insertDispatch.run(row.id, row.owner_id, item.runId, item.ordinal,
+          item.kind, item.callId ?? null, item.reservedMicros, item.outcome ?? null);
+        delete state.journal; delete state.inputIds; delete state.callIds;
+        view.messages = [];
+        db.prepare('INSERT INTO authoring_conversations_v6 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(row.id, row.owner_id,
+          row.creation_operation_id, row.version, row.run_id, row.status, row.cancel_requested, row.updated_at,
+          JSON.stringify(state), JSON.stringify(operations.slice(-1)), JSON.stringify(view), state.createdAt);
+      }
+      db.exec(`DROP TABLE authoring_conversations;
+        ALTER TABLE authoring_conversations_v6 RENAME TO authoring_conversations;
+        CREATE INDEX authoring_conversations_owner ON authoring_conversations(owner_id,created_at,id);
+        CREATE TRIGGER authoring_created_at_immutable BEFORE UPDATE OF created_at ON authoring_conversations
+          WHEN NEW.created_at IS NOT OLD.created_at BEGIN SELECT RAISE(ABORT, 'Authoring creation time is immutable'); END;
+        CREATE TRIGGER authoring_dispatch_immutable BEFORE UPDATE ON authoring_dispatches
+          WHEN OLD.outcome IS NOT NULL OR NEW.conversation_id IS NOT OLD.conversation_id OR NEW.owner_id IS NOT OLD.owner_id
+            OR NEW.run_id IS NOT OLD.run_id OR NEW.ordinal IS NOT OLD.ordinal OR NEW.kind IS NOT OLD.kind
+            OR NEW.call_id IS NOT OLD.call_id OR NEW.reserved_micros IS NOT OLD.reserved_micros OR NEW.outcome IS NULL
+          BEGIN SELECT RAISE(ABORT, 'Authoring dispatch is immutable'); END;`);
+      if (db.prepare('PRAGMA foreign_key_check').all().length || db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok') throw new Error('Authoring migration failed integrity checks');
+      db.exec('PRAGMA user_version=6');
+    });
+  } finally {
+    db.exec('PRAGMA foreign_keys=ON');
+    if (db.prepare('PRAGMA foreign_keys').get().foreign_keys !== 1) throw new Error('Foreign keys are required.');
+  }
+}
+
 export const USERS = [
   { id: 'maya', name: 'Maya', description: 'A small design practice', project: 'The spring collection', tasks: ['Gather material references', 'Refine the packaging sketches', 'Send the first concept'] },
   { id: 'leo', name: 'Leo', description: 'Good things, made together', project: 'Neighbourhood workshop', tasks: ['Plan the Saturday session', 'Check the tool cupboard', 'Share the workshop notes'] },
@@ -221,11 +290,12 @@ export function openData(path) {
         `);
         seedRows(db);
       });
-    } else if (![1, 2, 3, 4, 5].includes(version)) throw new Error('Unsupported database version; no data was reset.');
+    } else if (![1, 2, 3, 4, 5, 6].includes(version)) throw new Error('Unsupported database version; no data was reset.');
     if (version < 2) migrateLifecycle(db);
     if (version < 3) migrateAuthored(db);
     if (version < 4) migrateAuthoring(db);
     if (version < 5) migrateExtensions(db);
+    if (version < 6) migrateAuthoringHistory(db);
     return db;
   } catch (error) { db.close(); throw error; }
 }
@@ -243,13 +313,16 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
     const copy = new DatabaseSync(backupPath, { readOnly: true });
     try {
       if (copy.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || copy.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Backup verification failed; original data retained.');
-      for (const table of ['users', 'projects', 'tasks', ...lifecycleTables, 'authoring_conversations', 'authoring_budget']) {
-        const sql = `SELECT * FROM ${table} ORDER BY rowid`;
+      for (const table of ['users', 'projects', 'tasks', ...lifecycleTables, ...authoringHistoryTables, 'authoring_conversations', 'authoring_budget']) {
+        // Read text as bytes because SQLite's Node text reader can stop at embedded NUL.
+        const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(({ name, type }) => type === 'TEXT' ? `CAST(${name} AS BLOB) AS ${name}` : name);
+        const sql = `SELECT ${columns.join(',')} FROM ${table} ORDER BY rowid`;
         if (JSON.stringify(copy.prepare(sql).all()) !== JSON.stringify(db.prepare(sql).all())) throw new Error('Backup differs; original data retained.');
       }
     } finally { copy.close(); }
     transaction(db, () => {
       db.exec('UPDATE extensions SET draft_revision_id=NULL');
+      for (const table of authoringHistoryTables) db.exec(`DELETE FROM ${table}`);
       for (const table of lifecycleTables) db.exec(`DELETE FROM ${table}`);
       db.exec('DELETE FROM authoring_conversations');
       db.exec('DELETE FROM tasks; DELETE FROM projects; DELETE FROM users;');
