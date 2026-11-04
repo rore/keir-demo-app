@@ -6,13 +6,15 @@ import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData } from '../src/data.mjs';
 import { createLegacyV4 } from './fixtures/legacy-v4.mjs';
+import { legacySelections } from './fixtures/task-effect-schema.mjs';
 
 const existingTables = ['users', 'projects', 'tasks', 'extension_revisions', 'extension_selections',
   'extension_evidence', 'extension_approvals', 'extension_history', 'extension_authored'];
 const authoringHistoryTables = ['authoring_messages', 'authoring_operations', 'authoring_dispatches'];
 const authoringTables = ['authoring_budget', 'authoring_conversations', ...authoringHistoryTables];
 const allDataTables = [...existingTables, ...authoringTables, 'extensions', 'extension_revision_links', 'extension_conversation_links'];
-const snapshot = (db, tables) => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+const snapshot = (db, tables) => Object.fromEntries(tables.map(table => [table,
+  table === 'extension_selections' ? legacySelections(db) : db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'keir-authoring-data-'));
   t.after(() => { assert.ok(directory.startsWith(join(tmpdir(), 'keir-authoring-data-'))); rmSync(directory, { recursive: true, force: true }); });
@@ -41,7 +43,7 @@ test('populated v3 migrates once, retaining every native/lifecycle byte and exis
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
   assert.equal(db.prepare("SELECT draft_revision_id FROM extensions WHERE owner_id='owner-a'").get().draft_revision_id, revision);
   assert.deepEqual(snapshot(db, existingTables), original);
   assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 0 });

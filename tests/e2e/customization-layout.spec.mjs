@@ -375,7 +375,7 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   item = await card(page); await expect(item).toContainText('In use'); await expect(item).toContainText('Your current setup is still on.'); await expect(item).not.toContainText('Changes in progress');
   expect((await savedState(page)).selection.revision.label).toBe('Needs attention');
   await picture(page, 'overview-in-use');
-  demo.db.prepare("UPDATE extension_revisions SET identity='{}' WHERE id=(SELECT revision_id FROM extension_selections WHERE owner_id='maya')").run();
+  demo.db.prepare("UPDATE extension_revisions SET identity='{}' WHERE id=(SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask')").run();
   await destination(page, 'Tasks'); await overview(page); await expect(await card(page)).toContainText('Couldn’t check what’s in use');
   await expect(await card(page)).not.toContainText('completed tasks: Done'); await picture(page, 'overview-unavailable');
   await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam'); await destination(page, 'Customizations');

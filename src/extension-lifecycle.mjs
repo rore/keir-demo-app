@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { runReadSimulation } from '@keir/runtime-node/read-simulation';
-import { AppError, notFound, transaction } from './data.mjs';
+import { AppError, notFound, transaction, revokeTaskAdmissions } from './data.mjs';
 import { loadCatalog, loadHost, admitArtifact, hostBindings, digest, json, consumer, hook } from './extension-catalog.mjs';
 
 const conflict = () => { throw new AppError(409, 'This extension changed. Review the current version before trying again.'); };
@@ -93,7 +93,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     return { ...state, name: Buffer.from(state.name_bytes).toString('utf8') };
   }
   function selection(owner) {
-    const state = db.prepare('SELECT * FROM extension_selections WHERE owner_id=?').get(owner);
+    const state = db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='ClassifyTask'").get(owner);
     if (!state) throw notFound();
     return state;
   }
@@ -154,7 +154,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
     const selected = selection(owner), outgoing = selected.revision_id;
     if (selected.generation !== generation) conflict();
     if (row && !eligible(row)) conflict();
-    db.prepare('UPDATE extension_selections SET revision_id=?,generation=generation+1 WHERE owner_id=?').run(row?.id ?? null, owner);
+    db.prepare("UPDATE extension_selections SET revision_id=?,generation=generation+1 WHERE owner_id=? AND hook_id='ClassifyTask'").run(row?.id ?? null, owner);
     db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)').run(owner, row?.id ?? outgoing, generation + 1, operation);
   }
   function saveAuthored(owner, extensionId, value) {
@@ -394,6 +394,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         }
         if (active.revision_id && db.prepare('SELECT 1 FROM extension_revision_links WHERE owner_id=? AND extension_id=? AND revision_id=?').get(owner, input.extensionId, active.revision_id)) change(owner, active.generation, null, 'disable');
         const deletedAt = Date.now();
+        revokeTaskAdmissions(db, owner, input.extensionId);
         db.prepare('UPDATE extensions SET deleted_at=? WHERE owner_id=? AND id=?').run(deletedAt, owner, input.extensionId);
         authorize();
         return { extensionId: input.extensionId, deletedAt };
@@ -522,6 +523,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, compile
         if (!active.revision_id) conflict();
         revision(owner, active.revision_id, input.extensionId);
         change(owner, input.generation, null, 'disable');
+        revokeTaskAdmissions(db, owner, input.extensionId);
       }); return api.state(owner, input.extensionId);
     },
     rollback(owner, input, authorize) {

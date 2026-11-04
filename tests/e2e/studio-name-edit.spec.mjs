@@ -20,7 +20,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     const fixture = await startAuthoringFixture({ unconfigured: true });
     const name = 'Keep unfinished work visible while all completed work stays exactly as it is today'.padEnd(80, '.').slice(0, 80);
     fixture.db.prepare('UPDATE extensions SET name=? WHERE owner_id=?').run(name, 'maya');
-    const before = fixture.db.prepare('SELECT * FROM extension_selections WHERE owner_id=?').get('maya');
+    const before = fixture.db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='ClassifyTask'").get('maya');
     const renameRequests = [];
     page.on('request', request => { if (request.method() === 'POST' && /\/rename$/.test(new URL(request.url()).pathname)) renameRequests.push(request); });
     try {
@@ -52,7 +52,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       await expect(ui.getByRole('heading', { name: 'My task advice', exact: true })).toBeVisible();
       await expect(rename).toBeFocused(); await expect(form).toHaveCount(0);
       expect(renameRequests).toHaveLength(1);
-      expect(fixture.db.prepare('SELECT * FROM extension_selections WHERE owner_id=?').get('maya')).toEqual(before);
+      expect(fixture.db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='ClassifyTask'").get('maya')).toEqual(before);
       await page.reload(); await expect(ui.getByRole('heading', { name: 'My task advice', exact: true })).toBeVisible();
       expect(fixture.requests).toHaveLength(0);
     } finally { await fixture.close(); }

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData } from '../src/data.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { legacySelections, removeTaskEffectSchema } from './fixtures/task-effect-schema.mjs';
 
 const tables = ['extension_approvals','extension_evidence','extension_history','extension_selections','extension_states','extension_authored','extension_revisions'];
 function itemId(api, owner) {
@@ -14,6 +15,7 @@ function itemId(api, owner) {
   return items[0].extension.id;
 }
 function removeItemSchema(db) {
+  removeTaskEffectSchema(db);
   db.exec('UPDATE extensions SET draft_revision_id=NULL; DROP TABLE extension_conversation_links; DROP TABLE extension_revision_links; DROP TABLE extensions');
 }
 function removeAuthoringSchema(db) {
@@ -37,7 +39,7 @@ function legacy(path) {
 test('populated v1 migrates once, preserving every native row with explicit operator provenance and no fake approval', t => {
   const { path } = fixture(t), original = legacy(path);
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
   assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), original);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
@@ -82,7 +84,7 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
   db.close();
 
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 8);
   assert.deepEqual(upgraded.prepare('SELECT * FROM tasks ORDER BY id').all(), native);
   for (const [table, rows] of Object.entries(lifecycle)) {
     if (table === 'extension_states') {
@@ -91,12 +93,12 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
         assert.equal(head?.draft_version ?? 0, row.draft_version);
         assert.equal(head?.draft_revision_id ?? null, row.draft_id);
       }
-    } else assert.deepEqual(upgraded.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), rows);
+    } else assert.deepEqual(table === 'extension_selections' ? legacySelections(upgraded) : upgraded.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), rows);
   }
   upgraded.close();
   upgraded = openData(path);
   assert.deepEqual(upgraded.prepare('SELECT * FROM tasks ORDER BY id').all(), native);
-  for (const [table, rows] of Object.entries(lifecycle).filter(([table]) => table !== 'extension_states')) assert.deepEqual(upgraded.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), rows);
+  for (const [table, rows] of Object.entries(lifecycle).filter(([table]) => table !== 'extension_states')) assert.deepEqual(table === 'extension_selections' ? legacySelections(upgraded) : upgraded.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), rows);
   assert.equal(upgraded.prepare('PRAGMA foreign_key_check').all().length, 0);
   assert.equal(upgraded.prepare('SELECT count(*) n FROM extension_authored').get().n, 0);
   upgraded.close();
@@ -104,6 +106,7 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
 
 test('v2 migration rolls back when the authored table already exists', t => {
   const { path } = fixture(t), db = openData(path);
+  removeTaskEffectSchema(db);
   removeAuthoringSchema(db);
   db.exec(`DROP TABLE extension_authored; CREATE TABLE extension_authored(conflict TEXT); PRAGMA user_version=2`);
   db.close();
@@ -140,13 +143,13 @@ test('reset verifies and backs up lifecycle rows before deleting them; corrupted
   db.close();
   await assert.rejects(resetData(directory, true, async (source, destination) => {
     await backup(source, destination);
-    const copy = new DatabaseSync(destination); copy.exec("UPDATE extension_selections SET generation=99 WHERE owner_id='maya'"); copy.close();
+    const copy = new DatabaseSync(destination); copy.exec("UPDATE extension_selections SET generation=99 WHERE owner_id='maya' AND hook_id='ClassifyTask'"); copy.close();
   }), /Backup differs/);
   let reopened = openData(path);
   assert.equal(createLifecycle(reopened).collection('maya').selection.revision, null); reopened.close();
   const backupPath = await resetData(directory, true);
   const copy = new DatabaseSync(backupPath, { readOnly: true });
-  assert.equal(copy.prepare("SELECT generation FROM extension_selections WHERE owner_id='maya'").get().generation, 2); copy.close();
+  assert.equal(copy.prepare("SELECT generation FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get().generation, 2); copy.close();
   const verified = new DatabaseSync(backupPath, { readOnly: true });
   const backedUp = verified.prepare('SELECT owner_id, label, source, artifact, suite FROM extension_authored WHERE revision_id=?').get(revisionId);
   assert.equal(backedUp.owner_id, 'maya');

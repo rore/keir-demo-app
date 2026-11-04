@@ -20,7 +20,7 @@ const test = base.extend({
     try {
       server = await start({ directory, port });
       await use({ origin: server.origin, restart: async () => { await server.close(); server = await start({ directory, port }); },
-        invalidateSelectedAdvice: () => server.db.prepare("UPDATE extension_revisions SET identity='{}' WHERE id=(SELECT revision_id FROM extension_selections WHERE owner_id='maya')").run() });
+        invalidateSelectedAdvice: () => server.db.prepare("UPDATE extension_revisions SET identity='{}' WHERE id=(SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask')").run() });
     } finally { await server?.close(); rmSync(directory, { recursive: true, force: true }); }
   },
 });

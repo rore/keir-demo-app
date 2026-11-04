@@ -164,7 +164,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.locator('.rs-chat-note')).toContainText('Messages use your configured assistant');
       expect(fixture.requests).toEqual([]);
       await expect(ui.locator('.rs-chat')).not.toContainText(provider);
-      const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya'").get();
+      const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
       await openDetails(page);
       const connection = ui.getByRole('region', { name: 'Assistant connection details', exact: true });
       await expect(connection.getByText(`Provider: ${provider}`, { exact: true })).toBeVisible();

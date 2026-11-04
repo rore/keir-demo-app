@@ -6,12 +6,13 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openData } from '../src/data.mjs';
 import { createLegacyV4 } from './fixtures/legacy-v4.mjs';
+import { legacySelections } from './fixtures/task-effect-schema.mjs';
 
 const preservedTables = ['users', 'projects', 'tasks', 'extension_revisions', 'extension_selections',
   'extension_evidence', 'extension_approvals', 'extension_history', 'extension_authored',
   'authoring_budget', 'authoring_conversations'];
 const snapshot = (db, tables) => Object.fromEntries(tables.map(table =>
-  [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  [table, table === 'extension_selections' ? legacySelections(db) : db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 
 function fixture(t, { missingCreatedAt = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'keir-extension-migration-'));
@@ -33,7 +34,7 @@ test('V4 migration preserves immutable rows and budgets, links only proven legac
   db.close();
 
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 8);
   const after = snapshot(upgraded, preservedTables);
   for (const table of preservedTables.filter(table => table !== 'authoring_conversations')) assert.deepEqual(after[table], before[table], table);
   assert.deepEqual(after.authoring_conversations.map(row => ({ ...row })), before.authoring_conversations.map(row =>
@@ -63,7 +64,7 @@ test('V4 migration preserves immutable rows and budgets, links only proven legac
   assert.equal(upgraded.prepare('SELECT count(*) n FROM extensions WHERE owner_id=?').get('owner-empty').n, 0);
   assert.deepEqual(upgraded.prepare('SELECT id,owner_id,revision_id,generation,operation FROM extension_history ORDER BY id').all().map(row => ({ ...row }))
     .filter(row => row.revision_id === null), [{ id: 3, owner_id: 'owner-a', revision_id: null, generation: 10, operation: 'disable' }]);
-  assert.deepEqual(upgraded.prepare('SELECT owner_id,revision_id,generation FROM extension_selections ORDER BY owner_id').all().map(row => ({ ...row })), selections.map(({ owner_id, revision_id, generation }) => ({ owner_id, revision_id, generation })));
+  assert.deepEqual(upgraded.prepare("SELECT owner_id,revision_id,generation FROM extension_selections WHERE hook_id='ClassifyTask' ORDER BY owner_id").all().map(row => ({ ...row })), selections.map(({ owner_id, revision_id, generation }) => ({ owner_id, revision_id, generation })));
   assert.deepEqual(upgraded.prepare('PRAGMA foreign_key_check').all(), []);
 
   const extensionA = entities.find(row => row.owner_id === 'owner-a').id;

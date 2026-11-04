@@ -3,14 +3,16 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openData } from '../src/data.mjs';
+import { openData, taskEffectService } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 
 const origin = 'http://127.0.0.1:32123';
+const databases = new WeakMap();
 function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), 'keir-native-api-'));
   const db = openData(join(dir, 'app.sqlite'));
   return createApp({ db, origin, staticRoot: dir }).then(app => {
+    databases.set(app, db);
     t.after(async () => { await app.close(); db.close(); rmSync(dir, { recursive: true, force: true }); });
     return app;
   });
@@ -18,6 +20,37 @@ function setup(t) {
 const request = (method, url, { cookie, token, body, headers = {} } = {}) => ({
   method, url, headers: { host: '127.0.0.1:32123', ...(cookie ? { cookie: `keir_demo_session=${cookie}` } : {}), ...(token ? { 'x-session-context': token } : {}), ...headers },
   ...(body !== undefined ? { payload: JSON.stringify(body) } : {}),
+});
+
+test('an admitted owner A completion keeps its exact native context after the browser signs in as B', async t => {
+  const app = await setup(t), db = databases.get(app);
+  const bootstrap = await app.inject(request('GET', '/api/session'));
+  const maya = await signIn(app, 'maya', bootstrap.json().contextToken);
+  const selected = db.prepare("SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
+  const pins = { artifactDigest: `sha256:${'a'.repeat(64)}`, modelRef: { format: 'keir-dcm/effect-3', digest: `sha256:${'b'.repeat(64)}` },
+    compiler: { id: 'test' }, environment: { id: 'test' }, consumer: { kind: 'EVENT_REPORT' },
+    qualification: { id: 'test-report', revision: 1, reportDigest: `sha256:${'c'.repeat(64)}`, hostBuild: `sha256:${'d'.repeat(64)}` } };
+  db.prepare("UPDATE extension_selections SET revision_id=?,generation=1,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'")
+    .run(selected.revision_id, JSON.stringify(pins));
+  const projects = await app.inject(request('GET', '/api/projects', maya)), projectId = projects.json()[0].id;
+  const source = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId, title: 'Owner A source' }, headers: jsonHeaders }));
+  assert.equal(source.statusCode, 201);
+  const completed = await app.inject(request('POST', `/api/tasks/${source.json().id}/complete`, { ...maya, body: {}, headers: jsonHeaders }));
+  assert.equal(completed.statusCode, 200);
+  const eventId = db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(source.json().id).event_id;
+  const leo = await signIn(app, 'leo', maya);
+  const seen = [];
+  const effects = taskEffectService(db, { authorizeRead: context => context.owner === 'maya',
+    authorizeWrite: context => { seen.push(context); return context.owner === 'maya'; }, isQualificationCurrent: context => context.pins.qualification.id === 'test-report' });
+  assert.deepEqual(effects.claim('maya', eventId).pins, pins);
+  const result = effects.createTaskOnce('maya', effects.keyFor('maya', eventId), { projectId, title: 'Owner A result' });
+  assert.equal(result.effect, 'CONFIRMED'); assert.ok(seen.every(context => context.owner === 'maya' && context.sourceTaskId === source.json().id));
+  const foreignRead = await app.inject(request('GET', `/api/tasks/${result.value.id}`, leo));
+  assert.equal(foreignRead.statusCode, 404);
+  const switchedBack = await signIn(app, 'maya', leo);
+  const ownRead = await app.inject(request('GET', `/api/tasks/${result.value.id}`, switchedBack));
+  assert.equal(ownRead.statusCode, 200); assert.equal(ownRead.json().title, 'Owner A result');
+  assert.equal(effects.status('maya', eventId).originalKey, seen[0].originalKey);
 });
 const jsonHeaders = { origin, 'content-type': 'application/json' };
 async function signIn(app, userId, context) {
@@ -45,6 +78,11 @@ test('same-origin session context protects CRUD and rejects cross-user and stale
   assert.equal(completed.statusCode, 200);
   assert.equal(completed.json().status, 'completed');
   assert.ok(completed.json().completedAt);
+  const repeated = await app.inject(request('POST', `/api/tasks/${task.json().id}/complete`, { ...maya, body: {}, headers: jsonHeaders }));
+  assert.deepEqual(repeated.json(), completed.json());
+  assert.deepEqual(Object.keys(completed.json()).sort(), ['completedAt','createdAt','id','notes','projectId','status','title','updatedAt']);
+  const protectedKey = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId: project.id, title: 'No public key', operationKey: 'forged' }, headers: jsonHeaders }));
+  assert.equal(protectedKey.statusCode, 400);
 
   const leo = await signIn(app, 'leo', maya);
   const foreignAssociation = await app.inject(request('POST', '/api/tasks', { ...leo, body: { projectId: project.id, title: 'wrong owner' }, headers: jsonHeaders }));

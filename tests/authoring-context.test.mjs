@@ -25,7 +25,7 @@ function extensionPath(db, suffix = '', owner = 'maya') {
 function authoringTarget(db, conversationId) {
   const rows = db.prepare("SELECT * FROM extensions WHERE owner_id='maya'").all();
   assert.equal(rows.length, 1);
-  const extension = rows[0], selected = db.prepare("SELECT * FROM extension_selections WHERE owner_id='maya'").get();
+  const extension = rows[0], selected = db.prepare("SELECT * FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
   return conversationId ? { kind: 'resume', extensionId: extension.id }
     : { kind: 'revise', extensionId: extension.id, baseRevisionId: extension.draft_revision_id ?? selected.revision_id, selectionGeneration: selected.generation };
 }
@@ -68,7 +68,7 @@ test('example GET is authenticated, queryless, inert and returns original synthe
   assert.equal((await call('authoring/example')).statusCode, 401);
   await login();
   const before = db.prepare('SELECT * FROM extensions ORDER BY owner_id').all();
-  const beforeSelection = db.prepare('SELECT * FROM extension_selections ORDER BY owner_id').all();
+  const beforeSelection = db.prepare('SELECT * FROM extension_selections ORDER BY owner_id,hook_id').all();
   const beforeBudget = db.prepare('SELECT * FROM authoring_budget').all();
   assert.equal((await call('authoring/example?owner=leo')).statusCode, 400);
   const response = await call('authoring/example');
@@ -85,7 +85,7 @@ test('example GET is authenticated, queryless, inert and returns original synthe
   assert.deepEqual(db.prepare('SELECT * FROM authoring_budget').all(), beforeBudget);
   assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
-  assert.deepEqual(db.prepare('SELECT * FROM extension_selections ORDER BY owner_id').all(), beforeSelection);
+  assert.deepEqual(db.prepare('SELECT * FROM extension_selections ORDER BY owner_id,hook_id').all(), beforeSelection);
   const oldSession = getAuth();
   await login('leo');
   assert.equal((await call('authoring/example', undefined, oldSession)).statusCode, 401);

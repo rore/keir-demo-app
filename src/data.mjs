@@ -7,10 +7,12 @@ import { loadCatalog } from './extension-catalog.mjs';
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
   'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
 const authoringHistoryTables = ['authoring_dispatches', 'authoring_messages', 'authoring_operations'];
+const taskEffectTables = ['task_effect_receipts', 'task_completion_events'];
 function seedLifecycle(db) {
   let catalog = [];
   try { catalog = loadCatalog(); } catch { /* Invalid deployment leaves native tasks usable with no advice. */ }
   const scoped = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extensions'").get();
+  const hookScoped = db.prepare('PRAGMA table_info(extension_selections)').all().some(column => column.name === 'hook_id');
   for (const user of USERS) {
     if (!scoped) db.prepare('INSERT INTO extension_states VALUES (?, 0, NULL)').run(user.id);
     const template = catalog.find(item => item.id === (user.id === 'maya' ? 'pending' : user.id === 'leo' ? 'attention' : ''));
@@ -23,7 +25,10 @@ function seedLifecycle(db) {
         db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(revisionId, user.id, extensionId);
       }
     }
-    db.prepare('INSERT INTO extension_selections VALUES (?, ?, ?)').run(user.id, revisionId, template ? 1 : 0);
+    if (hookScoped) {
+      db.prepare("INSERT INTO extension_selections(owner_id,hook_id,revision_id,generation) VALUES (?,'ClassifyTask',?,?)").run(user.id, revisionId, template ? 1 : 0);
+      db.prepare("INSERT INTO extension_selections(owner_id,hook_id,revision_id,generation) VALUES (?,'TaskCompleted',NULL,0)").run(user.id);
+    } else db.prepare('INSERT INTO extension_selections VALUES (?, ?, ?)').run(user.id, revisionId, template ? 1 : 0);
     if (template) db.prepare('INSERT INTO extension_history(owner_id, revision_id, generation, operation) VALUES (?, ?, 1, ?)').run(user.id, revisionId, 'operator');
   }
 }
@@ -246,6 +251,61 @@ export function transaction(db, action) {
   catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
+function migrateTaskEffects(db) {
+  transaction(db, () => {
+    db.exec(`
+      CREATE UNIQUE INDEX tasks_owner ON tasks(id,owner_id);
+      CREATE TABLE extension_selections_v8(
+        owner_id TEXT NOT NULL REFERENCES users(id), hook_id TEXT NOT NULL CHECK(hook_id IN ('ClassifyTask','TaskCompleted')),
+        revision_id TEXT, generation INTEGER NOT NULL CHECK(generation BETWEEN 0 AND 9007199254740991),
+        binding_pins TEXT CHECK(binding_pins IS NULL OR length(CAST(binding_pins AS BLOB))<=32768),
+        PRIMARY KEY(owner_id,hook_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
+        CHECK(revision_id IS NOT NULL OR binding_pins IS NULL)) STRICT;
+      INSERT INTO extension_selections_v8(owner_id,hook_id,revision_id,generation)
+        SELECT owner_id,'ClassifyTask',revision_id,generation FROM extension_selections;
+      INSERT INTO extension_selections_v8(owner_id,hook_id,revision_id,generation) SELECT id,'TaskCompleted',NULL,0 FROM users;
+      DROP TABLE extension_selections;
+      ALTER TABLE extension_selections_v8 RENAME TO extension_selections;
+      CREATE TABLE task_completion_events(
+        event_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), source_task_id TEXT NOT NULL UNIQUE,
+        original_key TEXT NOT NULL UNIQUE CHECK(length(original_key)=36), item_id TEXT, revision_id TEXT,
+        selection_generation INTEGER NOT NULL CHECK(selection_generation BETWEEN 0 AND 9007199254740991),
+        input TEXT NOT NULL CHECK(json_valid(input) AND length(CAST(input AS BLOB))<=4096),
+        pins TEXT CHECK(pins IS NULL OR length(CAST(pins AS BLOB))<=32768),
+        state TEXT NOT NULL CHECK(state IN ('NO_BINDING','PENDING','STARTED','FINISHED')),
+        revoked_at INTEGER CHECK(revoked_at IS NULL OR revoked_at>=0),
+        outcome TEXT CHECK(outcome IS NULL OR (json_valid(outcome) AND length(CAST(outcome AS BLOB))<=131072)),
+        reconciliation TEXT CHECK(reconciliation IS NULL OR (json_valid(reconciliation) AND length(CAST(reconciliation AS BLOB))<=32768)),
+        created_at TEXT NOT NULL, UNIQUE(owner_id,original_key),
+        FOREIGN KEY(source_task_id,owner_id) REFERENCES tasks(id,owner_id),
+        FOREIGN KEY(revision_id,owner_id,item_id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id),
+        CHECK((state='NO_BINDING' AND revision_id IS NULL) OR (state!='NO_BINDING' AND revision_id IS NOT NULL)),
+        CHECK((state='FINISHED' AND outcome IS NOT NULL) OR (state!='FINISHED' AND outcome IS NULL))) STRICT;
+      CREATE INDEX task_events_item ON task_completion_events(owner_id,item_id,state);
+      CREATE TABLE task_effect_receipts(
+        owner_id TEXT NOT NULL, capability_id TEXT NOT NULL CHECK(capability_id='tasks.create'), original_key TEXT NOT NULL,
+        capability_version TEXT NOT NULL CHECK(capability_version='1'), payload BLOB NOT NULL CHECK(length(payload)<=4096),
+        result TEXT NOT NULL CHECK(json_valid(result) AND length(CAST(result AS BLOB))<=4096), effect TEXT NOT NULL CHECK(effect IN ('CONFIRMED','NONE')),
+        created_task_id TEXT, PRIMARY KEY(owner_id,capability_id,original_key),
+        FOREIGN KEY(owner_id,original_key) REFERENCES task_completion_events(owner_id,original_key),
+        FOREIGN KEY(created_task_id,owner_id) REFERENCES tasks(id,owner_id),
+        CHECK((effect='CONFIRMED' AND created_task_id IS NOT NULL) OR (effect='NONE' AND created_task_id IS NULL))) STRICT;
+      CREATE TRIGGER task_event_immutable BEFORE UPDATE ON task_completion_events
+        WHEN NEW.event_id IS NOT OLD.event_id OR NEW.owner_id IS NOT OLD.owner_id OR NEW.source_task_id IS NOT OLD.source_task_id
+          OR NEW.original_key IS NOT OLD.original_key OR NEW.item_id IS NOT OLD.item_id OR NEW.revision_id IS NOT OLD.revision_id
+          OR NEW.selection_generation IS NOT OLD.selection_generation OR NEW.input IS NOT OLD.input OR NEW.pins IS NOT OLD.pins
+          OR NEW.created_at IS NOT OLD.created_at OR (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at)
+          OR (OLD.outcome IS NOT NULL AND NEW.outcome IS NOT OLD.outcome)
+          OR (NEW.state IS NOT OLD.state AND NOT ((OLD.state='PENDING' AND NEW.state='STARTED') OR (OLD.state='STARTED' AND NEW.state='FINISHED')))
+        BEGIN SELECT RAISE(ABORT,'Task event identity and settled outcome are immutable'); END;
+      CREATE TRIGGER task_receipt_immutable BEFORE UPDATE ON task_effect_receipts
+        BEGIN SELECT RAISE(ABORT,'Task effect receipts are immutable'); END;
+      PRAGMA user_version=8;
+    `);
+    if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Task effect migration failed integrity checks');
+  });
+}
+
 function seedRows(db) {
   const now = new Date().toISOString();
   for (const user of USERS) {
@@ -290,7 +350,7 @@ export function openData(path) {
         `);
         seedRows(db);
       });
-    } else if (![1, 2, 3, 4, 5, 6, 7].includes(version)) throw new Error('Unsupported database version; no data was reset.');
+    } else if (![1, 2, 3, 4, 5, 6, 7, 8].includes(version)) throw new Error('Unsupported database version; no data was reset.');
     if (version < 2) migrateLifecycle(db);
     if (version < 3) migrateAuthored(db);
     if (version < 4) migrateAuthoring(db);
@@ -299,6 +359,7 @@ export function openData(path) {
     if (version < 7) transaction(db, () => {
       db.exec('ALTER TABLE extensions ADD COLUMN deleted_at INTEGER CHECK(deleted_at IS NULL OR deleted_at>=0); PRAGMA user_version=7;');
     });
+    if (version < 8) migrateTaskEffects(db);
     return db;
   } catch (error) { db.close(); throw error; }
 }
@@ -316,7 +377,7 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
     const copy = new DatabaseSync(backupPath, { readOnly: true });
     try {
       if (copy.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || copy.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Backup verification failed; original data retained.');
-      for (const table of ['users', 'projects', 'tasks', ...lifecycleTables, ...authoringHistoryTables, 'authoring_conversations', 'authoring_budget']) {
+      for (const table of ['users', 'projects', 'tasks', ...taskEffectTables, ...lifecycleTables, ...authoringHistoryTables, 'authoring_conversations', 'authoring_budget']) {
         // Read text as bytes because SQLite's Node text reader can stop at embedded NUL.
         const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(({ name, type }) => type === 'TEXT' ? `CAST(${name} AS BLOB) AS ${name}` : name);
         const sql = `SELECT ${columns.join(',')} FROM ${table} ORDER BY rowid`;
@@ -324,6 +385,7 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
       }
     } finally { copy.close(); }
     transaction(db, () => {
+      for (const table of taskEffectTables) db.exec(`DELETE FROM ${table}`);
       db.exec('UPDATE extensions SET draft_revision_id=NULL');
       for (const table of authoringHistoryTables) db.exec(`DELETE FROM ${table}`);
       for (const table of lifecycleTables) db.exec(`DELETE FROM ${table}`);
@@ -347,6 +409,12 @@ function text(value, label, max, required = true) {
 }
 const projectColumns = 'id, name, created_at AS createdAt, updated_at AS updatedAt';
 const taskColumns = 'id, project_id AS projectId, title, notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt';
+
+function insertTask(db, owner, projectId, title, notes) {
+  const id = randomUUID(), now = new Date().toISOString();
+  db.prepare('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, owner, projectId, title, notes, 'open', now, now, null);
+  return id;
+}
 
 export function taskService(db) {
   function project(owner, id) {
@@ -379,8 +447,8 @@ export function taskService(db) {
       fields(input, ['projectId', 'title', 'notes']);
       if (typeof input.projectId !== 'string') throw new AppError(400, 'Choose a project.');
       project(owner, input.projectId);
-      const title = text(input.title, 'Task title', 120), notes = text(input.notes ?? '', 'Notes', 4000, false), id = randomUUID(), now = new Date().toISOString();
-      db.prepare('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, owner, input.projectId, title, notes, 'open', now, now, null);
+      const title = text(input.title, 'Task title', 120), notes = text(input.notes ?? '', 'Notes', 4000, false);
+      const id = insertTask(db, owner, input.projectId, title, notes);
       return task(owner, id);
     },
     editTask(owner, id, input) {
@@ -390,10 +458,179 @@ export function taskService(db) {
       return task(owner, id);
     },
     completeTask(owner, id) {
-      task(owner, id);
-      const now = new Date().toISOString();
-      db.prepare("UPDATE tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE owner_id = ? AND id = ? AND status = 'open'").run(now, now, owner, id);
-      return task(owner, id);
+      return transaction(db, () => {
+        task(owner, id);
+        const now = new Date().toISOString();
+        const changed = db.prepare("UPDATE tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE owner_id = ? AND id = ? AND status = 'open'").run(now, now, owner, id).changes;
+        if (changed) {
+          const selected = db.prepare("SELECT s.*,l.extension_id FROM extension_selections s LEFT JOIN extension_revision_links l ON l.revision_id=s.revision_id AND l.owner_id=s.owner_id WHERE s.owner_id=? AND s.hook_id='TaskCompleted'").get(owner);
+          db.prepare(`INSERT INTO task_completion_events(event_id,owner_id,source_task_id,original_key,item_id,revision_id,selection_generation,input,pins,state,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), owner, id, randomUUID(), selected?.extension_id ?? null,
+            selected?.revision_id ?? null, selected?.generation ?? 0, JSON.stringify({ taskId: id }), selected?.binding_pins ?? null,
+            selected?.revision_id ? 'PENDING' : 'NO_BINDING', now);
+        }
+        return task(owner, id);
+      });
+    },
+  };
+}
+
+// Called inside the lifecycle transaction; revocation never erases settled native evidence.
+export function revokeTaskAdmissions(db, owner, itemId) {
+  db.prepare("UPDATE task_completion_events SET revoked_at=? WHERE owner_id=? AND item_id=? AND state IN ('PENDING','STARTED') AND revoked_at IS NULL")
+    .run(Date.now(), owner, itemId);
+  db.prepare(`UPDATE extension_selections SET revision_id=NULL,binding_pins=NULL,generation=generation+1
+    WHERE owner_id=? AND hook_id='TaskCompleted' AND revision_id IN
+      (SELECT revision_id FROM extension_revision_links WHERE owner_id=? AND extension_id=?)`).run(owner, owner, itemId);
+}
+
+const nativeKeys = new WeakMap();
+const effectError = (code, status = 403) => Object.assign(new AppError(status, code), { code });
+const strictAuthority = (check, context) => { try { return check(context) === true; } catch { return false; } };
+function storedJson(value, max) {
+  let encoded;
+  try { encoded = JSON.stringify(value); } catch { throw effectError('INPUT_INVALID', 400); }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof encoded !== 'string' || Buffer.byteLength(encoded) > max)
+    throw effectError('INPUT_INVALID', 400);
+  return encoded;
+}
+function freezeContext(value) {
+  const pending = [value];
+  while (pending.length) {
+    const next = pending.pop();
+    if (next && typeof next === 'object' && !Object.isFrozen(next)) { pending.push(...Object.values(next)); Object.freeze(next); }
+  }
+  return value;
+}
+function taskEvent(row) {
+  const parse = value => { try { return JSON.parse(value); } catch { return null; } };
+  return freezeContext({ eventId: row.event_id, owner: row.owner_id, sourceTaskId: row.source_task_id, originalKey: row.original_key,
+    itemId: row.item_id, revisionId: row.revision_id, selectionGeneration: row.selection_generation,
+    input: parse(row.input), pins: parse(row.pins), state: row.state, revokedAt: row.revoked_at,
+    outcome: parse(row.outcome), reconciliation: parse(row.reconciliation) });
+}
+
+// Dormant native boundary: no route or runner constructs this service.
+export function taskEffectService(db, { authorizeRead, authorizeWrite, isQualificationCurrent } = {}) {
+  if ([authorizeRead, authorizeWrite, isQualificationCurrent].some(check => typeof check !== 'function'))
+    throw new TypeError('Task effects require explicit read, write and qualification authority.');
+  const event = (owner, id) => {
+    const row = db.prepare('SELECT * FROM task_completion_events WHERE owner_id=? AND event_id=?').get(owner, id);
+    if (!row) throw notFound();
+    return row;
+  };
+  const receipt = row => db.prepare("SELECT * FROM task_effect_receipts WHERE owner_id=? AND capability_id='tasks.create' AND original_key=?").get(row.owner_id, row.original_key);
+  const canRead = context => { if (!strictAuthority(authorizeRead, context)) throw effectError('AUTHORITY_DENIED'); };
+  function current(row, projectId) {
+    const context = freezeContext({ ...taskEvent(row), ...(projectId === undefined ? {} : { projectId }) });
+    const pins = context.pins, hash = value => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
+    if (row.revoked_at !== null || !pins || !hash(pins.artifactDigest) || pins.modelRef?.format !== 'keir-dcm/effect-3'
+        || !hash(pins.modelRef?.digest) || !pins.compiler || !pins.environment || pins.consumer?.kind !== 'EVENT_REPORT'
+        || !pins.qualification || typeof pins.qualification.id !== 'string' || !pins.qualification.id
+        || !Number.isSafeInteger(pins.qualification.revision) || pins.qualification.revision < 1
+        || !hash(pins.qualification.reportDigest) || !hash(pins.qualification.hostBuild)
+        || context.input?.taskId !== row.source_task_id) return false;
+    if (!strictAuthority(isQualificationCurrent, context) || !strictAuthority(authorizeWrite, context)) return false;
+    // Re-read after trusted callbacks, and never use mutable current-selection equality as authority.
+    return !!db.prepare(`SELECT 1 FROM task_completion_events v JOIN tasks t ON t.id=v.source_task_id AND t.owner_id=v.owner_id
+      JOIN extension_revision_links l ON l.revision_id=v.revision_id AND l.owner_id=v.owner_id AND l.extension_id=v.item_id
+      JOIN extensions e ON e.id=l.extension_id AND e.owner_id=l.owner_id
+      JOIN extension_revisions r ON r.id=l.revision_id AND r.owner_id=l.owner_id
+      WHERE v.event_id=? AND v.owner_id=? AND v.revoked_at IS NULL AND e.deleted_at IS NULL AND t.status='completed'
+        AND ((r.provenance='operator' AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id AND h.operation='operator'))
+          OR (r.provenance='customer' AND EXISTS(SELECT 1 FROM extension_approvals a WHERE a.owner_id=r.owner_id AND a.revision_id=r.id)))`)
+      .get(row.event_id, row.owner_id);
+  }
+  function deny(row) {
+    db.prepare('UPDATE task_completion_events SET revoked_at=? WHERE event_id=? AND owner_id=? AND revoked_at IS NULL')
+      .run(Date.now(), row.event_id, row.owner_id);
+    return effectError('AUTHORITY_DENIED');
+  }
+  function fromKey(owner, key) {
+    const identity = key && typeof key === 'object' ? nativeKeys.get(key) : null;
+    if (!identity || identity.owner !== owner) throw effectError('HOST_KEY_INVALID', 400);
+    const row = event(owner, identity.eventId);
+    if (row.original_key !== identity.originalKey) throw effectError('HOST_KEY_INVALID', 400);
+    return row;
+  }
+  const resultOf = row => row ? JSON.parse(row.result) : null;
+  return {
+    keyFor(owner, eventId) {
+      const row = event(owner, eventId); canRead(taskEvent(row));
+      const key = Object.freeze({ type: 'demo.TaskCompletionKey/1', value: row.original_key });
+      nativeKeys.set(key, { owner, eventId, originalKey: row.original_key });
+      return key;
+    },
+    claim(owner, eventId) {
+      const result = transaction(db, () => {
+        const row = event(owner, eventId);
+        if (row.state !== 'PENDING') return null;
+        if (!current(row)) return deny(row);
+        db.prepare("UPDATE task_completion_events SET state='STARTED' WHERE owner_id=? AND event_id=? AND state='PENDING'").run(owner, eventId);
+        if (!current(event(owner, eventId))) return deny(row);
+        return taskEvent(event(owner, eventId));
+      });
+      if (result instanceof Error) throw result;
+      return result;
+    },
+    createTaskOnce(owner, key, input) {
+      const result = transaction(db, () => {
+        const row = fromKey(owner, key);
+        fields(input, ['projectId', 'title']);
+        if (typeof input.projectId !== 'string' || !input.projectId.isWellFormed()
+            || typeof input.title !== 'string' || !input.title.isWellFormed()) throw effectError('INPUT_INVALID', 400);
+        const title = text(input.title, 'Task title', 120), payload = Buffer.from(JSON.stringify({ projectId: input.projectId, title }));
+        const prior = receipt(row);
+        if (prior) {
+          canRead(freezeContext({ ...taskEvent(row), projectId: input.projectId }));
+          if (prior.capability_version !== '1' || !Buffer.from(prior.payload).equals(payload))
+            return { kind: 'BUSINESS_REJECTION', code: 'KEY_PAYLOAD_MISMATCH', effect: 'NONE' };
+          return resultOf(prior);
+        }
+        if (row.state !== 'STARTED') throw effectError('EVENT_NOT_STARTED', 409);
+        if (!current(row, input.projectId)) return deny(row);
+        // A savepoint keeps durable revocation while rolling back an uncommitted task and receipt.
+        db.exec('SAVEPOINT task_effect_create');
+        const project = db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=?').get(owner, input.projectId);
+        const id = project ? insertTask(db, owner, input.projectId, title, '') : null;
+        const response = id ? { kind: 'SUCCESS', value: { id }, effect: 'CONFIRMED' }
+          : { kind: 'BUSINESS_REJECTION', code: 'PROJECT_NOT_FOUND', effect: 'NONE' };
+        db.prepare('INSERT INTO task_effect_receipts VALUES (?,?,?,?,?,?,?,?)')
+          .run(owner, 'tasks.create', row.original_key, '1', payload, JSON.stringify(response), response.effect, id);
+        if (!current(event(owner, row.event_id), input.projectId)) {
+          db.exec('ROLLBACK TO task_effect_create; RELEASE task_effect_create');
+          return deny(row);
+        }
+        db.exec('RELEASE task_effect_create');
+        return response;
+      });
+      if (result instanceof Error) throw result;
+      return result;
+    },
+    finish(owner, eventId, outcome) {
+      const encoded = storedJson(outcome, 131072);
+      return transaction(db, () => {
+        const row = event(owner, eventId);
+        if (row.state === 'FINISHED') {
+          if (row.outcome !== encoded) throw effectError('OUTCOME_IMMUTABLE', 409);
+          return false;
+        }
+        if (row.state !== 'STARTED') throw effectError('EVENT_NOT_STARTED', 409);
+        db.prepare("UPDATE task_completion_events SET state='FINISHED',outcome=? WHERE owner_id=? AND event_id=?").run(encoded, owner, eventId);
+        return true;
+      });
+    },
+    status(owner, eventId) {
+      const row = event(owner, eventId); canRead(taskEvent(row));
+      return { ...taskEvent(row), receipt: resultOf(receipt(row)) };
+    },
+    reconcile(owner, eventId) {
+      return transaction(db, () => {
+        const row = event(owner, eventId); canRead(taskEvent(row));
+        const observation = { observedAt: new Date().toISOString(), receipt: resultOf(receipt(row)) };
+        db.prepare('UPDATE task_completion_events SET reconciliation=? WHERE owner_id=? AND event_id=?').run(JSON.stringify(observation), owner, eventId);
+        return observation;
+      });
     },
   };
 }

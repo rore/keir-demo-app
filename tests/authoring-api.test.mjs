@@ -32,7 +32,7 @@ const lease = sessionId => ({ sessionId, current: () => true });
 function input(db, operationId, overrides = {}, owner = 'maya') {
   const rows = db.prepare('SELECT * FROM extensions WHERE owner_id=?').all(owner);
   assert.equal(rows.length, 1, 'The fixture has one known legacy extension per owner.');
-  const extension = rows[0], selection = db.prepare('SELECT * FROM extension_selections WHERE owner_id=?').get(owner);
+  const extension = rows[0], selection = db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='ClassifyTask'").get(owner);
   const target = overrides.conversationId ? { kind: 'resume', extensionId: extension.id }
     : { kind: 'revise', extensionId: extension.id, baseRevisionId: extension.draft_revision_id ?? selection.revision_id, selectionGeneration: selection.generation };
   return { conversationId: null, operationId, text: 'Help with task advice.', expectedVersion: 0, expectedDraftVersion: 0, target, ...overrides };
