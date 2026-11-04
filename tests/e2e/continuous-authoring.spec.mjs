@@ -113,7 +113,7 @@ test('collection pages merge summaries, keep global selection and expose more th
   await expect(page.locator('.customization-card')).toHaveCount(3);
   await expect(page.getByRole('button', { name: 'All customizations loaded', exact: true })).toBeFocused();
   expect(pages).toEqual(['collection-older']);
-  await expect(page.locator(`[id="edit-${demo.extensionId}"]`).locator('..')).toContainText('In use');
+  await expect(page.locator('.customization-card').filter({ has: page.locator(`[id="edit-${demo.extensionId}"]`) })).toContainText('In use');
   await page.locator(`[id="edit-${demo.extensionId}"]`).click();
   await expect(studio(page)).toBeVisible();
   expect(exactReads).toHaveLength(1);

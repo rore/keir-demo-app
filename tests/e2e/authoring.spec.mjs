@@ -466,21 +466,20 @@ test('active observation pauses while hidden and keeps reading beyond 130 withou
 });
 
 test('failed start and failed recovery block retry until readback, then reuse the exact submitted operation', async ({ page, demo }) => {
-  let failedStart = false, failRead = true, releaseRead, readEntered, dispatches = 0;
+  let failRead = true, releaseRead, readEntered, dispatches = 0;
   const entered = new Promise(resolve => { readEntered = resolve; });
   const calls = await scriptAuthoring(page, { extensionId: demo.extensionIds.maya, onTurn: async (route, body, recorded) => {
-    if (recorded.turns.length === 1) { failedStart = true; return route.abort('failed'); }
+    if (recorded.turns.length === 1) return route.abort('failed');
     dispatches++;
     const current = conversation(demo.extensionIds.maya, 'retried-once', 1, 'AWAITING_USER', [message('answer', 'assistant', 'The same request was accepted once.', 'clarification')],
       { operation: { id: body.operationId, runId: 'run-retried-once', version: 1 } });
     return route.fulfill({ status: 202, json: { operation: current.operation, conversation: current } });
-  } });
-  await page.route('**/api/authoring?**', async route => {
-    if (!failedStart || !failRead) return route.fallback();
+  }, onRecover: async route => {
+    if (!failRead) return route.fulfill({ status: 404, json: { message: 'Operation was not admitted' } });
     failRead = false; readEntered();
     await new Promise(resolve => { releaseRead = resolve; });
     await route.fulfill({ status: 503, json: { message: 'Readback temporarily unavailable' } }).catch(() => {});
-  });
+  } });
   try {
     await enterStudio(page, demo.origin);
     const ui = studio(page), panel = authoring(page);
@@ -491,9 +490,11 @@ test('failed start and failed recovery block retry until readback, then reuse th
     await expect(panel.getByRole('button', { name: 'Retry submitted request', exact: true })).toHaveCount(0);
     releaseRead();
     await expect(panel).toContainText("The submitted request's outcome could not be checked");
+    expect(calls.recoveries).toEqual([calls.turns[0]]);
     await expect(panel.getByRole('button', { name: 'Retry submitted request', exact: true })).toHaveCount(0);
     await panel.getByRole('button', { name: 'Check authoring status', exact: true }).click();
     await expect(panel.getByRole('button', { name: 'Retry submitted request', exact: true })).toBeEnabled();
+    expect(calls.recoveries).toEqual([calls.turns[0], calls.turns[0]]);
     expect(calls.turns).toHaveLength(1);
     await panel.getByRole('button', { name: 'Retry submitted request', exact: true }).click();
     await expect(ui.getByText('The same request was accepted once.', { exact: true })).toBeVisible();
