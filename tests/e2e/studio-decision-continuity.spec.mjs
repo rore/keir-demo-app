@@ -96,6 +96,42 @@ async function scriptTurns(page, mutate) {
   return turns;
 }
 
+test('saved review stays readable before its reachable actions at short, phone and desktop sizes', async ({ page }, testInfo) => {
+  const fixture = await startAuthoringFixture({ unconfigured: true });
+  try {
+    const { path, state } = await seed(page, fixture);
+    const decisions = decisionRequests(page);
+    await openItem(page, state.extension.id);
+    for (const viewport of [{ width: 683, height: 384 }, { width: 390, height: 844 }, { width: 1440, height: 1000 }]) {
+      await page.setViewportSize(viewport);
+      await openReview(page);
+      const action = review(page).getByRole('button', { name: 'Approve this change', exact: true });
+      await expect(action).toBeEnabled();
+      const summary = review(page).getByText(/^In these example tasks,/);
+      await summary.scrollIntoViewIfNeeded();
+      await expect(summary).toBeInViewport({ ratio: 0.99 });
+      const summaryBox = await summary.boundingBox(), actionBox = await action.boundingBox();
+      expect(summaryBox.y + summaryBox.height).toBeLessThanOrEqual(actionBox.y);
+      expect(await summary.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+      })).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`review-summary-${viewport.width}x${viewport.height}.png`) });
+      await action.scrollIntoViewIfNeeded();
+      await expect(action).toBeInViewport({ ratio: 0.99 });
+      expect(await action.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+      })).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`review-actions-${viewport.width}x${viewport.height}.png`) });
+      await closeReview(page);
+    }
+    expect(decisions).toEqual([]);
+    expect(await api(page, path)).toEqual(state);
+    expect(fixture.requests).toEqual([]);
+  } finally { await fixture.close(); }
+});
+
 for (const resource of ['proof', 'source']) test(`closing and reopening explicit review fences a late ${resource} failure`, async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   let hold;
