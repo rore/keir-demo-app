@@ -10,22 +10,24 @@ async function api(page, path, body) {
   expect(response.ok(), await response.text()).toBe(true);
   return response.json();
 }
-async function seed(page, fixture) {
+async function seed(page, fixture, activeNeedsAttention = false) {
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
   await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
-  let state = await api(page, 'extensions', { operationId: crypto.randomUUID(), source: fixture.metadata.source, label: 'Active inspection' });
+  const attentionSource = fixture.metadata.source.replace('"PENDING"', '"NEEDS_ATTENTION"');
+  const attentionCases = fixture.metadata.cases.map(text => text.replaceAll('"PENDING"', '"NEEDS_ATTENTION"'));
+  let state = await api(page, 'extensions', { operationId: crypto.randomUUID(), source: activeNeedsAttention ? attentionSource : fixture.metadata.source, label: 'Active inspection' });
   const path = 'extensions/' + state.extension.id;
   const input = () => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
-  state = await api(page, path + '/scenarios', { ...input(), cases: fixture.metadata.cases });
+  state = await api(page, path + '/scenarios', { ...input(), cases: activeNeedsAttention ? attentionCases : fixture.metadata.cases });
   state = await api(page, path + '/simulate', input());
   state = await api(page, path + '/approve', { ...input(), evidenceId: state.evidence.id });
   state = await api(page, path + '/activate', { ...input(), generation: state.selection.generation });
   const active = state.selection;
-  const source = fixture.metadata.source.replace('"PENDING"', '"NEEDS_ATTENTION"');
-  expect(source).not.toBe(fixture.metadata.source);
+  const source = activeNeedsAttention ? fixture.metadata.source : attentionSource;
+  expect(source).not.toBe(activeNeedsAttention ? attentionSource : fixture.metadata.source);
   state = await api(page, path + '/compile', { source, label: 'New checked idea', draftVersion: state.draftVersion });
-  const cases = fixture.metadata.cases.map(text => text.replaceAll('"PENDING"', '"NEEDS_ATTENTION"'));
+  const cases = activeNeedsAttention ? fixture.metadata.cases : attentionCases;
   state = await api(page, path + '/scenarios', { ...input(), cases });
   state = await api(page, path + '/simulate', input());
   state = await api(page, path + '/approve', { ...input(), evidenceId: state.evidence.id });
@@ -45,22 +47,30 @@ async function openActive(page) {
 test('active behavior uses its approved proof and a failed reread cannot show cached draft or active results', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
-    const { path, active, state } = await seed(page, fixture);
-    const reads = [];
+    const { path, active, state, draftProof } = await seed(page, fixture, true);
+    const reads = [], mutations = [];
     page.on('request', request => { if (new URL(request.url()).pathname.includes('/evidence/')) reads.push(new URL(request.url()).pathname.split('/').at(-1)); });
+    page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.startsWith('/api/extensions')) mutations.push(request.url()); });
     await openActive(page);
     await expect(activeView(page)).toContainText('In the last checked examples');
-    await expect(activeView(page)).toContainText('unfinished tasks showed Pending');
+    await expect(activeView(page)).toContainText('unfinished tasks showed Needs attention');
     await expect(activeView(page)).toContainText('completed tasks showed Done');
-    await expect(activeView(page)).not.toContainText('showed Needs attention');
+    await expect(activeView(page)).not.toContainText('showed Pending');
     expect(reads.at(-1)).toBe(active.approvedEvidenceId);
     expect(await api(page, path)).toEqual(state);
     await activeView(page).getByRole('button', { name: 'Continue saved changes', exact: true }).click();
+    const decision = studio(page).getByRole('article', { name: 'Current decision', exact: true });
+    await decision.getByRole('button', { name: 'Show the unfinished task example', exact: true }).click();
+    await expect(studio(page).locator('.rs-example dd')).toHaveText(['Pending', 'Pending']);
+    expect(reads.at(-1)).toBe(draftProof);
+    expect(await api(page, path)).toEqual(state);
+    await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();
     await page.route(`**/api/${path}/evidence/${active.approvedEvidenceId}`, route => route.fulfill({ status: 503, json: { message: 'Saved check unavailable' } }), { times: 1 });
     await openActive(page);
     await expect(activeView(page)).not.toContainText('In the last checked examples');
     await expect(activeView(page)).toContainText(/could not|unavailable|not be confirmed/i);
     expect((await api(page, path)).selection).toEqual(active);
+    expect(mutations).toEqual([]);
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });
