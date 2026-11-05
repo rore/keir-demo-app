@@ -148,6 +148,7 @@ type Props = {
   target: StudioTarget;
   ownerId: string;
   recoveryKey: string;
+  projects: readonly { id: string; name: string }[];
   targeted: (target: StudioTarget) => void;
   unavailable: () => void;
   task?: { title: string; status: "open" | "completed" };
@@ -366,7 +367,7 @@ function CustomizationName({ ownerId, itemId, name, disabled, request, saved }: 
   </>;
 }
 
-export default function Studio({ request, changed, beforeSelectionChange, back, backToTasks, createNew, backLabel, target, ownerId, recoveryKey, targeted, unavailable, task }: Props) {
+export default function Studio({ request, changed, beforeSelectionChange, back, backToTasks, createNew, backLabel, target, ownerId, recoveryKey, projects, targeted, unavailable, task }: Props) {
   const initialTarget = useRef(target);
   const extensionId = useRef(target.extensionId);
   const requestedConversation = useRef<string | null>(null);
@@ -570,6 +571,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const illustration = illustrated?.key === illustrationKey ? illustrated.example : null;
   const sourceTask = illustration?.source ?? proposedExample?.report.scenario?.task;
   const expectedTask = illustration?.expected ?? proposedExample?.expected.createdTasks?.[0];
+  const sourceProject = projects.find(project => project.id === sourceTask?.projectId)?.name ?? sourceTask?.projectName;
+  const expectedProject = projects.find(project => project.id === expectedTask?.projectId)?.name ?? expectedTask?.projectName;
   const matchingExamples = reviewEvidence?.reports.filter(item => item.report.status === "PASS" && checkedObservation(item)).length ?? 0;
   const behaviorSummary = summarizeExamples(reviewEvidence);
   const activeSelectionMatches = !!activeSnapshot && activeSnapshot.ownerId === state?.owner.id && activeSnapshot.extensionId === state.extension?.id
@@ -1590,16 +1593,20 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {pendingTurn && retryTurn && !retired && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}</div>}
           {showSavedBehavior && state?.draft && <article className="rs-sheet rs-inline-behavior" aria-labelledby="studio-saved-change">
             <h3 id="studio-saved-change" tabIndex={-1}>Your saved change</h3>
-            {state.extension?.hookId === "TaskCompleted" && <p><strong>When</strong> a task is completed.</p>}
             {sourceTask && expectedTask ? <>
-              <p><strong>Then, in this example,</strong> add one unfinished task. The pair shows the saved expectation for this example.</p>
+              <p><strong>When, in this saved example,</strong> a task {sourceProject && <>in <strong>{sourceProject}</strong> </>}is completed.</p>
+              <p><strong>Then</strong> the saved expectation is one unfinished follow-up.</p>
               <div className="rs-behavior-pair">
-                <div><span>Completed example task</span><strong>{sourceTask.title}</strong><p>{sourceTask.projectName ?? "Example project"}</p></div>
+                <div><span>Completed example task</span><strong>{sourceTask.title}</strong><p>{sourceProject ?? "Example project"}</p></div>
                 <div><span>Expected unfinished follow-up</span><strong>{expectedTask.title.startsWith(sourceTask.title) && expectedTask.title !== sourceTask.title
                   ? <>{sourceTask.title}<mark>{expectedTask.title.slice(sourceTask.title.length)}</mark></> : expectedTask.title}</strong>
-                  <p>{expectedTask.projectName ?? (sourceTask.projectId && sourceTask.projectId === expectedTask.projectId ? "Same example project" : "Example project name unavailable")}</p></div>
+                  <p>{expectedProject ?? (sourceTask.projectId && sourceTask.projectId === expectedTask.projectId ? "Same example project" : "Example project name unavailable")}</p></div>
               </div>
-            </> : <p>A verified description of the rule is unavailable. Saved source is in History and details.</p>}
+              <p className="muted">This illustration covers one saved situation.</p>
+            </> : <>
+              {state.extension?.hookId === "TaskCompleted" && <p>This change starts after a task completion.</p>}
+              <p>A verified description of the rule is unavailable. Saved source is in History and details.</p>
+            </>}
             {!state.evidence && !decisionEvidenceId && <p>This revision has no checked examples yet.</p>}
             {inlineAvailable && ((decisionEvidenceId || failedEvidenceId) ? <button className="rs-primary" disabled={disabled} onClick={() => void openReview()}>Review checked examples</button>
               : state.draft.suiteDigest || state.draft.kind === "prepared"

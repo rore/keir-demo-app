@@ -1028,7 +1028,7 @@ function Workspace({
         </main>
         {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange} open={target => void openStudio("overview", target)} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} />}
         {destination === "studio" && <main className="studio-main"><Studio key={studioTarget.entryId} request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
-          target={studioTarget} ownerId={session.user.id} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId}
+          target={studioTarget} ownerId={session.user.id} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId} projects={projects}
           targeted={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) rememberStudio({ ...next, entryId: studioTarget.entryId }); }}
           unavailable={() => { if (currentStudioEntry.current !== studioTarget.entryId || lifetime.current.signal.aborted) return; currentStudioEntry.current = null; setCustomizationNotice("That customization or conversation is unavailable. Choose a saved item or start a new one."); setDestination("customizations"); }} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
           back={returnFromStudio} backToTasks={returnToTasks} createNew={() => void openStudio("overview", { extensionId: null })} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}

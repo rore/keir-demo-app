@@ -78,7 +78,7 @@ async function holdNext(page, url, { afterResponse = false } = {}) {
 }
 
 test('a competing approval cannot substitute its proof during turn-on', async ({ page, request }) => {
-  const fixture = await startAuthoringFixture({ unconfigured: true });
+  const fixture = await startAuthoringFixture({ unconfigured: true, projectName: 'Studio QA' });
   let hold;
   try {
     const { origin, metadata } = fixture;
@@ -91,6 +91,9 @@ test('a competing approval cannot substitute its proof during turn-on', async ({
 
     await openItem(page, extensionId);
     await expectIllustration(page, metadata.title);
+    await expect(behavior(page)).toContainText('When, in this saved example, a task in Studio QA is completed.');
+    await expect(behavior(page).locator('.rs-behavior-pair').getByText('Studio QA', { exact: true })).toHaveCount(2);
+    await expect(behavior(page)).toContainText('This illustration covers one saved situation.');
     await expect(review(page)).toBeHidden();
     await composer(page).fill('Keep my unsent next change');
     await reviewLink(page).click();
