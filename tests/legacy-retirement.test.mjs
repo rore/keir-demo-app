@@ -72,7 +72,7 @@ test('raw effect3 source and exact passing approval survive definition replaceme
     { extensionId, revisionId, draftVersion: 1, generation: 1 }, () => {}), { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
   assert.throws(() => lifecycle.source('leo', revisionId, extensionId), { status: 404 });
   assert.deepEqual(snapshot(db), before); assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), native);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
   db.prepare('UPDATE extension_authored SET source=? WHERE revision_id=?').run(Buffer.concat([source, Buffer.from('\n')]), revisionId);
   assert.throws(() => lifecycle.source('maya', revisionId, extensionId), { status: 404 });
   assert.equal(lifecycle.state('maya', extensionId).approved, false);

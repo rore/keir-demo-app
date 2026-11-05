@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData } from '../src/data.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
-import { legacySelections, removeTaskEffectSchema } from './fixtures/task-effect-schema.mjs';
+import { legacySelections, removeSchemaAfter7 } from './fixtures/task-effect-schema.mjs';
 
 const tables = ['extension_approvals','extension_evidence','extension_history','extension_selections','extension_states','extension_authored','extension_revisions'];
 function itemId(api, owner) {
@@ -15,7 +15,7 @@ function itemId(api, owner) {
   return items[0].extension.id;
 }
 function removeItemSchema(db) {
-  removeTaskEffectSchema(db);
+  removeSchemaAfter7(db);
   db.exec('UPDATE extensions SET draft_revision_id=NULL; DROP TABLE extension_conversation_links; DROP TABLE extension_revision_links; DROP TABLE extensions');
 }
 function removeAuthoringSchema(db) {
@@ -28,8 +28,8 @@ function fixture(t) {
 }
 function legacy(path) {
   const db = openData(path);
-  const original = db.prepare('SELECT * FROM tasks ORDER BY id').all();
   removeItemSchema(db);
+  const original = db.prepare('SELECT * FROM tasks ORDER BY id').all();
   removeAuthoringSchema(db);
   for (const table of tables.filter(table => table !== 'extension_states')) db.exec(`DROP TABLE ${table}`);
   db.exec('PRAGMA user_version=1');
@@ -39,8 +39,8 @@ function legacy(path) {
 test('populated v1 migrates once, preserving every native row with explicit operator provenance and no fake approval', t => {
   const { path } = fixture(t), original = legacy(path);
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
-  assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), original);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
+  assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all().map(row => ({ ...row })), original.map(row => ({ ...row, tags: '[]' })));
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
   let lifecycle = createLifecycle(db);
@@ -58,7 +58,7 @@ test('populated v1 migrates once, preserving every native row with explicit oper
   db.close(); db = openData(path);
   assert.equal(createLifecycle(db).state('maya', extensionId).selection.revision, null);
   assert.equal(createLifecycle(db).source('maya', target, extensionId).revisionId, target);
-  assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), original);
+  assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all().map(row => ({ ...row })), original.map(row => ({ ...row, tags: '[]' })));
   db.close();
 });
 
@@ -90,8 +90,8 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
   db.close();
 
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 8);
-  assert.deepEqual(upgraded.prepare('SELECT * FROM tasks ORDER BY id').all(), native);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 9);
+  assert.deepEqual(upgraded.prepare('SELECT * FROM tasks ORDER BY id').all().map(row => ({ ...row })), native.map(row => ({ ...row, tags: '[]' })));
   for (const [table, rows] of Object.entries(lifecycle)) {
     if (table === 'extension_states') {
       for (const row of rows) {
@@ -103,7 +103,7 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
   }
   upgraded.close();
   upgraded = openData(path);
-  assert.deepEqual(upgraded.prepare('SELECT * FROM tasks ORDER BY id').all(), native);
+  assert.deepEqual(upgraded.prepare('SELECT * FROM tasks ORDER BY id').all().map(row => ({ ...row })), native.map(row => ({ ...row, tags: '[]' })));
   for (const [table, rows] of Object.entries(lifecycle).filter(([table]) => table !== 'extension_states')) assert.deepEqual(table === 'extension_selections' ? legacySelections(upgraded) : upgraded.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), rows);
   assert.equal(upgraded.prepare('PRAGMA foreign_key_check').all().length, 0);
   assert.equal(upgraded.prepare('SELECT count(*) n FROM extension_authored').get().n, 0);
@@ -112,7 +112,7 @@ test('populated v2 upgrades and reopens without changing native or lifecycle row
 
 test('v2 migration rolls back when the authored table already exists', t => {
   const { path } = fixture(t), db = openData(path);
-  removeTaskEffectSchema(db);
+  removeSchemaAfter7(db);
   removeAuthoringSchema(db);
   db.exec(`DROP TABLE extension_authored; CREATE TABLE extension_authored(conflict TEXT); PRAGMA user_version=2`);
   db.close();

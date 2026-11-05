@@ -56,7 +56,7 @@ test('services validate CRUD, bounds, ownership and completion without partial w
   assert.equal(maya.listTasks('maya', mayaSeed.id).length > 0, true);
 
   const count = db.prepare('SELECT count(*) n FROM projects WHERE owner_id=?').get('maya').n;
-  assert.throws(() => db.prepare('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run('bad', 'maya', leoSeed.id, 'bad', '', 'open', 'a', 'a', null));
+  assert.throws(() => db.prepare('INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run('bad', 'maya', leoSeed.id, 'bad', '', 'open', 'a', 'a', null), /FOREIGN KEY/);
   assert.equal(db.prepare('SELECT count(*) n FROM projects WHERE owner_id=?').get('maya').n, count);
 });
 
@@ -70,6 +70,83 @@ test('initial seed is idempotent and all three users persist through reopen', t 
   db = openData(path);
   cleanup(t, dir, () => db.close());
   for (const user of USERS) assert.equal(taskService(db).listProjects(user.id).length, 2);
+});
+
+test('native tags normalize, preserve exact stored text on tag-only edits and survive reopen', t => {
+  const dir = sandbox(), path = join(dir, 'app.sqlite');
+  let db = openData(path);
+  cleanup(t, dir, () => db.close());
+  let service = taskService(db);
+  const projectId = service.listProjects('maya')[0].id;
+  const task = service.createTask('maya', { projectId, title: 'Tag me', tags: [' J\u030C ', '\u01F0', ' CAFE\u0301 ', 'caf\u00E9'] });
+  assert.deepEqual(task.tags, ['\u01F0', 'caf\u00E9']);
+  assert.deepEqual(service.searchTasks('maya', projectId, { tag: ' J\u030C ' }).items.map(row => row.id), [task.id]);
+  assert.deepEqual(service.editTask('maya', task.id, { title: 'Edited', notes: 'Updated' }).tags, task.tags);
+
+  db.prepare('UPDATE tasks SET title=?, notes=?, updated_at=? WHERE id=?').run('  old\u0000title  ', ' old\u0000notes ', 'old', task.id);
+  const exactText = () => db.prepare('SELECT hex(title) AS title, hex(notes) AS notes FROM tasks WHERE id=?').get(task.id);
+  const before = exactText();
+  const edited = service.editTask('maya', task.id, { tags: [' Later ', ...Array(8).fill('later')] });
+  assert.deepEqual(edited.tags, ['later']);
+  assert.deepEqual(exactText(), before);
+  assert.notEqual(edited.updatedAt, 'old');
+  assert.deepEqual(service.listTasks('maya', projectId).find(row => row.id === task.id).tags, ['later']);
+
+  const count = service.listTasks('maya', projectId).length;
+  for (const tags of [null, 'x', [42], [' '], ['x,y'], ['x\u0000y'], ['x\u0085y'], ['\uD800'], ['😀'.repeat(17)], Array.from({ length: 9 }, (_, i) => String(i))]) {
+    expectStatus(400, () => service.createTask('maya', { projectId, title: 'Invalid', tags }));
+    expectStatus(400, () => service.editTask('maya', task.id, { tags }));
+  }
+  assert.equal(service.listTasks('maya', projectId).length, count);
+  assert.deepEqual(service.getTask('maya', task.id).tags, ['later']);
+  expectStatus(404, () => service.editTask('leo', task.id, { tags: [] }));
+  const boundary = ['😀'.repeat(16), '1', '2', '3', '4', '5', '6', '7'];
+  assert.deepEqual(service.editTask('maya', task.id, { tags: boundary }).tags, boundary);
+  db.close(); db = openData(path);
+  service = taskService(db);
+  assert.deepEqual(service.getTask('maya', task.id).tags, boundary);
+  assert.deepEqual(exactText(), before);
+  assert.deepEqual(service.editTask('maya', task.id, { title: 'Now', notes: '', tags: [] }).tags, []);
+  assert.deepEqual(service.editTask('maya', task.id, { tags: ['again'] }).tags, ['again']);
+  assert.deepEqual(service.editTask('maya', task.id, { tags: [] }).tags, []);
+});
+
+test('search filters a project before paging, with exact tags and literal ASCII-folded text beyond NUL', t => {
+  const dir = sandbox(), db = openData(join(dir, 'app.sqlite'));
+  cleanup(t, dir, () => db.close());
+  const service = taskService(db), owner = 'maya';
+  const { id: projectId } = service.createProject(owner, { name: 'Search fixture' });
+  const add = input => service.createTask(owner, { projectId, title: 'Ordinary', ...input });
+  for (let index = 0; index < 30; index++) add({ notes: 'needle XX É', tags: ['ready'] });
+  const matching = Array.from({ length: 27 }, (_, index) => add(index % 2
+    ? { title: 'NEEDLE %_ É', tags: ['ready'] }
+    : { notes: 'before\u0000needle %_ É', tags: ['ready'] }));
+  const widerTag = add({ notes: 'needle %_ É', tags: ['ready later'] });
+  add({ notes: 'needle %_ é', tags: ['ready'] });
+  const completed = service.completeTask(owner, matching[0].id);
+  assert.equal(completed.status, 'completed');
+  const anchorTime = '2026-01-02T00:00:00.000Z';
+  db.prepare('UPDATE tasks SET created_at=? WHERE project_id=?').run(anchorTime, projectId);
+  db.prepare("UPDATE tasks SET created_at='2026-01-01T00:00:00.000Z' WHERE project_id=? AND notes=?").run(projectId, 'needle XX É');
+  const filters = { q: '  NeEdLe %_ É  ', tag: ' READY ' };
+  const ids = matching.map(row => row.id).sort();
+  const search = (options = filters) => service.searchTasks(owner, projectId, options);
+  const first = search();
+  assert.deepEqual(first.items.map(row => row.id), ids.slice(0, 25));
+  assert.equal(first.nextAfter, ids[24]);
+  const second = search({ ...filters, after: first.nextAfter });
+  assert.deepEqual(second.items.map(row => row.id), ids.slice(25));
+  assert.equal(second.nextAfter, null);
+  assert.equal([...first.items, ...second.items].find(row => row.id === completed.id).status, 'completed');
+  assert.equal(search({ ...filters, after: ids[1] }).items.length, 25);
+  assert.equal(search({ ...filters, after: ids[1] }).nextAfter, null);
+  assert.deepEqual(search({ ...filters, after: ids.at(-1) }), { items: [], nextAfter: null });
+  assert.deepEqual(search({ q: 'nothing matches' }), { items: [], nextAfter: null });
+  assert.deepEqual(search({ tag: 'ready later' }).items.map(row => row.id), [widerTag.id]);
+  for (const invalid of [{}, { q: ' ' }, { tag: ' ' }, { q: ['x'] }, { q: 'x'.repeat(121) }, { tag: 'x,y' }, { ...filters, after: '' }]) {
+    expectStatus(400, () => search(invalid));
+  }
+  assert.equal(service.listTasks(owner, projectId).length, 59);
 });
 
 test('reset requires confirmation, holds exclusive lock, verifies backup and restores it', async t => {

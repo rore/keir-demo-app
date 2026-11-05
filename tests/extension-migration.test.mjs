@@ -34,9 +34,12 @@ test('V4 migration preserves immutable rows and budgets, links only proven legac
   db.close();
 
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 9);
   const after = snapshot(upgraded, preservedTables);
-  for (const table of preservedTables.filter(table => table !== 'authoring_conversations')) assert.deepEqual(after[table], before[table], table);
+  for (const table of preservedTables.filter(table => table !== 'authoring_conversations')) {
+    if (table === 'tasks') assert.deepEqual(after.tasks.map(row => ({ ...row })), before.tasks.map(row => ({ ...row, tags: '[]' })));
+    else assert.deepEqual(after[table], before[table], table);
+  }
   assert.deepEqual(after.authoring_conversations.map(row => ({ ...row })), before.authoring_conversations.map(row =>
     ({ ...row, created_at: JSON.parse(row.state).createdAt })), 'Original header values and their recorded creation clocks survive exactly.');
   assert.equal(upgraded.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='extension_states'").get().n, 0);

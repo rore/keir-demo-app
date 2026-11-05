@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { openData } from '../src/data.mjs';
-import { legacySelections, removeTaskEffectSchema } from './fixtures/task-effect-schema.mjs';
+import { legacySelections, removeSchemaAfter7 } from './fixtures/task-effect-schema.mjs';
 
 // Frozen V5 authoring DDL: the other V5 tables are unchanged by schema 6.
 const legacyAuthoringDDL = `CREATE TABLE authoring_conversations(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
@@ -26,7 +26,7 @@ function fixture(t) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'app.sqlite');
   const db = openData(path);
-  removeTaskEffectSchema(db);
+  removeSchemaAfter7(db);
   db.exec('ALTER TABLE extensions DROP COLUMN deleted_at');
   db.exec('DROP TABLE authoring_dispatches; DROP TABLE authoring_messages; DROP TABLE authoring_operations; DROP TABLE authoring_conversations;');
   db.exec(legacyAuthoringDDL);
@@ -63,10 +63,13 @@ test('V5 history migration preserves exact messages, receipts, operations, holds
   const before = snapshot(db);
   db.close();
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 9);
   assert.equal(upgraded.prepare('PRAGMA foreign_keys').get().foreign_keys, 1);
   const after = snapshot(upgraded);
-  for (const [table, rows] of Object.entries(before)) if (table !== 'authoring_conversations') assert.deepEqual(after[table], rows, table);
+  for (const [table, rows] of Object.entries(before)) {
+    if (table === 'tasks') assert.deepEqual(after.tasks, rows.map(row => ({ ...row, tags: '[]' })));
+    else if (table !== 'authoring_conversations') assert.deepEqual(after[table], rows, table);
+  }
   const row = upgraded.prepare('SELECT * FROM authoring_conversations').get();
   assert.equal(row.created_at, 123);
   assert.deepEqual(JSON.parse(row.state), retained);

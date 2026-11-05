@@ -49,8 +49,9 @@ export function nativeEffectService(db) {
 }
 
 // Only current-schema fixtures use this; frozen historical databases keep their original DDL.
-export function removeTaskEffectSchema(db) {
-  db.exec(`DROP TABLE task_effect_receipts;
+export function removeSchemaAfter7(db) {
+  db.exec(`ALTER TABLE tasks DROP COLUMN tags;
+    DROP TABLE task_effect_receipts;
     DROP TABLE task_completion_events;
     DROP INDEX tasks_owner;
     CREATE TABLE extension_selections_legacy(owner_id TEXT PRIMARY KEY REFERENCES users(id), revision_id TEXT,

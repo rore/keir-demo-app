@@ -30,9 +30,21 @@ type Task = {
   projectId: string;
   title: string;
   notes: string;
+  tags: string[];
   status: "open" | "completed";
   completedAt: string | null;
 };
+type TaskDraft = Pick<Task, "title" | "notes"> & { tags: string };
+type SearchFilters = { q: string; tag: string };
+type SearchPage = { items: Task[]; nextAfter: string | null };
+type TaskSearch = SearchPage & { pending: boolean; failure: { message: string; after: string | null } | null };
+const emptyFilters = { q: "", tag: "" };
+const emptyPage = { items: [], nextAfter: null };
+
+function taskDraft(task: Task): TaskDraft {
+  return { title: task.title, notes: task.notes, tags: task.tags.join(", ") };
+}
+
 class ApiError extends Error {
   constructor(
     message: string,
@@ -275,6 +287,12 @@ function Workspace({
   const [projectsReady, setProjectsReady] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [filters, setFilters] = useState(emptyFilters);
+  const [search, setSearch] = useState<TaskSearch | null>(null);
+  const appliedFilters = useRef<SearchFilters | null>(null);
+  const searchRequest = useRef<AbortController | null>(null);
+  const searchFocus = useRef<HTMLElement | null>(null);
+  const searchHeading = useRef<HTMLHeadingElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [title, setTitle] = useState("");
@@ -285,7 +303,8 @@ function Workspace({
   const [detail, setDetail] = useState<Task | null>(null);
   const [recentCompletion, setRecentCompletion] = useState<string | null>(null);
   const pendingTaskOpen = useRef<{ task: Task; navigation: number } | null>(null);
-  const [draft, setDraft] = useState({ title: "", notes: "" });
+  const [draft, setDraft] = useState<TaskDraft>({ title: "", notes: "", tags: "" });
+  const draftVersion = useRef(0);
   const routeKey = "daymark-studio-route:" + session.user.id;
   const [entryLink] = useState(studioLink);
   const [savedRoute] = useState<(StudioTarget & { entryId: string }) | null>(() => {
@@ -353,6 +372,7 @@ function Workspace({
   const lifetime = useRef(new AbortController());
   const generation = useRef(0);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const returnToSearch = useRef(false);
   const detailRef = useRef<HTMLDialogElement>(null);
   const detailInstance = useRef(0);
   const serverGeneration = useRef<number | null>(null);
@@ -396,6 +416,65 @@ function Workspace({
     try { return await request<T>(path, method, body, scopedSignal); }
     catch (error) { if (error instanceof ApiError && error.status === 401) handleError(error); throw error; }
   }
+  function resetSearch() {
+    searchRequest.current?.abort();
+    appliedFilters.current = null;
+    setSearch(null);
+    setFilters(emptyFilters);
+  }
+  async function fetchSearch(next: SearchFilters, mode: "submit" | "refresh" | "more", after: string | null = null) {
+    searchRequest.current?.abort();
+    const controller = new AbortController();
+    searchRequest.current = controller;
+    appliedFilters.current = next;
+    const current = generation.current;
+    const signal = AbortSignal.any([controller.signal, lifetime.current.signal]);
+    setSearch(previous => ({
+      ...(previous && mode !== "submit" ? previous : { ...emptyPage, failure: null }),
+      pending: true,
+    }));
+    const params = new URLSearchParams();
+    if (next.q) params.set("q", next.q);
+    if (next.tag) params.set("tag", next.tag);
+    if (after !== null) params.set("after", after);
+    try {
+      const page = await request<SearchPage>(`projects/${projectId}/tasks/search?${params}`, "GET", undefined, signal);
+      if (signal.aborted || current !== generation.current) return;
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && focused.closest(".task-search-results")) searchFocus.current = focused;
+      setSearch(previous => ({
+        ...page,
+        items: mode === "more" && previous ? [...previous.items, ...page.items] : page.items,
+        pending: false,
+        failure: null,
+      }));
+    } catch (failure) {
+      if (signal.aborted || current !== generation.current) return;
+      if (failure instanceof ApiError && failure.status === 401) { handleError(failure); return; }
+      const message = failure instanceof ApiError ? failure.message : "Search could not be completed. Please try again.";
+      setSearch(previous => ({ ...(previous ?? emptyPage), pending: false, failure: { message, after } }));
+    }
+  }
+  function refreshSearch() {
+    if (appliedFilters.current) void fetchSearch(appliedFilters.current, "refresh");
+  }
+  function updateTask(saved: Task) {
+    const replace = (items: Task[]) => items.map(item => item.id === saved.id ? saved : item);
+    setTasks(replace);
+    setSearch(previous => previous && { ...previous, items: replace(previous.items) });
+    refreshSearch();
+  }
+  useLayoutEffect(() => {
+    resetSearch();
+    return () => searchRequest.current?.abort();
+  }, [projectId]);
+  useLayoutEffect(() => {
+    const focused = searchFocus.current;
+    if (focused && !focused.isConnected && document.activeElement === document.body && destination === "tasks") {
+      searchHeading.current?.focus();
+    }
+    searchFocus.current = null;
+  }, [search, destination]);
   function navigate(next: "tasks" | "customizations") {
     studioEntrySerial.current++;
     currentStudioEntry.current = null;
@@ -483,7 +562,7 @@ function Workspace({
             if (studioEntrySerial.current === target.navigation) {
               const actual = data.find(task => task.id === target.task.id);
               if (actual) {
-                detailInstance.current++; setDraft({ title: actual.title, notes: actual.notes }); setDetail(actual);
+                detailInstance.current++; setDraft(taskDraft(actual)); setDetail(actual);
                 requestAnimationFrame(() => { if (current === generation.current && studioEntrySerial.current === target.navigation && !lifetime.current.signal.aborted) returnFocus.current = document.getElementById("task-open-" + actual.id); });
               }
               else setNotice("The created task is no longer available in this project.");
@@ -517,7 +596,13 @@ function Workspace({
     }
     else {
       detailRef.current?.close();
-      if (destination === "tasks") returnFocus.current?.focus();
+      if (destination === "tasks" && returnFocus.current) {
+        const opening = returnFocus.current;
+        const row = opening.id ? document.getElementById(opening.id) : null;
+        const fallback = returnToSearch.current ? searchHeading.current : null;
+        (opening.isConnected ? opening : row ?? fallback ?? document.getElementById("tasks-heading"))?.focus();
+        returnFocus.current = null;
+      }
     }
   }, [detail?.id, destination]);
   async function action<T>(
@@ -568,6 +653,7 @@ function Workspace({
       () => request<Task>("tasks", "POST", { projectId, title }),
       (saved) => {
         setTasks((old) => [...old, saved]);
+        refreshSearch();
         setTitle("");
         setNotice("Task added.");
       },
@@ -585,9 +671,7 @@ function Workspace({
         }
       },
       (saved) => {
-        setTasks((old) =>
-          old.map((item) => (item.id === saved.id ? saved : item)),
-        );
+        updateTask(saved);
         setNotice("A little more done.");
         setRecentCompletion(saved.id);
       },
@@ -601,15 +685,19 @@ function Workspace({
     const navigation = ++studioEntrySerial.current;
     currentStudioEntry.current = null;
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    returnToSearch.current = !!search;
     detailInstance.current++; setDestination("tasks");
     if (task.projectId !== projectId) { pendingTaskOpen.current = { task, navigation }; setProjectId(task.projectId); }
-    else { setDraft({ title: task.title, notes: task.notes }); setDetail(task); }
+    else { setDraft(taskDraft(task)); setDetail(task); }
   }
   async function refreshCreatedTasks(created: Task) {
     const current = generation.current;
     if (created.projectId !== projectId) return;
     const next = await request<Task[]>(`projects/${projectId}/tasks`);
-    if (current === generation.current && !lifetime.current.signal.aborted) setTasks(next);
+    if (current === generation.current && !lifetime.current.signal.aborted) {
+      setTasks(next);
+      refreshSearch();
+    }
   }
   const open = tasks.filter((task) => task.status === "open");
   const completed = tasks.filter((task) => task.status === "completed");
@@ -633,8 +721,9 @@ function Workspace({
           className="task-open"
           onClick={(event) => {
             returnFocus.current = event.currentTarget;
+            returnToSearch.current = !!search;
             detailInstance.current++;
-            setDraft({ title: task.title, notes: task.notes });
+            setDraft(taskDraft(task));
             setDetail(task);
           }}
         >
@@ -836,7 +925,50 @@ function Workspace({
               </button>
             </form>
           )}
-          {loading ? (
+          {project && (
+            <form className="task-search-form" onSubmit={event => {
+              event.preventDefault();
+              const next = { q: filters.q.trim(), tag: filters.tag.trim() };
+              if (next.q || next.tag) void fetchSearch(next, "submit");
+            }}>
+              <label>
+                Search tasks
+                <input id="task-search-text" type="search" value={filters.q} maxLength={120}
+                  onChange={event => setFilters({ ...filters, q: event.target.value })} />
+              </label>
+              <label>
+                Filter by tag
+                <input type="text" value={filters.tag}
+                  onChange={event => setFilters({ ...filters, tag: event.target.value })} />
+              </label>
+              <div className="task-search-actions">
+                <button className="primary" disabled={!filters.q.trim() && !filters.tag.trim()}>Search</button>
+                <button type="button" className="quiet-button" disabled={!search && !filters.q && !filters.tag}
+                  onClick={() => { resetSearch(); document.getElementById("task-search-text")?.focus(); }}>
+                  Clear
+                </button>
+              </div>
+            </form>
+          )}
+          {search && project ? (
+            <section className="task-search-results" aria-labelledby="task-search-heading">
+              <div className="list-heading">
+                <h2 id="task-search-heading" ref={searchHeading} tabIndex={-1}>Search results</h2>
+              </div>
+              {search.items.length > 0 && <ul className="task-list">{search.items.map(taskRow)}</ul>}
+              <p className="task-search-status" role="status">
+                {search.pending ? "Searching tasks…" : search.items.length ? `${search.items.length} ${search.items.length === 1 ? "task" : "tasks"} shown.` : !search.failure ? "No tasks match your search." : ""}
+              </p>
+              {!search.pending && search.failure && <p className="error" role="alert">{search.failure.message}</p>}
+              {(search.failure || search.nextAfter !== null) && (
+                <button type="button" className="quiet-button" aria-disabled={search.pending} onClick={() => {
+                  if (search.pending || !appliedFilters.current) return;
+                  const after = search.failure ? search.failure.after : search.nextAfter;
+                  void fetchSearch(appliedFilters.current, after === null ? "refresh" : "more", after);
+                }}>{search.failure ? "Retry" : "Load more"}</button>
+              )}
+            </section>
+          ) : loading ? (
             <div className="loading" role="status">
               <span className="loading-line" />
               Gathering your tasks…
@@ -918,7 +1050,7 @@ function Workspace({
             key={detail.id}
             task={detail}
             draft={draft}
-            setDraft={setDraft}
+            setDraft={next => { draftVersion.current++; setDraft(next); }}
             manage={() => void openStudio("detail")}
             busy={busy}
             error={error}
@@ -926,19 +1058,33 @@ function Workspace({
             reactionRequest={studioRequest}
             reactionConfirmed={refreshCreatedTasks}
             openCreated={openCreatedTask}
-            save={(title, notes) => {
+            save={() => {
               const instance = detailInstance.current;
+              const version = draftVersion.current;
+              const previous = taskDraft(detail);
+              const textChanged = draft.title !== previous.title || draft.notes !== previous.notes;
+              const tagsChanged = draft.tags !== previous.tags;
+              const tags = draft.tags.trim() ? draft.tags.split(",") : [];
+              const body = tagsChanged
+                ? { ...(textChanged ? { title: draft.title, notes: draft.notes } : {}), tags }
+                : { title: draft.title, notes: draft.notes };
               action(
                 () =>
-                  request<Task>(`tasks/${detail.id}`, "PATCH", {
-                    title,
-                    notes,
-                  }),
+                  request<Task>(`tasks/${detail.id}`, "PATCH", body),
                 (saved) => {
-                  setTasks((old) =>
-                    old.map((item) => (item.id === saved.id ? saved : item)),
-                  );
-                  if (instance === detailInstance.current) closeDetail();
+                  updateTask(saved);
+                  if (instance === detailInstance.current) {
+                    if (version === draftVersion.current) closeDetail();
+                    else {
+                      const confirmed = taskDraft(saved);
+                      setDetail(saved);
+                      setDraft(current => ({
+                        title: current.title === draft.title ? confirmed.title : current.title,
+                        notes: current.notes === draft.notes ? confirmed.notes : current.notes,
+                        tags: current.tags === draft.tags ? confirmed.tags : current.tags,
+                      }));
+                    }
+                  }
                   setNotice("Task saved.");
                 },
               );
@@ -1040,8 +1186,8 @@ function TaskDetail({
   save,
 }: {
   task: Task;
-  draft: { title: string; notes: string };
-  setDraft: (draft: { title: string; notes: string }) => void;
+  draft: TaskDraft;
+  setDraft: (draft: TaskDraft) => void;
   manage: () => void;
   busy: boolean;
   error: string;
@@ -1049,7 +1195,7 @@ function TaskDetail({
   reactionRequest: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
   reactionConfirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
-  save: (title: string, notes: string) => void;
+  save: () => void;
 }) {
   const { title, notes } = draft;
   return (
@@ -1057,7 +1203,7 @@ function TaskDetail({
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        save(title, notes);
+        save();
       }}
     >
       <div className="detail-top">
@@ -1094,6 +1240,10 @@ function TaskDetail({
         placeholder="A thought, a reference, a place to begin…"
         rows={7}
       />
+      <label htmlFor="edit-tags">Tags</label>
+      <input id="edit-tags" value={draft.tags} aria-describedby="edit-tags-hint"
+        onChange={event => setDraft({ ...draft, tags: event.target.value })} />
+      <p id="edit-tags-hint" className="muted tag-hint">Separate tags with commas. Use up to 8 tags, each up to 32 characters.</p>
       {task.completedAt && (
         <p className="muted">
           Completed{" "}

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData, taskService, taskEffectService, transaction, revokeTaskAdmissions } from '../src/data.mjs';
-import { removeTaskEffectSchema, nativeEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
+import { removeSchemaAfter7, nativeEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
 
 const stores = ['task_completion_events', 'task_effect_receipts'];
 const effects = nativeEffectService;
@@ -47,7 +47,7 @@ function populateLegacy(db) {
 }
 function legacyFixture(t) {
   const f = fixture(t), db = openData(f.path);
-  removeTaskEffectSchema(db);
+  removeSchemaAfter7(db);
   db.exec('PRAGMA user_version=7');
   populateLegacy(db);
   const before = snapshot(db), beforeSchema = schema(db);
@@ -83,23 +83,66 @@ function populatedEffects(db) {
   return { event, key, payload, createdId: result.value.id, service };
 }
 
+test('populated v8 retains exact task, customization and receipt bytes through v9 failure and recovery', t => {
+  const { path } = fixture(t);
+  let db = openData(path);
+  const { event, createdId } = populatedEffects(db);
+  db.prepare('UPDATE tasks SET title=?,notes=? WHERE id=?').run('  kept\u0000title  ', ' original\u0000notes λ ', event.source_task_id);
+  db.exec('ALTER TABLE tasks DROP COLUMN tags; PRAGMA user_version=8;');
+  const before = snapshot(db), beforeSchema = schema(db);
+  assert.equal(before.task_effect_receipts.length, 1);
+  db.close();
+
+  const exec = DatabaseSync.prototype.exec;
+  DatabaseSync.prototype.exec = function (sql) {
+    if (/PRAGMA user_version\s*=\s*9/i.test(sql)) {
+      assert.ok(this.prepare('PRAGMA table_info(tasks)').all().some(column => column.name === 'tags'));
+      throw new Error('injected schema 9 failure');
+    }
+    return exec.call(this, sql);
+  };
+  try { assert.throws(() => openData(path), /injected schema 9 failure/); } finally { DatabaseSync.prototype.exec = exec; }
+  db = new DatabaseSync(path);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.deepEqual(schema(db), beforeSchema);
+  assert.deepEqual(snapshot(db), before);
+  db.close();
+
+  db = openData(path);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
+  const { type, notnull, dflt_value } = db.prepare("SELECT * FROM pragma_table_info('tasks') WHERE name='tags'").get();
+  assert.deepEqual({ type, notnull, dflt_value }, { type: 'TEXT', notnull: 1, dflt_value: "'[]'" });
+  const after = snapshot(db);
+  const { tasks, ...originalTables } = before;
+  const { tasks: upgradedTasks, ...upgradedTables } = after;
+  assert.deepEqual(upgradedTables, originalTables);
+  assert.deepEqual(upgradedTasks.map(row => ({ ...row })), tasks.map(row => ({ ...row, tags: new TextEncoder().encode('[]') })));
+  assert.deepEqual(schema(db).filter(row => row.name !== 'tasks'), beforeSchema.filter(row => row.name !== 'tasks'));
+  assert.deepEqual(taskService(db).getTask('maya', createdId).tags, []);
+  integrity(db);
+  db.close(); db = openData(path);
+  assert.deepEqual(snapshot(db), after);
+  integrity(db); db.close();
+});
+
 test('populated schema 7 upgrades without changing old bytes, selection, history, tombstones or held UNKNOWN spend', t => {
   const { path, before, beforeSchema } = legacyFixture(t);
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
   const after = snapshot(db);
   assert.deepEqual(Object.keys(after), [...Object.keys(before), ...stores].sort());
   for (const [table, rows] of Object.entries(before)) {
     const actual = table === 'extension_selections'
       ? db.prepare("SELECT CAST(owner_id AS BLOB) AS owner_id,CAST(revision_id AS BLOB) AS revision_id,generation FROM extension_selections WHERE hook_id='ClassifyTask' ORDER BY rowid").all()
       : after[table];
-    assert.deepEqual(actual, rows, table);
+    if (table === 'tasks') assert.deepEqual(actual.map(row => ({ ...row })), rows.map(row => ({ ...row, tags: new Uint8Array([91, 93]) })));
+    else assert.deepEqual(actual, rows, table);
   }
   assert.deepEqual(db.prepare("SELECT owner_id,revision_id,generation,binding_pins FROM extension_selections WHERE hook_id='TaskCompleted' ORDER BY owner_id").all().map(row => ({ ...row })),
     ['leo', 'maya', 'sam'].map(owner_id => ({ owner_id, revision_id: null, generation: 0, binding_pins: null })));
   assert.equal(db.prepare("SELECT count(*) n FROM extension_selections WHERE hook_id='ClassifyTask' AND binding_pins IS NOT NULL").get().n, 0);
   for (const table of stores) assert.deepEqual(after[table], []);
-  const oldObjects = new Set(beforeSchema.filter(row => row.name !== 'extension_selections').map(row => row.name));
+  const oldObjects = new Set(beforeSchema.filter(row => !['extension_selections', 'tasks'].includes(row.name)).map(row => row.name));
   assert.deepEqual(schema(db).filter(row => oldObjects.has(row.name)), beforeSchema.filter(row => oldObjects.has(row.name)));
   integrity(db);
   db.close(); db = openData(path);

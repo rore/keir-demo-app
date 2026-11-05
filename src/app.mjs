@@ -231,6 +231,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   app.post('/api/projects', (request, reply) => { const result = service.createProject(authorize(request).userId, request.body); reply.code(201); return result; });
   app.patch('/api/projects/:id', request => service.renameProject(authorize(request).userId, request.params.id, request.body));
   app.get('/api/projects/:id/tasks', request => service.listTasks(authorize(request).userId, request.params.id));
+  app.get('/api/projects/:id/tasks/search', request => service.searchTasks(authorize(request).userId, request.params.id, request.query));
   app.get('/api/tasks/:id', request => service.getTask(authorize(request).userId, request.params.id));
   app.post('/api/tasks/:id/advice', async request => {
     const session = authorize(request);

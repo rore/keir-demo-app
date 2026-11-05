@@ -78,7 +78,7 @@ test('same-origin session context protects CRUD and rejects cross-user and stale
   assert.ok(completed.json().completedAt);
   const repeated = await app.inject(request('POST', `/api/tasks/${task.json().id}/complete`, { ...maya, body: {}, headers: jsonHeaders }));
   assert.deepEqual(repeated.json(), completed.json());
-  assert.deepEqual(Object.keys(completed.json()).sort(), ['completedAt','createdAt','id','notes','projectId','status','title','updatedAt']);
+  assert.deepEqual(Object.keys(completed.json()).sort(), ['completedAt','createdAt','id','notes','projectId','status','tags','title','updatedAt']);
   const protectedKey = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId: project.id, title: 'No public key', operationKey: 'forged' }, headers: jsonHeaders }));
   assert.equal(protectedKey.statusCode, 400);
 
@@ -131,4 +131,49 @@ test('session switching revokes the old cookie and ordinary stale API responses 
   const current = await app.inject(request('GET', '/api/projects', leo));
   assert.equal(current.statusCode, 200);
   assert.equal(current.headers['set-cookie'], undefined);
+});
+
+test('project search and native tag edits use the current owner and strict query fields', async t => {
+  const app = await setup(t);
+  const bootstrap = await app.inject(request('GET', '/api/session'));
+  const maya = await signIn(app, 'maya', bootstrap.json().contextToken);
+  const projects = await app.inject(request('GET', '/api/projects', maya));
+  const [{ id: projectId }] = projects.json();
+  const search = (query, session = maya, id = projectId) =>
+    app.inject(request('GET', `/api/projects/${id}/tasks/search${query}`, session));
+  const post = (url, body) => app.inject(request('POST', url, { ...maya, body, headers: jsonHeaders }));
+  const other = await post('/api/projects', { name: 'Other project' });
+  assert.equal(other.statusCode, 201, other.body);
+  const foreignAnchor = await post('/api/tasks', { projectId: other.json().id, title: 'Search target', tags: ['ready'] });
+  assert.equal(foreignAnchor.statusCode, 201, foreignAnchor.body);
+  const created = await post('/api/tasks', { projectId, title: 'Search target', tags: [' Ready '] });
+  assert.equal(created.statusCode, 201, created.body);
+  const task = created.json();
+  assert.deepEqual(task.tags, ['ready']);
+  const patched = await app.inject(request('PATCH', `/api/tasks/${task.id}`, {
+    ...maya, headers: jsonHeaders, body: { tags: [' follow-up '] },
+  }));
+  assert.equal(patched.statusCode, 200, patched.body);
+  const found = await search('?q=TARGET&tag=FOLLOW-UP');
+  assert.equal(found.statusCode, 200, found.body);
+  assert.deepEqual(found.json(), { items: [patched.json()], nextAfter: null });
+  assert.equal(found.json().items[0].title, task.title);
+
+  for (const query of ['', '?q=%20', '?tag=follow-up&tag=ready', '?q=target&q=target', '?q=target&ownerId=leo',
+    '?q=target&after=', '?q=target&after=has%20space', '?q=target&after=a&after=b']) {
+    const response = await search(query);
+    assert.equal(response.statusCode, 400, query);
+  }
+  assert.equal((await search('?q=target', {})).statusCode, 401);
+  const missing = await search('?q=target&after=missing');
+  const wrongProject = await search('?q=target&after=' + foreignAnchor.json().id);
+  assert.equal(missing.statusCode, 404);
+  assert.equal(wrongProject.statusCode, 404);
+  assert.deepEqual(wrongProject.json(), missing.json());
+  const leo = await signIn(app, 'leo', maya);
+  assert.equal((await search('?q=target', leo)).statusCode, 404);
+  const leoProjects = await app.inject(request('GET', '/api/projects', leo));
+  const foreignOwner = await search('?q=target&after=' + task.id, leo, leoProjects.json()[0].id);
+  assert.equal(foreignOwner.statusCode, 404);
+  assert.deepEqual(foreignOwner.json(), missing.json());
 });

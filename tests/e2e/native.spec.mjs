@@ -17,7 +17,7 @@ const test = base.extend({
     const directory = mkdtempSync(join(tmpdir(), 'keir-browser-'));
     const port = await freePort();
     let server = await start({ directory, port });
-    try { await use({ origin: server.origin, restart: async () => { await server.close(); server = await start({ directory, port }); } }); }
+    try { await use({ origin: server.origin, get db() { return server.db; }, restart: async () => { await server.close(); server = await start({ directory, port }); } }); }
     finally { await server.close(); rmSync(directory, { recursive: true, force: true }); }
   },
 });
@@ -34,6 +34,213 @@ async function newProject(page, name, mobile = false) {
   await page.getByRole('button', { name: 'Save project', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible();
 }
+
+const searchRequest = /\/api\/projects\/[^/]+\/tasks\/search(?:\?|$)/;
+const searchHeading = page => page.getByRole('heading', { name: 'Search results', exact: true });
+const taskButton = (page, name) => page.getByRole('button', { name, exact: true });
+async function search(page, text, tag = '') {
+  await page.getByLabel('Search tasks', { exact: true }).fill(text);
+  await page.getByLabel('Filter by tag', { exact: true }).fill(tag);
+  await taskButton(page, 'Search').click();
+}
+
+for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height: 1000 }, phone: { width: 390, height: 844 } })) {
+  test(`native tags persist across restart and search restores focus when a match is removed on ${layout}`, async ({ page, demo }) => {
+    await page.setViewportSize(viewport);
+    demo.db.exec('UPDATE extension_selections SET revision_id = NULL, binding_pins = NULL');
+    const studioCalls = [];
+    page.on('request', request => {
+      if (/^\/api\/(authoring|extensions)(\/|$)/.test(new URL(request.url()).pathname)) studioCalls.push(request.url());
+    });
+    await page.goto(demo.origin);
+    await signIn(page, 'Maya');
+    const task = taskButton(page, 'Gather material references');
+    const tags = page.getByLabel('Tags', { exact: true });
+    const detail = page.getByRole('dialog', { name: 'Task details' });
+    await task.click();
+    await tags.fill('  Material, priority, MATERIAL  ');
+    await taskButton(page, 'Save changes').click();
+    await expect(detail).not.toBeVisible();
+    await expect(task).toBeFocused();
+    await task.click();
+    await expect(tags).toHaveValue('material, priority');
+    await taskButton(page, 'Close task details').click();
+
+    await demo.restart();
+    expect(demo.db.prepare('SELECT count(*) AS n FROM extension_selections WHERE revision_id IS NOT NULL').get().n).toBe(0);
+    await page.reload();
+    await signIn(page, 'Maya');
+    await search(page, '', ' PRIORITY ');
+    await expect(searchHeading(page)).toBeVisible();
+    await expect(task).toBeVisible();
+    await screenshot(page, `native-tags-search-${layout}`);
+    await task.click();
+    await expect(tags).toHaveValue('material, priority');
+    await tags.fill('material');
+    await taskButton(page, 'Save changes').click();
+    await expect(detail).not.toBeVisible();
+    await expect(page.getByText('No tasks match your search.', { exact: true })).toBeVisible();
+    await expect(searchHeading(page)).toBeFocused();
+    await taskButton(page, 'Clear').click();
+    await expect(searchHeading(page)).toHaveCount(0);
+    await expect(page.getByLabel('Filter by tag', { exact: true })).toHaveValue('');
+    await task.click();
+    await expect(tags).toHaveValue('material');
+    expect(studioCalls).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test('literal text and exact tags page through open and completed tasks and retry the same cursor', async ({ page, demo }) => {
+  const project = demo.db.prepare("SELECT id FROM projects WHERE owner_id='maya'").get().id;
+  const insert = demo.db.prepare(`INSERT INTO tasks
+    (id, owner_id, project_id, title, notes, status, created_at, updated_at, completed_at, tags)
+    VALUES (?, 'maya', ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const now = '2026-01-01T00:00:00.000Z';
+  for (let i = 0; i < 25; i++) {
+    const id = `match-${String(i).padStart(2, '0')}`;
+    insert.run(id, project, `${id} %_`, '', 'open', now, now, null, '["review"]');
+  }
+  insert.run('match-25', project, 'A finished match', 'Notes contain %_', 'completed', now, now, now, '["review"]');
+  insert.run('exclude-text', project, 'Text mismatch', '', 'open', now, now, null, '["review"]');
+  insert.run('exclude-tag', project, 'Tag mismatch %_', '', 'open', now, now, null, '["review-later"]');
+
+  await page.goto(demo.origin);
+  await signIn(page, 'Maya');
+  const results = page.locator('[id^="task-open-match-"]:visible');
+  const firstPage = Array.from({ length: 25 }, (_, index) => `task-open-match-${String(index).padStart(2, '0')}`);
+  const rowIds = () => results.evaluateAll(rows => rows.map(row => row.id));
+  await search(page, '%_', 'REVIEW');
+  await expect.poll(rowIds).toEqual(firstPage);
+  await expect(page.locator('[id^="task-open-exclude-"]:visible')).toHaveCount(0);
+
+  const cursors = [];
+  await page.route(searchRequest, route => {
+    const cursor = new URL(route.request().url()).searchParams.get('after');
+    if (!cursor) return route.continue();
+    cursors.push(cursor);
+    if (cursors.length === 1) return route.fulfill({ status: 503, json: { message: 'Try the next page again.' } });
+    return route.continue();
+  });
+  await taskButton(page, 'Load more').click();
+  await expect(page.getByRole('alert')).toContainText('Try the next page again.');
+  expect(await rowIds()).toEqual(firstPage);
+  await taskButton(page, 'Retry').click();
+  await expect.poll(rowIds).toEqual([...firstPage, 'task-open-match-25']);
+  expect(cursors).toEqual(['match-24', 'match-24']);
+  await expect(taskButton(page, 'A finished match, completed')).toBeDisabled();
+  await expect(taskButton(page, 'Load more')).toHaveCount(0);
+  await taskButton(page, 'Clear').click();
+  await expect(searchHeading(page)).toHaveCount(0);
+  await expect(page.getByLabel('Search tasks', { exact: true })).toHaveValue('');
+  await expect(taskButton(page, 'Text mismatch')).toBeVisible();
+});
+
+async function holdResponse(page, match) {
+  let release, observed, delivered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { observed = resolve; });
+  const finished = new Promise(resolve => { delivered = resolve; });
+  await page.route(match, async route => {
+    try {
+      const response = await route.fetch();
+      observed();
+      await gate;
+      try { await route.fulfill({ response }); }
+      catch (error) { if (!route.request().failure()) throw error; }
+    } finally { delivered(); }
+  }, { times: 1 });
+  return { started, async deliver() {
+    release();
+    await finished;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  } };
+}
+
+test('late native search responses cannot replace newer filter, project or owner results', async ({ page, demo }) => {
+  await page.goto(demo.origin);
+  await signIn(page, 'Maya');
+  await newProject(page, 'Search sandbox');
+  await page.getByLabel('New task title').fill('Second project task');
+  await page.getByRole('button', { name: /^Add task/ }).click();
+  await expect(taskButton(page, 'Second project task')).toBeVisible();
+  const spring = page.getByRole('button', { name: /The spring collection$/ });
+  const sandbox = page.getByRole('button', { name: /Search sandbox$/ });
+
+  for (const scope of ['filter', 'project', 'owner']) {
+    await spring.click();
+    await expect(taskButton(page, 'Gather material references')).toBeVisible();
+    const held = await holdResponse(page, searchRequest);
+    await search(page, 'Gather');
+    await held.started;
+    const newerTask = {
+      filter: 'Refine the packaging sketches',
+      project: 'Second project task',
+      owner: 'Plan the Saturday session',
+    }[scope];
+    try {
+      if (scope === 'project') await sandbox.click();
+      if (scope === 'owner') {
+        await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+        await expect(page.getByRole('heading', { level: 1, name: 'Neighbourhood workshop' })).toBeVisible();
+      }
+      await search(page, newerTask);
+      await expect(searchHeading(page)).toBeVisible();
+      await expect(taskButton(page, newerTask)).toBeVisible();
+    } finally { await held.deliver(); }
+    await expect(taskButton(page, newerTask)).toBeVisible();
+    await expect(taskButton(page, 'Gather material references')).toHaveCount(0);
+    await expect(page.getByLabel('Search tasks', { exact: true })).toHaveValue(newerTask);
+    await taskButton(page, 'Clear').click();
+  }
+});
+
+test('native search refresh after a delayed save keeps newer search and detail drafts', async ({ page, demo }) => {
+  await page.goto(demo.origin);
+  await signIn(page, 'Maya');
+  await search(page, 'e');
+  const source = taskButton(page, 'Gather material references');
+  const title = page.getByLabel('Task title', { exact: true });
+  const searchText = page.getByLabel('Search tasks', { exact: true });
+  await source.click();
+  await title.fill('Alpha');
+  const held = await holdResponse(page, /\/api\/tasks\/[^/?]+$/);
+  await taskButton(page, 'Save changes').click();
+  await held.started;
+  try {
+    await taskButton(page, 'Cancel').click();
+    await searchText.fill('New unsent filter');
+    await taskButton(page, 'Refine the packaging sketches').click();
+    await title.fill('New unsaved task title');
+  } finally { await held.deliver(); }
+  await expect(source).toHaveCount(0);
+  await expect(title).toHaveValue('New unsaved task title');
+  await expect(searchText).toHaveValue('New unsent filter');
+  await taskButton(page, 'Cancel').click();
+  await taskButton(page, 'Clear').click();
+  await expect(taskButton(page, 'Alpha')).toBeVisible();
+});
+
+test('a delayed tag save merges normalized tags without overwriting newer edits in the same detail', async ({ page, demo }) => {
+  await page.goto(demo.origin);
+  await signIn(page, 'Maya');
+  await taskButton(page, 'Gather material references').click();
+  const title = page.getByLabel('Task title', { exact: true });
+  const tags = page.getByLabel('Tags', { exact: true });
+  await tags.fill(' New Tag, new tag ');
+  const held = await holdResponse(page, /\/api\/tasks\/[^/?]+$/);
+  await taskButton(page, 'Save changes').click();
+  await held.started;
+  try { await title.fill('New unsaved title'); }
+  finally { await held.deliver(); }
+  await expect(page.getByRole('dialog', { name: 'Task details' })).toBeVisible();
+  await expect(title).toHaveValue('New unsaved title');
+  await expect(tags).toHaveValue('new tag');
+  await taskButton(page, 'Cancel').click();
+  await taskButton(page, 'Gather material references').click();
+  await expect(title).toHaveValue('Gather material references');
+  await expect(tags).toHaveValue('new tag');
+});
 
 test('completion observations preserve edits and recover from failed or stale detail reads', async ({ page, demo }) => {
   await page.goto(demo.origin);

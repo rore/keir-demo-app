@@ -40,12 +40,13 @@ test('populated v3 migrates once, retaining every native/lifecycle byte and exis
   db.prepare('INSERT INTO extension_approvals VALUES (?, ?, ?)').run('owner-a', revision, 'evidence-1');
   db.prepare('UPDATE extension_states SET draft_version=7, draft_id=? WHERE owner_id=?').run(revision, 'owner-a');
   const original = snapshot(db, existingTables);
+  const migrated = { ...original, tasks: original.tasks.map(row => Object.assign(Object.create(null), row, { tags: '[]' })) };
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
   assert.equal(db.prepare("SELECT draft_revision_id FROM extensions WHERE owner_id='owner-a'").get().draft_revision_id, revision);
-  assert.deepEqual(snapshot(db, existingTables), original);
+  assert.deepEqual(snapshot(db, existingTables), migrated);
   assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 0 });
   assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 0);
   db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(9007199254740991);
@@ -53,7 +54,7 @@ test('populated v3 migrates once, retaining every native/lifecycle byte and exis
   const authoring = snapshot(db, authoringTables);
   db.close();
   db = openData(path);
-  assert.deepEqual(snapshot(db, existingTables), original);
+  assert.deepEqual(snapshot(db, existingTables), migrated);
   assert.deepEqual(snapshot(db, authoringTables), authoring);
   assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
   db.close();

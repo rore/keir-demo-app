@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData } from '../src/data.mjs';
-import { legacySelections, removeTaskEffectSchema } from './fixtures/task-effect-schema.mjs';
+import { legacySelections, removeSchemaAfter7 } from './fixtures/task-effect-schema.mjs';
 
 const snapshot = db => Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()
   .map(({ name }) => {
@@ -20,7 +20,7 @@ function fixture(t, legacy = false) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const db = openData(path);
   if (legacy) {
-    removeTaskEffectSchema(db);
+    removeSchemaAfter7(db);
     db.exec('ALTER TABLE extensions DROP COLUMN deleted_at; PRAGMA user_version=6;');
   }
   const revision = db.prepare("SELECT id FROM extension_revisions WHERE owner_id='maya'").get().id;
@@ -49,17 +49,17 @@ function integrity(db) {
 
 test('schema 6 migration retains nullable deletion metadata and every original row through the latest schema', t => {
   const { db, path } = fixture(t, true), before = snapshot(db);
-  const schema = db.prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT IN ('extensions','extension_selections') ORDER BY type,name").all();
+  const schema = db.prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT IN ('extensions','extension_selections','tasks') ORDER BY type,name").all();
   db.close();
   let upgraded = openData(path);
-  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 9);
   const after = snapshot(upgraded);
   assert.deepEqual(Object.keys(after).filter(name => !['task_completion_events', 'task_effect_receipts'].includes(name)), Object.keys(before));
   assert.deepEqual(after.task_completion_events, []);
   assert.deepEqual(after.task_effect_receipts, []);
   for (const [table, rows] of Object.entries(before)) {
     const actual = table === 'extensions' ? after[table].map(({ deleted_at, ...row }) => { assert.equal(deleted_at, null); return row; }) : after[table];
-    assert.deepEqual(actual, rows, table);
+    assert.deepEqual(actual, table === 'tasks' ? rows.map(row => ({ ...row, tags: new Uint8Array([91, 93]) })) : rows, table);
   }
   const names = new Set(schema.map(row => row.name));
   assert.deepEqual(upgraded.prepare('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').all().filter(row => names.has(row.name)), schema);
@@ -87,7 +87,7 @@ test('failed additive migration rolls back the column, version and all original 
 
 test('fresh schema validates deletion timestamps and retains tombstones through reopen', t => {
   const { db, path, extension } = fixture(t);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
   assert.equal(db.prepare('SELECT deleted_at FROM extensions WHERE id=?').get(extension).deleted_at, null);
   for (const timestamp of [-1, 1.5, 'invalid']) assert.throws(() => db.prepare('UPDATE extensions SET deleted_at=? WHERE id=?').run(timestamp, extension));
   for (const timestamp of [0, 123, null, 9007199254740991]) db.prepare('UPDATE extensions SET deleted_at=? WHERE id=?').run(timestamp, extension);

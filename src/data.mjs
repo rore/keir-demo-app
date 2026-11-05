@@ -314,7 +314,8 @@ function seedRows(db) {
     const projectId = randomUUID();
     db.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?)').run(projectId, user.id, user.project, now, now);
     user.tasks.forEach((title, index) => {
-      db.prepare('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         randomUUID(), user.id, projectId, title, '', index === 2 ? 'completed' : 'open', now, now, index === 2 ? now : null);
     });
   }
@@ -351,7 +352,7 @@ export function openData(path) {
         `);
         seedRows(db);
       });
-    } else if (![1, 2, 3, 4, 5, 6, 7, 8].includes(version)) throw new Error('Unsupported database version; no data was reset.');
+    } else if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(version)) throw new Error('Unsupported database version; no data was reset.');
     if (version < 2) migrateLifecycle(db);
     if (version < 3) migrateAuthored(db);
     if (version < 4) migrateAuthoring(db);
@@ -361,6 +362,12 @@ export function openData(path) {
       db.exec('ALTER TABLE extensions ADD COLUMN deleted_at INTEGER CHECK(deleted_at IS NULL OR deleted_at>=0); PRAGMA user_version=7;');
     });
     if (version < 8) migrateTaskEffects(db);
+    if (version < 9) transaction(db, () => {
+      db.exec(`ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'
+        CHECK(json_valid(tags) AND json_type(tags) = 'array' AND json_array_length(tags) <= 8)`);
+      if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Task tags migration failed integrity checks');
+      db.exec('PRAGMA user_version=9');
+    });
     return db;
   } catch (error) { db.close(); throw error; }
 }
@@ -409,11 +416,28 @@ function text(value, label, max, required = true) {
   return result;
 }
 const projectColumns = 'id, name, created_at AS createdAt, updated_at AS updatedAt';
-const taskColumns = 'id, project_id AS projectId, title, notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt';
+const taskColumns = 'id, project_id AS projectId, title, notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt, tags';
+const taskDto = row => ({ ...row, tags: JSON.parse(row.tags) });
 
-function insertTask(db, owner, projectId, title, notes) {
+function tag(value) {
+  if (typeof value !== 'string' || !value.isWellFormed() || /[,\p{Cc}]/u.test(value)) throw new AppError(400, 'Use text tags without commas or control characters.');
+  return text(value.trim().normalize('NFC').toLowerCase().normalize('NFC'), 'Tag', 32);
+}
+
+function tags(value) {
+  if (!Array.isArray(value)) throw new AppError(400, 'Tags must be a list.');
+  const distinct = new Set();
+  for (const entry of value) {
+    distinct.add(tag(entry));
+    if (distinct.size > 8) throw new AppError(400, 'Use up to eight tags.');
+  }
+  return JSON.stringify([...distinct]);
+}
+
+function insertTask(db, owner, projectId, title, notes, savedTags = '[]') {
   const id = randomUUID(), now = new Date().toISOString();
-  db.prepare('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, owner, projectId, title, notes, 'open', now, now, null);
+  db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at,tags)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, projectId, title, notes, 'open', now, now, null, savedTags);
   return id;
 }
 
@@ -426,7 +450,7 @@ export function taskService(db) {
   function task(owner, id) {
     const row = db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND id = ?`).get(owner, id);
     if (!row) throw notFound();
-    return row;
+    return taskDto(row);
   }
   return {
     listProjects: owner => db.prepare(`SELECT ${projectColumns} FROM projects WHERE owner_id = ? ORDER BY created_at, id`).all(owner),
@@ -442,7 +466,35 @@ export function taskService(db) {
       db.prepare('UPDATE projects SET name = ?, updated_at = ? WHERE owner_id = ? AND id = ?').run(text(input.name, 'Project name', 80), new Date().toISOString(), owner, id);
       return project(owner, id);
     },
-    listTasks(owner, id) { project(owner, id); return db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND project_id = ? ORDER BY created_at, id`).all(owner, id); },
+    listTasks(owner, id) { project(owner, id); return db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND project_id = ? ORDER BY created_at, id`).all(owner, id).map(taskDto); },
+    searchTasks(owner, id, input) {
+      project(owner, id);
+      fields(input, ['q', 'tag', 'after']);
+      const conditions = ['owner_id = ?', 'project_id = ?'];
+      const args = [owner, id];
+      if (Object.hasOwn(input, 'q')) {
+        if (typeof input.q !== 'string' || !input.q.isWellFormed() || /\p{Cc}/u.test(input.q)) throw new AppError(400, 'Use search text without control characters.');
+        const query = text(input.q, 'Search text', 120);
+        conditions.push('(instr(lower(title), lower(?)) > 0 OR instr(lower(notes), lower(?)) > 0)');
+        args.push(query, query);
+      }
+      if (Object.hasOwn(input, 'tag')) {
+        conditions.push('EXISTS (SELECT 1 FROM json_each(tasks.tags) WHERE value = ?)');
+        args.push(tag(input.tag));
+      }
+      if (conditions.length === 2) throw new AppError(400, 'Enter search text or a tag.');
+      if (Object.hasOwn(input, 'after')) {
+        const after = input.after;
+        if (typeof after !== 'string' || !after.isWellFormed() || !after || after.length > 128 || /[\p{Cc}\s]/u.test(after)) throw new AppError(400, 'Use a valid task search cursor.');
+        const anchor = db.prepare('SELECT created_at FROM tasks WHERE owner_id = ? AND project_id = ? AND id = ?').get(owner, id, after);
+        if (!anchor) throw notFound();
+        conditions.push('(created_at, id) > (?, ?)');
+        args.push(anchor.created_at, after);
+      }
+      const rows = db.prepare(`SELECT ${taskColumns} FROM tasks WHERE ${conditions.join(' AND ')} ORDER BY created_at, id LIMIT 26`).all(...args);
+      const items = rows.slice(0, 25).map(taskDto);
+      return { items, nextAfter: rows.length > items.length ? items.at(-1).id : null };
+    },
     getTask: task,
     getTaskForCustomization(owner, id) {
       // SQLite TEXT reads stop at embedded NUL; the model must see the saved title without truncation.
@@ -451,17 +503,25 @@ export function taskService(db) {
       return { ...row, title: Buffer.from(row.title).toString('utf8') };
     },
     createTask(owner, input) {
-      fields(input, ['projectId', 'title', 'notes']);
+      fields(input, ['projectId', 'title', 'notes', 'tags']);
       if (typeof input.projectId !== 'string') throw new AppError(400, 'Choose a project.');
       project(owner, input.projectId);
       const title = text(input.title, 'Task title', 120), notes = text(input.notes ?? '', 'Notes', 4000, false);
-      const id = insertTask(db, owner, input.projectId, title, notes);
+      const savedTags = Object.hasOwn(input, 'tags') ? tags(input.tags) : undefined;
+      const id = insertTask(db, owner, input.projectId, title, notes, savedTags);
       return task(owner, id);
     },
     editTask(owner, id, input) {
-      fields(input, ['title', 'notes']);
+      fields(input, ['title', 'notes', 'tags']);
       task(owner, id);
-      db.prepare('UPDATE tasks SET title = ?, notes = ?, updated_at = ? WHERE owner_id = ? AND id = ?').run(text(input.title, 'Task title', 120), text(input.notes, 'Notes', 4000, false), new Date().toISOString(), owner, id);
+      const savedTags = Object.hasOwn(input, 'tags') ? tags(input.tags) : null;
+      const now = new Date().toISOString();
+      if (savedTags !== null && !Object.hasOwn(input, 'title') && !Object.hasOwn(input, 'notes')) {
+        db.prepare('UPDATE tasks SET tags = ?, updated_at = ? WHERE owner_id = ? AND id = ?').run(savedTags, now, owner, id);
+      } else {
+        db.prepare('UPDATE tasks SET title = ?, notes = ?, tags = coalesce(?, tags), updated_at = ? WHERE owner_id = ? AND id = ?')
+          .run(text(input.title, 'Task title', 120), text(input.notes, 'Notes', 4000, false), savedTags, now, owner, id);
+      }
       return task(owner, id);
     },
     completeTask(owner, id) {
