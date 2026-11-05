@@ -117,7 +117,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(decision.getByRole('region', { name: 'Checked behavior currently in use', exact: true })).toContainText('Existing customer follow-up');
       const otherExamples = ui.getByText(/^Other checked examples/);
       await otherExamples.click();
-      await expect(otherExamples.locator('..').locator('.rs-example')).toHaveCount(4);
+      await expect(otherExamples.locator('..').locator('.rs-example')).toHaveCount(5);
       await expect(otherExamples.locator('..').locator('.rs-example').first()).toContainText('Create no task.');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(decision.getByLabel('Saved source for approval', { exact: true })).toHaveText(documents.source);
