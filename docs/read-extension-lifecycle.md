@@ -53,6 +53,6 @@ Before deliberately upgrading an existing installation, stop its owning app and 
 
 ## Package and verification
 
-The runtime and compiler are independently packaged and pinned through repository provenance and the lockfile. New compilations use `keir-effect/4` and host definition `daymark.task-completed/3`. Existing approved selections using `daymark.task-completed/2` keep their exact compatible model and package pins. See [task effects](task-effects.md) for the binding and native authority boundary.
+The runtime and compiler are independently packaged and pinned through repository provenance and the lockfile. New compilations use the current Keir specification and Daymark DCM. Existing approved selections keep their original compatible model and package pins. See [task effects](task-effects.md) for the binding and native authority boundary.
 
 The [verification guide](../tests/README.md) distinguishes public-projection UI tests, actual compiler/simulator checks, native persistence/process tests, integrated qualification and optional live-provider checks. No live-provider compatibility or integrated release result is asserted by this lifecycle guide.
