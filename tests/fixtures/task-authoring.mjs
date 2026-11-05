@@ -4,10 +4,11 @@ import { createAuthoringState } from '../../src/authoring-agent.mjs';
 import { digest, json, TASK_DEFINITION } from '../../src/extension-catalog.mjs';
 
 // Trusted test admission only: no artifact, approval, qualification, provider call or runtime authority.
-export function admitTaskDraft(db, lifecycle, { owner = 'maya', name = 'Task customization', operationId = randomUUID(), extensionId = randomUUID() } = {}) {
+export function admitTaskDraft(db, lifecycle, { owner = 'maya', name = 'Task customization', operationId = randomUUID(), extensionId = randomUUID(), createdAt } = {}) {
   const conversationId = randomUUID(), runId = randomUUID();
   const conversationState = { ...createAuthoringState({ ownerId: owner, sessionId: 'task-fixture', conversationId, runId }),
-    definitionId: TASK_DEFINITION, handles: { revisionId: null, draftVersion: 0, suiteDigest: null } };
+    definitionId: TASK_DEFINITION, handles: { revisionId: null, draftVersion: 0, suiteDigest: null },
+    ...(createdAt === undefined ? {} : { createdAt }) };
   const hash = digest(json({ fixture: 'blank-task-admission', operationId, extensionId }));
   transaction(db, () => {
     lifecycle.admit(owner, { extensionId, operationId, hash, name }, () => {});

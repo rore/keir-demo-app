@@ -73,7 +73,9 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch) {
         assert.ok(asked < messages.length - 1, 'The saved question precedes the explicit answer.');
         assert.equal(messages.at(-1).role, 'user');
         const input = history.users[0].content;
-        assert.equal(provider === 'openai' ? input : input.find(part => part.type === 'text').text, messages.at(-1).text);
+        const providerText = provider === 'openai' ? input : input.find(part => part.type === 'text').text;
+        const currentText = messages.at(-1).text;
+        assert.equal(providerText === currentText ? providerText : JSON.parse(providerText).currentUserMessage, currentText);
         if (/^(?:confirmed|yes)\b/i.test(messages.at(-1).text)) {
           name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
         } else text = 'Your saved changes are kept. Review them when you are ready, or continue discussing the request.';

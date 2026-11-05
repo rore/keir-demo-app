@@ -34,6 +34,7 @@ const studio = page => page.getByRole('region', { name: 'Customization Studio', 
 const available = { available: true, code: null, provider: 'openai', model: 'offline-ui-fake' };
 const reply = (route, json, status = 200) => route.fulfill({ status, json }).catch(error => { if (!route.request().failure()) throw error; });
 const message = (id, text, role = 'assistant') => ({ id, text, role, kind: 'text' });
+const transcript = (conversationId, messages, next = null) => ({ messages: messages.map(item => ({ ...item, conversationId })), next });
 function discussion(state, id = 'current', version = 1, messages = [message('latest', 'Current exchange')]) {
   return { id, extensionId: state.extension.id, purpose: 'REVISE', version, status: 'AWAITING_USER', runId: `run-${version}`,
     operation: { id: `operation-${version}`, version, runId: `run-${version}` }, messages, messagesBefore: null, code: null, review: null,
@@ -98,10 +99,7 @@ test('ordinary edits exceed eight turns in one discussion and settings recovery 
   rejectSettings = true;
   await composer.fill('Keep this settings-rejected message');
   await composer.press('Enter');
-  const recovery = ui.getByRole('article', { name: 'Assistant settings changed', exact: true });
-  await expect(recovery).toBeVisible();
-  await expect(recovery.getByRole('button', { name: 'Start new conversation', exact: true })).toBeEnabled();
-  await recovery.getByRole('button', { name: 'Start new conversation', exact: true }).click();
+  await expect(ui.getByRole('alert')).toContainText('Assistant settings changed. Your message is kept.');
   await expect(composer).toHaveValue('Keep this settings-rejected message');
   expect(turns).toHaveLength(13);
 });
@@ -141,7 +139,7 @@ test('collection pages merge summaries, keep global selection and expose more th
 });
 function requestIsGet(route) { return route.request().method() === 'GET'; }
 
-test('older message and conversation pages preserve the current exchange, unsent input and reading position', async ({ page, demo }) => {
+test('older transcript segments preserve the current exchange, unsent input and reading position', async ({ page, demo }) => {
   await signIn(page, demo.origin);
   const saved = await api(page, demo.origin, `extensions/${demo.extensionId}`);
   const current = { ...discussion(saved, 'chosen-current', 1, [message('latest', 'Current exchange'),
@@ -150,18 +148,19 @@ test('older message and conversation pages preserve the current exchange, unsent
   await page.route('**/api/authoring**', route => {
     const request = route.request(), url = new URL(request.url());
     if (request.method() !== 'GET') { turns.push(request.url()); return reply(route, {}, 500); }
-    if (url.pathname.endsWith('/messages')) {
+    if (url.pathname.endsWith('/transcript')) {
       pages.push(url.searchParams.get('before'));
-      return reply(route, { messages: Array.from({ length: 25 }, (_, index) => message(`old-${index}`, `Earlier message ${index}`)), next: null });
+      expect(url.searchParams.get('extensionId')).toBe(demo.extensionId);
+      return reply(route, transcript('old-discussion', Array.from({ length: 20 }, (_, index) =>
+        message(index === 0 ? 'latest' : `old-${index}`, `Earlier message ${index}`))));
     }
     if (url.pathname === '/api/authoring') {
-      if (url.searchParams.has('before')) return reply(route, { availability: available, current: discussion(saved, 'must-not-select'),
-        conversations: [summary(discussion(saved, 'old-discussion'))], next: null });
-      return reply(route, { availability: available, current: null, conversations: [summary(discussion(saved, 'page-first'))], next: 'discussions-older' });
+      return reply(route, { availability: available, current, conversations: [summary(current)], next: null,
+        transcript: transcript(current.id, current.messages, 'messages-older') });
     }
     return reply(route, current);
   });
-  await page.goto(`${demo.origin}/#customization=${demo.extensionId}&conversation=chosen-current`);
+  await page.goto(`${demo.origin}/#customization=${demo.extensionId}`);
   const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
   await expect(ui.getByText('Current exchange', { exact: true })).toBeVisible();
   await composer.fill('Keep this unsent input');
@@ -169,7 +168,7 @@ test('older message and conversation pages preserve the current exchange, unsent
   await log.evaluate(element => { element.scrollTop = 0; });
   const readingTop = (await ui.getByText('Current exchange', { exact: true }).boundingBox()).y;
   await ui.getByRole('button', { name: 'Load earlier messages', exact: true }).click();
-  await expect(ui.getByText(/^Earlier message /)).toHaveCount(25);
+  await expect(ui.getByText(/^Earlier message /)).toHaveCount(20);
   expect(pages).toEqual(['messages-older']);
   await expect(log).toBeFocused();
   expect(Math.abs((await ui.getByText('Current exchange', { exact: true }).boundingBox()).y - readingTop)).toBeLessThan(3);
@@ -177,9 +176,8 @@ test('older message and conversation pages preserve the current exchange, unsent
   const bubbles = await ui.locator('.rs-message > p').allTextContents();
   expect(bubbles.indexOf('Earlier message 0')).toBeLessThan(bubbles.indexOf('Current exchange'));
   await details(page);
-  await ui.getByRole('button', { name: 'Load earlier conversations', exact: true }).click();
-  await expect(ui.getByLabel('Saved authoring conversation', { exact: true })).toHaveValue('chosen-current');
-  expect(new URL(page.url()).hash).toContain('conversation=chosen-current');
+  await expect(ui.getByLabel('Saved authoring conversation', { exact: true })).toHaveCount(0);
+  expect(new URL(page.url()).hash).toBe('#customization=' + demo.extensionId);
   await expect(composer).toHaveValue('Keep this unsent input');
   expect(turns).toEqual([]);
 });
@@ -266,7 +264,7 @@ test('a failed earlier page retries locally at the same cursor without disturbin
   await expect(ui.locator('.rs-tools')).toHaveJSProperty('open', true);
   await expect(ui.locator('.rs-preview')).toBeVisible();
   await expect(ui.locator('.sr-only[role="status"]')).toHaveText('Earlier messages loaded.');
-  expect(new URL(page.url()).hash).toContain('conversation=retry-history');
+  expect(new URL(page.url()).hash).toBe('#customization=' + demo.extensionId);
   expect(turns).toEqual([]);
 });
 
@@ -383,8 +381,7 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
     expect(await api(page, demo.origin, `extensions/${extensionId}`)).toEqual(before);
     expect(mutations).toEqual([]);
     expect(demo.requests).toEqual([]);
-    await details(page);
-    await ui.getByLabel('Saved authoring conversation', { exact: true }).selectOption('archived-context-boundary');
+    await page.goto(`${demo.origin}/#customization=${extensionId}&conversation=archived-context-boundary`);
     await expect(recovery).toHaveCount(0);
     await expect(decision).toHaveCount(0);
     await expect(ui.getByText('Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.', { exact: true })).toBeVisible();
@@ -421,7 +418,7 @@ test('reloading an accepted context continuation keeps the prior decision hidden
   await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
   expect(turns).toHaveLength(1);
   expect(turns[0]).toMatchObject({ target: { kind: 'resume', extensionId }, conversationId: 'reload-context-continuation', expectedVersion: 1 });
-  expect(new URL(page.url()).hash).toContain('conversation=reload-context-continuation');
+  expect(new URL(page.url()).hash).toBe('#customization=' + extensionId);
   await page.reload();
   await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
   await expect(ui.locator('.rs-working')).toContainText('Working on your request');

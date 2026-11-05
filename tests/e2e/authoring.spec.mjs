@@ -214,8 +214,7 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
   expect(calls.turns[1].operationId).not.toBe(calls.turns[0].operationId);
   expect(await ui.getByText('Checking the follow-up request.', { exact: true }).count()).toBe(1);
   expect(secondPolls).toBeGreaterThanOrEqual(1);
-  expect(new URL(page.url()).hash).toContain('customization=' + demo.extensionIds.maya);
-  expect(new URL(page.url()).hash).toContain('conversation=conversation-1');
+  expect(new URL(page.url()).hash).toBe('#customization=' + demo.extensionIds.maya);
 });
 
 for (const width of [1440, 390]) test(`lost accepted turn response is read back without automatic repost (${width}px)`, async ({ page, demo }) => {
@@ -338,7 +337,7 @@ test('held status from an old owner cannot appear in the newly mounted Studio af
   expect(calls.turns).toHaveLength(1);
 });
 
-test('mount, reload, readback and New conversation never submit; saved messages reappear from GET state', async ({ page, demo }) => {
+test('mount, reload and readback never submit; saved messages reappear from GET state', async ({ page, demo }) => {
   const saved = conversation(demo.extensionIds.maya, 'saved-conversation', 4, 'AWAITING_USER', [
     message('saved-user', 'user', 'Please keep this conversation'), message('saved-assistant', 'assistant', 'This message came from saved state.', 'clarification'),
   ]);
@@ -361,7 +360,7 @@ test('mount, reload, readback and New conversation never submit; saved messages 
   await expect(studio(page).getByText('This message came from saved state.', { exact: true })).toBeVisible();
   await openDetails(page);
   await authoring(page).getByRole('button', { name: 'Check authoring status', exact: true }).click();
-  await authoring(page).getByRole('button', { name: 'Continue current changes in a new conversation', exact: true }).click();
+  await expect(authoring(page).getByRole('button', { name: 'Continue current changes in a new conversation', exact: true })).toHaveCount(0);
   await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toBeVisible();
   expect(getCount).toBeGreaterThan(1);
   expect(calls.turns).toHaveLength(0);

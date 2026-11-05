@@ -22,7 +22,7 @@ const safeMessage = code => ({
   RUN_INTERRUPTED: 'The previous run was interrupted. Check the current draft before explicitly continuing.',
   CANCELLED: 'Authoring stopped. Check saved state; a draft may already have been saved.',
   CONTEXT_LIMIT: 'Progress is saved. Continue this discussion to work from the current draft and recent context.',
-  CONVERSATION_LIMIT: 'The owner conversation limit has been reached.', CONFIG_CHANGED: 'The AI configuration changed. Start a fresh conversation.',
+  CONVERSATION_LIMIT: 'The owner conversation limit has been reached.', CONFIG_CHANGED: 'The AI configuration changed. Check saved state before sending again.',
   BUDGET_EXHAUSTED: 'This authoring run reached its resource limit.', REVIEW_NOT_READY: 'Run the current independent examples before offering review.',
 }[code] ?? 'Authoring could not finish safely. Check saved state before continuing.');
 const error = (status, code) => { const value = new AppError(status, safeMessage(code)); value.code = codeFor(code); return value; };
@@ -100,16 +100,70 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         || !db.prepare('SELECT 1 FROM authoring_messages WHERE conversation_id=? AND owner_id=? AND sequence=?').get(id, owner, anchor.sequence))) throw error(400, 'INVALID_TOOL_ARGUMENTS');
     const rows = db.prepare(`SELECT sequence,payload FROM authoring_messages WHERE conversation_id=? AND owner_id=?${anchor ? ` AND sequence${anchor.inclusive ? '<=' : '<'}?` : ''} ORDER BY sequence DESC`)
       .iterate(...[id, owner, ...(anchor ? [anchor.sequence] : [])]);
+    return boundedMessages(rows, row => JSON.parse(row.payload),
+      (row, inclusive) => cursor({ scope, sequence: row.sequence, inclusive }), maxBytes);
+  }
+  // Start with the item index so a sparse item does not scan the owner's other segments.
+  const linkedSegments = `FROM extension_conversation_links l CROSS JOIN authoring_conversations c
+    WHERE l.owner_id=? AND l.extension_id=? AND c.id=l.conversation_id AND c.owner_id=l.owner_id`;
+  const segmentOrder = ' ORDER BY c.created_at DESC,c.id DESC';
+  const latestSegment = (owner, extensionId) => db.prepare(`SELECT c.* ${linkedSegments}${segmentOrder} LIMIT 1`).get(owner, extensionId);
+  const running = row => ['RUNNING', 'CANCELLING'].includes(row.status);
+  function transportMatches(state) {
+    const transport = state.transport;
+    return !transport || (transport.provider === config.provider && transport.model === config.model
+      && (transport.settingsRevision ?? null) === (config.settingsRevision ?? null));
+  }
+  function* itemMessageRows(owner, extensionId, anchor) {
+    const segments = db.prepare(`SELECT c.id,c.created_at ${linkedSegments}${anchor ? ' AND (c.created_at,c.id)<=(?,?)' : ''}${segmentOrder}`)
+      .iterate(owner, extensionId, ...(anchor ? [anchor.createdAt, anchor.conversationId] : []));
+    for (const segment of segments) {
+      const boundary = anchor?.conversationId === segment.id ? anchor : null;
+      const rows = db.prepare(`SELECT sequence,payload FROM authoring_messages WHERE conversation_id=? AND owner_id=?
+        ${boundary ? `AND sequence${boundary.inclusive ? '<=' : '<'}?` : ''} ORDER BY sequence DESC`)
+        .iterate(segment.id, owner, ...(boundary ? [boundary.sequence] : []));
+      for (const row of rows) yield { ...row, conversationId: segment.id, createdAt: segment.created_at };
+    }
+  }
+  function transcript(owner, extensionId, before, maxBytes = 262144) {
+    lifecycle.assertAvailable(owner, extensionId);
+    const scope = encode(['transcript', owner, extensionId]);
+    const anchor = before === undefined ? null : parseCursor(before, scope);
+    if (anchor && (Object.keys(anchor).length !== 5 || !integer(anchor.createdAt) || !token(anchor.conversationId)
+        || !integer(anchor.sequence) || typeof anchor.inclusive !== 'boolean'
+        || !db.prepare(`SELECT 1 ${linkedSegments} AND c.id=? AND c.created_at=? AND EXISTS (
+          SELECT 1 FROM authoring_messages m WHERE m.conversation_id=c.id AND m.owner_id=c.owner_id AND m.sequence=?)`)
+          .get(owner, extensionId, anchor.conversationId, anchor.createdAt, anchor.sequence))) throw error(400, 'INVALID_TOOL_ARGUMENTS');
+    return boundedMessages(itemMessageRows(owner, extensionId, anchor),
+      row => ({ ...JSON.parse(row.payload), conversationId: row.conversationId }),
+      ({ conversationId, createdAt, sequence }, inclusive) => cursor({ scope, conversationId, createdAt, sequence, inclusive }), maxBytes);
+  }
+  function boundedMessages(rows, readMessage, messageCursor, maxBytes) {
     const messages = []; let next = null, first;
     for (const row of rows) {
-      const message = JSON.parse(row.payload);
-      const candidate = cursor({ scope, sequence: row.sequence, inclusive: true });
+      const message = readMessage(row);
+      const candidate = messageCursor(row, false);
       if (length({ messages: [message, ...messages], next: candidate }) > maxBytes || messages.length >= 20) {
-        next = messages.length ? cursor({ scope, sequence: first, inclusive: false }) : candidate; break;
+        next = messages.length ? first : messageCursor(row, true); break;
       }
-      messages.unshift(message); first = row.sequence;
+      messages.unshift(message); first = candidate;
     }
     return { messages, next };
+  }
+  function priorUserMessages(ctx) {
+    const texts = [];
+    if (ctx.input.target.kind === 'create') return { texts, truncated: false };
+    let scanned = 0;
+    for (const row of itemMessageRows(ctx.owner, ctx.extensionId)) {
+      if (++scanned > 60) return { texts, truncated: true };
+      const { id, role, text } = JSON.parse(row.payload);
+      if (role !== 'user' || typeof text !== 'string' || !text.trim()
+          || row.conversationId === ctx.id && id === ctx.input.operationId
+          || text === 'Continue from saved work. Ask before changing any independent examples.') continue;
+      if (texts.length === 6 || length([text, ...texts]) > 8192) return { texts, truncated: true };
+      texts.unshift(text);
+    }
+    return { texts, truncated: false };
   }
   function appendMessage(owner, id, message) {
     if (db.prepare('SELECT 1 FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(id, message.id)) return;
@@ -136,7 +190,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   }
   function read(owner, id) { const row = rowFor(owner, id); if (!row) throw error(404, 'STALE_CONVERSATION'); return dto(row); }
   function list(owner, extensionId, before) {
-    if (extensionId !== undefined) lifecycle.state(owner, extensionId);
+    const item = extensionId === undefined ? null : lifecycle.state(owner, extensionId);
     const scope = encode(['conversations', owner, extensionId ?? null]), anchor = before === undefined ? null : parseCursor(before, scope);
     const filter = extensionId === undefined ? '' : ' AND l.extension_id=?';
     const args = [owner, ...(extensionId === undefined ? [] : [extensionId])];
@@ -146,16 +200,31 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const rows = db.prepare(`${query}${anchor ? ' AND (c.created_at<? OR (c.created_at=? AND c.id<?))' : ''} ORDER BY c.created_at DESC,c.id DESC LIMIT 21`)
       .all(...args, ...(anchor ? [anchor.createdAt, anchor.createdAt, anchor.id] : []));
     const page = rows.slice(0, 20), last = page.at(-1);
-    const current = extensionId === undefined ? null : db.prepare(`${query}
-      AND CASE WHEN json_valid(c.state) THEN json_extract(c.state,'$.definitionId') END=?
-      ORDER BY c.created_at DESC,c.id DESC LIMIT 1`).get(...args, TASK_DEFINITION);
-    return { availability: availability(), conversations: page.map(row => ({ id: row.id, version: row.version, status: row.status,
+    const latest = item && latestSegment(owner, extensionId), saved = latest && decode(latest).state;
+    // The item transcript carries messages; the current segment supplies execution metadata.
+    const current = saved?.definitionId === TASK_DEFINITION && (running(latest)
+      || item.retired === false && same(saved.handles, draftHandles(item)) && transportMatches(saved)) ? dto(latest, false) : null;
+    const result = { availability: availability(), conversations: page.map(row => ({ id: row.id, version: row.version, status: row.status,
       extensionId: linkFor(owner, row.id)?.extension_id ?? null, purpose: linkFor(owner, row.id)?.purpose ?? null,
       runId: row.run_id, creationOperationId: row.creation_operation_id, operationId: decode(row).operations.at(-1).id })),
     next: rows.length > page.length ? cursor({ scope, id: last.id, createdAt: last.created_at }) : null,
-    current: current ? dto(current) : null };
+    current };
+    if (item) result.transcript = transcript(owner, extensionId, undefined, 262144 - length({ ...result, transcript: null }) + 4);
+    return result;
   }
   function assertLease(lease) { if (!lease || !token(lease.sessionId) || lease.current() !== true) stop('STALE_CONTEXT'); }
+  function revisesCurrent(input, state) {
+    const { baseRevisionId, selectionGeneration, extensionId } = input.target;
+    const revision = state.selection.revision;
+    return selectionGeneration === state.selection.generation && (state.revisionId !== null
+      ? baseRevisionId === state.revisionId
+      : baseRevisionId === null || revision?.id === baseRevisionId && revision.extensionId === extensionId);
+  }
+  function usedOperation(owner, extensionId, operationId) {
+    return db.prepare(`SELECT 1 FROM extension_conversation_links l JOIN authoring_operations o
+      ON o.conversation_id=l.conversation_id AND o.owner_id=l.owner_id
+      WHERE l.owner_id=? AND l.extension_id=? AND o.operation_id=? LIMIT 1`).get(owner, extensionId, operationId);
+  }
   function validate(input) {
     if (!object(input) || Object.keys(input).length !== 6 || !['conversationId', 'operationId', 'text', 'expectedVersion', 'expectedDraftVersion', 'target'].every(key => Object.hasOwn(input, key))
         || !(input.conversationId === null || token(input.conversationId)) || !token(input.operationId)
@@ -207,7 +276,18 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           if (db.prepare('SELECT 1 FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(ctx.id, ctx.input.operationId)) stop('STALE_CONVERSATION');
           if (ctx.input.target.kind === 'create') lifecycle.admit(ctx.owner,
             { extensionId: ctx.extensionId, operationId: ctx.input.operationId, hash: ctx.hash, name: 'Untitled customization' }, () => assertLease(ctx.lease));
-          const current = lifecycle.state(ctx.owner, ctx.extensionId); if (current.draftVersion !== ctx.input.expectedDraftVersion) stop('STALE_DRAFT');
+          const current = lifecycle.state(ctx.owner, ctx.extensionId);
+          if (!same(draftHandles(current), state.handles)
+              || ctx.input.target.kind === 'revise' && !revisesCurrent(ctx.input, current)) stop('STALE_DRAFT');
+          if (ctx.input.target.kind !== 'create') {
+            const latest = latestSegment(ctx.owner, ctx.extensionId);
+            if (usedOperation(ctx.owner, ctx.extensionId, ctx.input.operationId)
+                || row && latest?.id !== row.id || latest && running(latest)) stop('STALE_CONVERSATION');
+            if (!row && latest) {
+              state.createdAt = Math.max(state.createdAt, latest.created_at + 1);
+              if (!integer(state.createdAt)) stop('STALE_CONVERSATION');
+            }
+          }
           state.runLedger = { base: prior?.state.usage.reservedMicros ?? 0, reserved: 0, ordinal: 0 };
         } else {
           if (!row || row.run_id !== ctx.runId || row.version !== state.version || row.cancel_requested || row.status !== 'RUNNING') stop('STALE_CONTEXT');
@@ -408,17 +488,17 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     if (current.draftVersion !== input.expectedDraftVersion) throw error(409, 'STALE_DRAFT');
     if (input.target.kind === 'revise') {
       const base = input.target.baseRevisionId;
-      if (input.target.selectionGeneration !== currentState.selection.generation
-          || current.revisionId !== null && base !== current.revisionId
-          || current.revisionId === null && base !== null && !(currentState.selection.revision?.id === base && currentState.selection.revision?.extensionId === extensionId)) throw error(409, 'STALE_DRAFT');
+      if (!revisesCurrent(input, currentState)) throw error(409, 'STALE_DRAFT');
       if (base) lifecycle.source(owner, base, extensionId);
     }
+    const latest = input.target.kind === 'create' ? null : latestSegment(owner, extensionId);
+    if (input.target.kind !== 'create' && usedOperation(owner, extensionId, input.operationId)
+        || row && latest?.id !== row.id) throw error(409, 'STALE_CONVERSATION');
     if (prior && !same(prior.state.handles, current)) throw error(409, 'STALE_DRAFT');
     const available = availability(); if (!available.available) throw error(503, available.code);
     if (closing || live.size >= 2 || [...live.values()].some(item => item.owner === owner)) throw error(429, 'AI_BUSY');
-    if (row && (row.version !== input.expectedVersion || ['RUNNING', 'CANCELLING'].includes(row.status)) || !row && input.expectedVersion !== 0) throw error(409, 'STALE_CONVERSATION');
-    if (prior?.state.transport && (prior.state.transport.provider !== config.provider || prior.state.transport.model !== config.model
-        || (prior.state.transport.settingsRevision ?? null) !== (config.settingsRevision ?? null))) throw error(409, 'CONFIG_CHANGED');
+    if (latest && running(latest) || row && row.version !== input.expectedVersion || !row && input.expectedVersion !== 0) throw error(409, 'STALE_CONVERSATION');
+    if (prior && !transportMatches(prior.state)) throw error(409, 'CONFIG_CHANGED');
     const id = row?.id ?? randomUUID(), runId = randomUUID(), controller = new AbortController();
     const state = prior?.state ?? createAuthoringState({ ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId });
     Object.assign(state, { definitionId: TASK_DEFINITION, ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId, status: 'IDLE', handles: current,
@@ -474,11 +554,13 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   }
   async function turn(owner, input, lease) {
     const ctx = prepare(owner, input, lease); if (ctx.duplicate) return ctx.duplicate;
+    const history = priorUserMessages(ctx);
     let native; try { native = providerFactory(config); } catch { throw error(503, 'TOOL_FAILED'); }
     live.set(ctx.runId, ctx);
     const provider = { ...native, complete: args => tracked(ctx, () => native.complete(args)) };
     const task = runAuthoringTurn({ provider, host: ctx.host, context: ctx.context, state: ctx.state,
-      input: { id: input.operationId, text: input.text, expectedVersion: input.expectedVersion }, signal: ctx.controller.signal });
+      input: { id: input.operationId, text: input.text, expectedVersion: input.expectedVersion },
+      priorUserMessages: history, signal: ctx.controller.signal });
     ctx.promise = (async () => {
       let result;
       try { result = await task; await Promise.allSettled([...ctx.tracked]); }
@@ -508,7 +590,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     return read(owner, id);
   }
   return {
-    list, read, turn, cancel, availability, messages: messagePage,
+    list, read, turn, cancel, availability, messages: messagePage, transcript,
     assertItemIdle(owner, extensionId) {
       if ([...live.values()].some(ctx => ctx.owner === owner && ctx.extensionId === extensionId)) {
         const failure = new AppError(409, 'Open this customization and use Stop, then wait for authoring to settle before deleting it.');

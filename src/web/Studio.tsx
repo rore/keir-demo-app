@@ -39,7 +39,7 @@ type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"
 }[] };
 type SavedReview = { owner: State["owner"]; extension: NonNullable<State["extension"]>; revision: Revision;
   draftVersion: number; evidenceId: string; suiteDigest: string | null; selection: State["selection"] };
-type Message = { id: number | string; who: "You" | "Studio"; text: string; evidenceId?: string; exampleCount?: number; context?: string };
+type Message = { id: number | string; who: "You" | "Studio"; text: string; conversationId?: string; evidenceId?: string; exampleCount?: number; context?: string };
 type Operation = { id: string; runId: string; version: number };
 type Conversation = {
   retired?: boolean;
@@ -51,11 +51,11 @@ type Conversation = {
   code: string | null; review: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string; eligible: boolean } | null;
   draft: { revisionId: string | null; draftVersion: number; suiteDigest: string | null }; selection: { revisionId: string | null; generation: number };
 };
+type Transcript = { messages: (Conversation["messages"][number] & { conversationId: string })[]; next: string | null };
 type Authoring = {
   availability: { available: boolean; code: string | null; provider: "openai" | "anthropic" | null; model: string | null };
-  conversations: { extensionId: string | null; purpose: "CREATE" | "REVISE" | null; id: string; version: number; status: Conversation["status"]; runId: string; creationOperationId?: string; operationId: string }[];
   current: Conversation | null;
-  next?: string | null;
+  transcript?: Transcript;
 };
 type TurnTarget = { kind: "create" } | { kind: "revise"; extensionId: string; baseRevisionId: string | null; selectionGeneration: number } | { kind: "resume"; extensionId: string };
 type Turn = { target: TurnTarget; conversationId: string | null; operationId: string; text: string; expectedVersion: number; expectedDraftVersion: number };
@@ -121,7 +121,7 @@ function authoringReason(code: string | null | undefined) {
   if (["BUDGET_EXHAUSTED", "EXPIRED"].includes(code)) return "An earlier authoring policy stopped this saved run. Your discussion, proposal and examples are kept. You can explicitly continue here under the current settings and shared allowance.";
   if (code === "PROVIDER_RATE_LIMIT") return "Your AI provider reached a request or account limit. Your discussion and any saved draft are kept. Check provider usage or explicitly try again later. Nothing is retried automatically.";
   if (code === "CONTEXT_LIMIT") return "This run reached the assistant’s request size boundary. Progress is saved. Explicitly continue here to use the current saved proposal and recent discussion; nothing is sent automatically.";
-  if (code === "CONFIG_CHANGED") return "Assistant settings changed. Start a new conversation to continue; your saved customization remains available.";
+  if (code === "CONFIG_CHANGED") return "Assistant settings changed. Your message is kept. Send it again when you’re ready.";
   if (code === "CONVERSATION_LIMIT") return "An earlier authoring policy stopped this request. Your saved conversations remain available.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
   if (code === "REVIEW_NOT_READY") return "The saved examples do not yet support approval. Inspect their results or discuss the correction.";
@@ -157,11 +157,11 @@ const checkedObservation = (item: Evidence["reports"][number]) => knownScenarioT
 const summarizeExamples = (proof: Evidence | null) => [...new Set(proof?.reports.filter(checkedObservation).map(item => observedTasks(item.report.observed).replace(/\.$/, "")) ?? [])].join("; ");
 
 const continuationPrefix = "Continue my saved proposal and examples using these earlier messages. If the context is incomplete, ask before changing the examples.\n\n";
-function conversationMessages(id: string, messages: Conversation["messages"]): Message[] {
-  return messages.map(item => ({ id: `ai:${id}:${item.id}`, who: item.role === "user" ? "You" : "Studio",
+function conversationMessage(id: string, item: Conversation["messages"][number]): Message {
+  return { id: `ai:${id}:${item.id}`, conversationId: id, who: item.role === "user" ? "You" : "Studio",
     text: item.role === "user" && item.text.startsWith(continuationPrefix) ? "Continue from saved work." : item.text,
     evidenceId: item.role === "assistant" ? item.receipt?.evidenceId : undefined,
-    context: item.role === "user" && item.text.startsWith(continuationPrefix) ? item.text : undefined }));
+    context: item.role === "user" && item.text.startsWith(continuationPrefix) ? item.text : undefined };
 }
 
 function AssistantSetup({ request, close, saved, beginSave }: { request: Props["request"]; close: (uncertain: boolean) => void; saved: (value: Setup) => void; beginSave: () => void }) {
@@ -335,7 +335,8 @@ function CustomizationName({ ownerId, itemId, name, disabled, request, saved }: 
 export default function Studio({ request, changed, beforeSelectionChange, back, backToTasks, createNew, backLabel, target, ownerId, recoveryKey, targeted, unavailable, task }: Props) {
   const initialTarget = useRef(target);
   const extensionId = useRef(target.extensionId);
-  const historyMode = useRef(target.history === true);
+  const requestedConversation = useRef<string | null>(null);
+  const historyMode = useRef(target.history === true || !!(target.extensionId && target.conversationId));
   const [historyView, setHistoryView] = useState(historyMode.current);
   const [entry, setEntry] = useState(target.extensionId || target.conversationId ? "item" : "start");
   const [hostCatalog, setHostCatalog] = useState<HostCatalog | null>(null);
@@ -379,7 +380,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [authoring, setAuthoring] = useState<Authoring | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [authoringError, setAuthoringError] = useState("");
-  const [needsFreshDiscussion, setNeedsFreshDiscussion] = useState(false);
   const [contextContinuation, setContextContinuation] = useState<{ conversationId: string; expectedVersion: number } | null>(null);
   const [pendingTurn, setPendingTurn] = useState<Turn | null>(() => pendingRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId))?.turn ?? null);
   const [retryTurn, setRetryTurn] = useState(false);
@@ -397,8 +397,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [revisionsNext, setRevisionsNext] = useState<string | null | undefined>(undefined);
   const [messagesBefore, setMessagesBefore] = useState<string | null>(null);
-  const [messagePageError, setMessagePageError] = useState<{ conversationId: string; before: string } | null>(null);
-  const messageHistory = useRef<{ conversationId: string; anchor: string | number | null; snapshotBefore: string | null; ids: Set<string | number> } | null>(null);
+  const [messagePageError, setMessagePageError] = useState<{ scope: string; before: string } | null>(null);
+  const messageHistory = useRef<{ scope: string; anchor: string | number | null; snapshotBefore: string | null; ids: Set<string | number> } | null>(null);
   const prependedMessages = useRef<{ height: number; top: number; focus: HTMLElement | null; anchor: { element: HTMLElement; top: number } | null } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const room = useRef<HTMLDivElement>(null);
@@ -456,15 +456,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   function turnTarget(): TurnTarget {
     if (!extensionId.current) return { kind: "create" };
-    return conversation ? { kind: "resume", extensionId: extensionId.current }
+    return conversation && !staleConversation && !historyView && !conversation.retired ? { kind: "resume", extensionId: extensionId.current }
       : { kind: "revise", extensionId: extensionId.current, baseRevisionId: state?.draft?.id
         ?? (state?.selection.revision?.extensionId === extensionId.current ? state.selection.revision.id : null), selectionGeneration: state!.selection.generation };
   }
-  const retired = state?.retired === true || conversation?.retired === true || retiredOperation;
-  const earlierModelDiscussion = conversation?.retired === true && !!conversation.extensionId && !!state?.extension && !state.retired;
+  const retired = state?.retired === true || conversation?.retired === true && !conversation.extensionId || retiredOperation;
   const executionUnavailable = state?.executionAvailability?.available === false;
   const offer = conversation?.review;
-  const eligibleOffer = offer?.eligible === true && !!state?.draft && offer.revisionId === state.draft.id
+  const eligibleOffer = !historyView && !conversation?.retired && offer?.eligible === true && !!state?.draft && offer.revisionId === state.draft.id
     && offer.draftVersion === state.draftVersion && offer.suiteDigest === state.draft.suiteDigest
     && conversation?.extensionId !== null;
   const decisionEvidenceId = state?.draft ? (state.approved && state.approvedEvidenceId ? state.approvedEvidenceId
@@ -490,18 +489,19 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const activeAuthoring = running(conversation);
   const legacyConversation = !!conversation && conversation.extensionId === null;
   const staleConversation = !!conversation && !!state?.extension && (conversation.extensionId !== state.extension.id
-    || conversation.draft.draftVersion !== state.draftVersion || conversation.draft.revisionId !== (state.draft?.id ?? null));
+    || conversation.draft.draftVersion !== state.draftVersion || conversation.draft.revisionId !== (state.draft?.id ?? null)
+    || conversation.draft.suiteDigest !== (state.draft?.suiteDigest ?? null));
   const contextRecovery = (conversation?.status === "BLOCKED" && conversation.code === "CONTEXT_LIMIT"
     || !!contextContinuation && contextContinuation.conversationId === conversation?.id)
-    && !legacyConversation && !staleConversation && !historyView && !needsFreshDiscussion;
-  const earlierMessagesFailed = messagePageError?.conversationId === conversation?.id && messagePageError?.before === messagesBefore;
+    && !legacyConversation && !staleConversation && !historyView;
+  const earlierMessagesFailed = messagePageError?.scope === messageHistory.current?.scope && messagePageError?.before === messagesBefore;
   const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn || !!pendingExample;
-  const sendDisabled = retired || disabled || legacyConversation || staleConversation || historyView || activeView;
+  const sendDisabled = retired || disabled || legacyConversation || historyView || activeView;
   const reviewReady = !!savedReview && (savedReview.revision.kind !== "authored" || !!reviewSource && reviewSource.key === review
     && reviewSource.ownerId === savedReview.owner.id && reviewSource.revisionId === savedReview.revision.id && reviewSource.suiteDigest === savedReview.suiteDigest);
   const reviewedApproved = viewedCurrent && !!state?.approved && state.approvedEvidenceId === savedReview?.evidenceId && review === reviewKey;
   const reviewAllowed = !retired && !!decisionEvidenceId && !!state?.draft && !disabled && !legacyConversation && !staleConversation && !historyView
-    && !contextRecovery && !needsFreshDiscussion && !restart;
+    && !contextRecovery && !restart;
   const newerEvidenceId = state?.evidence?.passed && state.evidence.id !== savedReview?.evidenceId ? state.evidence.id : null;
   const latestReviewAvailable = !!savedReview && (!viewedCurrent || !!newerEvidenceId);
   const viewedInUse = !!savedReview && trusted && state?.owner.id === savedReview.owner.id && state.extension?.id === savedReview.extension.id
@@ -611,7 +611,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     requestAnimationFrame(() => {
       if (!mounted.current || viewIntent.current !== intent || focusIntent.current !== focus) return;
       const target = reviewInvoker.current;
-      const savedTurn = evidenceReturn.current ? document.getElementById("studio-evidence-link-" + evidenceReturn.current) : null;
+      const savedTurn = evidenceReturn.current ? room.current?.querySelector<HTMLElement>(`[data-evidence-link="${CSS.escape(evidenceReturn.current)}"]`) : null;
       if (chatEnd.current?.parentElement) chatEnd.current.parentElement.scrollTop = conversationReturn.current;
       (target?.isConnected && target.closest(".read-studio") === room.current?.closest(".read-studio") && target.getClientRects().length
         ? target : savedTurn ?? room.current?.querySelector<HTMLElement>("#studio-message"))?.focus({ preventScroll: true });
@@ -767,7 +767,41 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
   }
-  async function adoptConversation(next: Conversation, turn: number, creationOperationId?: string) {
+  function mergeMessages(incoming: Message[], scope: string, before?: string | null) {
+    const page = messageHistory.current;
+    if (before !== undefined && (page?.scope !== scope || before && (incoming.length
+      ? !incoming.some(item => page.ids.has(item.id)) : before !== page.snapshotBefore))) {
+      messageHistory.current = { scope, anchor: incoming[0]?.id ?? null,
+        snapshotBefore: before, ids: new Set([...(page?.scope === scope ? page.ids : []), ...incoming.map(item => item.id)]) };
+      setMessagesBefore(before);
+      setMessagePageError(null);
+    } else if (page?.scope === scope) {
+      if (before !== undefined) page.snapshotBefore = before;
+      incoming.forEach(item => page.ids.add(item.id));
+    }
+    setMessages(old => {
+      const merged = scope.startsWith("item:") ? [...old] : old.filter(item => typeof item.id !== "string" || item.id.startsWith(scope + ":"));
+      let position = merged.length;
+      for (let index = incoming.length - 1; index >= 0; index--) {
+        const item = incoming[index];
+        const existing = merged.findIndex(message => message.id === item.id);
+        if (existing < 0) merged.splice(position, 0, item);
+        else {
+          const previous = merged[existing];
+          if (item.text !== previous.text || item.who !== previous.who || item.context !== previous.context || item.evidenceId !== previous.evidenceId)
+            merged[existing] = item;
+          position = existing;
+        }
+      }
+      return merged.length === old.length && merged.every((item, index) => item === old[index]) ? old : merged;
+    });
+  }
+  function loadTranscript(itemId: string, transcript: Transcript) {
+    const incoming = transcript.messages.map(item => conversationMessage(item.conversationId, item));
+    mergeMessages(incoming, "item:" + itemId, transcript.next);
+    if (incoming.length) initialized.current = true;
+  }
+  async function adoptConversation(next: Conversation, turn: number, newItem = false, transcriptLoaded = false) {
     if (!mounted.current || serial.current !== turn) return;
     if (extensionId.current && next.extensionId !== extensionId.current || initialTarget.current.conversationId && !initialTarget.current.extensionId && next.extensionId !== null) throw new Error("Conversation customization mismatch");
     if (next.extensionId && (!running(next) || state?.extension?.id !== next.extensionId)) {
@@ -776,78 +810,73 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (!mounted.current || serial.current !== turn) return;
       apply(saved);
     }
-    if (next.id !== conversation?.id) setNeedsFreshDiscussion(false);
     setContextContinuation(old => old && (old.conversationId !== next.id || next.version > old.expectedVersion && !running(next)) ? null : old);
-    setConversation(next);
-    callbacks.current.targeted({ extensionId: next.extensionId, conversationId: next.id, history: historyMode.current });
-    setAuthoring(index => {
-      if (!index) return index;
-      const previous = index.conversations.find(item => item.id === next.id);
-      const summary = { extensionId: next.extensionId, purpose: next.purpose, id: next.id, version: next.version, status: next.status, runId: next.runId, operationId: next.operation.id, creationOperationId: previous?.creationOperationId ?? creationOperationId };
-      return { ...index, conversations: [summary, ...index.conversations.filter(item => item.id !== next.id)] };
-    });
-    const incoming = conversationMessages(next.id, next.messages);
-    const page = messageHistory.current;
-    if (page?.conversationId !== next.id || next.messagesBefore && (incoming.length
-      ? !incoming.some(item => page.ids.has(item.id)) : next.messagesBefore !== page.snapshotBefore)) {
-      messageHistory.current = { conversationId: next.id, anchor: incoming[0]?.id ?? null,
-        snapshotBefore: next.messagesBefore ?? null, ids: new Set([...(page?.conversationId === next.id ? page.ids : []), ...incoming.map(item => item.id)]) };
-      setMessagesBefore(next.messagesBefore ?? null);
-      setMessagePageError(null);
-    } else {
-      page.snapshotBefore = next.messagesBefore ?? null;
-      incoming.forEach(item => page.ids.add(item.id));
+    if (!transcriptLoaded) {
+      const itemScope = "item:" + next.extensionId;
+      const incoming = next.messages.map(message => conversationMessage(next.id, message));
+      const page = messageHistory.current;
+      const item = !!next.extensionId && !historyMode.current && (page?.scope === itemScope || newItem);
+      if (item && next.messagesBefore && incoming.length && !incoming.some(message => page?.ids.has(message.id))) {
+        const transcript = await callbacks.current.request<Transcript>(`authoring/transcript?extensionId=${encodeURIComponent(next.extensionId!)}`, "GET", undefined, authoringLifetime.current.signal);
+        if (!mounted.current || serial.current !== turn || extensionId.current !== next.extensionId) return;
+        loadTranscript(next.extensionId!, transcript);
+      } else {
+        mergeMessages(incoming, item ? itemScope : "ai:" + next.id,
+          item ? page?.scope === itemScope ? undefined : null : next.messagesBefore ?? null);
+      }
     }
-    setMessages(old => {
-      const ids = new Set(old.map(item => item.id));
-      const byId = new Map(incoming.map(item => [item.id, item]));
-      const merged = [...old.filter(item => typeof item.id !== "string" || item.id.startsWith(`ai:${next.id}:`)).map(item => {
-        const updated = byId.get(item.id); return updated && (updated.text !== item.text || updated.who !== item.who || updated.context !== item.context || updated.evidenceId !== item.evidenceId) ? updated : item;
-      }), ...incoming.filter(item => !ids.has(item.id))];
-      return merged.length === old.length && merged.every((item, index) => item === old[index]) ? old : merged;
-    });
+    setConversation(next);
+    callbacks.current.targeted({ extensionId: next.extensionId, conversationId: !next.extensionId || historyMode.current ? next.id : null, history: historyMode.current });
     initialized.current = true; setEntry("item");
   }
-  async function loadAuthoring(id?: string | null, snapshot = state) {
+  async function adoptAuthoring(next: Authoring, turn: number, snapshot = state, id?: string | null) {
+    if (!mounted.current || serial.current !== turn) return;
+    setAuthoring(next);
+    const itemId = extensionId.current;
+    const currentWork = next.current && itemId && next.current.extensionId === itemId && (running(next.current) || snapshot
+      && next.current.draft.draftVersion === snapshot.draftVersion && next.current.draft.revisionId === (snapshot.draft?.id ?? null)
+      && next.current.draft.suiteDigest === (snapshot.draft?.suiteDigest ?? null));
+    const historical = !!itemId && !!id && id !== next.current?.id;
+    historyMode.current = historical;
+    setHistoryView(historical);
+    if (itemId && !historical && next.transcript) loadTranscript(itemId, next.transcript);
+    const selected = id ?? (currentWork ? next.current!.id : null);
+    if (selected) {
+      const current = next.current?.id === selected ? next.current : await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(selected)}`, "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn) return;
+      if (current?.id !== selected || current.extensionId !== extensionId.current) throw new Error("Unconfirmed conversation");
+      await adoptConversation(current, turn, false, !!itemId && !historical && !!next.transcript);
+      if (mounted.current && serial.current === turn) requestedConversation.current = historical || !itemId ? selected : null;
+    } else if (itemId) {
+      requestedConversation.current = null;
+      setConversation(null);
+      callbacks.current.targeted({ extensionId: itemId, conversationId: null });
+    }
+  }
+  async function loadAuthoring(id = requestedConversation.current, snapshot = state) {
     if (locked.current) return;
+    requestedConversation.current = id;
     locked.current = true;
     const turn = ++serial.current;
     setBusy("Checking authoring status…"); setAuthoringError("");
     try {
       const next = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
-      setAuthoring(next);
-      const currentWork = next.current && snapshot && next.current.extensionId === snapshot.extension?.id
-        && next.current.draft.draftVersion === snapshot.draftVersion && next.current.draft.revisionId === (snapshot.draft?.id ?? null);
-      const selected = id === undefined && extensionId.current ? currentWork ? next.current!.id : null : id;
-      if (selected) {
-        const current = next.current?.id === selected ? next.current : await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(selected)}`, "GET", undefined, authoringLifetime.current.signal);
-        if (current?.id !== selected || current.extensionId !== extensionId.current) throw new Error("Unconfirmed conversation");
-        if (id === undefined || snapshot && !conversation) { setMessages([]); messageHistory.current = null; }
-        await adoptConversation(current!, turn);
-      }
+      await adoptAuthoring(next, turn, snapshot, id);
       if (mounted.current && serial.current === turn) setObservationPaused(false);
     } catch (failure) {
       if (mounted.current && serial.current === turn && (failure as { status?: number }).status === 404 && id) callbacks.current.unavailable();
       if (mounted.current && serial.current === turn) { setAuthoring(null); setObservationPaused(true); setAuthoringError("AI authoring status could not be checked. Retry status before continuing a conversation. Saved work remains available."); }
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
-  function newConversation(keepExample = false) {
-    if (locked.current || retired || activeAuthoring || pendingTurn || pendingExample || legacyConversation) return;
-    messageHistory.current = null; setMessagesBefore(null);
-    setContextContinuation(null);
-    setConversation(null);  setReview(""); if (!keepExample) setEvidence(null); setActiveView(false);
-    historyMode.current = false; setHistoryView(false);
-    setMessages([{ id: ++messageId.current, who: "Studio", text: "Continue your current saved changes here. What would you like to change or check?" }]); initialized.current = true; setObservationPaused(false); setAuthoringError(""); setNeedsFreshDiscussion(false);
-    callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
-  }
   function returnToCurrent() {
     if (locked.current || pendingTurn || pendingExample) return;
+    requestedConversation.current = null;
     historyMode.current = false; setHistoryView(false); setConversation(null); setReview("");
     messageHistory.current = null; setMessagesBefore(null);
     setContextContinuation(null);
-    setMessages([{ id: ++messageId.current, who: "Studio", text: `These are your current saved changes${state?.draft ? ` (version ${state.draftVersion})` : ""}. What would you like to change or check?` }]);
-    initialized.current = true; setEntry("item");
+    setMessages([]);
+    initialized.current = false; setEntry("item");
     callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
     if (reviewOpen) closeReview();
     void loadAuthoring(undefined, state);
@@ -861,23 +890,36 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion });
   }
   async function recoverTurn(input: Turn, turn: number) {
+    let recoveredResponse = false;
     try {
       const recovered = await callbacks.current.request<{ operation: Operation; conversation: Conversation }>("authoring/recover", "POST", input, authoringLifetime.current.signal);
+      recoveredResponse = true;
       if (!mounted.current || serial.current !== turn) return;
       if (recovered.operation.id !== input.operationId || recovered.operation.version !== input.expectedVersion + 1
         || !recovered.operation.runId || recovered.conversation.version < recovered.operation.version
         || input.conversationId && recovered.conversation.id !== input.conversationId
         || input.target.kind !== "create" && recovered.conversation.extensionId !== input.target.extensionId) throw new Error("Operation customization mismatch");
-      const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
+      const itemId = recovered.conversation.extensionId;
+      if (extensionId.current && itemId !== extensionId.current) throw new Error("Operation customization mismatch");
+      const index = await callbacks.current.request<Authoring>(itemId ? `authoring?extensionId=${encodeURIComponent(itemId)}` : authoringPath(), "GET", undefined, authoringLifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
-      setAuthoring(index);
-      await adoptConversation(recovered.conversation, turn, input.conversationId === null ? input.operationId : undefined);
+      if (itemId && index.transcript) {
+        extensionId.current = itemId;
+        const saved = await callbacks.current.request<State>(extensionPath(itemId), "GET", undefined, authoringLifetime.current.signal);
+        if (!mounted.current || serial.current !== turn) return;
+        apply(saved);
+        await adoptAuthoring(index, turn, saved);
+      } else {
+        setAuthoring(index);
+        await adoptConversation(recovered.conversation, turn, input.target.kind === "create");
+      }
       if (!mounted.current || serial.current !== turn) return;
       retainTurn(null); setRetryTurn(false); setAuthoringError("");
       setText(value => value === input.text ? "" : value);
       return;
     } catch (failure) {
       if (!mounted.current || serial.current !== turn) return;
+      if (recoveredResponse) throw failure;
       if (deletedOutcome(failure, "turn", input.operationId)) return;
       if ((failure as { code?: string }).code === "LEGACY_CUSTOMIZATION_RETIRED") { setRetiredOperation(true); setRetryTurn(false); setAuthoringError(authoringReason("LEGACY_CUSTOMIZATION_RETIRED")); return; }
       if ((failure as { status?: number }).status !== 404) throw failure;
@@ -896,41 +938,39 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     try {
       if (recoveryOnly) await recoverTurn(input, turn);
       else {
+        let acceptedResponse = false;
         try {
           const accepted = await callbacks.current.request<{ operation: Operation; conversation: Conversation }>("authoring/turn", "POST", input, authoringLifetime.current.signal);
+          acceptedResponse = true;
           if (!mounted.current || serial.current !== turn) return;
           if (accepted.operation.id !== input.operationId || accepted.operation.version !== input.expectedVersion + 1 || accepted.conversation.version < accepted.operation.version || !accepted.operation.runId || input.conversationId && accepted.conversation.id !== input.conversationId) throw new Error("Unconfirmed authoring receipt");
-          setNeedsFreshDiscussion(false);
-          await adoptConversation(accepted.conversation, turn, input.conversationId === null ? input.operationId : undefined);
+          await adoptConversation(accepted.conversation, turn, input.target.kind === "create");
           if (!mounted.current || serial.current !== turn) return;
           retainTurn(null); setText(value => value === input.text ? "" : value); setObservationPaused(false);
         } catch (failure) {
           if (!mounted.current || serial.current !== turn) return;
-          if (deletedOutcome(failure, "turn", input.operationId)) return;
-      if ((failure as { code?: string }).code === "LEGACY_CUSTOMIZATION_RETIRED") { setRetiredOperation(true); setRetryTurn(false); setAuthoringError(authoringReason("LEGACY_CUSTOMIZATION_RETIRED")); return; }
-          if ((failure as { status?: number }).status === 409 && ["STALE_DRAFT", "STALE_CONVERSATION", "STALE_CONTEXT"].includes((failure as { code?: string }).code ?? "") && input.target.kind !== "create") {
-            const saved = await callbacks.current.request<State>(extensionPath(input.target.extensionId), "GET", undefined, authoringLifetime.current.signal);
-            if (!mounted.current || serial.current !== turn) return;
-            apply(saved);
-            const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
-            if (!mounted.current || serial.current !== turn) return;
-            setAuthoring(index);
-            if (input.conversationId) {
-              const current = index.current?.id === input.conversationId ? index.current : await callbacks.current.request<Conversation>(`authoring/conversations/${encodeURIComponent(input.conversationId)}`, "GET", undefined, authoringLifetime.current.signal);
-              await adoptConversation(current, turn);
-              if (!mounted.current || serial.current !== turn) return;
-            }
-            retainTurn(null); setText(value => value || input.text);
-            setAuthoringError("This request was rejected because saved work changed. Your text is kept. Inspect the current proposal, then explicitly continue its changes.");
-            return;
+          if (!acceptedResponse && deletedOutcome(failure, "turn", input.operationId)) return;
+          const problem = failure as { status?: number; code?: string };
+          if (!acceptedResponse && problem.code === "LEGACY_CUSTOMIZATION_RETIRED") {
+            setRetiredOperation(true); setRetryTurn(false); setAuthoringError(authoringReason(problem.code)); return;
           }
-          if ((failure as { status?: number })?.status === 409 && (failure as { code?: string })?.code === "CONFIG_CHANGED") {
-            retainTurn(null); setRetryTurn(false); setAuthoringError(authoringReason("CONFIG_CHANGED")); setNeedsFreshDiscussion(true);
+          if (!acceptedResponse && problem.status === 409 && input.target.kind !== "create"
+              && ["STALE_DRAFT", "STALE_CONVERSATION", "STALE_CONTEXT", "CONFIG_CHANGED"].includes(problem.code ?? "")) {
+            const notice = problem.code === "CONFIG_CHANGED" ? authoringReason(problem.code)
+              : "This request was rejected because saved work changed. Your text is kept. Check the current proposal before sending again.";
+            retainTurn(null); setRetryTurn(false); setText(value => value || input.text);
             try {
+              const saved = await callbacks.current.request<State>(extensionPath(input.target.extensionId), "GET", undefined, authoringLifetime.current.signal);
+              if (!mounted.current || serial.current !== turn) return;
+              apply(saved);
               const index = await callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal);
-              if (mounted.current && serial.current === turn) setAuthoring(index);
+              await adoptAuthoring(index, turn, saved);
+              if (mounted.current && serial.current === turn) setAuthoringError(notice);
             } catch {
-              if (mounted.current && serial.current === turn) setAuthoringError(authoringReason("CONFIG_CHANGED") + " Current status could not be checked; use Check authoring status.");
+              if (mounted.current && serial.current === turn) {
+                setAuthoring(null);
+                setAuthoringError("Saved status could not be checked. Your message is kept. Check authoring status before sending again.");
+              }
             }
             return;
           }
@@ -968,7 +1008,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (!mounted.current || deletedRef.current) return;
       const loaded = await refresh();
       if (!mounted.current || !loaded) return;
-      if (!pendingTurn && !pendingExample) await loadAuthoring(initialTarget.current.conversationId ?? (initialTarget.current.extensionId ? undefined : null), loaded);
+      if (pendingTurn && extensionId.current && messageHistory.current?.scope !== "item:" + extensionId.current) await loadAuthoring(undefined, loaded);
+      else if (!pendingTurn && !pendingExample) await loadAuthoring(initialTarget.current.conversationId, loaded);
       if (mounted.current && entry === "start") document.getElementById("studio-message")?.focus();
     })();
     void readHostCatalog();
@@ -1002,7 +1043,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     return () => { abort.abort(); clearTimeout(timer); };
   }, [conversation?.id, conversation?.runId, conversation?.status, visible, observationPaused, !!pendingTurn]);
   useEffect(() => {
-    if (entry !== "item" || !state || !trusted || initialized.current) return;
+    if (entry !== "item" || !state || !trusted || extensionId.current && !authoring || initialized.current) return;
     initialized.current = true;
     const selected = state.selection.eligible && state.selection.revision?.id === state.draft?.id;
     const text = state.draft ? state.approved
@@ -1010,7 +1051,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       : "Your saved changes are here. What would you like to change or check?"
       : "What would you like to change about your work?";
     setMessages([{ id: ++messageId.current, who: "Studio", text: `${task ? `From your ${task.status} task “${task.title}”. ` : ""}${text}` }]);
-  }, [entry, state, trusted]);
+  }, [entry, state, trusted, authoring]);
   useEffect(() => {
     const observer = new ResizeObserver(() => {
       const available = (room.current?.clientWidth ?? 900) - 14;
@@ -1080,7 +1121,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       apply(next);
       if (operation === "restart") {
         historyMode.current = false; setHistoryView(false);
-        setConversation(null); setContextContinuation(null); setMessages([]); messageHistory.current = null; setMessagesBefore(null); initialized.current = false; setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
+        setConversation(null); setContextContinuation(null); setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
         callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
       }
       const resultMessage = operation === "approve" && next.executionAvailability?.available === false
@@ -1168,16 +1209,20 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     }
   }
   async function earlierMessages() {
-    if (locked.current || !conversation || !messagesBefore || !messageHistory.current) return;
+    const page = messageHistory.current;
+    if (locked.current || !messagesBefore || !page) return;
+    const itemId = extensionId.current;
+    const item = !!itemId && page.scope === "item:" + itemId;
+    if (!item && (!conversation || page.scope !== "ai:" + conversation.id)) return;
     locked.current = true;
-    const turn = ++serial.current, id = conversation.id, before = messagesBefore, anchor = messageHistory.current.anchor;
+    const turn = ++serial.current, before = messagesBefore, anchor = page.anchor;
     const invoker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     function preserveReading() {
       const log = chatEnd.current?.parentElement;
       const focus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : invoker;
       if (log) {
         const bounds = log.getBoundingClientRect();
-        const visible = Array.from(log.querySelectorAll<HTMLElement>(".rs-message")).find(element => {
+        const visible = Array.from(log.querySelectorAll<HTMLElement>("[data-conversation-message]")).find(element => {
           const rect = element.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
         });
         prependedMessages.current = { height: log.scrollHeight, top: log.scrollTop, focus,
@@ -1186,37 +1231,27 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     }
     setBusy("Opening earlier messages…"); setNotice("");
     try {
-      const next = await callbacks.current.request<{ messages: Conversation["messages"]; next: string | null }>(
-        `authoring/conversations/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(before)}`, "GET", undefined, authoringLifetime.current.signal);
-      if (!mounted.current || serial.current !== turn || messageHistory.current?.conversationId !== id) return;
+      const cursor = encodeURIComponent(before);
+      const next = item
+        ? await callbacks.current.request<Transcript>(`authoring/transcript?extensionId=${encodeURIComponent(itemId)}&before=${cursor}`, "GET", undefined, authoringLifetime.current.signal)
+        : await callbacks.current.request<{ messages: Conversation["messages"]; next: string | null }>(
+          `authoring/conversations/${encodeURIComponent(conversation!.id)}/messages?before=${cursor}`, "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn || messageHistory.current !== page || extensionId.current !== itemId) return;
       preserveReading();
       followConversation.current = false;
-      const incoming = conversationMessages(id, next.messages);
+      const incoming = item ? (next as Transcript).messages.map(message => conversationMessage(message.conversationId, message))
+        : next.messages.map(message => conversationMessage(conversation!.id, message));
       const ids = new Set(incoming.map(item => item.id));
       setMessages(old => {
-        const retained = old.filter(item => !ids.has(item.id));
-        const position = anchor === null ? retained.length : retained.findIndex(item => item.id === anchor);
-        const index = position < 0 ? 0 : position;
-        return [...retained.slice(0, index), ...incoming, ...retained.slice(index)];
+        const position = anchor === null ? old.length : Math.max(0, old.findIndex(item => item.id === anchor));
+        return [...old.slice(0, position).filter(item => !ids.has(item.id)), ...incoming,
+          ...old.slice(position).filter(item => !ids.has(item.id))];
       });
-      messageHistory.current.anchor = incoming[0]?.id ?? anchor;
-      incoming.forEach(item => messageHistory.current!.ids.add(item.id));
+      page.anchor = incoming[0]?.id ?? anchor;
+      incoming.forEach(item => page.ids.add(item.id));
       setMessagesBefore(next.next); setMessagePageError(null); setNotice("Earlier messages loaded.");
     } catch {
-      if (mounted.current && serial.current === turn) { preserveReading(); setMessagePageError({ conversationId: id, before }); }
-    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
-  }
-  async function earlierConversations() {
-    if (locked.current || !authoring?.next) return;
-    locked.current = true;
-    const turn = ++serial.current;
-    setBusy("Opening earlier conversations…"); setAuthoringError("");
-    try {
-      const next = await callbacks.current.request<Authoring>(`${authoringPath()}${extensionId.current ? "&" : "?"}before=${encodeURIComponent(authoring.next)}`, "GET", undefined, authoringLifetime.current.signal);
-      if (mounted.current && serial.current === turn) setAuthoring(old => old ? { ...old,
-        conversations: [...old.conversations, ...next.conversations.filter(item => !old.conversations.some(row => row.id === item.id))], next: next.next } : old);
-    } catch {
-      if (mounted.current && serial.current === turn) setAuthoringError("Earlier conversations could not be loaded. Your current discussion remains open.");
+      if (mounted.current && serial.current === turn) { preserveReading(); setMessagePageError({ scope: page.scope, before }); }
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   async function earlierSaved(kind: "evidence" | "revisions" | "restore-targets") {
@@ -1274,8 +1309,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     if (locked.current || !text.trim() || sendDisabled || !authoring?.availability.available) return;
     if (authoring?.availability.available) {
       if (/[\uD800-\uDFFF]/u.test(text) || new TextEncoder().encode(text).length > 8192) { setAuthoringError("Use valid text within the 8 KiB description limit."); return; }
-      void submitAuthoring({ target: turnTarget(), conversationId: conversation?.id ?? null, operationId: crypto.randomUUID(), text,
-        expectedVersion: conversation?.version ?? 0, expectedDraftVersion: state!.draftVersion });
+      const target = turnTarget(), resumed = target.kind === "resume" ? conversation : null;
+      void submitAuthoring({ target, conversationId: resumed?.id ?? null, operationId: crypto.randomUUID(), text,
+        expectedVersion: resumed?.version ?? 0, expectedDraftVersion: state!.draftVersion });
       return;
     }
   }
@@ -1345,13 +1381,19 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <p>Tell me what you want to happen. We’ll check what Daymark can support and work through useful examples together.</p>
             {catalogError ? <p role="status">What Daymark supports could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p> : hostCatalog && <details><summary>What Daymark supports</summary>{hostCatalog.hooks.map(hook => <p key={hook.id}><strong>{hook.label}</strong> · {hook.description}</p>)}</details>}
           </article>}
-          {messages.map(message => <article className={`rs-message ${message.who === "You" ? "rs-yours" : ""}`} key={message.id}>
-            <strong>{message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}{message.evidenceId && !retired && message.evidenceId === decisionEvidenceId && <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview()}>View saved changes</button>}{message.evidenceId && (retired || message.evidenceId !== decisionEvidenceId) && <button id={"studio-evidence-link-" + message.evidenceId} disabled={!!busy} className="rs-link"
-              onClick={() => void showEvidence(message.evidenceId!)}>{message.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button>}
-          </article>)}
-          {retired && !earlierModelDiscussion && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3><p>Its source, examples, discussion and history remain available. It cannot run or be resumed as a task-creating customization. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
+          {messages.map(message => {
+            const currentReceipt = !retired && !historyView && (!message.conversationId || message.conversationId === conversation?.id)
+              && message.evidenceId === decisionEvidenceId;
+            return <article className={`rs-message ${message.who === "You" ? "rs-yours" : ""}`} data-conversation-message={!!message.conversationId || undefined} key={message.id}>
+              <strong>{message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}
+              {message.evidenceId && (currentReceipt
+                ? <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview()}>View saved changes</button>
+                : <button data-evidence-link={message.evidenceId} disabled={!!busy} className="rs-link" onClick={() => void showEvidence(message.evidenceId!)}>{message.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button>)}
+            </article>;
+          })}
+          {retired && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3><p>Its source, examples, discussion and history remain available. It cannot run or be resumed as a task-creating customization. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
           {legacyConversation && <p role="status">Earlier discussion · read-only. No customization link has been confirmed.</p>}
-          {(historyView || staleConversation || earlierModelDiscussion) && !activeAuthoring && <article className="rs-message rs-decision"><p>Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.</p>
+          {historyView && !activeAuthoring && <article className="rs-message rs-decision"><p>Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.</p>
             <button disabled={!!busy || !!pendingTurn || !!pendingExample} onClick={returnToCurrent}>Return to current changes</button></article>}
           {conversation?.review && !eligibleOffer && <article className="rs-message"><p>These saved examples do not support approval of the current changes.</p>
             <button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>{conversation.review.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button></article>}
@@ -1364,12 +1406,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button id="studio-view-active" className="rs-link" disabled={!!busy} onClick={() => void showActive()}>View what’s in use</button>
           </article>}
 
-          {authoringError && !needsFreshDiscussion && <p role="alert">{authoringError}</p>}
+          {authoringError && <p role="alert">{authoringError}</p>}
           {recoveryError && <p role="alert">{recoveryError}</p>}
           {pendingTurn && <article className="rs-message"><strong>Submitted request</strong><p>{pendingTurn.text}</p></article>}
           {pendingExample && <div className="rs-recovery"><button disabled={!!busy} onClick={() => void checkExampleRequest()}>Check submitted example</button>
 </div>}
-          {(authoringError || observationPaused || pendingTurn) && <div className="rs-recovery"><button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring(conversation?.id ?? null)}>{!authoring && authoringError ? "Retry status" : "Check authoring status"}</button>
+          {(authoringError || observationPaused || pendingTurn) && <div className="rs-recovery"><button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring()}>{!authoring && authoringError ? "Retry status" : "Check authoring status"}</button>
             {pendingTurn && retryTurn && !retired && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}</div>}
           <div ref={chatEnd} />
         </div>
@@ -1377,12 +1419,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {contextRecovery && !retired && <article className="rs-message rs-decision rs-current-decision" aria-label="Continue saved work">
             <p role="status">{contextContinuation && activeAuthoring ? "Continuing from saved work. Waiting for accepted work to settle." : authoringReason("CONTEXT_LIMIT")}</p>
             <button className="rs-primary" disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>Continue here from saved work</button>
-          </article>}
-          {needsFreshDiscussion && !retired && <article className="rs-message rs-decision rs-current-decision" aria-label="Assistant settings changed">
-            <p role="status">The assistant settings changed, so your message wasn’t sent. Start a new conversation to continue. Your message and saved work are kept.</p>
-            <button className="rs-primary" disabled={disabled || legacyConversation} onClick={() => {
-              newConversation(true); requestAnimationFrame(() => { if (mounted.current) document.getElementById("studio-message")?.focus(); });
-            }}>Start new conversation</button>
           </article>}
           {restart && <article id="studio-restart-confirm" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Start from version in use">
             <div className="rs-restart-body">
@@ -1397,7 +1433,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!restart && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
         {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
-        <form hidden={retired || legacyConversation || historyView || staleConversation || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Studio</label>
+        <form hidden={retired || legacyConversation || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Studio</label>
           <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder="Describe what you want or answer a question…"
             onKeyDown={event => {
               if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
@@ -1417,7 +1453,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           const bounds = room.current.getBoundingClientRect(); setWidth(Math.round(Math.max(limits.min, Math.min(limits.max, (event.clientX - bounds.left) / (bounds.width - 14) * 100))));
         } }} onPointerUp={event => event.currentTarget.releasePointerCapture(event.pointerId)} />
       <section hidden={!reviewOpen} className="rs-preview" aria-label="Customization preview">
-        <button className="rs-close-review" onClick={closeReview}>{needsFreshDiscussion ? "Message not sent" : "Back to conversation"}</button>
+        <button className="rs-close-review" onClick={closeReview}>Back to conversation</button>
 
       <section id="studio-canvas" ref={canvas} tabIndex={0} className="rs-canvas" aria-label="Customization and sample results"
         onWheel={() => { readingRevision.current++; }} onKeyDown={() => { readingRevision.current++; }} onPointerDown={() => { readingRevision.current++; }}
@@ -1510,13 +1546,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             </>}
           </details>
           <section className="rs-authoring" aria-label="AI authoring">
-            <h3>Saved conversations</h3>
-            {authoring && (extensionId.current || legacyConversation) && authoring.conversations.length > 0 && <label>Saved authoring conversation<select aria-label="Saved authoring conversation" value={conversation?.id ?? ""} disabled={!!busy || activeAuthoring || !!pendingTurn || !!pendingExample}
-              onChange={event => { if (event.target.value) { historyMode.current = true; setHistoryView(true);  setMessages([]); messageHistory.current = null; setMessagesBefore(null); void loadAuthoring(event.target.value).then(() => { if (mounted.current) closeReview(); }); } }}><option value="" disabled>Choose a saved conversation</option>{authoring.conversations.filter(item => item.extensionId === extensionId.current).map((item, index) => <option key={item.id} value={item.id}>Conversation {index + 1}</option>)}</select></label>}
-            {conversation && <><p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>
-              {!retired && !contextRecovery && !activeAuthoring && !legacyConversation && !historyView && !staleConversation && <button disabled={!!busy || !!pendingTurn || !!pendingExample} onClick={() => newConversation()}>Continue current changes in a new conversation</button>}</>}
-            {authoring?.next && <button disabled={!!busy} onClick={() => void earlierConversations()}>Load earlier conversations</button>}
-            {!authoringError && !observationPaused && !pendingTurn && <button disabled={!!busy} onClick={() => void loadAuthoring(conversation?.id ?? null)}>Check authoring status</button>}
+            <h3>Authoring status</h3>
+            {conversation && <p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>}
+            {!authoringError && !observationPaused && !pendingTurn && <button disabled={!!busy} onClick={() => void loadAuthoring()}>Check authoring status</button>}
           </section>
           {authoring?.availability.provider && <section aria-label="Assistant connection details"><h3>Assistant connection</h3><p>Provider: {authoring.availability.provider}</p><p>Model: {authoring.availability.model}</p><button onClick={openSetup}>Configure</button></section>}
           {state && <>
@@ -1577,6 +1609,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     {setupOpen && <AssistantSetup request={request} close={closeSetup} beginSave={() => { ++setupGeneration.current; }} saved={next => {
       setAuthoring(old => old ? { ...old, availability: next.availability } : old);
       setSetupNotice("Settings saved. Send a message when you’re ready.");
+      if (extensionId.current && !historyMode.current) void loadAuthoring();
       if (reviewOpen) closeReview();
       closeSetup();
     }} />}

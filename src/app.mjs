@@ -128,12 +128,15 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     ai.configure(next.config, next.persist);
     return setupResponse();
   });
-  app.get('/api/authoring', request => {
+  const authoringQuery = (request, requireItem = false) => {
     if (Object.keys(request.query).some(key => !['extensionId', 'before'].includes(key))
+        || requireItem && request.query.extensionId === undefined
         || request.query.extensionId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(request.query.extensionId)
         || request.query.before !== undefined && !/^[A-Za-z0-9_-]{1,2048}$/.test(request.query.before)) throw new AppError(400, 'Use an exact extension identity and valid page cursor.');
-    return lifecycleResponse(ai.list(authorize(request).userId, request.query.extensionId, request.query.before));
-  });
+    return [authorize(request).userId, request.query.extensionId, request.query.before];
+  };
+  app.get('/api/authoring', request => lifecycleResponse(ai.list(...authoringQuery(request))));
+  app.get('/api/authoring/transcript', request => lifecycleResponse(ai.transcript(...authoringQuery(request, true))));
   app.get('/api/authoring/example', request => { authorize(request); noQuery(request); throw Object.assign(new AppError(410, 'This earlier example is retired. Start a new customization through conversation.'), { code: 'LEGACY_CUSTOMIZATION_RETIRED' }); });
   app.get('/api/authoring/conversations/:id', request => { noQuery(request); return lifecycleResponse(ai.read(authorize(request).userId, request.params.id)); });
   app.get('/api/authoring/conversations/:id/messages', request => lifecycleResponse(ai.messages(authorize(request).userId, request.params.id, pageQuery(request))));

@@ -135,6 +135,150 @@ function direct(t, { path = ':memory:', ...options } = {}) {
   return { db, lifecycle, service };
 }
 
+for (const provider of ['openai', 'anthropic']) test(`${provider} continues an upgraded item through one paginated transcript and an exact operation receipt`, async t => {
+  const fake = wire(provider, () => ({ text: 'The customization can continue here.' }));
+  const { db, call, login } = await api(t, { config: configFor(provider), fetchImpl: fake.fetchImpl });
+  const lifecycle = createLifecycle(db, { compiler });
+  const oldCreated = Date.now() + 60000;
+  const old = admitTaskDraft(db, lifecycle, { name: 'Upgraded task rule', createdAt: oldCreated });
+  const other = admitTaskDraft(db, lifecycle, { name: 'Unrelated rule' });
+  const foreign = admitTaskDraft(db, lifecycle, { owner: 'leo', name: 'Foreign rule' });
+  db.prepare('UPDATE authoring_conversations SET state=? WHERE id=?').run(
+    JSON.stringify({ ...old.conversationState, definitionId: 'daymark.task-completed/2' }), old.conversationId);
+  const insert = db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)');
+  const prior = 'Keep the exact title and require the selected project.';
+  for (let i = 1; i <= 24; i++) {
+    const user = i >= 22;
+    const text = i === 24 ? prior : user ? `Prior user requirement ${i} ${'x'.repeat(6000)}` : `Saved assistant message ${i}`;
+    insert.run(old.conversationId, 'maya', i, 'old-' + i, JSON.stringify({ id: 'old-' + i, role: user ? 'user' : 'assistant', kind: 'text', text }));
+  }
+  for (const [item, owner] of [[other, 'maya'], [foreign, 'leo']])
+    insert.run(item.conversationId, owner, 1, 'old-24', JSON.stringify({ id: 'old-24', role: 'user', kind: 'text', text: 'Unrelated private intent' }));
+  await login();
+  const itemQuery = 'extensionId=' + old.extensionId;
+  const listPath = 'authoring?' + itemQuery;
+  const pagePath = 'authoring/transcript?' + itemQuery;
+  const before = (await call(listPath)).json();
+  assert.equal(before.current, null);
+  assert.equal(before.transcript.messages.length, 20);
+  assert.ok(before.transcript.messages.every(message => message.conversationId === old.conversationId));
+  const anchor = before.transcript.next;
+  assert.ok(anchor);
+  assert.equal((await call('authoring/transcript?extensionId=' + other.extensionId + '&before=' + anchor)).statusCode, 400);
+  const foreignAnchor = JSON.parse(Buffer.from(anchor, 'base64url').toString('utf8'));
+  foreignAnchor.conversationId = other.conversationId;
+  const forged = Buffer.from(JSON.stringify(foreignAnchor)).toString('base64url');
+  assert.equal((await call(pagePath + '&before=' + forged)).statusCode, 400);
+  assert.equal((await call('authoring/transcript?extensionId=' + foreign.extensionId)).statusCode, 404);
+  assert.equal((await call('authoring/transcript?extensionId=' + foreign.extensionId + '&before=' + anchor)).statusCode, 404);
+  assert.equal(fake.requests.length, 0);
+  assert.equal(reserved(db), 0);
+
+  const request = { conversationId: null, operationId: 'continue-upgrade', text: '  Continue this change 🌱  ',
+    expectedVersion: 0, expectedDraftVersion: old.state.draftVersion, target: { kind: 'revise', extensionId: old.extensionId,
+      baseRevisionId: null, selectionGeneration: old.state.selection.generation } };
+  const accepted = await call('authoring/turn', request);
+  assert.equal(accepted.statusCode, 202, accepted.body);
+  const current = accepted.json().conversation;
+  assert.notEqual(current.id, old.conversationId);
+  assert.equal(current.extensionId, old.extensionId);
+  assert.ok(db.prepare('SELECT created_at FROM authoring_conversations WHERE id=?').get(current.id).created_at > oldCreated);
+  await settled(call, current.id);
+  assert.equal(fake.requests.length, 1);
+  const body = fake.requests[0].body;
+  const inputText = provider === 'openai' ? body.input.at(-1).content : body.messages.at(-1).content.at(-1).text;
+  const envelope = JSON.parse(inputText);
+  assert.equal(envelope.currentUserMessage, request.text);
+  assert.equal(envelope.previousUserMessagesTruncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(envelope.previousUserMessages)) <= 8192);
+  assert.ok(!envelope.previousUserMessages.includes(request.text));
+  assert.match(inputText, /Keep the exact title and require the selected project/);
+  assert.doesNotMatch(inputText, /Saved assistant message|Unrelated private intent|Prior user requirement 22/);
+  const recovery = await call('authoring/recover', request);
+  assert.equal(recovery.statusCode, 200);
+  assert.deepEqual(recovery.json().operation, accepted.json().operation);
+  assert.equal(recovery.json().conversation.messages.find(message => message.id === request.operationId).text, request.text);
+  assert.equal((await call('authoring/recover', { ...request, text: request.text.trim() })).statusCode, 409);
+
+  const reopened = (await call(listPath)).json();
+  assert.equal(reopened.current.id, current.id);
+  assert.deepEqual(reopened.transcript.messages.slice(-2).map(message => [message.conversationId, message.text]),
+    [[current.id, request.text], [current.id, 'The customization can continue here.']]);
+  const remaining = (await call(pagePath + '&before=' + reopened.transcript.next)).json();
+  const all = [...remaining.messages, ...reopened.transcript.messages];
+  assert.equal(all.length, 26);
+  assert.equal(new Set(all.map(message => `${message.conversationId}:${message.id}`)).size, 26);
+  assert.equal(remaining.next, null);
+  assert.equal((await call(pagePath + '&before=' + anchor)).json().messages.length, 4, 'a prior page anchor remains valid after append');
+  assert.deepEqual(lifecycle.state('maya', old.extensionId), old.state);
+  assert.equal(fake.requests.length, 1);
+  await login('leo');
+  assert.equal((await call(pagePath + '&before=' + anchor)).statusCode, 404);
+  assert.equal((await call('authoring/transcript?extensionId=' + foreign.extensionId + '&before=' + anchor)).statusCode, 400);
+});
+
+test('a fresh segment rechecks selection at admission and retains exact earlier recovery after handoff', async t => {
+  let fixtureDb, changeSelection = true, calls = 0;
+  const { db, lifecycle, service } = direct(t, { providerFactory: config => {
+    if (changeSelection) fixtureDb.prepare("UPDATE extension_selections SET generation=generation+1 WHERE owner_id='maya' AND hook_id='TaskCompleted'").run();
+    return { ...config, async complete() {
+      calls++;
+      return { calls: [], text: 'Ready.', usage: { inputTokens: 1, outputTokens: 1 } };
+    } };
+  } });
+  fixtureDb = db;
+  const { extensionId, conversationId } = taskDraft(db);
+  const before = lifecycle.state('maya', extensionId);
+  const request = { conversationId: null, operationId: 'fresh-segment', text: 'Keep working on this item.',
+    expectedVersion: 0, expectedDraftVersion: before.draftVersion, target: { kind: 'revise', extensionId,
+      baseRevisionId: null, selectionGeneration: before.selection.generation } };
+  await assert.rejects(service.turn('maya', request, lease('fresh-segment-test')), { code: 'STALE_DRAFT' });
+  assert.equal(calls, 0);
+  assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 1);
+  assert.equal(reserved(db), 0);
+
+  changeSelection = false;
+  const earlier = { ...request, conversationId, operationId: 'earlier-segment', target: { kind: 'resume', extensionId } };
+  const earlierReceipt = await service.turn('maya', earlier, lease('fresh-segment-test'));
+  const earlierSettled = await service.wait('maya', conversationId);
+  const current = { ...request, target: { ...request.target, selectionGeneration: lifecycle.state('maya', extensionId).selection.generation } };
+  const newReceipt = await service.turn('maya', current, lease('fresh-segment-test'));
+  const newId = newReceipt.conversation.id;
+  await service.wait('maya', newId);
+  await assert.rejects(service.turn('maya', { ...earlier, operationId: 'too-old', expectedVersion: earlierSettled.version }, lease('fresh-segment-test')),
+    { code: 'STALE_CONVERSATION' });
+  assert.deepEqual(service.recover('maya', earlier).operation, earlierReceipt.operation);
+  assert.deepEqual((await service.turn('maya', earlier, lease('fresh-segment-test'))).operation, earlierReceipt.operation);
+  assert.equal(service.list('maya', extensionId).current.id, newId);
+  assert.equal(calls, 2);
+});
+
+test('the linked authoring response budgets large transcripts and deleted items cannot page them', async t => {
+  const fake = wire('openai', () => ({ text: 'Unexpected provider request.' }));
+  const { db, call, login } = await api(t, { config: configFor(), fetchImpl: fake.fetchImpl });
+  const { extensionId, conversationId, state } = taskDraft(db);
+  const insert = db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)');
+  for (let i = 1; i <= 2; i++) {
+    const message = { id: 'large-' + i, role: 'assistant', kind: 'text', text: 'x'.repeat(131000) };
+    insert.run(conversationId, 'maya', i, message.id, JSON.stringify(message));
+  }
+  await login();
+  const query = '?extensionId=' + extensionId;
+  const result = await call('authoring' + query);
+  assert.equal(result.statusCode, 200);
+  assert.ok(Buffer.byteLength(result.body) <= 262144);
+  const { current, transcript } = result.json();
+  assert.equal(current.id, conversationId);
+  assert.deepEqual(transcript.messages.map(message => message.id), ['large-2']);
+  const earlier = 'authoring/transcript' + query + '&before=' + transcript.next;
+  assert.deepEqual((await call(earlier)).json().messages.map(message => message.id), ['large-1']);
+  const deleted = await call(`extensions/${extensionId}/delete`, { expectedName: state.extension.name,
+    draftVersion: state.draftVersion, generation: state.selection.generation });
+  assert.equal(deleted.statusCode, 200, deleted.body);
+  assert.equal((await call(earlier)).statusCode, 404);
+  assert.equal(fake.requests.length, 0);
+});
+
 test('authoring API rejects foreign sessions/owners/extra fields and deduplicates exact operations with CAS', async t => {
   const fake = wire('openai', () => ({ name: 'ask_clarification', arguments: { question: 'Which independent cases should pass?' } }));
   const { db, call, login, getAuth } = await api(t, { config: configFor(), fetchImpl: fake.fetchImpl });

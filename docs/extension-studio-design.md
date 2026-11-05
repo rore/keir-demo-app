@@ -21,6 +21,8 @@ Keep the [customer assistant guidance](https://github.com/rore/keir-core/blob/ma
 
 This is the target for the next application slice. The user-facing name is **Customizations**. Each saved customization belongs to one person and has its own conversation, proposed changes, checked examples and history. Maya can create B while A is in use, leave, and open either by name. A customization keeps its identity when its wording, draft or active version changes. Two items can have similar names.
 
+Opening a saved customization shows its conversation by default. **Load earlier messages** continues through that item's history. The same composer stays available when the assistant needs a fresh internal run for a draft, model or settings change. Opening the item makes no assistant request. Earlier messages and checked examples remain readable. Approval and turning on a change still require the exact current proposal and its checked evidence.
+
 ### Where Maya starts
 
 | Surface | What Maya sees | What her action means |
