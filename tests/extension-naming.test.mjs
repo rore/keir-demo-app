@@ -109,7 +109,7 @@ test('rename preserves authored revisions, proof, approval, active generation an
   const input = { extensionId: id, revisionId: state.revisionId, draftVersion: state.draftVersion };
   state = await lifecycle.simulate('maya', input, authorized);
   state = lifecycle.approve('maya', { ...input, evidenceId: state.evidence.id }, authorized);
-  state = lifecycle.activate('maya', { ...input, generation: state.selection.generation }, authorized);
+  state = lifecycle.activate('maya', { ...input, generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorized);
   const before = snapshot(db);
   let checks = 0;
   assert.throws(() => lifecycle.rename('maya', { extensionId: id, name: 'Rejected', expectedName: state.extension.name }, () => {

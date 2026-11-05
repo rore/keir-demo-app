@@ -21,7 +21,7 @@ const test = base.extend({
       state = await lifecycle.simulate('maya', input, () => {});
       expect(state.evidence.passed).toBe(true);
       state = lifecycle.approve('maya', { ...input, evidenceId: state.evidence.id }, () => {});
-      lifecycle.activate('maya', { ...input, generation: state.selection.generation }, () => {});
+      lifecycle.activate('maya', { ...input, generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, () => {});
       // Each protocol case supplies its own discussion projection; host admission rows stay intact.
       await page.route('**/api/authoring**', route => reply(route, { availability: { available: false, code: 'AI_NOT_CONFIGURED', provider: null, model: null },
         conversations: [], current: null, next: null }));
@@ -87,7 +87,7 @@ test('ordinary edits exceed eight turns in one discussion and settings recovery 
     return reply(route, current);
   });
   await openItem(page, demo.extensionId);
-  const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+  const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
   for (let index = 1; index <= 12; index++) {
     await composer.fill(`Ordinary edit ${index}`);
     await composer.press('Enter');
@@ -161,7 +161,7 @@ test('older transcript segments preserve the current exchange, unsent input and 
     return reply(route, current);
   });
   await page.goto(`${demo.origin}/#customization=${demo.extensionId}`);
-  const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+  const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
   await expect(ui.getByText('Current exchange', { exact: true })).toBeVisible();
   await composer.fill('Keep this unsent input');
   const log = ui.getByRole('log', { name: 'Studio conversation', exact: true });
@@ -237,7 +237,7 @@ test('a failed earlier page retries locally at the same cursor without disturbin
     return reply(route, current);
   });
   await openItem(page, demo.extensionId);
-  const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+  const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
   await expect(ui.getByText('Retained current message 0', { exact: true })).toBeVisible();
   await composer.fill('Keep this unsent correction');
   await details(page);
@@ -286,14 +286,14 @@ for (const status of [200, 503]) test(`a late earlier-page ${status} response ca
   });
   try {
     await openItem(page, demo.extensionId);
-    await studio(page).getByLabel('Message to Studio', { exact: true }).fill('Private unsent correction');
+    await studio(page).getByLabel('Message to Daymark assistant', { exact: true }).fill('Private unsent correction');
     await studio(page).getByRole('button', { name: 'Load earlier messages', exact: true }).click();
     await held;
     await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
     await openItem(page, demo.leoId);
     release();
-    await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toHaveValue('');
+    await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('');
     await expect(studio(page).getByText('Late owner-private earlier message', { exact: true })).toHaveCount(0);
     await expect(studio(page).getByText('Couldn’t load earlier messages.', { exact: true })).toHaveCount(0);
     await expect(studio(page).getByRole('button', { name: 'Retry earlier messages', exact: true })).toHaveCount(0);
@@ -345,7 +345,7 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
   });
   try {
     await openItem(page, extensionId);
-    const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+    const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     const recovery = ui.getByRole('article', { name: 'Continue saved work', exact: true });
     await expect(recovery).toHaveCount(1);
     await expect(recovery.getByRole('button', { name: 'Continue here from saved work', exact: true })).toBeEnabled();
@@ -425,7 +425,7 @@ test('reloading an accepted context continuation keeps the prior decision hidden
   await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
   await expect(ui.getByRole('button', { name: 'Switch to this customization', exact: true })).toHaveCount(0);
   await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-  await expect(ui.getByText('Approved · Not in use', { exact: true })).toBeVisible();
+  await expect(ui.getByText('Approved · Still off', { exact: true })).toBeVisible();
   // Compiled UI with a synthetic accepted run; reload reads status without repeating the paid request.
   await page.screenshot({ path: testInfo.outputPath('context-continuation-running-after-reload.png'), fullPage: true });
   expect(turns).toHaveLength(1);
@@ -457,7 +457,7 @@ test('a later status projection reopens a skipped message gap and inserts it in 
     return reply(route, current);
   });
   await openItem(page, demo.extensionId);
-  const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+  const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
   await expect(ui.getByText('Ordered message 2', { exact: true })).toBeVisible();
   await expect(ui.getByRole('button', { name: 'Load earlier messages', exact: true })).toHaveCount(0);
   await composer.fill('Keep this while another tab advances');
@@ -494,7 +494,7 @@ test('lost first-create response recovers its exact old receipt without searchin
   await collection(page);
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
   const ui = studio(page);
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Original create request');
+  await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Original create request');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('Recovered the original saved customization', { exact: true })).toBeVisible();
   expect(posted.target).toEqual({ kind: 'create' });

@@ -42,7 +42,7 @@ test('collection pages lightweight summaries, retains off-page selection and fin
   active = await lifecycle.simulate('maya', current(active), authorize);
   assert.equal(active.evidence.passed, true);
   active = lifecycle.approve('maya', { ...current(active), evidenceId: active.evidence.id }, authorize);
-  const selected = lifecycle.activate('maya', { ...current(active), generation: active.selection.generation }, authorize).selection;
+  const selected = lifecycle.activate('maya', { ...current(active), generation: active.selection.generation, evidenceId: active.approvedEvidenceId }, authorize).selection;
   const created = [];
   for (let index = 0; index < 26; index++) created.push(await create(db, lifecycle, `collection-${index}`));
   const first = lifecycle.collection('maya');
@@ -76,7 +76,7 @@ test('all revision, proof, restore and displaced-draft history stays reachable t
     state = await lifecycle.simulate('maya', current(state), authorize);
     proofs.push(lifecycle.evidence('maya', state.evidence.id, extensionId));
     state = lifecycle.approve('maya', { ...current(state), evidenceId: state.evidence.id }, authorize);
-    state = lifecycle.activate('maya', { ...current(state), generation: state.selection.generation }, authorize);
+    state = lifecycle.activate('maya', { ...current(state), generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorize);
     activated.push(state.draft.id);
   }
   const selected = state.selection;

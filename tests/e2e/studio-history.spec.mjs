@@ -32,7 +32,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       state = await api(page, path + '/scenarios', { ...input(), cases: example.cases });
       state = await api(page, path + '/simulate', input());
       state = await api(page, path + '/approve', { ...input(), evidenceId: state.evidence.id });
-      state = await api(page, path + '/activate', { ...input(), generation: state.selection.generation });
+      state = await api(page, path + '/activate', { ...input(), generation: state.selection.generation, evidenceId: state.approvedEvidenceId });
       const active = state.selection;
       const savedSource = example.source + '\n\n';
       state = await api(page, path + '/compile', { hookId: 'TaskCompleted', source: savedSource, label: 'Saved before restart', draftVersion: state.draftVersion });
@@ -62,8 +62,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
         await confirmation.getByText('Saved version details', { exact: true }).click();
         await expect(confirmation.getByRole('button', { name: 'Start from this version', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport({ ratio: 1 });
-        await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
-        await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeHidden();
+        await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
+        await expect(ui.getByRole('button', { name: /^(Turn on for my tasks|Switch to this customization)$/ })).toHaveCount(0);
+        await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeHidden();
         return confirmation;
       };
       await (await beginRestart()).getByRole('button', { name: 'Cancel', exact: true }).click();

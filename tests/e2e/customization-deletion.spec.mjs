@@ -64,10 +64,10 @@ test('a task customization is authored, checked, approved, used and deleted thro
     await enter(page, fixture); await collection(page);
     await page.getByRole('button', { name: 'New customization', exact: true }).click();
     const ui = page.getByRole('region', { name: 'Customization Studio', exact: true });
-    await ui.getByLabel('Message to Studio', { exact: true }).fill(`When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`);
+    await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(`When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`);
     await ui.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
-    await ui.getByLabel('Message to Studio', { exact: true }).fill(`Confirmed: completing a task in ${fixture.metadata.projectName} should create ${fixture.metadata.title}; other projects should create nothing.`);
+    await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(`Confirmed: completing a task in ${fixture.metadata.projectName} should create ${fixture.metadata.title}; other projects should create nothing.`);
     await ui.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible();
     await openSavedChanges(page);
@@ -77,8 +77,8 @@ test('a task customization is authored, checked, approved, used and deleted thro
     const proof = await api(page, `extensions/${id}/evidence/${approved.evidence.id}`);
     expect(proof.reports).toHaveLength(6); expect(proof.reports.every(item => item.report.status === 'PASS')).toBe(true);
     await ui.getByRole('button', { name: /^(Turn on for my tasks|Switch to this customization)$/ }).click();
-    await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
-    await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeVisible();
+    await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
+    await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
     const active = await api(page, 'extensions/' + id); expect(active.selection.revision.id).toBe(approved.draft.id);
     const providerCalls = fixture.requests.length, native = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
     await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).click();

@@ -139,7 +139,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const readGate = new Promise(resolve => { releaseRead = resolve; });
     const { calls } = await scriptSetup(page, { onSetupRead: async calls => { if (calls.setupReads === 1) await readGate; return null; } });
     await enterStudio(page, demo.origin);
-    const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+    const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     await composer.fill('Keep this unsent authoring message');
     await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(1);
     const dialog = await openConfigure(page);

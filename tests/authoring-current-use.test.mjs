@@ -89,7 +89,7 @@ test('discovery separates exact checked active v1 from a different customer task
   }
   let active = await checked(activeFixture.source, activeFixture);
   active = lifecycle.approve('maya', { ...input(active), evidenceId: active.evidence.id }, authorize);
-  active = lifecycle.activate('maya', { ...input(active), generation: active.selection.generation }, authorize);
+  active = lifecycle.activate('maya', { ...input(active), generation: active.selection.generation, evidenceId: active.approvedEvidenceId }, authorize);
   const draft = await checked(draftFixture.source, draftFixture);
   const activeProof = lifecycle.evidence('maya', active.approvedEvidenceId, extensionId);
   const draftProof = lifecycle.evidence('maya', draft.evidence.id, extensionId);
@@ -115,7 +115,8 @@ test('discovery separates exact checked active v1 from a different customer task
   assert.match(context.businessContext.checking, /example tasks.*your tasks have not changed/);
   assert.match(requests[0].instructions, /After an example check, describe what would happen in that example and say “Your real tasks have not changed”/);
   for (const guidance of [context.businessContext.navigation, requests[0].instructions]) {
-    for (const label of ['View saved changes', 'Your saved changes', 'View latest changes', 'Back to conversation',
+    for (const label of ['View saved changes', 'Your saved change', 'Review checked examples', 'Show example checks',
+      'Hide checked examples', 'View latest changes', 'Back to conversation',
       'Approve this change', 'Turn on for my tasks', 'Switch to this customization']) assert.ok(guidance.includes(label));
     assert.doesNotMatch(guidance, /beside Current decision|Show the unfinished task example/);
     assert.match(guidance, /do not open or replace.*automatically|never open or replace.*automatically/);
@@ -132,7 +133,7 @@ test('an explicitly approved customer task version retains its exact checked syn
   const identity = () => ({ extensionId, revisionId: state.draft.id, draftVersion: state.draftVersion });
   state = await lifecycle.simulate('maya', identity(), authorize);
   state = lifecycle.approve('maya', { ...identity(), evidenceId: state.evidence.id }, authorize);
-  state = lifecycle.activate('maya', { ...identity(), generation: state.selection.generation }, authorize);
+  state = lifecycle.activate('maya', { ...identity(), generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorize);
   const { context } = await discover(t, f);
   assert.equal(context.currentUse.selected.provenance, 'customer');
   assert.equal(context.currentUse.checkedSummary.evidenceId, state.approvedEvidenceId);

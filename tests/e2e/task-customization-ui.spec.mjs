@@ -69,19 +69,27 @@ async function publicStudio(page, { mismatch = false, retired = false, unavailab
   return { mutations };
 }
 
-test('one deliberate canvas shows each exact current and proposed task proof; approval and activation stay separate', async ({ page, demo }) => {
+test('inline review and secondary comparison retain their exact task proofs and separate decisions', async ({ page, demo }) => {
   await enter(page, demo); const { mutations } = await publicStudio(page);
   await studio(page).locator('#studio-view-saved').click();
-  const current = studio(page).getByRole('region', { name: 'Checked behavior currently in use', exact: true });
+  const decision = studio(page).getByRole('article', { name: 'Current decision', exact: true });
   const proposed = studio(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
-  await expect(current).toContainText('Review completion'); await expect(proposed).toContainText('Prepare next step');
-  await expect(current).toContainText('Finish packaging sketches'); await expect(proposed).toContainText('Launch');
-  const currentBox = await current.boundingBox(), proposedBox = await proposed.boundingBox();
-  expect(currentBox.x + currentBox.width).toBeLessThanOrEqual(proposedBox.x);
+  await expect(proposed).toContainText('Prepare next step'); await expect(proposed).toContainText('Launch');
+  await decision.getByRole('button', { name: 'Inspect examples and what’s in use', exact: true }).click();
+  const comparison = studio(page).getByRole('article', { name: 'Sample results', exact: true });
+  const current = comparison.getByRole('region', { name: 'Checked behavior currently in use', exact: true });
+  await expect(current).toContainText('Review completion');
+  await expect(current).toContainText('Finish packaging sketches');
+  await expect(comparison.getByRole('region', { name: 'Saved proposed example', exact: true })).toContainText('Prepare next step');
+  await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();
   expect(mutations).toEqual([]); await studio(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
+  const use = studio(page).getByRole('button', { name: 'Turn on for my tasks', exact: true });
+  await expect(use).toBeEnabled();
   expect(mutations).toEqual([{ path: '/api/extensions/task-customization/approve', body: { revisionId: 'draft-revision', draftVersion: 2, evidenceId: 'proof-b' } }]);
-  await studio(page).getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
-  expect(mutations[1]).toEqual({ path: '/api/extensions/task-customization/activate', body: { revisionId: 'draft-revision', draftVersion: 2, generation: 7 } });
+  await use.click();
+  await expect(decision.locator('.rs-review-status')).toHaveText('On for my tasks');
+  expect(mutations[1]).toEqual({ path: '/api/extensions/task-customization/activate',
+    body: { revisionId: 'draft-revision', draftVersion: 2, generation: 7, evidenceId: 'proof-b' } });
 });
 
 test('an unavailable installation keeps review and approval usable but disables turning on', async ({ page, demo }) => {
@@ -92,21 +100,25 @@ test('an unavailable installation keeps review and approval usable but disables 
   await expect(studio(page).getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeDisabled();
   await expect(studio(page).getByRole('log', { name: 'Studio conversation' })).toContainText('This change is approved and saved. Task customizations cannot run in this installation yet.');
   await expect(studio(page)).not.toContainText('ready to turn on');
-  await expect(studio(page).locator('.rs-review-status')).toHaveText('Approved · Saved');
+  await expect(studio(page).locator('.rs-review-status')).toHaveText('Approved · Still off');
   expect(mutations.map(item => item.path)).toEqual(['/api/extensions/task-customization/approve']);
 });
 
-test('without a current version the proposed proof uses the canvas width', async ({ page, demo }, testInfo) => {
+test('without a current version the proposed proof uses the conversation width', async ({ page, demo }, testInfo) => {
   await enter(page, demo); await publicStudio(page, { noActive: true, unavailable: true });
   await studio(page).locator('#studio-view-saved').click();
   const proposed = studio(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
   await expect(proposed).toContainText('Prepare next step');
   await expect(studio(page).getByRole('region', { name: 'Checked behavior currently in use', exact: true })).toHaveCount(0);
-  const proposedBox = await proposed.boundingBox(), gridBox = await proposed.locator('..').boundingBox();
-  expect(proposedBox.width).toBeGreaterThanOrEqual(gridBox.width * 0.98);
+  const width = await proposed.evaluate(node => {
+    const parentStyle = getComputedStyle(node.parentElement);
+    return { proof: node.getBoundingClientRect().width,
+      available: node.parentElement.clientWidth - parseFloat(parentStyle.paddingLeft) - parseFloat(parentStyle.paddingRight) };
+  });
+  expect(width.proof).toBeGreaterThanOrEqual(width.available * 0.98);
   await page.screenshot({ path: testInfo.outputPath('sole-proposed-proof.png'), fullPage: true });
   await studio(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
-  await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
   await expect(studio(page).getByRole('log', { name: 'Studio conversation' })).toContainText('This change is approved and saved.');
   await expect(studio(page)).not.toContainText('ready to turn on');
   await page.screenshot({ path: testInfo.outputPath('approved-unavailable-chat.png'), fullPage: true });
@@ -115,7 +127,7 @@ test('without a current version the proposed proof uses the canvas width', async
 test('mismatching task creation remains an inspectable example without an approval action', async ({ page, demo }) => {
   await enter(page, demo); const { mutations } = await publicStudio(page, { mismatch: true });
   await studio(page).getByText('The saved examples compare the current follow-up with your proposed next step.', { exact: true }).locator('..').getByRole('button', { name: 'View checked examples', exact: true }).click();
-  const results = studio(page).getByRole('article', { name: 'Sample results', exact: true });
+  const results = studio(page).getByRole('article', { name: 'Current decision', exact: true });
   await expect(results).toContainText('Create “Prepare next step”'); await expect(results).toContainText('No task was created.');
   await expect(results).toContainText('This example needs a correction'); await expect(studio(page).getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
   expect(mutations).toEqual([]);
@@ -147,7 +159,7 @@ test('an independently expected UNKNOWN stays reviewable without claiming a task
 test('retired customizations preserve history access and require a fresh customization', async ({ page, demo }) => {
   await enter(page, demo); const { mutations } = await publicStudio(page, { retired: true });
   await expect(studio(page).getByRole('article', { name: 'Retired customization', exact: true })).toBeVisible();
-  await expect(studio(page).getByLabel('Message to Studio')).toBeHidden();
+  await expect(studio(page).getByLabel('Message to Daymark assistant')).toBeHidden();
   await expect(studio(page).getByRole('button', { name: /Approve this change|Turn on for my tasks|Continue guided example|Try a guided example/ })).toHaveCount(0);
   await studio(page).getByRole('button', { name: 'Start a new customization', exact: true }).click();
   await expect(studio(page).getByRole('heading', { name: 'What would you like to change about your work?', exact: true })).toBeVisible();

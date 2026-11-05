@@ -36,7 +36,7 @@ test('selected deletion disables once, keeps audit/native rows and rejects every
   let state = await taskDraft(db, lifecycle, 'selected-task', fixture);
   state = await lifecycle.simulate('maya', handles(state), authorize);
   state = lifecycle.approve('maya', { ...handles(state), evidenceId: state.evidence.id }, authorize);
-  state = lifecycle.activate('maya', { ...handles(state), generation: state.selection.generation }, authorize);
+  state = lifecycle.activate('maya', { ...handles(state), generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorize);
   const previous = state.selection.revision;
   const tables = ['tasks', 'projects', 'extension_revisions', 'extension_revision_links', 'extension_authored', 'extension_evidence', 'extension_approvals', 'authoring_budget'];
   const before = Object.fromEntries(tables.map(table => [table, rows(db, table)]));
@@ -64,7 +64,7 @@ test('selected deletion disables once, keeps audit/native rows and rejects every
     () => lifecycle.rename('maya', { extensionId: receipt.extensionId, name: 'New', expectedName: state.extension.name }, authorize),
     () => lifecycle.load('maya', { extensionId: receipt.extensionId, templateId: 'attention', draftVersion: state.draftVersion }, authorize),
     () => lifecycle.approve('maya', { ...handles(state), evidenceId: state.evidence.id }, authorize),
-    () => lifecycle.activate('maya', { ...handles(state), generation: after.selection.generation }, authorize),
+    () => lifecycle.activate('maya', { ...handles(state), generation: after.selection.generation, evidenceId: state.approvedEvidenceId }, authorize),
     () => lifecycle.rollback('maya', { extensionId: receipt.extensionId, revisionId: previous.id, generation: after.selection.generation }, authorize),
     () => lifecycle.restart('maya', { extensionId: receipt.extensionId, revisionId: previous.id, draftVersion: state.draftVersion, generation: after.selection.generation }, authorize),
   ];
@@ -78,7 +78,7 @@ test('unselected deletion preserves Task selection while legacy advice remains r
   let active = await taskDraft(db, lifecycle, 'active-task', fixture);
   active = await lifecycle.simulate('maya', handles(active), authorize);
   active = lifecycle.approve('maya', { ...handles(active), evidenceId: active.evidence.id }, authorize);
-  active = lifecycle.activate('maya', { ...handles(active), generation: active.selection.generation }, authorize);
+  active = lifecycle.activate('maya', { ...handles(active), generation: active.selection.generation, evidenceId: active.approvedEvidenceId }, authorize);
   const extra = add(db, lifecycle, 'unselected');
   const before = lifecycle.collection('maya').selection;
   lifecycle.delete('maya', input(extra), authorize);

@@ -40,7 +40,8 @@ try {
   const before = db.prepare("SELECT * FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get();
   for (const operation of ['activate', 'rollback']) {
     const response = await request('POST', `/api/extensions/${extensionId}/${operation}`, { ...auth,
-      body: { revisionId: 'unavailable-revision', generation: before.generation, ...(operation === 'activate' && { draftVersion: 0 }) } });
+      body: { revisionId: 'unavailable-revision', generation: before.generation,
+        ...(operation === 'activate' && { draftVersion: 0, evidenceId: 'unavailable-proof' }) } });
     assert.equal(response.statusCode, 503, response.body);
   }
   assert.deepEqual(db.prepare("SELECT * FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get(), before);

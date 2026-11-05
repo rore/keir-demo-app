@@ -209,14 +209,16 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
   function commit(owner, extensionId, authorize, action, taskOnly = true) {
     return transaction(db, () => { authorize(); draft(owner, extensionId); if (taskOnly) requireTask(owner, extensionId); const result = action(); authorize(); return result; });
   }
-  function change(owner, generation, row, operation, hookId = TASK_HOOK) {
+  function change(owner, generation, row, operation, hookId = TASK_HOOK, expectedEvidenceId) {
     const selected = selection(owner, hookId), outgoing = selected.revision_id;
     if (selected.generation !== generation) conflict();
     if (row && !eligible(row)) conflict();
     let pins = null;
     if (row) {
       const item = executable(row), approved = db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, row.id);
-      pins = json({ ...item.pins, approvedEvidenceId: approved?.evidence_id ?? null });
+      const approvedEvidenceId = approved?.evidence_id ?? null;
+      if (operation === 'activate' && expectedEvidenceId !== approvedEvidenceId) conflict();
+      pins = json({ ...item.pins, approvedEvidenceId });
     }
     db.prepare('UPDATE extension_selections SET revision_id=?,generation=generation+1,binding_pins=? WHERE owner_id=? AND hook_id=?').run(row?.id ?? null, pins, owner, hookId);
     db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)').run(owner, row?.id ?? outgoing, generation + 1, operation);
@@ -586,7 +588,13 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
         db.prepare('INSERT INTO extension_approvals VALUES (?,?,?) ON CONFLICT(owner_id,revision_id) DO UPDATE SET evidence_id=excluded.evidence_id').run(owner, row.id, proof.id);
       }); return api.state(owner, input.extensionId);
     },
-    activate(owner, input, authorize) { commit(owner, input.extensionId, authorize, () => change(owner, input.generation, currentDraft(owner, input), 'activate')); return api.state(owner, input.extensionId); },
+    activate(owner, input, authorize) {
+      commit(owner, input.extensionId, authorize, () => {
+        const row = currentDraft(owner, input);
+        change(owner, input.generation, row, 'activate', TASK_HOOK, input.evidenceId);
+      });
+      return api.state(owner, input.extensionId);
+    },
     disable(owner, input, authorize) {
       commit(owner, input.extensionId, authorize, () => {
         const state = draft(owner, input.extensionId), active = selection(owner, state.hook_id ?? TASK_HOOK);

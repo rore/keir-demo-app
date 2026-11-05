@@ -108,10 +108,10 @@ test('a held actual completion receipt cannot replace a reopened task view or un
     await expect(outcome(page)).toContainText(noBinding);
     await details(page).getByLabel('Task title', { exact: true }).fill('Retain unsaved native race title');
     await details(page).getByLabel('Notes', { exact: false }).fill('Retain unsaved native notes');
-    await details(page).getByRole('button', { name: 'Customizations', exact: true }).click();
+    await details(page).getByRole('button', { name: 'Customization Studio', exact: true }).click();
     await expect(studio(page)).toBeVisible();
     await studio(page).getByRole('button', { name: 'Back to my task', exact: true }).click();
-    await expect(details(page).getByRole('button', { name: 'Customizations', exact: true })).toBeFocused();
+    await expect(details(page).getByRole('button', { name: 'Customization Studio', exact: true })).toBeFocused();
     await expect(details(page).getByLabel('Task title', { exact: true })).toHaveValue('Retain unsaved native race title');
     const notes = details(page).getByLabel('Notes', { exact: false });
     await expect(notes).toHaveValue('Retain unsaved native notes');

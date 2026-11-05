@@ -69,17 +69,19 @@ test('creation identity, original receipt, item-fenced sources and separate appr
   const originalSelectionId = preparedA.state.selection.revision?.id ?? null;
   preparedA.state = lifecycle.approve('maya', { ...preparedA.input, evidenceId: proofA.id }, authorized);
   assert.equal(preparedA.state.selection.revision?.id ?? null, originalSelectionId, 'approval leaves the current extension selected');
-  preparedA.state = lifecycle.activate('maya', { ...preparedA.input, generation: preparedA.state.selection.generation }, authorized);
+  preparedA.state = lifecycle.activate('maya', { ...preparedA.input,
+    generation: preparedA.state.selection.generation, evidenceId: preparedA.state.approvedEvidenceId }, authorized);
   assert.equal(preparedA.state.selection.revision.extensionId, idA);
   assert.equal(lifecycle.state('maya', idB).evidence.id, proofB.id, 'B remains saved while A is active');
 
   preparedB.state = lifecycle.approve('maya', { ...preparedB.input, evidenceId: proofB.id }, authorized);
   assert.equal(preparedB.state.selection.revision.id, preparedA.state.draft.id, 'approving B keeps A active');
   const generationForB = preparedB.state.selection.generation;
-  preparedB.state = lifecycle.activate('maya', { ...preparedB.input, generation: generationForB }, authorized);
+  const activationB = { ...preparedB.input, generation: generationForB, evidenceId: preparedB.state.approvedEvidenceId };
+  preparedB.state = lifecycle.activate('maya', activationB, authorized);
   assert.equal(preparedB.state.selection.revision.extensionId, idB);
   const afterB = lifecycle.state('maya', idB);
-  assert.throws(() => lifecycle.activate('maya', { ...preparedB.input, generation: generationForB }, authorized), { status: 409 });
+  assert.throws(() => lifecycle.activate('maya', activationB, authorized), { status: 409 });
   assert.throws(() => lifecycle.disable('maya', { extensionId: idA, generation: afterB.selection.generation }, authorized), { status: 404 });
   assert.deepEqual(lifecycle.state('maya', idB), afterB, 'stale use and wrong-item disable leave B selected');
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
@@ -91,7 +93,8 @@ test('restart makes a clean head from the active revision and retains later draf
   const extensionId = created.extension.id;
   let active = await prepare(lifecycle, extensionId, 'attention');
   active.state = lifecycle.approve('maya', { ...active.input, evidenceId: active.state.evidence.id }, authorized);
-  active.state = lifecycle.activate('maya', { ...active.input, generation: active.state.selection.generation }, authorized);
+  active.state = lifecycle.activate('maya', { ...active.input,
+    generation: active.state.selection.generation, evidenceId: active.state.approvedEvidenceId }, authorized);
   const activeRevision = active.state.draft.id;
 
   let later = await prepare(lifecycle, extensionId, 'pending');
@@ -126,7 +129,8 @@ for (const approved of [false, true]) test(`restart exposes a displaced never-ac
   const extensionId = created.extension.id;
   let active = await prepare(lifecycle, extensionId, 'attention');
   active.state = lifecycle.approve('maya', { ...active.input, evidenceId: active.state.evidence.id }, authorized);
-  active.state = lifecycle.activate('maya', { ...active.input, generation: active.state.selection.generation }, authorized);
+  active.state = lifecycle.activate('maya', { ...active.input,
+    generation: active.state.selection.generation, evidenceId: active.state.approvedEvidenceId }, authorized);
   const bytes = sourceFor('Never-active saved source: original λ') + '\n';
   let later = await lifecycle.compile('maya', { extensionId, hookId: 'TaskCompleted', source: bytes, draftVersion: active.state.draftVersion }, authorized);
   if (approved) {
@@ -201,7 +205,7 @@ test('authored revisions remain usable beyond 32 saves, including scenarios, cre
   state = await lifecycle.proposeScenarios('maya', { ...current(state), cases: repeated.cases }, authorized);
   state = await lifecycle.simulate('maya', current(state), authorized);
   state = lifecycle.approve('maya', { ...current(state), evidenceId: state.evidence.id }, authorized);
-  state = lifecycle.activate('maya', { ...current(state), generation: state.selection.generation }, authorized);
+  state = lifecycle.activate('maya', { ...current(state), generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorized);
   const proof = lifecycle.evidence('maya', state.evidence.id, state.extension.id), selected = state.selection;
   state = await lifecycle.compile('maya', { extensionId: state.extension.id, hookId: 'TaskCompleted', source: sourceFor('later source'), draftVersion: state.draftVersion }, authorized);
   const later = lifecycle.source('maya', state.draft.id, state.extension.id);

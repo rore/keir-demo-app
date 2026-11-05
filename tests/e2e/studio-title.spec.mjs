@@ -19,7 +19,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }
       state = await lifecycle.simulate('maya', input, () => {});
       expect(state.evidence.passed).toBe(true);
       state = lifecycle.approve('maya', { ...input, evidenceId: state.evidence.id }, () => {});
-      lifecycle.activate('maya', { ...input, generation: state.selection.generation }, () => {});
+      lifecycle.activate('maya', { ...input, generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, () => {});
       await page.setViewportSize(viewport);
       await page.goto(fixture.origin);
       await page.getByRole('button', { name: 'Continue as Maya' }).click();
@@ -27,8 +27,8 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }
       await page.getByRole('article', { name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/, exact: true }).click();
       const heading = page.getByRole('heading', { name, exact: true });
       await expect(heading).toBeVisible();
-      await expect(page.getByLabel('Customization status', { exact: true })).toContainText('In use');
-      await expect(page.getByRole('region', { name: 'Customization Studio', exact: true })).not.toContainText('Your saved changes');
+      await expect(page.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
+      await expect(page.getByRole('region', { name: 'Customization Studio', exact: true })).not.toContainText('Checked examples');
       const geometry = await heading.evaluate(node => ({ height: node.getBoundingClientRect().height,
         line: parseFloat(getComputedStyle(node).lineHeight), width: node.getBoundingClientRect().width }));
       expect(geometry.height).toBeLessThanOrEqual(geometry.line + 1);
@@ -36,7 +36,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }
       await expect(heading).toHaveAttribute('title', name);
       await expect(page.getByRole('button', { name: 'History and details', exact: true })).toBeInViewport({ ratio: 1 });
       await expect(page.getByRole('button', { name: 'Back to Customizations', exact: true })).toBeInViewport({ ratio: 1 });
-      await expect(page.getByLabel('Message to Studio', { exact: true })).toBeInViewport({ ratio: 1 });
+      await expect(page.getByLabel('Message to Daymark assistant', { exact: true })).toBeInViewport({ ratio: 1 });
       mkdirSync(resolve('build/studio-title'), { recursive: true });
       await page.screenshot({ path: resolve(`build/studio-title/${viewport.width}x${viewport.height}.png`) });
       expect(fixture.requests).toHaveLength(0);

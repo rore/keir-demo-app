@@ -24,7 +24,7 @@ try {
     state = await lifecycle.simulate(owner, input, () => {});
     assert.equal(state.evidence.passed, true);
     state = lifecycle.approve(owner, { ...input, evidenceId: state.evidence.id }, () => {});
-    state = lifecycle.activate(owner, { ...input, generation: state.selection.generation }, () => {});
+    state = lifecycle.activate(owner, { ...input, generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, () => {});
     selections.set(owner, { state, input });
   }
   const sam = selections.get('sam'), maya = selections.get('maya');
@@ -74,7 +74,7 @@ try {
   assert.deepEqual(revoked.status.outcome.effects, [], 'The reached read implementation rejects before any native write.');
   assert.ok(db.prepare('SELECT revoked_at FROM task_completion_events WHERE source_task_id=?').get(revoked.source.id).revoked_at);
 
-  sam.state = lifecycle.activate('sam', { ...sam.input, generation: sam.state.selection.generation }, () => {});
+  sam.state = lifecycle.activate('sam', { ...sam.input, generation: sam.state.selection.generation, evidenceId: sam.state.approvedEvidenceId }, () => {});
   now = 300;
   db.function('expireReuseDeadline', () => { now = 1301; return 0; });
   db.exec('CREATE TEMP TRIGGER expire_reused_task_effect AFTER INSERT ON task_effect_receipts BEGIN SELECT expireReuseDeadline(); END');

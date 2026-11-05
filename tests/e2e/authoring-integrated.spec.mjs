@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { openSavedChanges } from '../fixtures/studio-review.mjs';
+import { expandCheckedExamples, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
@@ -38,7 +38,7 @@ async function addTask(page, title) {
   await expect(page.getByRole('button', { name: title, exact: true })).toBeVisible();
 }
 const send = async (page, text) => {
-  await studio(page).getByLabel('Message to Studio', { exact: true }).fill(text);
+  await studio(page).getByLabel('Message to Daymark assistant', { exact: true }).fill(text);
   await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
 };
 async function openDetails(page) {
@@ -83,9 +83,9 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     expect(nonmatch.report.observed).toEqual({ effect: 'NOT_OBSERVED', createdTasks: null });
     expect(nonmatch.report.status).toBe('FAIL'); expect(nonmatch.report.mismatches.length).toBeGreaterThan(0);
     await ui.getByText(fixture.metadata.mismatchText, { exact: true }).locator('..').getByRole('button', { name: 'View checked examples', exact: true }).click();
-    await ui.getByText('Other checked examples', { exact: true }).click();
-    await ui.getByRole('button', { name: `Saved example: Completed task in “${fixture.metadata.otherProjectName}”`, exact: true }).click();
-    const mismatch = ui.locator('.rs-example:visible');
+    await expect(decision(page)).toBeVisible();
+    await expandCheckedExamples(decision(page));
+    const mismatch = decision(page).getByRole('article', { name: `Example: Completed task in “${fixture.metadata.otherProjectName}”`, exact: true });
     await expect(mismatch).toHaveCount(1);
     await expect(mismatch.locator('.rs-mismatch')).toHaveText('Task creation was not confirmed in this example');
     await expect(mismatch.locator('dd')).toHaveText(['Create no task.', 'No task-creation result was observed.']);
@@ -95,7 +95,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     expect(mutations).toEqual([]);
     expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 
-    await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+    await decision(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
     expect(fixture.requests).toHaveLength(5);
     await send(page, 'Correct the saved source so only completed tasks in the chosen project create the named task. Keep exactly the same independent expected examples.');
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
@@ -121,9 +121,9 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect((await read('extensions')).selection).toEqual(selection);
     await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
-    await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
+    await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
     await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
-    await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeVisible();
+    await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
     await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(repaired.review.revisionId);
     expect(mutations).toHaveLength(2);
     expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
@@ -208,7 +208,7 @@ test('offline Studio resumes the same checked draft and preserves review when th
     await send(page, blockedText);
     await refresh;
     await expect(ui.getByRole('alert')).toContainText('native tasks and saved work remain available');
-    await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue(blockedText);
+    await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue(blockedText);
     await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
     await expect(ui.getByText('Submitted request', { exact: true })).toHaveCount(0);
     expect(recoveryRequests).toEqual([]);
@@ -345,7 +345,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         const path = new URL(request.url()).pathname;
         if (/^\/api\/extensions\/[^/]+\/evidence\//.test(path)) evidenceRequests.push(path.split('/').at(-1));
       });
-      await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent refinement while reviewing');
+      await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep this unsent refinement while reviewing');
       await openSavedChanges(page);
       await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
       const proof = await read(`extensions/evidence/${conversation.review.evidenceId}`);
@@ -355,7 +355,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(proof.reports[0].report.observed).toEqual({ effect: 'CONFIRMED', createdTasks: proof.reports[0].expected.createdTasks });
       expect(proof.reports[1].expected.createdTasks).toEqual([]);
       expect(proof.reports[1].report.observed).toEqual({ effect: 'NONE', createdTasks: [] });
-      await ui.getByText(/^Other checked examples/).click();
+      await expandCheckedExamples(decision(page));
       const examples = decision(page).getByRole('article', { name: /^Example:/ });
       await expect(examples).toHaveCount(proof.reports.length);
       for (const [index, report] of proof.reports.entries()) {
@@ -373,8 +373,8 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         }
       }
       expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
-      await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
-      await expect(decision(page)).toContainText('These were example tasks; your real tasks have not changed.');
+      await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
+      await expect(decision(page)).toContainText('Example only · no real tasks changed');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
       for (let index = 0; index < fixture.metadata.cases.length; index++)
@@ -388,11 +388,9 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
       expect((await read('extensions')).selection.revision?.id ?? null).toBe(selectedA.revision_id);
       await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
-      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
+      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
       await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
-      if (!await ui.getByLabel('Message to Studio', { exact: true }).isVisible())
-        await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
-      await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeVisible();
+      await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
       await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
       await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
       expect((await read('extensions')).selection.generation).toBe(selectedA.generation + 1);
@@ -467,7 +465,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
         await page.locator('#open-customizations').click();
         const intended = 'Refine the saved task customization after replacing assistant settings.';
-        await ui.getByLabel('Message to Studio', { exact: true }).fill(intended);
+        await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(intended);
         await openDetails(page);
         await ui.getByRole('button', { name: 'Configure', exact: true }).click();
         const dialog = page.getByRole('dialog', { name: 'Set up the assistant', exact: true });
@@ -476,7 +474,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         const held = fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
         await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
         await expect(dialog).toHaveCount(0);
-        await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue(intended);
+        await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue(intended);
         expect(fixture.requests.length).toBe(callCount);
         expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(held);
         await send(page, intended);

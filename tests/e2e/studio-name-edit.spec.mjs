@@ -112,7 +112,7 @@ test('switching owners discards the prior owner rename text and fences its late 
   } finally { release(); await fixture.close(); }
 });
 
-test('matching task creation remains the primary exact example when no-op cases were authored first', async ({ page }) => {
+test('saved behavior illustrates task creation and checked examples keep authored order', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
     const { extensionId: id, conversationId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { owner: 'sam' });
@@ -140,7 +140,14 @@ test('matching task creation remains the primary exact example when no-op cases 
     const ui = studio(page), decision = ui.getByRole('article', { name: 'Current decision', exact: true });
     const invitation = ui.getByRole('button', { name: 'View saved changes', exact: true }).first();
     await openSavedChanges(page);
-    const example = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true }).getByRole('article', { name: `Example: Completed task in “${project.name}”`, exact: true });
+    await expect(ui.getByRole('article', { name: 'Your saved change', exact: true })).toContainText(task.metadata.title);
+    const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
+    const rows = proposed.locator('details:has(> .rs-example)');
+    await expect(rows).toHaveCount(cases.length);
+    await expect(rows.first().locator('.rs-example')).toBeVisible();
+    await expect(rows.first().locator('.rs-example')).toContainText('Create no task.');
+    await rows.last().locator(':scope > summary').click();
+    const example = proposed.getByRole('article', { name: `Example: Completed task in “${project.name}”`, exact: true });
     await expect(example).toHaveCount(1);
     await expect(example.locator('.rs-created-example strong')).toHaveText(task.metadata.title);
     await expect(example.getByText('Matches what you wanted', { exact: true })).toBeVisible();
@@ -148,7 +155,7 @@ test('matching task creation remains the primary exact example when no-op cases 
     await expect(exact).toBeHidden();
     await decision.getByText('Exact saved change and checks', { exact: true }).click();
     await expect(exact).toContainText(saved.evidence.id);
-    await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+    await decision.getByRole('button', { name: 'Hide checked examples', exact: true }).click();
     await expect(invitation).toBeFocused();
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }

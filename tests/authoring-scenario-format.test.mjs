@@ -240,7 +240,7 @@ test('offline authoring checks an exact suffix and repairs scenario syntax witho
 
   const selection = { extensionId, ...input(state) };
   const approved = lifecycle.approve('maya', { ...selection, evidenceId: settled.review.evidenceId }, () => {});
-  lifecycle.activate('maya', { ...selection, generation: approved.selection.generation }, () => {});
+  lifecycle.activate('maya', { ...selection, generation: approved.selection.generation, evidenceId: approved.approvedEvidenceId }, () => {});
   const native = taskService(db);
   const source = native.createTask('maya', { projectId: project.id, title: 'Re\u0301sumé 🚀' });
   native.completeTask('maya', source.id);
@@ -427,7 +427,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const selection = { extensionId, ...input(state) };
   const approved = lifecycle.approve('maya', { ...selection, evidenceId: proof.id }, () => {});
   assert.equal(approved.selection.revision, null);
-  const activated = lifecycle.activate('maya', { ...selection, generation: approved.selection.generation }, () => {});
+  const activated = lifecycle.activate('maya', { ...selection, generation: approved.selection.generation, evidenceId: approved.approvedEvidenceId }, () => {});
   assert.equal(activated.selection.revision.id, proof.revisionId);
   assert.equal(activated.selection.approvedEvidenceId, proof.id);
   const dispatcher = createTaskDispatcher({ db, lifecycle });

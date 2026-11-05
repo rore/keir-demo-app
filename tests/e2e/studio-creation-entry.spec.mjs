@@ -44,7 +44,7 @@ async function createActiveCustomization(page, fixture) {
     revisionId: state.draft.id, draftVersion: state.draftVersion, evidenceId: state.evidence.id,
   });
   state = await api(page, `extensions/${extensionId}/activate`, {
-    revisionId: state.draft.id, draftVersion: state.draftVersion, generation: state.selection.generation,
+    revisionId: state.draft.id, draftVersion: state.draftVersion, generation: state.selection.generation, evidenceId: state.approvedEvidenceId,
   });
   const saved = await api(page, `extensions/${extensionId}/revisions/${state.draft.id}`);
   return { extensionId, revisionId: state.draft.id, source: saved.source, cases: saved.cases, state };
@@ -93,7 +93,7 @@ test('top-level New starts a distinct customization after a real prior chat and 
     await nav(page).getByRole('button', { name: 'Customizations', exact: true }).click();
     await page.locator(`#edit-${prior.extensionId}`).click();
     const editStudio = studio(page);
-    await editStudio.getByLabel('Message to Studio', { exact: true }).fill('Prior saved conversation for the synthetic regression.');
+    await editStudio.getByLabel('Message to Daymark assistant', { exact: true }).fill('Prior saved conversation for the synthetic regression.');
     const priorAccepted = page.waitForResponse(response => turnRequest(response.request()));
     await editStudio.getByRole('button', { name: 'Send', exact: true }).click();
     const priorResponse = await priorAccepted;
@@ -112,9 +112,9 @@ test('top-level New starts a distinct customization after a real prior chat and 
     const blankLog = await log.innerText();
     expect(blankLog).not.toContain('Prior saved conversation for the synthetic regression.');
     expect(blankLog).not.toContain(fixture.metadata.question);
-    await expect(newStudio.getByLabel('Message to Studio', { exact: true })).toHaveValue('');
+    await expect(newStudio.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('');
 
-    await newStudio.getByLabel('Message to Studio', { exact: true }).fill('A distinct new customization request.');
+    await newStudio.getByLabel('Message to Daymark assistant', { exact: true }).fill('A distinct new customization request.');
     const creationAccepted = page.waitForResponse(response => turnRequest(response.request()));
     await newStudio.getByRole('button', { name: 'Send', exact: true }).click();
     const acceptedResponse = await creationAccepted;
@@ -146,7 +146,7 @@ test('top-level New starts a distinct customization after a real prior chat and 
     await nav(page).getByRole('button', { name: 'Customizations', exact: true }).click();
     await page.locator(`#edit-${prior.extensionId}`).click();
     const reopenA = studio(page);
-    await reopenA.getByLabel('Message to Studio', { exact: true }).fill('Yes, keep the independent examples and show me Done for completed tasks.');
+    await reopenA.getByLabel('Message to Daymark assistant', { exact: true }).fill('Yes, keep the independent examples and show me Done for completed tasks.');
     await reopenA.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(reopenA.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 25_000 });
     const bStateAfterEdit = await api(page, `extensions/${accepted.conversation.extensionId}`);
@@ -179,7 +179,7 @@ test('Enter sends once; Shift+Enter, IME, repeat, empty and running guards do no
   page.on('request', request => { if (turnRequest(request)) posts.push(request.postDataJSON()); });
   try {
     const ui = await enterNewStudio(page, fixture.origin);
-    const composer = ui.getByLabel('Message to Studio', { exact: true });
+    const composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     await composer.focus();
     await page.keyboard.press('Enter');
     await noTurnRequest(page);
@@ -233,7 +233,7 @@ test('a lost create receipt recovers by operation identity and reload does not r
   page.on('request', request => { if (turnRequest(request)) posts.push(request.postDataJSON()); });
   try {
     const ui = await enterNewStudio(page, fixture.origin);
-    const composer = ui.getByLabel('Message to Studio', { exact: true });
+    const composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     await composer.fill('Keep this request if its first response is lost.');
     await page.route('**/api/authoring/turn', async route => {
       const response = await route.fetch();
@@ -293,7 +293,7 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
   page.on('request', request => { if (turnRequest(request)) posts.push(request.postDataJSON()); });
   try {
     const ui = await enterNewStudio(page, fixture.origin);
-    await ui.getByLabel('Message to Studio', { exact: true }).fill('Maya private request for the delayed-link regression.');
+    await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Maya private request for the delayed-link regression.');
     await page.route('**/api/authoring/turn', async route => {
       const response = await route.fetch();
       acceptedResponse = { status: response.status(), body: await response.json() };

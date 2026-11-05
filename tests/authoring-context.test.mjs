@@ -454,7 +454,7 @@ test('actual compiled task source retains independent expectations, exact proof 
   state = lifecycle.approve('maya', { extensionId, ...input(state), evidenceId: state.evidence.id }, () => true);
   assert.deepEqual(state.selection, selection, 'approval does not activate or select');
   await assert.rejects(lifecycle.proposeScenarios('maya', { extensionId, ...input(state), cases: example.cases, draftVersion: state.draftVersion - 1 }, () => true), { status: 409 });
-  state = lifecycle.activate('maya', { extensionId, ...input(state), generation: state.selection.generation }, () => true);
+  state = lifecycle.activate('maya', { extensionId, ...input(state), generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, () => true);
   assert.equal(state.selection.revision.id, state.draft.id); assert.equal(state.selection.generation, selection.generation + 1);
   assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), native, 'checking, approval and activation create no native task');
 });

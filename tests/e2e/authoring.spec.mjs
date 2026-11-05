@@ -142,7 +142,7 @@ test('missing setup offers Configure and saved task source without a generation 
   await enterStudio(page, demo);
   const ui = studio(page), panel = authoring(page);
   await expect(panel).toContainText('Set up the assistant to create or change a customization.');
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Ask for a task customization');
+  await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Ask for a task customization');
   await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
   await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(1);
   const { source } = await prepareTask(page, demo);
@@ -196,7 +196,7 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
   await enterStudio(page, demo);
   await expect.poll(getDraftVersion).toBe(0);
   const ui = studio(page);
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Suggest a task customization for my projects');
+  await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Suggest a task customization for my projects');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('Which project should this customization cover?', { exact: true })).toBeVisible({ timeout: 10_000 });
   expect(Object.keys(calls.turns[0]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'operationId', 'target', 'text']);
@@ -205,7 +205,7 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
   expect(await ui.getByText('Checking the submitted task customization request.', { exact: true }).count()).toBe(1);
   expect(firstPolls).toBeGreaterThanOrEqual(2);
 
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Use open tasks as the first example');
+  await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Use open tasks as the first example');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('What should the next example cover?', { exact: true })).toBeVisible({ timeout: 10_000 });
   expect(Object.keys(calls.turns[1]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'operationId', 'target', 'text']);
@@ -240,7 +240,7 @@ for (const width of [1440, 390]) test(`lost accepted turn response is read back 
   });
   await enterStudio(page, demo);
   const ui = studio(page);
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Tell me what task fields are available');
+  await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Tell me what task fields are available');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('The request was saved. What should I clarify?', { exact: true })).toBeVisible({ timeout: 10_000 });
   expect(calls.turns).toHaveLength(1);
@@ -279,9 +279,9 @@ for (const width of [1440, 683]) test(`Stop stays visible and remains cancelling
   });
   await enterStudio(page, demo);
   const panel = authoring(page);
-  await studio(page).getByLabel('Message to Studio', { exact: true }).fill('Start a bounded authoring request');
+  await studio(page).getByLabel('Message to Daymark assistant', { exact: true }).fill('Start a bounded authoring request');
   await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
-  await studio(page).getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent follow-up');
+  await studio(page).getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep this unsent follow-up');
   await expect(panel.getByRole('button', { name: 'Stop', exact: true })).toBeInViewport();
   await panel.getByRole('button', { name: 'Stop', exact: true }).click();
   await cancelledStatusStarted;
@@ -289,13 +289,13 @@ for (const width of [1440, 683]) test(`Stop stays visible and remains cancelling
   expect(cancelRequest).toEqual({ id: 'stoppable', body: { runId: 'run-stoppable', expectedVersion: 1 } });
   await expect(panel.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled();
   await expect(panel.getByRole('button', { name: 'Stopping…', exact: true })).toBeInViewport();
-  await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent follow-up');
+  await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent follow-up');
 
   current = { ...current, status: 'CANCELLED' };
   settled = true;
   releaseCancelledStatus();
   await expect(panel.getByRole('status').filter({ hasText: 'Authoring stopped' })).toBeVisible({ timeout: 10_000 });
-  await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent follow-up');
+  await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent follow-up');
   expect(lifecycleActions).toEqual([]);
   expect(calls.turns).toHaveLength(1);
   expect(calls.cancels).toHaveLength(1);
@@ -320,7 +320,7 @@ test('held status from an old owner cannot appear in the newly mounted Studio af
   });
   await enterStudio(page, demo);
   const ui = studio(page);
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Private Maya request');
+  await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Private Maya request');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await held;
 
@@ -333,7 +333,7 @@ test('held status from an old owner cannot appear in the newly mounted Studio af
   releaseStatus();
   await expect(studio(page).getByText('Late private Maya response', { exact: true })).toHaveCount(0);
   await expect(studio(page).getByText('Private Maya request', { exact: true })).toHaveCount(0);
-  await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toBeVisible();
+  await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
   expect(calls.turns).toHaveLength(1);
 });
 
@@ -361,7 +361,7 @@ test('mount, reload and readback never submit; saved messages reappear from GET 
   await openDetails(page);
   await authoring(page).getByRole('button', { name: 'Check authoring status', exact: true }).click();
   await expect(authoring(page).getByRole('button', { name: 'Continue current changes in a new conversation', exact: true })).toHaveCount(0);
-  await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toBeVisible();
+  await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
   expect(getCount).toBeGreaterThan(1);
   expect(calls.turns).toHaveLength(0);
 });
@@ -412,11 +412,11 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   await expect(disclosure).toContainText(`Model: ${available.model}`);
   await openDetails(page);
   await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent conversation draft');
+  await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep this unsent conversation draft');
   const requested = [];
   page.on('request', request => { const path = new URL(request.url()).pathname; if (/^\/api\/extensions\/[^/]+\/evidence\//.test(path)) requested.push(path.split('/').at(-1)); });
   await offerButton.click();
-  await expect(ui.getByRole('heading', { name: eligible ? 'Your saved changes' : 'Earlier examples', exact: true })).toBeVisible();
+  await expect(ui.getByRole('heading', { name: eligible ? 'Checked examples' : 'Earlier examples', exact: true })).toBeVisible();
   expect(requested).toEqual([first.evidence.id]);
   expect((await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json()).approved).toBe(false);
   if (eligible) {
@@ -440,7 +440,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     await expect(currentDecision).toContainText('Evidence: ' + latest.evidence.id);
     expect((await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json()).approvedEvidenceId).toBe(null);
   }
-  await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent conversation draft');
+  await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent conversation draft');
   await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
 });
 
@@ -498,9 +498,9 @@ test('failed start and failed recovery block retry until readback, then reuse th
   try {
     await enterStudio(page, demo);
     const ui = studio(page), panel = authoring(page);
-    await ui.getByLabel('Message to Studio', { exact: true }).fill('Original submitted request');
+    await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Original submitted request');
     await ui.getByRole('button', { name: 'Send', exact: true }).click(); await entered;
-    await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this new unsent follow-up');
+    await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep this new unsent follow-up');
     await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
     await expect(panel.getByRole('button', { name: 'Retry submitted request', exact: true })).toHaveCount(0);
     releaseRead();
@@ -516,7 +516,7 @@ test('failed start and failed recovery block retry until readback, then reuse th
     expect(calls.turns).toHaveLength(2);
     expect(calls.turns[1]).toEqual(calls.turns[0]);
     expect(dispatches).toBe(1);
-    await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this new unsent follow-up');
+    await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this new unsent follow-up');
   } finally { releaseRead?.(); }
 });
 
@@ -555,7 +555,7 @@ for (const code of ['SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'PROVIDER_RATE_LIMIT', 'C
     },
   });
   await enterStudio(page, demo);
-  const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+  const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
   await composer.fill('Keep this unsent follow-up');
   const continuation = ui.getByRole('button', { name: code === 'PROVIDER_RATE_LIMIT' ? 'Try again from saved work' : 'Continue here from saved work', exact: true });
   expect(calls.turns).toHaveLength(0);

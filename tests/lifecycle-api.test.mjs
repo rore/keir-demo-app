@@ -72,7 +72,9 @@ test('scoped lifecycle API enforces exact shapes, session, draft/selection versi
   const checked = (await call(extensionPath(db, `evidence/${state.evidence.id}`))).json();
   assert.equal(checked.reports.length, 6);
   assert.equal(checked.reports.find(row => row.id === 'missing-task').report.scenario.task.projectId, undefined, 'Unavailable reads remain inspectable without invented project data.');
-  assert.equal((await call(extensionPath(db, 'activate'), { ...input, generation: initial.selection.generation })).statusCode, 409);
+  const activation = { ...input, generation: initial.selection.generation };
+  const activatePath = extensionPath(db, 'activate');
+  assert.equal((await call(activatePath, { ...activation, evidenceId: state.evidence.id })).statusCode, 409);
   assert.equal((await call(extensionPath(db, 'approve'), { ...input, evidenceId: state.evidence.id, passed: true })).statusCode, 400);
   state = (await call(extensionPath(db, 'approve'), { ...input, evidenceId: state.evidence.id })).json();
   assert.equal(state.approved, true);
@@ -83,18 +85,43 @@ test('scoped lifecycle API enforces exact shapes, session, draft/selection versi
   assert.equal((await call(extensionPath(db, `evidence/${approvedId}`))).json().id, approvedId);
   state = (await call(extensionPath(db, 'approve'), { ...input, evidenceId: state.evidence.id })).json();
   assert.equal(state.approvedEvidenceId, state.evidence.id);
+  assert.equal(state.draft.id, activation.revisionId);
+  assert.equal(state.draftVersion, activation.draftVersion);
+  assert.equal(state.selection.generation, activation.generation);
+  const selections = () => db.prepare('SELECT * FROM extension_selections ORDER BY owner_id, hook_id').all();
+  const history = () => db.prepare('SELECT * FROM extension_history ORDER BY id').all();
+  const approvals = () => db.prepare('SELECT * FROM extension_approvals ORDER BY owner_id, revision_id').all();
+  const before = { selections: selections(), history: history(), approvals: approvals() };
   const native = db.prepare('SELECT * FROM tasks ORDER BY id').all();
-  const activated = await call(extensionPath(db, 'activate'), { ...input, generation: initial.selection.generation });
+  const approvedActivation = { ...activation, evidenceId: state.approvedEvidenceId };
+  for (const bad of [activation, { ...activation, evidenceId: '../proof' }, { ...activation, evidenceId: 1 },
+    { ...approvedActivation, owner: 'leo' }])
+    assert.equal((await call(activatePath, bad)).statusCode, 400);
+  assert.equal((await call(activatePath, approvedActivation, { origin: 'http://invalid.local' })).statusCode, 403);
+  assert.equal((await call(activatePath, approvedActivation, { 'x-session-context': 'wrong' })).statusCode, 401);
+  assert.equal((await call(activatePath, { ...activation, evidenceId: null })).statusCode, 409);
+  assert.equal((await call(activatePath, { ...activation, evidenceId: approvedId })).statusCode, 409,
+    'Replacing approval on the same revision conflicts with an activation of the previously displayed proof');
+  assert.deepEqual({ selections: selections(), history: history(), approvals: approvals() }, before);
+  assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), native);
+  const activated = await call(activatePath, approvedActivation);
   assert.equal(activated.statusCode, 200);
   assert.equal(activated.json().selection.revision.id, input.revisionId);
   assert.equal(activated.json().selection.approvedEvidenceId, state.approvedEvidenceId);
   assert.equal(activated.json().selection.generation, initial.selection.generation + 1);
+  const historyAfter = history();
+  assert.equal(historyAfter.length, before.history.length + 1);
+  assert.deepEqual(historyAfter.slice(0, -1), before.history);
+  const { owner_id, revision_id, generation, operation } = historyAfter.at(-1);
+  assert.deepEqual({ owner_id, revision_id, generation, operation },
+    { owner_id: 'maya', revision_id: activation.revisionId, generation: activation.generation + 1, operation: 'activate' });
   assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), native, 'Activation never executes or replays a task.');
   assert.equal((await call(extensionPath(db, 'disable'), { generation: initial.selection.generation })).statusCode, 409);
   assert.equal((await call(extensionPath(db, 'history?before=-1'))).statusCode, 400);
   assert.equal((await call(extensionPath(db, 'history?owner=leo'))).statusCode, 400);
   const proofId = approvedId;
   await login('leo');
+  assert.equal((await call(activatePath, approvedActivation)).statusCode, 404);
   assert.equal((await call(extensionPath(db, `evidence/${proofId}`))).statusCode, 404);
   assert.equal((await call(extensionPath(db, 'rollback'), { revisionId: input.revisionId, generation: 0 })).statusCode, 404);
   const leoCompiled = (await call(extensionPath(db, 'compile', 'leo'), { hookId: TASK_HOOK, source: actual.source, draftVersion: 0 })).json();
@@ -159,7 +186,8 @@ test('authored source and independent suites create immutable revisions; only ex
   state = (await call(extensionPath(db, 'approve'), { revisionId: correctedRevision, draftVersion: 3, evidenceId: state.evidence.id })).json();
   assert.equal(state.approved, true);
   assert.deepEqual(state.selection, selected);
-  const active = await call(extensionPath(db, 'activate'), { revisionId: correctedRevision, draftVersion: 3, generation: state.selection.generation });
+  const active = await call(extensionPath(db, 'activate'), { revisionId: correctedRevision, draftVersion: 3,
+    generation: state.selection.generation, evidenceId: state.approvedEvidenceId });
   assert.equal(active.statusCode, 200);
   assert.equal(active.json().selection.revision.id, correctedRevision);
   assert.equal(active.json().selection.approvedEvidenceId, state.approvedEvidenceId);

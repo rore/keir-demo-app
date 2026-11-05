@@ -48,7 +48,10 @@ async function setup(t, { title = 'Customer follow-up', reportedStatus, clock } 
   state = lifecycle.approve(owner, { ...revision(), evidenceId: state.evidence.id }, () => {});
   return { db, native, owner, project, other, fixture, lifecycle, dispatcher, extensionId, revision,
     get state() { return state; },
-    activate() { state = lifecycle.activate(owner, { ...revision(), generation: state.selection.generation }, () => {}); return state; },
+    activate() {
+      state = lifecycle.activate(owner, { ...revision(), generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, () => {});
+      return state;
+    },
     disable() { state = lifecycle.disable(owner, { extensionId, generation: state.selection.generation }, () => {}); return state; } };
 }
 

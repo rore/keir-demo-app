@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { openSavedChanges } from '../fixtures/studio-review.mjs';
+import { expandCheckedExamples, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { TASK_HOOK, digest, json } from '../../src/extension-catalog.mjs';
@@ -32,7 +32,7 @@ async function seed(page, fixture, activeAlternative = false) {
   state = await api(page, path + '/scenarios', { ...input(), cases: current.cases });
   state = await api(page, path + '/simulate', input());
   state = await api(page, path + '/approve', { ...input(), evidenceId: state.evidence.id });
-  state = await api(page, path + '/activate', { ...input(), generation: state.selection.generation });
+  state = await api(page, path + '/activate', { ...input(), generation: state.selection.generation, evidenceId: state.approvedEvidenceId });
   const active = state.selection;
   expect(proposed.source).not.toBe(current.source); expect(draftTitle).not.toBe(activeTitle);
   state = await api(page, path + '/compile', { hookId: TASK_HOOK, source: proposed.source, label: 'New checked idea', draftVersion: state.draftVersion });
@@ -110,21 +110,21 @@ test('active behavior uses its approved proof and a failed reread cannot show ca
     const beforeReview = reads.length;
     await openSavedChanges(page);
     const decision = studio(page).getByRole('article', { name: 'Current decision', exact: true });
-    await expect(decision.getByRole('heading', { name: 'Your saved changes', exact: true })).toBeVisible();
+    await expect(decision.getByRole('heading', { name: 'Checked examples', exact: true })).toBeVisible();
     const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
-    await expect(decision).toContainText('Checked examples: 6.');
-    await expect(decision).toContainText('These were example tasks; your real tasks have not changed.');
+    await expect(proposed.locator('details:has(> .rs-example)')).toHaveCount(6);
+    await expect(decision).toContainText('Example only · no real tasks changed');
     await expect(proposed.getByRole('article', { name: `Example: Completed task in “${fixture.metadata.projectName}”`, exact: true })).toBeVisible();
     await expect(proposed.locator('dd').first()).toContainText(draftTitle);
     await expect(proposed.locator('dd').nth(1)).toContainText(draftTitle);
     expect(reads.slice(beforeReview)).toContain(draftProof);
     expect(reads.slice(beforeReview)).not.toContain(state.evidence.id);
-    await decision.getByText('Other checked examples (5)', { exact: true }).click();
+    await expandCheckedExamples(decision);
     const missing = decision.getByRole('article', { name: 'Example: Missing task', exact: true });
     await expect(missing).toBeVisible();
     await expect(missing.locator('dd')).toHaveText(['Create no task.', 'No task was created. The source task could not be found.']);
     expect(await api(page, path)).toEqual(state);
-    await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();
+    await decision.getByRole('button', { name: 'Hide checked examples', exact: true }).click();
     await page.route(`**/api/${path}/evidence/${active.approvedEvidenceId}`, route => route.fulfill({ status: 503, json: { message: 'Saved check unavailable' } }), { times: 1 });
     await openActive(page);
     await expect(activeView(page)).not.toContainText('Checked examples in use:');
@@ -158,7 +158,8 @@ for (const change of ['owner', 'selection']) test(`a late active proof cannot su
       await page.getByLabel('Demo person', { exact: true }).selectOption('sam');
       await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
     } else {
-      await api(page, path + '/activate', { revisionId: state.draft.id, draftVersion: state.draftVersion, generation: active.generation });
+      await api(page, path + '/activate', { revisionId: state.draft.id, draftVersion: state.draftVersion,
+        generation: active.generation, evidenceId: state.approvedEvidenceId });
     }
     release(); await settled;
     await expect(activeView(page).getByText(/Checked examples in use:/)).toHaveCount(0);
@@ -292,7 +293,7 @@ test('case display uses scenario facts and observed results despite misleading a
     await expect(completed.locator('dd').first()).toContainText(draftTitle);
     await expect(completed.locator('dd').nth(1)).toContainText(draftTitle);
     await expect(proposed).not.toContainText('fabricated project');
-    await decision.getByText('Other checked examples (5)', { exact: true }).click();
+    await expandCheckedExamples(decision);
     const missing = decision.getByRole('article', { name: 'Example: Missing task', exact: true });
     await expect(missing).toBeVisible();
     await expect(missing.locator('dd')).toHaveText(['Create no task.', 'No task was created. The source task could not be found.']);

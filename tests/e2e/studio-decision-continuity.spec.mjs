@@ -7,7 +7,7 @@ import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const review = page => studio(page).getByRole('article', { name: 'Current decision', exact: true });
-const composer = page => studio(page).getByLabel('Message to Studio', { exact: true });
+const composer = page => studio(page).getByLabel('Message to Daymark assistant', { exact: true });
 const activate = page => review(page).getByRole('button', { name: /^(Turn on for my tasks|Switch to this customization)$/ });
 async function api(page, path, body) {
   const origin = new URL(page.url()).origin;
@@ -39,7 +39,7 @@ async function seed(page, fixture, { approved = false, native = false, selection
     let active = await checkedDraft(existing.source, existing.cases, 'Existing customer change');
     const path = 'extensions/' + active.extension.id;
     active = await api(page, path + '/approve', { ...input(active), evidenceId: active.evidence.id });
-    await api(page, path + '/activate', { ...input(active), generation: active.selection.generation });
+    await api(page, path + '/activate', { ...input(active), generation: active.selection.generation, evidenceId: active.approvedEvidenceId });
   }
   let state = await checkedDraft(fixture.metadata.source, fixture.metadata.cases, 'Continuity proposal');
   const path = 'extensions/' + state.extension.id;
@@ -54,10 +54,10 @@ async function openItem(page, id) {
 }
 async function openReview(page) {
   await studio(page).getByRole('button', { name: 'View saved changes', exact: true }).click();
-  await expect(review(page).getByRole('heading', { name: 'Your saved changes', exact: true })).toBeVisible();
+  await expect(review(page).getByRole('heading', { name: 'Checked examples', exact: true })).toBeVisible();
 }
 async function closeReview(page) {
-  await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();
+  await review(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
   await expect(review(page)).toBeHidden();
 }
 async function holdResponse(page, url, { fail = false } = {}) {
@@ -123,7 +123,7 @@ test('saved review stays readable before its reachable actions at short, phone a
       await openReview(page);
       const action = review(page).getByRole('button', { name: 'Approve this change', exact: true });
       await expect(action).toBeEnabled();
-      const summary = review(page).getByText(/^Checked examples:/);
+      const summary = review(page).getByRole('heading', { name: 'Checked examples', exact: true });
       await summary.scrollIntoViewIfNeeded();
       await expect(summary).toBeInViewport({ ratio: 0.99 });
       const summaryBox = await summary.boundingBox(), actionBox = await action.boundingBox();
@@ -193,8 +193,8 @@ for (const resource of ['proof', 'source']) test(`reading inside an explicit rev
     await openItem(page, state.extension.id);
     hold = await holdResponse(page, `**/api/${path}/${resource === 'proof' ? 'evidence/' + state.evidence.id : 'revisions/' + state.draft.id}`);
     await openReview(page); await hold.started;
-    await review(page).getByRole('heading', { name: 'Your saved changes', exact: true }).click();
-    await studio(page).locator('.rs-canvas').dispatchEvent('wheel', { deltaY: 80 });
+    await review(page).getByRole('heading', { name: 'Checked examples', exact: true }).click();
+    await studio(page).getByRole('log').dispatchEvent('wheel', { deltaY: 80 });
     await page.keyboard.press('PageDown');
     hold.release(); await hold.finished;
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
@@ -228,7 +228,7 @@ for (const operation of ['approve', 'activate']) test(`a late real ${operation} 
     await expect(composer(page)).toHaveValue('My next explicit request');
     await expect(review(page)).toBeHidden();
     expect(decisions).toEqual([{ path: '/api/' + path + '/' + operation, body: operation === 'approve'
-      ? { ...input(state), evidenceId: state.evidence.id } : { ...input(state), generation: state.selection.generation } }]);
+      ? { ...input(state), evidenceId: state.evidence.id } : { ...input(state), generation: state.selection.generation, evidenceId: state.evidence.id } }]);
     if (operation === 'activate') {
       await composer(page).press('Enter');
       await expect(studio(page).getByText('Continued discussion 1', { exact: true })).toBeVisible();
@@ -282,7 +282,7 @@ for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preser
     if (change === 'selection') expect(latest.selection.generation).toBe(state.selection.generation + 1);
     await expect(review(page)).toBeVisible();
     await expect(review(page)).toContainText('Evidence: ' + state.evidence.id);
-    await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeDisabled();
+    await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true }).and(review(page).locator('button:enabled'))).toHaveCount(0);
     await expect(studio(page).getByRole('button', { name: 'View latest changes', exact: true })).toBeEnabled();
     await studio(page).getByRole('button', { name: 'View latest changes', exact: true }).click();
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();

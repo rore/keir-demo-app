@@ -191,7 +191,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     return lifecycleResponse(lifecycle.history(authorize(request).userId, before, request.params.extensionId));
   });
   const operations = { draft: ['templateId', 'draftVersion'], simulate: ['revisionId', 'draftVersion'], approve: ['revisionId', 'draftVersion', 'evidenceId'],
-    activate: ['revisionId', 'draftVersion', 'generation'], disable: ['generation'], rollback: ['revisionId', 'generation'], restart: ['revisionId', 'draftVersion', 'generation'] };
+    activate: ['revisionId', 'draftVersion', 'generation', 'evidenceId'], disable: ['generation'], rollback: ['revisionId', 'generation'], restart: ['revisionId', 'draftVersion', 'generation'] };
   async function withSignal(request, reply, action) {
     const abort = new AbortController();
     const disconnected = () => { if (!reply.raw.writableFinished) abort.abort(); };
@@ -206,7 +206,9 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     if (operation !== 'disable') lifecycle.assertWritable(session.userId, request.params.extensionId);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== fields.length
         || !fields.every(field => Object.hasOwn(input, field) && (['draftVersion', 'generation'].includes(field)
-          ? Number.isSafeInteger(input[field]) && input[field] >= 0 : typeof input[field] === 'string' && /^[A-Za-z0-9-]{1,128}$/.test(input[field]))))
+          ? Number.isSafeInteger(input[field]) && input[field] >= 0
+          : (operation === 'activate' && field === 'evidenceId' && input[field] === null)
+            || (typeof input[field] === 'string' && /^[A-Za-z0-9-]{1,128}$/.test(input[field])))))
       throw new AppError(400, 'Use only the supported customization fields.');
     if (['activate', 'rollback'].includes(operation) && !effects.availability().available)
       throw new AppError(503, effects.availability().message);

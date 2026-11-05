@@ -46,7 +46,8 @@ async function approved(lifecycle, owner = 'maya', title) {
   state = lifecycle.approve(owner, { ...input, evidenceId: state.evidence.id }, authorized);
   return { state, input };
 }
-const activate = (lifecycle, state, owner = 'maya') => lifecycle.activate(owner, { ...currentInput(state), generation: state.selection.generation }, authorized);
+const activate = (lifecycle, state, owner = 'maya') => lifecycle.activate(owner, { ...currentInput(state),
+  generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorized);
 function legacyState(db) {
   return { revisions: db.prepare("SELECT * FROM extension_revisions WHERE template_id<>'authored' ORDER BY id").all(),
     selections: db.prepare("SELECT * FROM extension_selections WHERE hook_id='ClassifyTask' ORDER BY owner_id").all(),
@@ -85,10 +86,26 @@ test('approved evidence stays pinned when a later sample run becomes latest', as
   assert.equal(second.evidence.id, second.evidenceHistory[0].id);
   assert.equal(lifecycle.state('maya', itemId(lifecycle)).approvedEvidenceId, first);
   assert.equal(lifecycle.state('leo', itemId(lifecycle, 'leo')).approvedEvidenceId, null);
+  const selected = activate(lifecycle, second);
+  assert.equal(selected.selection.approvedEvidenceId, first);
   assert.equal(lifecycle.approve('maya', { ...input, evidenceId: second.evidence.id }, authorized).approvedEvidenceId, second.evidence.id);
   const replacement = await load(lifecycle, 'maya', 'Later title');
   assert.equal(replacement.approvedEvidenceId, null);
-  assert.throws(() => lifecycle.activate('maya', { ...input, generation: replacement.selection.generation }, authorized), { status: 409 });
+  assert.throws(() => lifecycle.activate('maya', { ...input, generation: replacement.selection.generation, evidenceId: first }, authorized), { status: 409 });
+});
+
+test('an eligible task operator revision with no approval requires an explicit null evidence expectation', async t => {
+  const { db, lifecycle } = setup(t), state = await load(lifecycle);
+  db.prepare("UPDATE extension_revisions SET provenance='operator' WHERE id=?").run(state.draft.id);
+  db.prepare("INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,'operator')")
+    .run(state.owner.id, state.draft.id, state.selection.generation);
+  const input = { ...currentInput(state), generation: state.selection.generation };
+  assert.throws(() => lifecycle.activate('maya', input, authorized), { status: 409 });
+  const active = lifecycle.activate('maya', { ...input, evidenceId: null }, authorized);
+  assert.equal(active.selection.revision.id, state.draft.id);
+  assert.equal(active.selection.revision.provenance, 'operator');
+  assert.equal(active.selection.approvedEvidenceId, null);
+  assert.equal(active.selection.eligible, true);
 });
 
 test('captured admission keeps exact approval authority without rereading deployment files', async t => {
@@ -145,7 +162,8 @@ test('two source-owned customer titles use the same generic adapters and indepen
 test('stale draft rejects old activation with unchanged generation and never-active work cannot roll back', async t => {
   const { lifecycle } = setup(t), { state, input } = await approved(lifecycle);
   await load(lifecycle, 'maya', 'Replacement title');
-  assert.throws(() => lifecycle.activate('maya', { ...input, generation: state.selection.generation }, authorized), { status: 409 });
+  assert.throws(() => lifecycle.activate('maya', { ...input, generation: state.selection.generation,
+    evidenceId: state.approvedEvidenceId }, authorized), { status: 409 });
   assert.throws(() => lifecycle.rollback('maya', { extensionId: state.extension.id, revisionId: input.revisionId,
     generation: state.selection.generation }, authorized), { status: 409 });
 });
@@ -267,9 +285,16 @@ test('oversized evidence is rejected before persistence and invalid assets never
 });
 
 test('transaction-time reauthorization rolls back selection and history atomically', async t => {
-  const { db, lifecycle } = setup(t), { state } = await approved(lifecycle), selected = activate(lifecycle, state);
-  const before = lifecycle.state('maya', selected.extension.id), history = db.prepare('SELECT * FROM extension_history ORDER BY id').all();
+  const { db, lifecycle } = setup(t), { state } = await approved(lifecycle);
+  const originalHistory = db.prepare('SELECT * FROM extension_history ORDER BY id').all();
   let checks = 0;
+  assert.throws(() => lifecycle.activate('maya', { ...currentInput(state), generation: state.selection.generation,
+    evidenceId: state.approvedEvidenceId }, () => { if (++checks === 2) denied(); }), { status: 401 });
+  assert.deepEqual(lifecycle.state('maya', state.extension.id), state);
+  assert.deepEqual(db.prepare('SELECT * FROM extension_history ORDER BY id').all(), originalHistory);
+  const selected = activate(lifecycle, state);
+  const before = lifecycle.state('maya', selected.extension.id), history = db.prepare('SELECT * FROM extension_history ORDER BY id').all();
+  checks = 0;
   assert.throws(() => lifecycle.disable('maya', { extensionId: selected.extension.id, generation: selected.selection.generation },
     () => { if (++checks === 2) denied(); }), { status: 401 });
   assert.deepEqual(lifecycle.state('maya', selected.extension.id), before);

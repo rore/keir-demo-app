@@ -68,7 +68,7 @@ async function openStudio(page, extensionId, conversationId) {
     if (conversationId) params.set('conversation', conversationId);
     location.hash = params.toString();
   }, { extensionId, conversationId });
-  await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toBeVisible();
+  await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
 }
 
 async function rejectNextTurn(page, text) {
@@ -78,7 +78,7 @@ async function rejectNextTurn(page, text) {
   }, { times: 1 });
   await page.route('**/api/authoring/turn', route => route.fulfill({ status: 409, contentType: 'application/json',
     body: JSON.stringify({ code: 'CONFIG_CHANGED', message: 'Assistant settings changed.' }) }), { times: 1 });
-  const composer = studio(page).getByLabel('Message to Studio', { exact: true });
+  const composer = studio(page).getByLabel('Message to Daymark assistant', { exact: true });
   await composer.fill(text);
   const response = page.waitForResponse(item => new URL(item.url()).pathname === '/api/authoring/turn');
   await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
@@ -100,7 +100,7 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     expect(fixture.requests).toEqual([]);
     await openStudio(page, savedItem.extensionId);
 
-    const composer = studio(page).getByLabel('Message to Studio', { exact: true });
+    const composer = studio(page).getByLabel('Message to Daymark assistant', { exact: true });
     const firstMessage = 'Keep my approved examples and help me clarify this saved change.';
     await composer.fill(firstMessage);
     const firstResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/authoring/turn' && response.status() === 202);
@@ -192,7 +192,7 @@ test('one item shows its saved discussions and owner switching does not leak rec
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
     await navigate(page, 'Customizations');
     await page.getByRole('button', { name: 'New customization', exact: true }).click();
-    await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toHaveValue('');
+    await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('');
     await expect(studio(page).getByRole('article', { name: 'Assistant settings changed', exact: true })).toHaveCount(0);
     await expect(page.locator('body')).not.toContainText(rejectedMessage);
     expect(calls.setupPosts).toEqual([]);
@@ -234,7 +234,7 @@ test('an upgraded customization opens its earlier discussion and continues in on
     expect(index.current).toBeNull();
 
     await page.goto(`${fixture.origin}/#customization=${extensionId}`);
-    const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
+    const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     const loadEarlier = () => ui.getByRole('button', { name: 'Load earlier messages', exact: true }).click();
     await expect(ui.getByText(previous, { exact: true })).toBeVisible();
     await loadEarlier();

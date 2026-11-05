@@ -192,7 +192,7 @@ test('a checked title rule copies the exact saved title, skips a different title
   assert.equal(proof.identity.dependencies.artifactDigest, artifactDigest);
   state = lifecycle.approve(owner, { ...input, evidenceId: state.evidence.id }, authorize);
   assert.equal(state.selection.revision, null);
-  state = lifecycle.activate(owner, { ...input, generation: state.selection.generation }, authorize);
+  state = lifecycle.activate(owner, { ...input, generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorize);
   assert.equal(state.selection.revision.id, input.revisionId);
 
   const matching = native.createTask(owner, { projectId, title: 'Title before the last saved edit' });
@@ -275,7 +275,7 @@ test('a checked suffix rule preserves Unicode and reaches the byte limit before 
   state = lifecycle.approve(owner, { ...input, evidenceId: proof.id }, authorize);
   assert.equal(state.approvedEvidenceId, proof.id);
   assert.equal(state.selection.revision, null);
-  lifecycle.activate(owner, { ...input, generation: state.selection.generation }, authorize);
+  lifecycle.activate(owner, { ...input, generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorize);
 
   const sources = [title, otherTitle, limitTitle, nativeLimitTitle].map(title => native.createTask(owner, { projectId, title }));
   const before = native.listTasks(owner, projectId).length;

@@ -1259,7 +1259,7 @@ function TaskDetail({
         </div>
       )}
       {task.status === "completed" && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} />}
-      <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customizations</button>
+      <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>
       <div className="detail-actions">
         <button type="button" className="quiet-button" onClick={close}>
           Cancel
