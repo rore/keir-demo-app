@@ -62,15 +62,15 @@ export function createAuthoringSettings({ file, env = process.env, config } = {}
     get config() { return current; },
     publicConfiguration() {
       const ready = current.status === 'ready';
-      const micros = ready ? BigInt(current.maxMicros) : null;
-      const maxUsd = ready ? `${micros / 1000000n}.${String(micros % 1000000n).padStart(6, '0')}`.replace(/\.?0+$/, '') : null;
+      const micros = ready && !current.uncapped ? BigInt(current.maxMicros) : null;
+      const maxUsd = micros === null ? null : `${micros / 1000000n}.${String(micros % 1000000n).padStart(6, '0')}`.replace(/\.?0+$/, '');
       return { status: current.status, code: ready ? null : current.code, source,
         provider: ready ? current.provider : null, model: ready ? current.model : null, maxUsd };
     },
     prepare(input) {
       const revision = randomUUID(), next = readSetupConfig(input, revision);
       if (next.status !== 'ready') throw failure(400, next.code, next.code === 'AI_CREDENTIALS_MISSING'
-        ? 'Enter a nonempty printable API key of at most 4096 characters.' : 'Choose a supported provider/model and a positive decimal allowance with up to six decimal places.');
+        ? 'Enter a nonempty printable API key of at most 4096 characters.' : 'Choose a supported provider and model. Leave the allowance blank or enter a positive amount with up to six decimal places.');
       const bytes = Buffer.from(JSON.stringify({ version: 1, revision, ...input }));
       if (bytes.length > LIMIT) throw failure(400, 'AI_CONFIG_INVALID', 'These settings exceed the local storage size limit. Enter a shorter API key.');
       return { config: next, persist() {

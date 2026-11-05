@@ -1,0 +1,191 @@
+{
+  "format": "keir-scenario/1",
+  "id": "normal",
+  "given": {
+    "input": {
+      "taskId": "task1"
+    },
+    "fixture": "normal"
+  },
+  "stubs": [
+    {
+      "step": "source",
+      "capability": "tasks.get",
+      "version": "1",
+      "args": {
+        "taskId": "task1"
+      },
+      "protectedArgs": {
+        "actorId": "user1"
+      },
+      "response": {
+        "kind": "SUCCESS",
+        "value": {
+          "id": "task1",
+          "projectId": "project1",
+          "status": "COMPLETED"
+        }
+      }
+    },
+    {
+      "step": "created",
+      "capability": "tasks.create",
+      "version": "1",
+      "args": {
+        "projectId": "project1",
+        "title": "Follow up"
+      },
+      "protectedArgs": {
+        "actorId": "user1"
+      },
+      "response": {
+        "kind": "SUCCESS",
+        "value": {
+          "id": "task2"
+        },
+        "effect": "CONFIRMED"
+      }
+    }
+  ],
+  "expect": {
+    "outcome": {
+      "classification": "COMPLETED",
+      "result": {
+        "status": "CREATED"
+      },
+      "effects": [
+        {
+          "step": "created",
+          "capability": "tasks.create",
+          "state": "CONFIRMED"
+        }
+      ],
+      "trace": [
+        {
+          "sequence": 0,
+          "event": "INVOCATION_START"
+        },
+        {
+          "sequence": 1,
+          "event": "STEP_START",
+          "step": "eligibleProject"
+        },
+        {
+          "sequence": 2,
+          "event": "VALUE_BOUND",
+          "step": "eligibleProject"
+        },
+        {
+          "sequence": 3,
+          "event": "STEP_START",
+          "step": "source"
+        },
+        {
+          "sequence": 4,
+          "event": "CALL_DISPATCHED",
+          "step": "source",
+          "capability": "tasks.get"
+        },
+        {
+          "sequence": 5,
+          "event": "CALL_SUCCEEDED",
+          "step": "source",
+          "capability": "tasks.get"
+        },
+        {
+          "sequence": 6,
+          "event": "STEP_START",
+          "step": "eligible"
+        },
+        {
+          "sequence": 7,
+          "event": "VALUE_BOUND",
+          "step": "eligible"
+        },
+        {
+          "sequence": 8,
+          "event": "STEP_START",
+          "step": "created"
+        },
+        {
+          "sequence": 9,
+          "event": "GUARD_EVALUATED",
+          "step": "created",
+          "taken": true
+        },
+        {
+          "sequence": 10,
+          "event": "EFFECT_INTENT",
+          "step": "created",
+          "capability": "tasks.create"
+        },
+        {
+          "sequence": 11,
+          "event": "CALL_DISPATCHED",
+          "step": "created",
+          "capability": "tasks.create"
+        },
+        {
+          "sequence": 12,
+          "event": "EFFECT_RECORDED",
+          "step": "created",
+          "capability": "tasks.create",
+          "state": "CONFIRMED"
+        },
+        {
+          "sequence": 13,
+          "event": "CALL_SUCCEEDED",
+          "step": "created",
+          "capability": "tasks.create"
+        },
+        {
+          "sequence": 14,
+          "event": "RETURNED"
+        },
+        {
+          "sequence": 15,
+          "event": "TERMINATED"
+        }
+      ]
+    },
+    "calls": [
+      {
+        "step": "source",
+        "capability": "tasks.get",
+        "version": "1",
+        "args": {
+          "taskId": "task1"
+        },
+        "protectedArgs": {
+          "actorId": "user1"
+        }
+      },
+      {
+        "step": "created",
+        "capability": "tasks.create",
+        "version": "1",
+        "args": {
+          "projectId": "project1",
+          "title": "Follow up"
+        },
+        "protectedArgs": {
+          "actorId": "user1"
+        }
+      }
+    ],
+    "consumption": {
+      "status": "REPORTED",
+      "classification": "COMPLETED",
+      "result": {
+        "status": "CREATED"
+      },
+      "effects": [
+        {
+          "step": "created",
+          "capability": "tasks.create",
+          "state": "CONFIRMED"
+        }
+      ]
+    }
+  }
+}

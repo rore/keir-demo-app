@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppError, USERS, acquireDataLock, openData, resetData, taskService } from '../src/data.mjs';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, backup } from 'node:sqlite';
 
 function sandbox() {
   const dir = mkdtempSync(join(tmpdir(), 'keir-native-data-'));
@@ -63,6 +63,10 @@ test('services validate CRUD, bounds, ownership and completion without partial w
 test('initial seed is idempotent and all three users persist through reopen', t => {
   const dir = sandbox(), path = join(dir, 'app.sqlite');
   let db = openData(path);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.deepEqual(db.prepare('SELECT owner_id,hook_id,revision_id,generation,binding_pins FROM extension_selections ORDER BY owner_id').all()
+    .map(row => Object.values(row)), ['leo', 'maya', 'sam'].map(id => [id, 'TaskCompleted', null, 0, null]));
+  assert.equal(db.prepare('SELECT count(*) n FROM extension_revisions').get().n, 0);
   assert.deepEqual(taskService(db).listProjects('maya').length, 1);
   assert.deepEqual(USERS.map(user => taskService(db).listProjects(user.id).length), [1, 1, 1]);
   for (const user of USERS) taskService(db).createProject(user.id, { name: `${user.name} extra` });
@@ -70,6 +74,25 @@ test('initial seed is idempotent and all three users persist through reopen', t 
   db = openData(path);
   cleanup(t, dir, () => db.close());
   for (const user of USERS) assert.equal(taskService(db).listProjects(user.id).length, 2);
+});
+
+test('fresh schema, seed and current marker roll back together on initialization failure', t => {
+  const dir = sandbox(), path = join(dir, 'app.sqlite');
+  cleanup(t, dir);
+  const exec = DatabaseSync.prototype.exec;
+  DatabaseSync.prototype.exec = function (sql) {
+    const result = exec.call(this, sql);
+    if (sql === 'PRAGMA user_version=10') throw new Error('initialization blocked');
+    return result;
+  };
+  try { assert.throws(() => openData(path), /initialization blocked/); }
+  finally { DatabaseSync.prototype.exec = exec; }
+  const raw = new DatabaseSync(path);
+  try {
+    assert.equal(raw.prepare('PRAGMA user_version').get().user_version, 0);
+    assert.deepEqual(raw.prepare('SELECT name FROM sqlite_schema').all(), []);
+  } finally { raw.close(); }
+  assert.throws(() => openData(path), /Unsupported database format/);
 });
 
 test('native tags normalize, preserve exact stored text on tag-only edits and survive reopen', t => {
@@ -174,7 +197,14 @@ test('reset requires confirmation, holds exclusive lock, verifies backup and res
     const invalidBackup = new DatabaseSync(backupPath);
     invalidBackup.exec('CREATE TABLE unrelated(value TEXT)');
     invalidBackup.close();
-  }));
+  }), /Backup verification failed/);
+  for (const change of ['PRAGMA user_version=9', 'DROP TRIGGER task_receipt_immutable']) {
+    await assert.rejects(resetData(dir, true, async (source, backupPath) => {
+      await backup(source, backupPath);
+      const copy = new DatabaseSync(backupPath);
+      try { copy.exec(change); } finally { copy.close(); }
+    }), /Backup verification failed/);
+  }
   const afterFailure = openData(path);
   assert.ok(taskService(afterFailure).listProjects('maya').some(row => row.name === 'Keep me in backup'));
   afterFailure.close();
@@ -193,9 +223,11 @@ test('failed reset transaction rolls back and releases lock', async t => {
   cleanup(t, dir);
   const db = openData(path);
   taskService(db).createProject('sam', { name: 'Survives failed reset' });
-  db.exec("CREATE TRIGGER fail_seed BEFORE INSERT ON projects WHEN NEW.name = 'A quieter workspace' BEGIN SELECT RAISE(ABORT, 'seed blocked'); END");
   db.close();
-  await assert.rejects(resetData(dir, true), /seed blocked/);
+  await assert.rejects(resetData(dir, true, async (source, backupPath) => {
+    await backup(source, backupPath);
+    source.exec("CREATE TEMP TRIGGER fail_seed BEFORE INSERT ON main.projects WHEN NEW.name = 'A quieter workspace' BEGIN SELECT RAISE(ABORT, 'seed blocked'); END");
+  }), /seed blocked/);
   const check = openData(path);
   assert.ok(taskService(check).listProjects('sam').some(row => row.name === 'Survives failed reset'));
   check.close();

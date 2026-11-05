@@ -132,14 +132,14 @@ test('disable and reenable never revive an old native admission', async t => {
   assert.equal(f.native.listTasks(f.owner, f.project.id).filter(task => task.title === f.fixture.metadata.title).length, 1);
 });
 
-test('two exact real bindings reuse one prepared handle with fresh event, owner, key, permission and deadline context', () => {
+test('one current binding reuses its prepared handle with fresh event, owner, key, permission and deadline context', () => {
   const result = spawnSync(process.execPath, ['--experimental-test-module-mocks',
     fileURLToPath(new URL('./fixtures/task-effects-reuse.mjs', import.meta.url))], {
     cwd: new URL('..', import.meta.url), encoding: 'utf8', windowsHide: true, timeout: 120000,
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.deepEqual(JSON.parse(result.stdout), { boundVersions: ['2', '3'], prepares: 1, invocations: 4,
+  assert.deepEqual(JSON.parse(result.stdout), { boundVersions: ['3'], prepares: 1, invocations: 4,
     outcomes: ['CONFIRMED', 'NO_OP', 'REVOKED', 'EXPIRED'] });
 });
 

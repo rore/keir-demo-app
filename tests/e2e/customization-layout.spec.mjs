@@ -136,7 +136,7 @@ async function prepareChoice(page, label) {
   await refresh(page);
   await expect.poll(async () => (await savedState(page)).draft?.id).toBe(proposed.draft.id);
   expect((await savedState(page)).draft.label).toBe(label);
-  expect(proposed.draft.pins.profile).toBe('keir-effect/4');
+  expect(proposed.draft.pins.modelRef.format).toBe('keir-dcm/1');
   return proposed;
 }
 const choose = prepareChoice;
@@ -406,7 +406,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(results.getByText('These results cover only the recorded examples. Other situations remain untested.', { exact: true })).toBeVisible();
     await disclosures.nth(1).locator(':scope > summary').click();
     await expect(disclosures.nth(1).locator('.rs-example')).toBeVisible();
-    await action.scrollIntoViewIfNeeded(); await expect(action).toBeInViewport({ ratio: 0.99 });
+    await action.evaluate(button => button.scrollIntoView({ block: 'center' }));
+    await expect(action).toBeInViewport({ ratio: 0.99 });
     const id = (await savedState(page)).evidence.id;
     await results.getByRole('button', { name: 'Hide checked examples', exact: true }).click(); await expect(named).toBeFocused();
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);

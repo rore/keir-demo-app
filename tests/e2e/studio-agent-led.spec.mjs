@@ -212,7 +212,17 @@ test('ordinary examples retain independent task expectations and observed mismat
   try {
     await enterCollection(page, fixture.origin);
     const cases = fixture.metadata.cases.map(text => JSON.parse(text));
-    cases[0].expect = structuredClone(cases[1].expect);
+    const { expect: expected } = cases[0];
+    const { trace, effects } = expected.outcome;
+    const receipt = trace.find(event => event.event === 'EFFECT_RECORDED');
+    const error = { code: 'ACCESS_DENIED', path: '/steps/3' };
+    const classification = 'BUSINESS_REJECTION';
+    receipt.state = 'NONE';
+    effects[0].state = 'NONE';
+    expected.outcome = { classification, error, effects, trace: [
+      ...trace.slice(0, receipt.sequence + 1), { sequence: receipt.sequence + 1, event: 'TERMINATED', code: error.code },
+    ] };
+    expected.consumption = { status: 'REPORTED', classification, error, effects };
     const originals = cases.map(value => JSON.stringify(value, null, 2));
     const { id, state: prepared } = await createCandidate(page, fixture, { label: 'Independent task expectation', cases: originals });
     expect(prepared.evidence.passed).toBe(false);

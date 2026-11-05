@@ -1,0 +1,609 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:keir:schema:scenario:1",
+  "title": "Keir decoded verification scenario structure",
+  "description": "Native readers enforce strict JSON bytes, UTF-8 byte bounds, trace ordering, selected model and artifact compatibility, fixture authority and DCM typing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "id",
+    "given",
+    "stubs",
+    "expect"
+  ],
+  "properties": {
+    "format": {
+      "const": "keir-scenario/1"
+    },
+    "id": {
+      "$ref": "#/$defs/id"
+    },
+    "given": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "fixture"
+      ],
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/record"
+        },
+        "fixture": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "stubs": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/stub"
+      }
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "calls",
+        "consumption"
+      ],
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/outcome"
+        },
+        "calls": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/call"
+          }
+        },
+        "consumption": {
+          "$ref": "#/$defs/consumption"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(?![\\s\\S])"
+    },
+    "step": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9]{0,63}(?![\\s\\S])"
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,63}(?![\\s\\S])"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "record": {
+      "type": "object"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 63
+    },
+    "state": {
+      "enum": [
+        "CONFIRMED",
+        "NONE",
+        "UNKNOWN"
+      ]
+    },
+    "classification": {
+      "enum": [
+        "COMPLETED",
+        "BUSINESS_REJECTION",
+        "FAILED",
+        "LIMIT_EXCEEDED",
+        "UNCERTAIN"
+      ]
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "capability",
+        "version",
+        "args",
+        "protectedArgs"
+      ],
+      "properties": {
+        "step": {
+          "$ref": "#/$defs/step"
+        },
+        "capability": {
+          "$ref": "#/$defs/text"
+        },
+        "version": {
+          "$ref": "#/$defs/text"
+        },
+        "args": {
+          "$ref": "#/$defs/record"
+        },
+        "protectedArgs": {
+          "$ref": "#/$defs/record"
+        }
+      }
+    },
+    "stub": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "capability",
+        "version",
+        "args",
+        "protectedArgs",
+        "response"
+      ],
+      "properties": {
+        "step": {
+          "$ref": "#/$defs/step"
+        },
+        "capability": {
+          "$ref": "#/$defs/text"
+        },
+        "version": {
+          "$ref": "#/$defs/text"
+        },
+        "args": {
+          "$ref": "#/$defs/record"
+        },
+        "protectedArgs": {
+          "$ref": "#/$defs/record"
+        },
+        "response": {
+          "$ref": "#/$defs/response"
+        }
+      }
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "const": "SUCCESS"
+            },
+            "value": {
+              "$ref": "#/$defs/record"
+            },
+            "effect": {
+              "const": "CONFIRMED"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "code"
+          ],
+          "properties": {
+            "kind": {
+              "const": "BUSINESS_REJECTION"
+            },
+            "code": {
+              "$ref": "#/$defs/code"
+            },
+            "effect": {
+              "const": "NONE"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "TRANSIENT_FAILURE"
+            },
+            "effect": {
+              "const": "NONE"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "effect"
+          ],
+          "properties": {
+            "kind": {
+              "const": "UNKNOWN_COMMIT"
+            },
+            "effect": {
+              "const": "UNKNOWN"
+            }
+          }
+        }
+      ]
+    },
+    "effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "capability",
+        "state"
+      ],
+      "properties": {
+        "step": {
+          "$ref": "#/$defs/step"
+        },
+        "capability": {
+          "$ref": "#/$defs/text"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "path"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/code"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "cause": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "path"
+          ],
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/code"
+            },
+            "path": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          }
+        }
+      }
+    },
+    "traceEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sequence",
+            "event"
+          ],
+          "properties": {
+            "sequence": {
+              "$ref": "#/$defs/sequence"
+            },
+            "event": {
+              "enum": [
+                "INVOCATION_START",
+                "RETURNED"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sequence",
+            "event",
+            "step"
+          ],
+          "properties": {
+            "sequence": {
+              "$ref": "#/$defs/sequence"
+            },
+            "event": {
+              "enum": [
+                "STEP_START",
+                "VALUE_BOUND",
+                "STEP_SKIPPED"
+              ]
+            },
+            "step": {
+              "$ref": "#/$defs/step"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sequence",
+            "event",
+            "step",
+            "taken"
+          ],
+          "properties": {
+            "sequence": {
+              "$ref": "#/$defs/sequence"
+            },
+            "event": {
+              "const": "GUARD_EVALUATED"
+            },
+            "step": {
+              "$ref": "#/$defs/step"
+            },
+            "taken": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sequence",
+            "event",
+            "step",
+            "capability"
+          ],
+          "properties": {
+            "sequence": {
+              "$ref": "#/$defs/sequence"
+            },
+            "event": {
+              "enum": [
+                "EFFECT_INTENT",
+                "CALL_DISPATCHED",
+                "CALL_SUCCEEDED"
+              ]
+            },
+            "step": {
+              "$ref": "#/$defs/step"
+            },
+            "capability": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sequence",
+            "event",
+            "step",
+            "capability",
+            "state"
+          ],
+          "properties": {
+            "sequence": {
+              "$ref": "#/$defs/sequence"
+            },
+            "event": {
+              "const": "EFFECT_RECORDED"
+            },
+            "step": {
+              "$ref": "#/$defs/step"
+            },
+            "capability": {
+              "$ref": "#/$defs/text"
+            },
+            "state": {
+              "$ref": "#/$defs/state"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sequence",
+            "event"
+          ],
+          "properties": {
+            "sequence": {
+              "$ref": "#/$defs/sequence"
+            },
+            "event": {
+              "const": "TERMINATED"
+            },
+            "code": {
+              "$ref": "#/$defs/code"
+            }
+          }
+        }
+      ]
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "effects",
+        "trace"
+      ],
+      "properties": {
+        "classification": {
+          "$ref": "#/$defs/classification"
+        },
+        "effects": {
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/effect"
+          }
+        },
+        "trace": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/traceEvent"
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/record"
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "$ref": "#/$defs/outcomePayload"
+    },
+    "consumption": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "classification",
+            "effects"
+          ],
+          "properties": {
+            "status": {
+              "const": "REPORTED"
+            },
+            "classification": {
+              "$ref": "#/$defs/classification"
+            },
+            "effects": {
+              "type": "array",
+              "maxItems": 1,
+              "items": {
+                "$ref": "#/$defs/effect"
+              }
+            },
+            "result": {
+              "$ref": "#/$defs/record"
+            },
+            "error": {
+              "$ref": "#/$defs/error"
+            }
+          },
+          "$ref": "#/$defs/outcomePayload"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "code"
+          ],
+          "properties": {
+            "status": {
+              "const": "NOT_REPORTED"
+            },
+            "code": {
+              "$ref": "#/$defs/code"
+            }
+          }
+        }
+      ]
+    },
+    "outcomePayload": {
+      "oneOf": [
+        {
+          "properties": {
+            "classification": {
+              "const": "COMPLETED"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "classification": {
+              "const": "BUSINESS_REJECTION"
+            },
+            "error": {
+              "not": {
+                "required": [
+                  "cause"
+                ]
+              }
+            }
+          },
+          "required": [
+            "error"
+          ]
+        },
+        {
+          "properties": {
+            "classification": {
+              "enum": [
+                "FAILED",
+                "LIMIT_EXCEEDED"
+              ]
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "result"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "classification": {
+              "const": "UNCERTAIN"
+            },
+            "error": {
+              "not": {
+                "required": [
+                  "cause"
+                ]
+              }
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "result"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

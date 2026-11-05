@@ -19,9 +19,9 @@ The host application mounts Studio within its authenticated UI. Its integration 
 
 | User action | Studio behavior | Daymark integration |
 | --- | --- | --- |
-| Open Customizations or New | Show known items and available starting points. Opening the conversational start is side-effect free. Resume a draft if one exists. | Read the signed-in owner's lifecycle state. Map the one available `ClassifyTask` opportunity to Task advice. Two prepared programs are choices within it. Preserve the originating task and unsaved edits on return. |
-| Describe or choose behavior | Render conversation and trusted choice controls. Show a visible reason for unsupported actions. | Today a prepared choice loads a real draft. Free-form generation is unavailable. A future host-agent response can select a registered view and provide validated data. Text or generated markup cannot register code or invoke lifecycle actions. |
-| Test and review | Offer the saved run when ready. Keep the user's place until they open it. Compare the recorded expectation with the recorded outcome. | Simulate the exact revision with host-owned fixtures. Resolve evidence by ID. Render task-specific labels such as *Pending* in the Daymark view. Identify simulated outcomes separately from observations on saved tasks. |
+| Open Customizations or New | Show known items and available starting points. Opening the conversational start is side-effect free. Resume a draft if one exists. | Read the signed-in owner's lifecycle state and expose the available `TaskCompleted` opportunity. Preserve the originating task and unsaved edits on return. |
+| Describe or choose behavior | Render conversation and trusted choice controls. Show a visible reason for unsupported actions. | Accept the first explicit message as an owner-scoped customization. The authoring service uses the approved host model and returns bounded proposal and review data. Text and generated markup cannot register code or invoke lifecycle actions. |
+| Test and review | Offer the saved run when ready. Keep the user's place until they open it. Compare the recorded expectation with the recorded outcome. | Simulate the exact revision with host-owned fixtures. Resolve evidence by ID. Identify simulated effects separately from outcomes on saved tasks. |
 | Approve | Submit the current draft version, revision and the exact evidence the person reviewed. Refresh from the server. | Verify session, owner, current draft, evidence and dependencies. Approval leaves the active selection intact. Expose the evidence bound to approval separately from the latest run. |
 | Use, disable or restore | Show the proposed consequence and keep current behavior visible until the server confirms the change. Restore names a specific eligible historical revision. | Validate the expected selection generation and all operation-specific pins. Reject stale requests. A saved-task check belongs to Daymark, including whether its result may still be displayed after a session or generation change. |
 
@@ -37,10 +37,10 @@ Treat identifiers as opaque. A template, hook, customization, revision, evidence
 
 ## Building toward this in Daymark
 
-1. Keep the existing lifecycle service and routes. Move their translation out of the interaction view when touching the corresponding flow. Group Task advice wording, example explanations and receipt rendering with its host integration. Keep one Studio interaction controller.
+1. Keep the existing lifecycle service and routes. Move their translation out of the interaction view when touching the corresponding flow. Group task scenario explanations and receipt rendering with the host integration. Keep one Studio interaction controller.
 2. Qualify the boundary without building a second app. Open Studio from the library with no task selected, continue a real draft, run examples, review, approve, leave, reopen and use it. Verify the same journey from task detail preserves the unsaved form. Check that a planned action explains its availability and sends no write.
 3. Exercise the shared interaction with a small host fixture whose opaque identifiers, labels and result fields contain no task vocabulary. A custom result view should replace the domain rendering without replacing the conversation, keyboard handling or approval flow. Include approve-A/run-B/remount, an owner switch during a request and a stale activation generation. Run the authority cases against Daymark's server as well.
 
 Use these journeys to plan the boundary, then qualify its implementation without Studio interpreting a task receipt or the host reimplementing review interactions. Keep the reusable portion in the application initially. Independent packaging, version compatibility across hosts and measured integration effort are separate delivery decisions.
 
-Related contracts: [Studio interactions](studio-on-demand-review.md), [extension lifecycle](read-extension-lifecycle.md), [task advice](real-task-reads.md).
+See the [Studio interactions](studio-on-demand-review.md), [extension lifecycle](read-extension-lifecycle.md) and [task effects](task-effects.md) contracts.

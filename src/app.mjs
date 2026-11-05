@@ -137,7 +137,6 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   };
   app.get('/api/authoring', request => lifecycleResponse(ai.list(...authoringQuery(request))));
   app.get('/api/authoring/transcript', request => lifecycleResponse(ai.transcript(...authoringQuery(request, true))));
-  app.get('/api/authoring/example', request => { authorize(request); noQuery(request); throw Object.assign(new AppError(410, 'This earlier example is retired. Start a new customization through conversation.'), { code: 'LEGACY_CUSTOMIZATION_RETIRED' }); });
   app.get('/api/authoring/conversations/:id', request => { noQuery(request); return lifecycleResponse(ai.read(authorize(request).userId, request.params.id)); });
   app.get('/api/authoring/conversations/:id/messages', request => lifecycleResponse(ai.messages(authorize(request).userId, request.params.id, pageQuery(request))));
   app.post('/api/authoring/recover', { bodyLimit: 65536 }, request => {
@@ -156,13 +155,6 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   app.get('/api/extensions/creation/:operationId', request => { noQuery(request); return lifecycleResponse(lifecycle.findCreation(authorize(request).userId, request.params.operationId)); });
   app.get('/api/extensions/catalog', request => { authorize(request); noQuery(request); return lifecycleResponse(lifecycle.hostCatalog()); });
   app.get('/api/extensions/:extensionId', request => { noQuery(request); return lifecycleResponse(lifecycle.state(authorize(request).userId, request.params.extensionId)); });
-  app.post('/api/extensions', { bodyLimit: 1048576 }, async (request, reply) => {
-    noQuery(request); const session = authorize(request), input = request.body;
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['operationId', 'source', 'label'].includes(key))
-        || typeof input.operationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.operationId) || typeof input.source !== 'string') throw new AppError(400, 'Use a source and creation operation identity.');
-    const result = await withSignal(request, reply, signal => lifecycle.createFromSource(session.userId, input, () => authorize(request), { signal }));
-    authorize(request); return lifecycleResponse(result);
-  });
   app.post('/api/extensions/:extensionId/rename', request => {
     noQuery(request); const session = authorize(request), input = request.body;
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 2
@@ -190,7 +182,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     if (before !== undefined && !Number.isSafeInteger(before)) throw new AppError(400, 'Use a valid history cursor.');
     return lifecycleResponse(lifecycle.history(authorize(request).userId, before, request.params.extensionId));
   });
-  const operations = { draft: ['templateId', 'draftVersion'], simulate: ['revisionId', 'draftVersion'], approve: ['revisionId', 'draftVersion', 'evidenceId'],
+  const operations = { simulate: ['revisionId', 'draftVersion'], approve: ['revisionId', 'draftVersion', 'evidenceId'],
     activate: ['revisionId', 'draftVersion', 'generation', 'evidenceId'], disable: ['generation'], rollback: ['revisionId', 'generation'], restart: ['revisionId', 'draftVersion', 'generation'] };
   async function withSignal(request, reply, action) {
     const abort = new AbortController();
@@ -212,7 +204,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
       throw new AppError(400, 'Use only the supported customization fields.');
     if (['activate', 'rollback'].includes(operation) && !effects.availability().available)
       throw new AppError(503, effects.availability().message);
-    const result = await withSignal(request, reply, signal => lifecycle[operation === 'draft' ? 'load' : operation](session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request), { signal }));
+    const result = await withSignal(request, reply, signal => lifecycle[operation](session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request), { signal }));
     authorize(request);
     return lifecycleResponse(result);
   });
@@ -235,12 +227,6 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   app.get('/api/projects/:id/tasks', request => service.listTasks(authorize(request).userId, request.params.id));
   app.get('/api/projects/:id/tasks/search', request => service.searchTasks(authorize(request).userId, request.params.id, request.query));
   app.get('/api/tasks/:id', request => service.getTask(authorize(request).userId, request.params.id));
-  app.post('/api/tasks/:id/advice', async request => {
-    const session = authorize(request);
-    if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new AppError(400, 'Task advice takes no fields.');
-    service.getTask(session.userId, request.params.id);
-    throw Object.assign(new AppError(410, 'Task advice is retired. Open Customizations to describe a task change.'), { code: 'LEGACY_CUSTOMIZATION_RETIRED' });
-  });
   app.get('/api/tasks/:id/reaction', request => { noQuery(request); return effects.status(authorize(request).userId, request.params.id); });
   app.post('/api/tasks/:id/reaction/reconcile', request => {
     noQuery(request); const session = authorize(request);

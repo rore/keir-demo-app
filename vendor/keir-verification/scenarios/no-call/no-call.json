@@ -1,0 +1,53 @@
+{
+  "format": "keir-scenario/1",
+  "id": "no-call",
+  "given": {
+    "input": {
+      "taskId": "task1"
+    },
+    "fixture": "normal"
+  },
+  "stubs": [],
+  "expect": {
+    "outcome": {
+      "classification": "COMPLETED",
+      "result": {
+        "status": "NO_OP"
+      },
+      "effects": [],
+      "trace": [
+        {
+          "sequence": 0,
+          "event": "INVOCATION_START"
+        },
+        {
+          "sequence": 1,
+          "event": "STEP_START",
+          "step": "eligible"
+        },
+        {
+          "sequence": 2,
+          "event": "VALUE_BOUND",
+          "step": "eligible"
+        },
+        {
+          "sequence": 3,
+          "event": "RETURNED"
+        },
+        {
+          "sequence": 4,
+          "event": "TERMINATED"
+        }
+      ]
+    },
+    "calls": [],
+    "consumption": {
+      "status": "REPORTED",
+      "classification": "COMPLETED",
+      "result": {
+        "status": "NO_OP"
+      },
+      "effects": []
+    }
+  }
+}

@@ -55,9 +55,7 @@ async function scriptSetup(page, options = {}) {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     if (url.pathname === '/api/authoring' && method === 'GET') {
       calls.authoringReads++;
-      const personalStudioRead = url.searchParams.has('extensionId') ? 0 : calls.authoringReads - 2;
-      const result = options.onAuthoringRead && personalStudioRead > 0
-        ? await options.onAuthoringRead({ ...calls, authoringReads: personalStudioRead }, state) : null;
+      const result = options.onAuthoringRead ? await options.onAuthoringRead(calls, state) : null;
       if (result?.status) return json(route, result.body ?? { message: 'Scripted status failure' }, result.status);
       return json(route, result ?? { availability: state.availability, conversations: [], current: null });
     }
@@ -83,7 +81,7 @@ async function scriptSetup(page, options = {}) {
   return { calls, state };
 }
 
-async function enterStudio(page, origin, user = 'Maya') {
+async function enterStudio(page, origin, user = 'Maya', beforeNew = () => {}) {
   await page.goto(origin);
   await page.getByRole('button', { name: `Continue as ${user}` }).click();
   await page.getByRole('button', { name: user === 'Maya' ? 'Gather material references' : 'Plan the Saturday session', exact: true }).click();
@@ -91,6 +89,7 @@ async function enterStudio(page, origin, user = 'Maya') {
   await page.locator('#open-customizations').click();
   await expect(studio(page)).toBeVisible();
   await navigate(page, 'Customizations');
+  beforeNew();
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
   await expect(studio(page)).toBeVisible();
   await expect(authoring(page)).toBeVisible();
@@ -249,15 +248,18 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
 }
 
 test('failed authoring and setup reads expose safe retries without inferring configuration', async ({ page, demo }) => {
+  let failNextRead = false;
   const { calls } = await scriptSetup(page, {
-    onAuthoringRead: reads => reads.authoringReads === 1
-      ? { status: 503, body: { message: 'Synthetic status outage' } }
-      : null,
+    onAuthoringRead: () => {
+      if (!failNextRead) return null;
+      failNextRead = false;
+      return { status: 503, body: { message: 'Synthetic status outage' } };
+    },
     onSetupRead: reads => reads.setupReads === 1
       ? { status: 503, body: { message: 'Synthetic setup read outage' } }
       : null,
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo.origin, 'Maya', () => { failNextRead = true; });
   const panel = authoring(page), ui = studio(page);
   await expect(panel.getByRole('button', { name: 'Retry status', exact: true })).toBeVisible();
   await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(0);

@@ -40,6 +40,15 @@ test('missing provider does not read credential getters', () => {
   assert.deepEqual(readAuthoringConfig(env), { status: 'unavailable', code: 'AI_NOT_CONFIGURED' });
 });
 
+test('missing or blank environment allowance leaves cost accounting enabled without a spending cap', () => {
+  for (const cap of [undefined, '']) {
+    const config = readAuthoringConfig(valid('openai', 'gpt-5.6-terra', cap, 'OPENAI_API_KEY'));
+    assert.equal(config.status, 'ready');
+    assert.equal(config.uncapped, true);
+    assert.equal(config.reserveMicros, 319488);
+  }
+});
+
 test('rejects unsupported and malformed configuration with fixed results', () => {
   const base = valid('openai', 'gpt-5.6-terra', '1', 'OPENAI_API_KEY');
   for (const cap of ['0', '-1', '1e2', 'NaN', '1.1234567', '9007199255.000000', '1\n']) {

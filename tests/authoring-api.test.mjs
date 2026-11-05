@@ -59,7 +59,7 @@ const rowState = db => JSON.parse(db.prepare('SELECT state FROM authoring_conver
 const dispatches = (db, id = db.prepare('SELECT id FROM authoring_conversations ORDER BY rowid DESC LIMIT 1').get().id) =>
   db.prepare('SELECT * FROM authoring_dispatches WHERE conversation_id=? ORDER BY rowid').all(id);
 const reserved = db => db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
-const guideFile = new URL('../vendor/customer-authoring-guide-v2.md', import.meta.url);
+const guideFile = new URL('../vendor/customer-authoring-guide-v3.md', import.meta.url);
 function substituteGuide(t, path) {
   const open = fs.openSync;
   return t.mock.method(fs, 'openSync', (file, ...options) =>
@@ -142,16 +142,15 @@ function direct(t, { path = ':memory:', ...options } = {}) {
   return { db, lifecycle, service };
 }
 
-for (const provider of ['openai', 'anthropic']) test(`${provider} continues an upgraded item through one paginated transcript and an exact operation receipt`, async t => {
+for (const provider of ['openai', 'anthropic']) test(`${provider} continues a saved item through one paginated transcript and an exact operation receipt`, async t => {
   const fake = wire(provider, () => ({ text: 'The customization can continue here.' }));
   const { db, call, login } = await api(t, { config: configFor(provider), fetchImpl: fake.fetchImpl });
   const lifecycle = createLifecycle(db, { compiler });
   const oldCreated = Date.now() + 60000;
-  const old = admitTaskDraft(db, lifecycle, { name: 'Upgraded task rule', createdAt: oldCreated });
+  const old = admitTaskDraft(db, lifecycle, { name: 'Saved task rule', createdAt: oldCreated });
   const other = admitTaskDraft(db, lifecycle, { name: 'Unrelated rule' });
   const foreign = admitTaskDraft(db, lifecycle, { owner: 'leo', name: 'Foreign rule' });
-  db.prepare('UPDATE authoring_conversations SET state=? WHERE id=?').run(
-    JSON.stringify({ ...old.conversationState, definitionId: 'daymark.task-completed/2' }), old.conversationId);
+  const newer = await lifecycle.compile('maya', { extensionId: old.extensionId, hookId: TASK_HOOK, source, draftVersion: old.state.draftVersion }, () => true);
   const insert = db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)');
   const prior = 'Keep the exact title and require the selected project.';
   for (let i = 1; i <= 24; i++) {
@@ -181,9 +180,9 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} continues an u
   assert.equal(fake.requests.length, 0);
   assert.equal(reserved(db), 0);
 
-  const request = { conversationId: null, operationId: 'continue-upgrade', text: '  Continue this change 🌱  ',
-    expectedVersion: 0, expectedDraftVersion: old.state.draftVersion, target: { kind: 'revise', extensionId: old.extensionId,
-      baseRevisionId: null, selectionGeneration: old.state.selection.generation } };
+  const request = { conversationId: null, operationId: 'continue-saved-item', text: '  Continue this change 🌱  ',
+    expectedVersion: 0, expectedDraftVersion: newer.draftVersion, target: { kind: 'revise', extensionId: old.extensionId,
+      baseRevisionId: newer.draft.id, selectionGeneration: newer.selection.generation } };
   const accepted = await call('authoring/turn', request);
   assert.equal(accepted.statusCode, 202, accepted.body);
   const current = accepted.json().conversation;
@@ -217,7 +216,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} continues an u
   assert.equal(new Set(all.map(message => `${message.conversationId}:${message.id}`)).size, 26);
   assert.equal(remaining.next, null);
   assert.equal((await call(pagePath + '&before=' + anchor)).json().messages.length, 4, 'a prior page anchor remains valid after append');
-  assert.deepEqual(lifecycle.state('maya', old.extensionId), old.state);
+  assert.deepEqual(lifecycle.state('maya', old.extensionId), newer);
   assert.equal(fake.requests.length, 1);
   await login('leo');
   assert.equal((await call(pagePath + '&before=' + anchor)).statusCode, 404);

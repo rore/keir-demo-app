@@ -1,28 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { openData } from '../src/data.mjs';
-import { createLifecycle } from '../src/extension-lifecycle.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { createAuthoringProvider } from '../src/authoring-provider.mjs';
 import { createAuthoringState, runAuthoringTurn } from '../src/authoring-agent.mjs';
 import { checkAuthoringProvider } from '../scripts/check-authoring-provider.mjs';
 import { createQualificationHost } from '../scripts/authoring-qualification-host.mjs';
+import { taskCustomizationFixture } from './fixtures/task-customization.mjs';
 
 const hash = digit => 'sha256:' + digit.repeat(64);
 const env = provider => ({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
   KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-openai-key', ANTHROPIC_API_KEY: 'synthetic-anthropic-key' });
-const source = '{"format":"keir/v0","independent":"synthetic source bytes"}';
-const cases = [JSON.stringify({ format: 'keir-read-simulation/1', id: 'independent', input: { taskId: 'sample' }, stubs: [],
-  expect: { calls: [], outcome: { classification: 'COMPLETED', result: { classification: 'PENDING' } }, consumption: { status: 'DISPLAYED', code: 'PENDING' } } })];
+const { source, cases: [matchingCase] } = taskCustomizationFixture();
+const cases = [matchingCase];
 function scenario(providerName, { clarify = true, wrong = false } = {}) {
   const requests = [], events = [];
   const selection = { revisionId: 'approvedA', generation: 7, evidenceId: 'EA' };
   let current = { revisionId: 'approvedA', draftVersion: 0, suiteDigest: hash('0') };
   let compiled = false;
   const steps = [
-    ['discover_catalog', {}], ...(clarify ? [['ask_clarification', { question: 'Which classification should open tasks show?' }]] : []),
+    ['discover_catalog', {}], ...(clarify ? [['ask_clarification', { question: 'Which title should the follow-up task have?' }]] : []),
     ['compile_draft', { hookId: 'TaskCompleted', sourceJson: 'invalid candidate', expectedDraftVersion: 0 }],
     ['compile_draft', { hookId: 'TaskCompleted', sourceJson: source, expectedDraftVersion: 0 }],
     ['propose_scenarios', { revisionId: 'compiledB', cases, expectedDraftVersion: 1 }],
@@ -50,7 +47,7 @@ function scenario(providerName, { clarify = true, wrong = false } = {}) {
   // These are injected host doubles: actual compiler/lifecycle qualification belongs to integration.
   const host = {
     readDraft: () => ({ ...current, selection }),
-    discover: () => ({ profile: 'keir-read/2', capabilities: ['tasks.get'], draftVersion: current.draftVersion }),
+    discover: () => ({ supportedHooks: ['TaskCompleted'], capabilities: ['tasks.get', 'tasks.create'], draftVersion: current.draftVersion }),
     compile: (bytes, expected) => {
       assert.equal(expected, current.draftVersion); events.push(['compile', bytes.toString()]);
       if (bytes.toString() !== source) return { diagnostics: [{ code: 'SOURCE_INVALID', path: '/source' }] };
@@ -75,10 +72,10 @@ function scenario(providerName, { clarify = true, wrong = false } = {}) {
 
 for (const name of ['openai', 'anthropic']) test(`${name} native protocol drives the actual loop through pause/reload/repair/exact review`, async () => {
   const f = scenario(name); let state = createAuthoringState(f.context);
-  const first = await runAuthoringTurn({ ...f, state, input: { id: 'request', text: 'Make task advice.', expectedVersion: 0 } });
+  const first = await runAuthoringTurn({ ...f, state, input: { id: 'request', text: 'Create a follow-up after completion.', expectedVersion: 0 } });
   assert.equal(first.status, 'AWAITING_USER'); assert.equal(f.requests.length, 2);
   state = JSON.parse(JSON.stringify(state)); // owner persistence can restore private native continuation.
-  const result = await runAuthoringTurn({ ...f, state, input: { id: 'answer', text: 'PENDING for open tasks.', expectedVersion: 1 } });
+  const result = await runAuthoringTurn({ ...f, state, input: { id: 'answer', text: 'Use the title Example follow-up task.', expectedVersion: 1 } });
   assert.equal(result.status, 'REVIEW_AVAILABLE'); assert.equal(result.review.revisionId, 'reviewB');
   assert.equal(result.review.evidenceId, 'EB'); assert.equal(result.review.eligible, true);
   assert.deepEqual(f.selection, { revisionId: 'approvedA', generation: 7, evidenceId: 'EA' });
@@ -116,6 +113,9 @@ test('opt-in harness returns only bounded identity/counters and requires configu
   assert.equal(JSON.stringify(result).includes('opaque'), false);
   const unavailable = await checkAuthoringProvider({ live: true, env: {}, ...scenario('openai'), inputs: [{ id: 'request', text: 'No config.' }] });
   assert.deepEqual(unavailable, { status: 'NOT_RUN', code: 'AI_NOT_CONFIGURED' });
+  const uncapped = await checkAuthoringProvider({ live: true, env: { ...env('openai'), KEIR_AI_MAX_USD: '' },
+    inputs: [{ id: 'request', text: 'No allowance.' }], runCheck: () => assert.fail('An uncapped qualification must not run') });
+  assert.deepEqual(uncapped, { status: 'NOT_RUN', code: 'ALLOWANCE_REQUIRED' });
 });
 
 test('qualification accepts more than eight explicit inputs while preserving each input byte limit', async () => {
@@ -150,22 +150,4 @@ test('project qualification fixture uses isolated durable service and remains in
   assert.equal(result.usage.reservedMicros, 319488); assert.equal(requests, 1);
   assert.equal(Object.hasOwn(result, 'review'), false);
   assert.equal(JSON.stringify(result).includes('synthetic-openai-key'), false);
-});
-
-test('legacy qualification source cannot gain task-write authority through direct authoring', async () => {
-  const fixture = createQualificationHost();
-  assert.match(fixture.inputs[0].text, /Discover.*actual existing project IDs/);
-  assert.match(fixture.inputs[0].text, /Author my project and title choices in source/);
-  assert.match(fixture.inputs[0].text, /Do not approve, activate/);
-  const db = openData(':memory:');
-  try {
-    const tasks = db.prepare('SELECT * FROM tasks ORDER BY id').all();
-    const compiler = { compile: async () => ({ artifact: readFileSync(new URL('../extensions/task-read/maya.json', import.meta.url)), diagnostics: [] }) };
-    const lifecycle = createLifecycle(db, { compiler });
-    await assert.rejects(lifecycle.createFromSource('sam', { operationId: 'qualified-source', source: readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8') }, () => {}),
-      error => error.status === 410 && error.code === 'LEGACY_CUSTOMIZATION_RETIRED');
-    assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), tasks);
-    assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 0);
-    assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
-  } finally { db.close(); }
 });

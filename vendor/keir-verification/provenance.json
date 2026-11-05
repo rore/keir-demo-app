@@ -1,0 +1,34 @@
+{
+  "repository": "https://github.com/rore/keir-core",
+  "revision": "e5e2eb7f4bc4cc6ccd2817511793605eef88a384",
+  "files": {
+    "LICENSE": {
+      "source": "LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "scenario.schema.json": {
+      "source": "schemas/scenario-1/scenario.schema.json",
+      "sha256": "ee1b47571829e5c2dff40f8e399f224ee69984b07dbec0d1c535c0374b965562"
+    },
+    "scenario-lexical.mjs": {
+      "source": "runtime-node/test/scenario-lexical.mjs",
+      "sha256": "e141559baef7b54e4ca939e2f0073cabdb7f8721c483e715e836a66630d25d3a"
+    },
+    "scenario-vectors.json": {
+      "source": "conformance/keir-1/scenario-vectors.json",
+      "sha256": "bc8c69218fb30b4cbef6735d61d3e96ad39a03bd4c3132ad490557156160e084"
+    },
+    "scenarios/no-call/no-call.json": {
+      "source": "conformance/keir-1/scenarios/no-call/no-call.json",
+      "sha256": "9ac3ba9a866dcd919c2e510175b9238ee6de99d1bc22cd9699fd79be05cb9ff2"
+    },
+    "scenarios/main/normal.json": {
+      "source": "conformance/keir-1/scenarios/main/normal.json",
+      "sha256": "895504c5e15676fea0209466b776c4372a3a88747f9cb73d058a212c8bdb3cb4"
+    },
+    "scenarios/main/write-rejected.json": {
+      "source": "conformance/keir-1/scenarios/main/write-rejected.json",
+      "sha256": "73bb915cd23e724fe3eae28a0a4243c056b075617ae5f5c1e64e42c1ed80e9ba"
+    }
+  }
+}

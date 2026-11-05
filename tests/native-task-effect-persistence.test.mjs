@@ -224,7 +224,7 @@ test('deleting an unselected replaced item revokes all its old admissions, prese
   f.effects.claim(owner, first.eventId);
   const committed = f.effects.createTaskOnce(owner, f.effects.keyFor(owner, first.eventId), { projectId: f.projectId, title: 'Keep this real task' });
   f.effects.finish(owner, first.eventId, { classification: 'COMPLETED', effects: [{ effect: 'CONFIRMED' }] });
-  f.db.prepare("UPDATE extension_selections SET revision_id=NULL,generation=generation+1 WHERE owner_id=? AND hook_id='ClassifyTask'").run(owner);
+  f.db.prepare("UPDATE extension_selections SET revision_id=NULL,binding_pins=NULL,generation=generation+1 WHERE owner_id=? AND hook_id='TaskCompleted'").run(owner);
   const lifecycle = createLifecycle(f.db), state = lifecycle.state(owner, f.revision.extension_id);
   lifecycle.delete(owner, { extensionId: f.revision.extension_id, expectedName: state.extension.name, draftVersion: state.draftVersion, generation: state.selection.generation }, () => {});
   assert.notEqual(f.effects.status(owner, second.eventId).revokedAt, null);

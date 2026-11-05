@@ -1,4 +1,5 @@
-extensions/task-read/*.json text eol=lf
-extensions/task-read/*.yaml text eol=lf
+extensions/task-effect/title/dcm.json -text
+vendor/*.jar binary
 vendor/*.tgz binary
-vendor/customer-authoring-guide-v2.md -text
+vendor/compiler-notices/** -text
+vendor/customer-authoring-guide-v3.md -text

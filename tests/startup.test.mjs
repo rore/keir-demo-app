@@ -1,24 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync, symlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync, symlinkSync, copyFileSync, readdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { acquireDataLock, openData, resetData } from '../src/data.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { acquireDataLock, openData, resetData, taskService } from '../src/data.mjs';
 import { start } from '../src/server.mjs';
 import { createApp } from '../src/app.mjs';
 import { createAuthoringSettings } from '../src/authoring-settings.mjs';
+import { nativeEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
 
-test('real startup refuses another server/reset and release preserves persisted data', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'keir-startup-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+async function reservePort() {
   const reservation = createServer();
   await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
+  return port;
+}
+
+test('real startup refuses another server/reset and a verified backup starts in a new directory', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'keir-startup-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const port = await reservePort();
   const server = await start({ directory, port });
+  const proofRows = db => ['extension_evidence', 'extension_approvals', 'task_effect_receipts']
+    .map(table => db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all());
+  let saved, records, event, receipt, payload;
   try {
     await assert.rejects(start({ directory, port }), /locked/);
     await assert.rejects(resetData(directory, true), /locked/);
@@ -27,10 +37,140 @@ test('real startup refuses another server/reset and release preserves persisted 
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal((await response.json()).users.length, 3);
     for (const path of ['/.data/app.sqlite', '/package.json', '/src/data.mjs', '/%2e%2e/package.json']) assert.ok([403, 404].includes((await fetch(server.origin + path)).status));
+    saved = taskService(server.db).createProject('maya', { name: 'Saved before reset' });
+    const binding = seedTaskEffectBinding(server.db);
+    server.db.prepare("UPDATE extension_selections SET generation=1,revision_id=?,binding_pins=? WHERE owner_id='maya'")
+      .run(binding.revisionId, JSON.stringify(binding.pins));
+    const tasks = taskService(server.db), effects = nativeEffectService(server.db);
+    const task = tasks.createTask('maya', { projectId: saved.id, title: 'Before reset' });
+    tasks.completeTask('maya', task.id);
+    event = server.db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(task.id).event_id;
+    assert.ok(effects.claim('maya', event));
+    payload = { projectId: saved.id, title: 'Created before reset' };
+    receipt = effects.createTaskOnce('maya', effects.keyFor('maya', event), payload);
+    assert.equal(receipt.effect, 'CONFIRMED');
+    effects.finish('maya', event, { classification: 'COMPLETED' });
+    records = proofRows(server.db);
   } finally { await server.close(); }
   assert.equal(existsSync(join(directory, 'app.lock')), false);
   const backupPath = await resetData(directory, true);
-  assert.equal(existsSync(backupPath), true);
+  const restoredDirectory = join(directory, 'restored');
+  mkdirSync(restoredDirectory);
+  copyFileSync(backupPath, join(restoredDirectory, 'app.sqlite'));
+  const restored = await start({ directory: restoredDirectory, port });
+  try {
+    assert.deepEqual(taskService(restored.db).listProjects('maya').find(project => project.id === saved.id), saved);
+    assert.deepEqual(proofRows(restored.db), records);
+    const effects = nativeEffectService(restored.db);
+    assert.deepEqual(effects.createTaskOnce('maya', effects.keyFor('maya', event), payload), receipt);
+    assert.deepEqual(proofRows(restored.db), records);
+  } finally { await restored.close(); }
+});
+
+function withSql(path, sql, options = {}) {
+  const db = new DatabaseSync(path, options);
+  try { db.exec(sql); } finally { db.close(); }
+}
+
+async function assertEntryPointsPreserveData(directory, expected) {
+  const names = readdirSync(directory);
+  const bytes = names.map(name => readFileSync(join(directory, name)));
+  const unchanged = () => {
+    assert.deepEqual(readdirSync(directory), names);
+    assert.deepEqual(names.map(name => readFileSync(join(directory, name))), bytes);
+  };
+  await assert.rejects(start({ directory, port: 0 }), expected);
+  unchanged();
+  const seed = spawnSync(process.execPath, ['scripts/demo-data.mjs', 'seed', '--data-dir', directory], { encoding: 'utf8', windowsHide: true });
+  assert.equal(seed.status, 1, seed.error?.message || seed.stderr);
+  assert.match(seed.stderr, expected);
+  unchanged();
+  await assert.rejects(resetData(directory, true), expected);
+  unchanged();
+}
+
+test('startup, seed and reset reject unsupported databases without touching the main file or sidecars', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'keir-rejected-data-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sidecar = (path, suffix) => writeFileSync(path + suffix, 'Synthetic sidecar evidence');
+  const version = value => path => {
+    withSql(path, 'PRAGMA user_version=' + value);
+    sidecar(path, '-journal');
+  };
+  for (const [name, fresh, mutate, expected] of [
+    ['preview v9', true, version(9), /Unsupported database version/],
+    ['unmarked', true, version(0), /Unsupported database version/],
+    ['future', true, version(11), /Unsupported database version/],
+    ['empty file', false, path => writeFileSync(path, ''), /Unsupported database format/],
+    ['invalid header with v10', true, path => {
+      const bytes = readFileSync(path);
+      bytes[0] = 0;
+      writeFileSync(path, bytes);
+      sidecar(path, '-journal');
+    }, /Unsupported database format/],
+    ['truncated current database', true, path => writeFileSync(path, readFileSync(path).subarray(0, 100)), /database disk image is malformed/],
+    ['different current schema', true, path => withSql(path, 'DROP TRIGGER task_receipt_immutable'), /Unsupported database schema/],
+    ['broken owner reference', true, path => withSql(path, "UPDATE projects SET owner_id='missing'", { enableForeignKeyConstraints: false }), /Database integrity check failed/],
+    ['WAL header', true, path => withSql(path, 'PRAGMA journal_mode=WAL'), /Unsupported database format/],
+    ['WAL sidecar', true, path => sidecar(path, '-wal'), /Unsupported database format/],
+    ['SHM sidecar', true, path => sidecar(path, '-shm'), /Unsupported database format/],
+    ['super-journal pointer', true, path => {
+      const target = join(dirname(path), 'untouched');
+      writeFileSync(target, 'Unrelated fixture data');
+      const magic = Buffer.from('d9d505f920a163d7', 'hex');
+      const pointer = Buffer.from(target), footer = Buffer.alloc(16);
+      footer.writeUInt32BE(pointer.length, 0);
+      footer.writeUInt32BE(pointer.reduce((sum, byte) => sum + byte, 0), 4);
+      magic.copy(footer, 8);
+      writeFileSync(path + '-journal', Buffer.concat([magic, Buffer.alloc(600), pointer, footer]));
+    }, /Unsupported database format/],
+    ['orphan journal', false, path => sidecar(path, '-journal'), /Unsupported database format/],
+    ['orphan WAL', false, path => sidecar(path, '-wal'), /Unsupported database format/],
+    ['orphan SHM', false, path => sidecar(path, '-shm'), /Unsupported database format/],
+  ]) {
+    await t.test(name, async () => {
+      const directory = mkdtempSync(join(root, 'case-')), path = join(directory, 'app.sqlite');
+      if (fresh) openData(path).close();
+      mutate(path);
+      await assertEntryPointsPreserveData(directory, expected);
+    });
+  }
+});
+
+test('a hot rollback journal is validated on a disposable copy before original recovery', async t => {
+  for (const wrongSchema of [false, true]) await t.test(wrongSchema ? 'rejects a different recovered schema' : 'recovers the current schema', async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'keir-hot-journal-')), path = join(directory, 'app.sqlite');
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const db = openData(path);
+    const tasks = db.prepare('SELECT id, notes FROM tasks ORDER BY id').all();
+    db.close();
+    if (wrongSchema) withSql(path, 'DROP TRIGGER task_receipt_immutable');
+    const original = readFileSync(path);
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite';
+      const db = new DatabaseSync(process.argv[1]);
+      db.exec("PRAGMA cache_size=5; BEGIN IMMEDIATE; UPDATE tasks SET notes=printf('%04000d', 1)");
+      console.log('dirty');
+      setInterval(() => {}, 60_000);
+    `, path], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const closed = once(child, 'close');
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    try {
+      const [ready] = await Promise.race([once(child.stdout, 'data'), closed]);
+      assert.match(String(ready), /dirty/, stderr);
+    } finally { child.kill('SIGKILL'); await closed; }
+    assert.notDeepEqual(readFileSync(path), original);
+    assert.throws(() => withSql(path, 'PRAGMA user_version', { readOnly: true }), { errcode: 776 });
+    if (wrongSchema) {
+      await assertEntryPointsPreserveData(directory, /Unsupported database schema/);
+    } else {
+      const recovered = await start({ directory, port: await reservePort() });
+      try { assert.deepEqual(recovered.db.prepare('SELECT id, notes FROM tasks ORDER BY id').all(), tasks); }
+      finally { await recovered.close(); }
+      assert.deepEqual(readdirSync(directory), ['app.sqlite']);
+    }
+  });
 });
 
 test('CLI starts using only its own child process/data', async t => {

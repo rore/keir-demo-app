@@ -2,10 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openData } from '../src/data.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
-import { createTaskRead } from '../src/task-read.mjs';
 import { createApp } from '../src/app.mjs';
 import { createCompiler } from '../src/compiler.mjs';
-import { digest, json } from '../src/extension-catalog.mjs';
 import { runTaskEffectSimulation } from '../src/task-effect-simulation.mjs';
 import { compileTaskCustomization } from './fixtures/task-customization.mjs';
 import { admitTaskDraft } from './fixtures/task-authoring.mjs';
@@ -20,7 +18,6 @@ function setup(t, options = {}) {
   const db = openData(':memory:'); t.after(() => db.close());
   return { db, lifecycle: createLifecycle(db, { compiler, ...options }) };
 }
-function first(lifecycle, owner = 'maya') { return lifecycle.state(owner, lifecycle.collection(owner).items.find(item => item.retired).extension.id); }
 function add(db, lifecycle, id, owner = 'maya') {
   return admitTaskDraft(db, lifecycle, { owner, extensionId: id, operationId: id, name: id }).state;
 }
@@ -62,18 +59,17 @@ test('selected deletion disables once, keeps audit/native rows and rejects every
     () => lifecycle.evidencePage('maya', receipt.extensionId),
     () => lifecycle.restorePage('maya', receipt.extensionId),
     () => lifecycle.rename('maya', { extensionId: receipt.extensionId, name: 'New', expectedName: state.extension.name }, authorize),
-    () => lifecycle.load('maya', { extensionId: receipt.extensionId, templateId: 'attention', draftVersion: state.draftVersion }, authorize),
     () => lifecycle.approve('maya', { ...handles(state), evidenceId: state.evidence.id }, authorize),
     () => lifecycle.activate('maya', { ...handles(state), generation: after.selection.generation, evidenceId: state.approvedEvidenceId }, authorize),
     () => lifecycle.rollback('maya', { extensionId: receipt.extensionId, revisionId: previous.id, generation: after.selection.generation }, authorize),
     () => lifecycle.restart('maya', { extensionId: receipt.extensionId, revisionId: previous.id, draftVersion: state.draftVersion, generation: after.selection.generation }, authorize),
   ];
   for (const work of unavailable) assert.throws(work, { status: 404 });
-  assert.ok(lifecycle.history('maya').rows.every(row => row.revisionId !== state.draft.id), 'normal global history excludes deleted entries without removing retained legacy audit');
+  assert.ok(lifecycle.history('maya').rows.every(row => row.revisionId !== state.draft.id), 'normal global history excludes deleted entries without removing retained audit');
 });
 
-test('unselected deletion preserves Task selection while legacy advice remains retired and safely deletable', async t => {
-  const { db, lifecycle } = setup(t), legacy = first(lifecycle);
+test('unselected deletion preserves the active Task selection', async t => {
+  const { db, lifecycle } = setup(t);
   const fixture = await compileTaskCustomization();
   let active = await taskDraft(db, lifecycle, 'active-task', fixture);
   active = await lifecycle.simulate('maya', handles(active), authorize);
@@ -83,20 +79,12 @@ test('unselected deletion preserves Task selection while legacy advice remains r
   const before = lifecycle.collection('maya').selection;
   lifecycle.delete('maya', input(extra), authorize);
   assert.deepEqual(lifecycle.collection('maya').selection, before);
-  let reads = 0;
-  const read = createTaskRead({ lifecycle, getTask: async () => { ++reads; throw Error('Retired advice must not read native data'); } });
-  assert.equal((await read({ userId: 'maya', taskId: 'task', authorize: () => true })).status, 'NOT_DISPLAYED');
-  assert.equal(reads, 0);
-  assert.equal(legacy.retired, true);
-  assert.throws(() => lifecycle.rename('maya', { extensionId: legacy.extension.id, name: 'New', expectedName: legacy.extension.name }, authorize), { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
-  lifecycle.delete('maya', input(legacy), authorize);
-  assert.deepEqual(lifecycle.collection('maya').selection, before);
   assert.equal(lifecycle.source('maya', active.draft.id, active.extension.id).source, fixture.source);
 });
 
 test('exact names, draft and global selection fences reject stale confirmation; denied authority rolls back deletion', t => {
-  const { db, lifecycle } = setup(t), state = first(lifecycle), retained = rows(db, 'extensions');
-  for (const override of [{ expectedName: 'Different' }, { draftVersion: 1 }, { generation: 0 }]) {
+  const { db, lifecycle } = setup(t), state = add(db, lifecycle, 'delete-fences'), retained = rows(db, 'extensions');
+  for (const override of [{ expectedName: 'Different' }, { draftVersion: 1 }, { generation: 1 }]) {
     assert.throws(() => lifecycle.delete('maya', { ...input(state), ...override }, authorize), { status: 409 });
     assert.deepEqual(rows(db, 'extensions'), retained);
   }
@@ -147,27 +135,19 @@ test('late Task compile, scenario validation and simulation cannot save after de
   await assert.rejects(simulation, { status: 404 }); assert.equal(rows(db, 'extension_evidence').length, evidenceCount);
 });
 
-test('historical creation receipts return terminal deletion without recompiling; mismatches conflict and new task admission works', async t => {
+test('current creation receipts remain owner-scoped and report deletion without recompiling', async t => {
   const fixture = await compileTaskCustomization();
   let calls = 0;
   const { db, lifecycle } = setup(t, { compiler: { compile: async (...args) => { calls++; return compiler.compile(...args); } } });
-  const original = first(lifecycle), request = { operationId: 'original', source: 'historical saved source' };
-  // Reconstruct only the original legacy receipt metadata, never a new executable admission.
-  db.prepare('UPDATE extensions SET creation_operation_id=?,creation_hash=? WHERE id=?')
-    .run(request.operationId, digest(json({ operationId: request.operationId, source: request.source })), original.extension.id);
-  const state = await lifecycle.createFromSource('maya', request, authorize); assert.equal(calls, 0);
-  const receipt = state.creationReceipt;
-  assert.deepEqual((await lifecycle.createFromSource('maya', request, authorize)).creationReceipt, receipt);
+  const state = await taskDraft(db, lifecycle, 'original', fixture);
+  const receipt = lifecycle.findCreation('maya', 'original').creationReceipt;
+  assert.equal(receipt.extensionId, state.extension.id);
+  assert.equal(receipt.draftVersion, 1);
+  assert.deepEqual(lifecycle.findCreation('maya', 'original').creationReceipt, receipt);
+  assert.throws(() => lifecycle.findCreation('leo', 'original'), { status: 404 });
   lifecycle.delete('maya', input(state), authorize);
   assert.throws(() => lifecycle.findCreation('maya', 'original'), { status: 410, code: 'CUSTOMIZATION_DELETED' });
-  await assert.rejects(lifecycle.createFromSource('maya', request, authorize), { status: 410, code: 'CUSTOMIZATION_DELETED' });
-  await assert.rejects(lifecycle.createFromSource('maya', { ...request, source: request.source + 'changed' }, authorize), { status: 409 });
-  assert.equal(calls, 0);
-  await assert.rejects(lifecycle.createFromSource('maya', { ...request, operationId: 'new-direct-source' }, authorize), { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
-  const task = add(db, lifecycle, 'new-explicit');
-  await lifecycle.compile('maya', { extensionId: task.extension.id, hookId: 'TaskCompleted', source: fixture.source, draftVersion: 0 }, authorize);
   assert.equal(calls, 1);
-  assert.throws(() => lifecycle.findCreation('leo', 'original'), { status: 404 });
 });
 
 test('API deletion enforces exact body, origin/session and owner; repeat receipt does not expose deleted content', async t => {
@@ -176,7 +156,7 @@ test('API deletion enforces exact body, origin/session and owner; repeat receipt
   let auth = {};
   const call = (path, payload, headers = {}) => app.inject({ url: '/api/' + path, method: payload === undefined ? 'GET' : 'POST',
     headers: { host: '127.0.0.1:32123', origin, 'content-type': 'application/json', ...auth, ...headers }, ...(payload === undefined ? {} : { payload }) });
-  const state = first(createLifecycle(db)), path = `extensions/${state.extension.id}/delete`, body = { ...input(state) }; delete body.extensionId;
+  const state = add(db, createLifecycle(db), 'delete-api'), path = `extensions/${state.extension.id}/delete`, body = { ...input(state) }; delete body.extensionId;
   assert.equal((await call(path, body)).statusCode, 401);
   const bootstrap = (await call('session')).json();
   const login = await call('session', { userId: 'maya' }, { 'x-session-context': bootstrap.contextToken });
@@ -185,10 +165,10 @@ test('API deletion enforces exact body, origin/session and owner; repeat receipt
   assert.equal((await call(path + '?extra=x', body)).statusCode, 400);
   assert.equal((await call(path, body, { origin: 'http://foreign.invalid' })).statusCode, 403);
   assert.equal((await call(path, body, { 'x-session-context': 'old' })).statusCode, 401);
-  const foreign = first(createLifecycle(db), 'leo');
+  const foreign = add(db, createLifecycle(db), 'delete-foreign', 'leo');
   assert.equal((await call(`extensions/${foreign.extension.id}/delete`, body)).statusCode, 404);
   assert.equal((await call('extensions/missing/delete', body)).statusCode, 404);
-  assert.equal((await call(path, { ...body, generation: 0 })).statusCode, 409);
+  assert.equal((await call(path, { ...body, generation: body.generation + 1 })).statusCode, 409);
   const deleted = await call(path, body); assert.equal(deleted.statusCode, 200);
   assert.deepEqual(Object.keys(deleted.json()).sort(), ['deletedAt', 'extensionId']);
   assert.deepEqual((await call(path, body)).json(), deleted.json());

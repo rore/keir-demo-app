@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { AppError, openData, taskService } from '../src/data.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { createApp } from '../src/app.mjs';
-import { createLifecycle as lifecycleFactory, simulationCases, situation } from '../src/extension-lifecycle.mjs';
+import { createLifecycle as lifecycleFactory } from '../src/extension-lifecycle.mjs';
 import { createCompiler } from '../src/compiler.mjs';
-import { loadHost, digest, json, PREVIOUS_TASK_DEFINITION, TASK_DEFINITION, TASK_HOOK } from '../src/extension-catalog.mjs';
+import { loadHost, TASK_DEFINITION, TASK_HOOK } from '../src/extension-catalog.mjs';
 import { authoringExample, businessContext, evidenceSummary } from '../src/authoring-example.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { join } from 'node:path';
@@ -80,7 +80,7 @@ test('task authoring admits immutable definition authority before failed compile
   assert.equal(attempts, 3);
 });
 
-for (const definitionId of [undefined, 'daymark.task-completed/1']) test(`task authoring resolves original legacy receipts for ${definitionId ?? 'absent definition'} before refusing retired blank continuation without rewriting spend or JSON`, async t => {
+for (const definitionId of [undefined, 'daymark.task-completed/1']) test(`task authoring rejects receipts for ${definitionId ?? 'absent definition'} without rewriting spend or JSON`, async t => {
   const db = openData(':memory:'), lifecycle = createLifecycle(db), lease = { sessionId: 'legacy-recovery-test', current: () => true };
   let service, requests = 0;
   const providerFactory = () => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros, complete: async () => {
@@ -99,64 +99,13 @@ for (const definitionId of [undefined, 'daymark.task-completed/1']) test(`task a
   const before = authoringStorage(db), count = requests;
   service = open();
   assert.deepEqual(authoringStorage(db), before, 'startup does not rewrite retired continuation, receipts or accounting');
-  assert.equal(service.recover('maya', original).conversation.retired, true);
-  assert.equal((await service.turn('maya', original, lease)).conversation.retired, true);
+  assert.throws(() => service.recover('maya', original), { status: 404 });
+  await assert.rejects(service.turn('maya', original, lease), { status: 404 });
   assert.throws(() => service.recover('maya', { ...original, text: 'Different payload' }), error => error.status === 409 && error.code === 'STALE_CONVERSATION');
   await assert.rejects(service.turn('maya', { ...original, text: 'Different payload' }, lease), error => error.status === 409 && error.code === 'STALE_CONVERSATION');
   await assert.rejects(service.turn('maya', { conversationId: current.id, operationId: 'retired-resume', text: 'Continue.', expectedVersion: current.version,
     expectedDraftVersion: 0, target: { kind: 'resume', extensionId: current.extensionId } }, lease), error => error.status === 410 && error.code === 'LEGACY_CUSTOMIZATION_RETIRED');
   assert.deepEqual(authoringStorage(db), before); assert.equal(requests, count);
-  const stopped = service.cancel('maya', current.id, { runId: current.runId, expectedVersion: current.version }, lease);
-  assert.equal(stopped.status, 'CANCELLED'); assert.equal(stopped.retired, true);
-  assert.deepEqual(authoringStorage(db).authoring_dispatches, before.authoring_dispatches);
-  assert.deepEqual(authoringStorage(db).authoring_budget, before.authoring_budget);
-  assert.equal(requests, count, 'Stop does not resume a retired provider chain');
-});
-
-test('the previous model discussion stays in history while a fresh revision uses the current model', async t => {
-  const db = openData(':memory:'), lifecycle = createLifecycle(db), lease = { sessionId: 'model-upgrade-test', current: () => true };
-  let service, requests = 0;
-  const providerFactory = () => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros, complete: async () => {
-    requests++;
-    return { calls: [], text: 'Saved discussion.', usage: { inputTokens: 1, outputTokens: 1 } };
-  } });
-  const open = () => createAuthoringService({ db, lifecycle, config, providerFactory });
-  t.after(async () => { await service?.close(); db.close(); });
-  service = open();
-  const original = taskTurn('previous-model-discussion'), started = await service.turn('maya', original, lease);
-  const prior = await service.wait('maya', started.conversation.id);
-  const { id, extensionId } = prior;
-  assert.equal(prior.purpose, 'CREATE');
-  await service.close();
-
-  const saved = JSON.parse(db.prepare('SELECT state FROM authoring_conversations WHERE id=?').get(id).state);
-  saved.definitionId = PREVIOUS_TASK_DEFINITION;
-  db.prepare("UPDATE authoring_conversations SET state=?,status='RUNNING' WHERE id=?").run(JSON.stringify(saved), id);
-  const before = authoringStorage(db);
-  service = open();
-  const history = service.read('maya', id);
-  assert.equal(history.retired, true);
-  assert.equal(history.status, 'INTERRUPTED');
-  assert.equal(history.code, 'RUN_INTERRUPTED');
-  assert.deepEqual(history.messages, prior.messages);
-  assert.equal(service.recover('maya', original).conversation.id, id);
-  assert.equal(service.list('maya', extensionId).current, null);
-  assert.deepEqual(service.list('maya', extensionId).conversations.map(item => item.id), [id]);
-  assert.deepEqual(authoringStorage(db).authoring_budget, before.authoring_budget);
-  assert.equal(requests, 1);
-
-  const item = lifecycle.state('maya', extensionId);
-  const fresh = await service.turn('maya', { conversationId: null, operationId: 'current-model-discussion',
-    text: 'Revise this task customization.', expectedVersion: 0, expectedDraftVersion: item.draftVersion,
-    target: { kind: 'revise', extensionId, baseRevisionId: null, selectionGeneration: item.selection.generation } }, lease);
-  const current = await service.wait('maya', fresh.conversation.id);
-  assert.equal(current.status, 'IDLE');
-  assert.equal(current.extensionId, extensionId);
-  assert.notEqual(current.id, id);
-  assert.equal(service.list('maya', extensionId).current.id, current.id);
-  assert.deepEqual(service.read('maya', id), history);
-  assert.equal(JSON.parse(db.prepare('SELECT state FROM authoring_conversations WHERE id=?').get(current.id).state).definitionId, TASK_DEFINITION);
-  assert.equal(requests, 2);
 });
 
 test('task authoring discovers every project page without exposing other owners or native tasks and rejects foreign cursors', async t => {
@@ -225,7 +174,6 @@ function authoringTarget(db, conversationId) {
 }
 const input = state => ({ extensionId: state.extension.id, revisionId: state.draft.id, draftVersion: state.draftVersion });
 const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '1', OPENAI_API_KEY: 'synthetic-key' });
-const noAiConfig = readAuthoringConfig({});
 
 async function api(t, options = {}) {
   const db = openData(':memory:'), origin = 'http://127.0.0.1:32124';
@@ -255,27 +203,6 @@ async function settled(call, id) {
   }
   assert.fail('Authoring did not settle within the bounded poll.');
 }
-
-test('retired scripted-example GET remains authenticated, queryless and inert', async t => {
-  let providerCalls = 0;
-  const { db, call, login, getAuth } = await api(t, { authoring: { config: noAiConfig, fetchImpl: async () => { providerCalls++; throw Error('unexpected'); } } });
-  assert.equal((await call('authoring/example')).statusCode, 401);
-  await login();
-  const before = db.prepare('SELECT * FROM extensions ORDER BY owner_id').all();
-  const selection = db.prepare('SELECT * FROM extension_selections ORDER BY owner_id,hook_id').all();
-  const budget = db.prepare('SELECT * FROM authoring_budget').all();
-  assert.equal((await call('authoring/example?owner=leo')).statusCode, 400);
-  const response = await call('authoring/example');
-  assert.equal(response.statusCode, 410); assert.equal(response.json().code, 'LEGACY_CUSTOMIZATION_RETIRED');
-  assert.equal(providerCalls, 0);
-  assert.deepEqual(db.prepare('SELECT * FROM extensions ORDER BY owner_id').all(), before);
-  assert.deepEqual(db.prepare('SELECT * FROM extension_selections ORDER BY owner_id,hook_id').all(), selection);
-  assert.deepEqual(db.prepare('SELECT * FROM authoring_budget').all(), budget);
-  assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 0);
-  assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
-  const previous = getAuth(); await login('leo');
-  assert.equal((await call('authoring/example', undefined, previous)).statusCode, 401);
-});
 
 test('agent discovery sends static supported context and worked source/scenario without task records', async t => {
   const requests = [];
@@ -429,7 +356,9 @@ test('actual compiled task source retains independent expectations, exact proof 
     error => error.status === 400 && error.diagnostics[0].code === 'INVALID_SCENARIO');
   assert.equal(lifecycle.state('maya', extensionId).draftVersion, 1);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
-  const wrong = JSON.parse(example.cases[0]); wrong.expect = JSON.parse(example.cases[1]).expect;
+  const wrong = JSON.parse(example.cases[0]);
+  wrong.expect.outcome.result.status = 'NO_OP';
+  wrong.expect.consumption.result.status = 'NO_OP';
   const wrongCase = JSON.stringify(wrong);
   state = await lifecycle.proposeScenarios('maya', { extensionId, ...input(state), cases: [wrongCase, ...example.cases.slice(1)] }, () => true);
   const wrongSuite = lifecycle.source('maya', state.draft.id, extensionId).cases;
@@ -437,7 +366,8 @@ test('actual compiled task source retains independent expectations, exact proof 
   state = await lifecycle.simulate('maya', input(state), () => true);
   const mismatchProof = lifecycle.evidence('maya', state.evidence.id, extensionId), mismatch = evidenceSummary(mismatchProof, wrongSuite).cases[0];
   assert.equal(mismatchProof.passed, false); assert.equal(mismatch.status, 'FAIL');
-  assert.deepEqual(mismatch.expected.createdTasks, []);
+  assert.equal(mismatchProof.reports[0].expected.outcome.result.status, 'NO_OP');
+  assert.equal(mismatchProof.reports[0].report.native.result.status, 'CREATED');
   assert.deepEqual(mismatch.actual.observed, { effect: 'CONFIRMED', createdTasks: [{ projectId: example.metadata.projectId, projectName: 'Example project', title: example.metadata.title }] });
   await assert.rejects(Promise.resolve().then(() => lifecycle.approve('maya', { extensionId, ...input(state), evidenceId: state.evidence.id }, () => true)), { status: 409 });
   state = await lifecycle.proposeScenarios('maya', { extensionId, ...input(state), cases: example.cases }, () => true);
@@ -490,65 +420,13 @@ test('a provider request limit keeps the saved source and explains manual recove
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
 });
 
-test('historical prepared evidence never borrows expectations from a different suite with reused case IDs', async t => {
-  const db = openData(':memory:'), lifecycle = createLifecycle(db); t.after(() => db.close());
-  const selected = db.prepare("SELECT r.* FROM extension_revisions r JOIN extension_selections s ON s.revision_id=r.id WHERE s.owner_id='maya' AND s.hook_id='ClassifyTask'").get();
-  const extensionId = db.prepare('SELECT extension_id FROM extension_revision_links WHERE revision_id=?').get(selected.id).extension_id;
-  const cases = simulationCases(selected.template_id), versions = { suite: 'task-advice-lifecycle/1', fixtureVersion: 'task-advice-fixtures/1' };
-  const suiteDigest = digest(json({ ...versions, simulator: selected.identity, cases: cases.map(row => ({ id: row.id, digest: digest(row.bytes) })) }));
-  const pins = JSON.parse(selected.identity);
-  // Historical read receipt fixture only; it cannot grant task-write approval or activation.
-  const original = { identity: { dependencies: pins, ...versions, suiteDigest }, reports: cases.map(row => ({ id: row.id, label: row.label, expected: row.expected,
-    report: { status: 'PASS', format: 'keir-read-simulation-report/1', mismatches: [], identity: { modelDigest: pins.modelDigest, artifactDigest: pins.artifactDigest },
-      native: row.expected.classification === 'COMPLETED' ? { classification: 'COMPLETED' } : { classification: row.expected.classification, code: row.id === 'host-denied' ? 'AUTHORITY_DENIED' : row.expected.classification === 'FAILED' ? 'ADAPTER_TRANSIENT' : 'NATIVE_ERROR' },
-      consumption: JSON.parse(row.bytes).expect.consumption } })) };
-  db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)').run('historical-read', 'maya', selected.id, selected.identity, suiteDigest, json(original), 1);
-  assert.deepEqual(lifecycle.evidence('maya', 'historical-read', extensionId).reports[0].expected.consumption, JSON.parse(cases[0].bytes).expect.consumption);
-  db.prepare('UPDATE extension_evidence SET suite_identity=? WHERE id=?').run('sha256:' + '0'.repeat(64), 'historical-read');
-  const historical = lifecycle.evidence('maya', 'historical-read', extensionId);
-  assert.equal(historical.passed, false);
-  assert.deepEqual(historical.reports, original.reports, 'reused case IDs cannot confer current-suite expectations');
-  const summary = evidenceSummary(historical, cases.map(row => row.bytes.toString()));
-  assert.ok(summary.cases.every(item => item.taskStatus === null && item.readFailure === null), 'provider summaries cannot invent historical task facts from reused IDs');
-});
-
-test('synthetic situation facts stay finite and unknown rather than guessing a task or observation', () => {
-  for (const response of [undefined, { kind: 'SUCCESS', value: { status: 'UNKNOWN' } },
-    { kind: 'BUSINESS_REJECTION', code: 'OTHER' }, { kind: 'FAILURE', code: 'TASK_NOT_FOUND' }]) {
-    assert.deepEqual(situation({ stubs: response ? [{ capability: 'tasks.get', response }] : [] }), { taskStatus: null, readFailure: null });
-  }
-  const stubs = [{ capability: 'tasks.get', response: { kind: 'SUCCESS', value: { status: 'OPEN' } } }];
-  assert.deepEqual(situation({ stubs: [...stubs, ...stubs] }), { taskStatus: null, readFailure: null });
-  const summary = evidenceSummary({ reports: [{ id: 'case', label: 'case', ...situation({ stubs }), expected: {},
-    report: { status: 'PASS', mismatches: [] } }] }, []);
-  assert.equal(summary.cases[0].taskStatus, 'OPEN');
-  assert.deepEqual(summary.cases[0].actual.consumption, {}, 'configured synthetic status is not an observed receipt');
-});
-
-test('mismatch receipts keep independent expectations and actual results without advice on errors', () => {
-  const example = { cases: simulationCases('attention').map(row => row.bytes.toString()) }, incorrect = JSON.parse(example.cases[0]);
-  incorrect.expect.outcome.result.classification = 'DONE'; incorrect.expect.consumption.code = 'DONE';
-  const original = JSON.stringify(incorrect), proof = { reports: [{ id: 'open', label: 'Open task', ...situation(incorrect), expected: { classification: 'COMPLETED', code: 'DONE' },
-    report: { status: 'MISMATCH', native: { classification: 'COMPLETED' }, consumption: { status: 'DISPLAYED', code: 'NEEDS_ATTENTION' },
-      mismatches: [{ stage: 'CONSUMPTION', code: 'VALUE_MISMATCH' }] } }] };
-  const summary = evidenceSummary(proof, [original]);
-  assert.equal(summary.cases[0].expected.code, 'DONE');
-  assert.equal(summary.cases[0].actual.consumption.code, 'NEEDS_ATTENTION');
-  assert.equal(summary.cases[0].mismatches[0].code, 'VALUE_MISMATCH');
-  assert.equal(summary.cases[0].taskStatus, 'OPEN');
-  assert.equal(summary.truncated, false);
-  const changing = structuredClone(incorrect);
-  changing.stubs.push({ ...structuredClone(changing.stubs[0]), response: { kind: 'SUCCESS', value: { id: 'sample-task', status: 'COMPLETED' } } });
-  assert.equal(situation(changing).taskStatus, null,
-    'several synthetic reads must not be presented as one known task state');
-  assert.equal(evidenceSummary(proof, [JSON.stringify(changing)]).cases[0].taskStatus, 'OPEN', 'summary uses verified proof projection instead of joining another supplied case');
-  assert.equal(JSON.stringify(summary).includes('synthetic-key'), false);
-  assert.equal(JSON.parse(original).expect.outcome.result.classification, 'DONE');
+test('proof summaries clip case count, labels and mismatch details', () => {
   const clipped = evidenceSummary({ reports: Array.from({ length: 9 }, (_, index) => ({ id: 'case-' + index, label: 'x'.repeat(140), expected: {},
     report: { status: 'PASS', native: {}, consumption: {}, mismatches: Array.from({ length: 9 }, () => ({ code: 'MISMATCH' })) } })) },
     Array.from({ length: 9 }, (_, index) => JSON.stringify({ id: 'case-' + index })));
   assert.equal(clipped.truncated, true);
   assert.equal(clipped.cases.length, 8);
   assert.equal(clipped.cases[0].label.length, 128);
+  assert.equal(clipped.cases[0].mismatches.length, 8);
   assert.ok(businessContext.supported && businessContext.unavailable && businessContext.checking);
 });

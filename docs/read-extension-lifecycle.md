@@ -33,7 +33,7 @@ A saved customization has its own owner-scoped identity, draft version, immutabl
 
 Real execution additionally requires compatible runtime binding and current native host permission. The optional `executionAvailability` projection explains when customizations cannot run. A false value disables activation and rollback; discussion, compilation, checks and customer approval remain valid. `selection.eligible` also reflects current execution authority, so a saved selection is not automatically claimed to be working. Simulation success and customer approval do not certify the real adapter or every future task.
 
-Earlier `ClassifyTask` advice, curated rules, scripted-example discussions and task definition `/1` are retired. Their source, artifact, cases, evidence, history and original operation receipts remain owner-readable; they cannot be resumed, approved, restored or executed as new task programs. Legacy mutation/execution attempts return `410 LEGACY_CUSTOMIZATION_RETIRED`. Stop, safe disable and deletion remain available. Start a new customization for fresh task-creation work; no old approval is converted into write authority. Unlinked legacy discussions remain read-only without a guessed item link.
+The current TaskCompleted definition uses Keir 0.1.0 with the `keir/1`, `keir-dcm/1`, `keir-artifact/1` and `keir-scenario/1` formats. History and restore use the exact saved current revision and its own evidence. Keep databases from earlier builds with their matching app version.
 
 Starting changes from the version in use requires a confirmation. Cancel preserves the current draft. Confirm copies the observed active revision under exact draft/version/generation checks, retains displaced changes and their discussion in History, and clears approval/evidence for the new draft. An old discussion cannot silently write over that new head. Native tasks, earlier effects and receipts are not undone.
 
@@ -49,7 +49,7 @@ Source is bounded UTF-8 text; suites, reports, provider context and responses ha
 
 Cancellation cannot undo a committed operation. After a lost response, inspect the original operation receipt and saved state before explicitly retrying; reload never automatically repeats a paid turn, compile or native write. Restart requires sign-in while saved work and receipts persist. Interrupted native outcomes remain distinct from later reconciliation observations. See [task effects](task-effects.md) for exact process-crash and durability limits; no arbitrary power-loss guarantee is implied.
 
-Before deliberately upgrading an existing installation, stop its owning app and retain a recoverable database backup. Supported migrations preserve native data, legacy bytes and accounting transactionally. Failed upgrades preserve prior state. Application rollback requires matching app source and a pre-upgrade database backup; do not delete/reset data to resolve an unsupported version. Tests use isolated synthetic databases; a user installation migration needs separate authorization.
+Use a fresh data directory when starting the current-contract build alongside an earlier installation. Keep the earlier database and its matching app together. Restore a verified current backup into an isolated directory before switching which data you use. See [running Daymark](running.md#reset-and-restoration).
 
 ## Package and verification
 

@@ -109,7 +109,8 @@ test('real task scenario admission rejects malformed read-error formats without 
   assert.deepEqual(rows(db, nativeTables), Object.fromEntries(nativeTables.map(table => [table, before[table]])));
 
   const independent = structuredClone(desired.cases);
-  independent[0].expect = structuredClone(independent[1].expect);
+  independent[0].expect.outcome.result.status = 'NO_OP';
+  independent[0].expect.consumption.result.status = 'NO_OP';
   const originalExpectations = serialize(independent);
   state = await lifecycle.proposeScenarios('maya', { extensionId, ...input(state), cases: originalExpectations }, () => {});
   assert.throws(() => lifecycle.currentReviewEvidence('maya', savedReviewInput), { status: 409 });
@@ -120,7 +121,8 @@ test('real task scenario admission rejects malformed read-error formats without 
   assert.equal(mismatch.passed, false);
   assert.deepEqual(lifecycle.currentReviewEvidence('maya', revisedReviewInput), mismatch);
   assert.equal(mismatch.reports[0].report.status, 'FAIL');
-  assert.deepEqual(mismatch.reports[0].expected.createdTasks, []);
+  assert.equal(mismatch.reports[0].expected.outcome.result.status, 'NO_OP');
+  assert.equal(mismatch.reports[0].report.native.result.status, 'CREATED');
   assert.equal(mismatch.reports[0].report.observed.effect, 'CONFIRMED');
   assert.ok(mismatch.reports[0].report.mismatches.length > 0);
   assert.deepEqual(lifecycle.source('maya', state.draft.id, extensionId).cases, originalExpectations);
@@ -268,7 +270,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const openai = provider === 'openai';
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: openai ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
-  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v2.md', import.meta.url), 'utf8');
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v3.md', import.meta.url), 'utf8');
   const calls = [], requestBytes = [];
   function respond(openaiContent, anthropicContent, stopReason) {
     const usage = { input_tokens: 10, output_tokens: 5 };
@@ -292,7 +294,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
     if (index === 0) {
       assert.match(instructions, /supportedHooks from discover_catalog for availability/);
       assert.match(instructions, /host-approved domain capability model/);
-      assert.match(instructions, /business parameters, protected bindings, result fields/);
+      assert.match(instructions, /parameter and result types, declared errors/);
       assert.match(instructions, /two positive examples with different source projects and titles/);
       assert.match(instructions, /clarify only genuinely unclear behavior/);
       assert.equal(body.tools.some(tool => /approve|activate|create_task/.test(tool.name)), false);
@@ -301,7 +303,8 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       const discovery = result;
       assert.deepEqual(discovery.supportedHooks.map(hook => hook.id), [TASK_HOOK]);
       assert.equal(discovery.hook, TASK_HOOK);
-      assert.equal(discovery.profile, 'keir-effect/4');
+      assert.equal(JSON.parse(discovery.sourceExample).language, 'keir/1');
+      assert.equal(JSON.parse(discovery.scenarioExample).format, 'keir-scenario/1');
       assert.equal(discovery.conversationContext.messages.at(-1).text, request);
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));

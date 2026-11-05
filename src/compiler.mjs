@@ -6,11 +6,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
-const JAR = 'keir-compiler-java-0.1.0-SNAPSHOT-cli.jar';
-const JAR_BYTES = 8_815_071;
-const JAR_HASH = '631a681210b6e57126f02a916ce5d86ea1797fb1833819799be65a5bdf172d9f';
-const IDENTITY = 'keir-compiler-java/0.1.0-SNAPSHOT';
-const PROFILE = 'keir-read/2';
+const JAR = 'keir-compiler-java-0.1.0-cli.jar';
+const JAR_BYTES = 8_812_623;
+const JAR_HASH = '06330d6dedaf172236f0921de8b85d92d47b77bc6c5d0c937ba3d94393cc934b';
+const IDENTITY = 'keir-compiler-java/0.1.0';
 const SOURCE_LIMIT = 65_536, OUTPUT_LIMIT = 1_048_576, ERROR_LIMIT = 16_384;
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const failures = {
@@ -24,7 +23,7 @@ const failures = {
 const messages = {
   SYNTAX_INVALID: 'The document does not match the required syntax.',
   FIELD_UNKNOWN: 'The document contains an unknown field.',
-  PROFILE_UNSUPPORTED: 'The construct is outside the selected profile.',
+  PROFILE_UNSUPPORTED: 'The construct is outside the supported contract.',
   PIN_MISMATCH: 'The selected model or environment does not match.',
   DCM_INVALID: 'The domain model is invalid.',
   CAPABILITY_UNKNOWN: 'The capability is not declared.',
@@ -33,8 +32,8 @@ const messages = {
   NOMINAL_MISMATCH: 'The nominal types do not match.',
   ENUM_MISMATCH: 'The value does not match the required enum.',
   DATAFLOW_UNAVAILABLE: 'The binding name is unavailable.',
-  CEL_POLICY_DENIED: 'The checked expression is outside the allowed profile.',
-  BUDGET_EXCEEDED: 'A profile admission limit was exceeded.',
+  CEL_POLICY_DENIED: 'The checked expression is outside the allowed contract.',
+  BUDGET_EXCEEDED: 'A contract admission limit was exceeded.',
   TYPE_MISMATCH: 'The value does not match the required type.',
 };
 const structural = new Set(('domain id version fingerprint entrypoint name language steps return record args call let cel literal type when onError '
@@ -98,12 +97,12 @@ function childEnvironment(directory) {
   return env;
 }
 
-function runChild(java, directory, signal, launch, timeoutMs, killGraceMs, profile) {
+function runChild(java, directory, signal, launch, timeoutMs, killGraceMs) {
   return new Promise((resolve, reject) => {
     let child;
     try {
       child = launch(java, ['-Xmx256m', '-XX:-UsePerfData', '-Djava.io.tmpdir=' + directory, '-Duser.home=' + directory,
-        '-jar', join(directory, 'compiler.jar'), join(directory, 'source.input'), join(directory, 'dcm.json'), '--profile=' + profile],
+        '-jar', join(directory, 'compiler.jar'), join(directory, 'source.input'), join(directory, 'dcm.json')],
       { cwd: directory, env: childEnvironment(directory), shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch { reject(failure('COMPILER_UNAVAILABLE')); return; }
     let closed = false, stopped, killTimer;
@@ -165,7 +164,7 @@ export function createCompiler({ modelBytes, javaExecutable } = {}, {
 } = {}) {
   const model = modelBytes instanceof Uint8Array && modelBytes.byteLength <= SOURCE_LIMIT ? Buffer.from(modelBytes) : null;
   const java = javaExecutable ?? (process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java');
-  const configured = model?.length && typeof java === 'string' && java.length > 0
+  const configured = typeof java === 'string' && java.length > 0
     && Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 10_000
     && Number.isInteger(killGraceMs) && killGraceMs > 0 && killGraceMs <= 250;
   let active = false;
@@ -174,9 +173,7 @@ export function createCompiler({ modelBytes, javaExecutable } = {}, {
       if (signal !== undefined && !(signal instanceof AbortSignal)) throw failure('COMPILER_FAILED');
       if (signal?.aborted) throw failure('COMPILER_CANCELLED');
       if (active) throw failure('COMPILER_BUSY');
-      if (!configured && definition === undefined) throw failure('COMPILER_UNAVAILABLE');
-      if (typeof java !== 'string' || !java || !Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 10_000
-          || !Number.isInteger(killGraceMs) || killGraceMs <= 0 || killGraceMs > 250) throw failure('COMPILER_UNAVAILABLE');
+      if (!configured || (!model?.length && definition === undefined)) throw failure('COMPILER_UNAVAILABLE');
       if (!(sourceBytes instanceof Uint8Array)) return { artifact: null, diagnostics: Object.freeze([Object.freeze({ code: 'SYNTAX_INVALID', path: '/source', message: messages.SYNTAX_INVALID })]) };
       if (sourceBytes.byteLength > SOURCE_LIMIT) throw failure('COMPILER_LIMIT');
       const source = Buffer.from(sourceBytes);
@@ -191,21 +188,20 @@ export function createCompiler({ modelBytes, javaExecutable } = {}, {
         if (performance.now() - started >= timeoutMs) throw failure('COMPILER_TIMEOUT');
       }
       try {
-        let selectedModel = model, profile = PROFILE;
+        let selectedModel = model;
         if (requestedDefinition !== undefined) {
           try {
             const { definitionForPins } = await import('./extension-catalog.mjs');
             const trusted = definitionForPins(requestedDefinition.pins);
             if (requestedDefinition.definitionId !== trusted.definitionId || !(requestedDefinition.dcmBytes instanceof Uint8Array)
                 || !Buffer.from(requestedDefinition.dcmBytes).equals(trusted.dcmBytes)) throw 0;
-            selectedModel = Buffer.from(trusted.dcmBytes); profile = trusted.pins.profile;
+            selectedModel = Buffer.from(trusted.dcmBytes);
           } catch { check(); throw failure('COMPILER_UNAVAILABLE'); }
         }
         let jar;
         try {
           const metadata = JSON.parse(utf8.decode(await readBounded(join(distributionDirectory, 'compiler-provenance.json'), SOURCE_LIMIT)));
-          if (metadata.compiler !== IDENTITY || metadata.profile !== 'keir-effect/4'
-            || JSON.stringify(metadata.profiles) !== JSON.stringify(['keir-read/2', 'keir-effect/3', 'keir-effect/4']) || !metadata.profiles.includes(profile) || metadata.artifact?.file !== JAR
+          if (metadata.compiler !== IDENTITY || metadata.artifact?.file !== JAR
             || metadata.artifact.bytes !== JAR_BYTES || metadata.artifact.sha256 !== 'sha256:' + JAR_HASH) throw 0;
           jar = await readBounded(join(distributionDirectory, JAR), JAR_BYTES);
           if (jar.length !== JAR_BYTES || hash(jar) !== JAR_HASH) throw 0;
@@ -216,7 +212,7 @@ export function createCompiler({ modelBytes, javaExecutable } = {}, {
           await writeFile(join(directory, name), bytes, { flag: 'wx', mode: 0o600 });
           check();
         }
-        return await runChild(java, directory, signal, launch, timeoutMs - (performance.now() - started), killGraceMs, profile);
+        return await runChild(java, directory, signal, launch, timeoutMs - (performance.now() - started), killGraceMs);
       } catch (error) {
         if (error instanceof CompilerError) throw error;
         throw failure('COMPILER_FAILED');

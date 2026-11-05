@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openData, taskService, transaction } from '../src/data.mjs';
+import { openData, taskService } from '../src/data.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
-import { digest, json, loadHost, PREVIOUS_TASK_DEFINITION, TASK_DEFINITION, TASK_HOOK } from '../src/extension-catalog.mjs';
+import { digest, json, loadHost, TASK_DEFINITION, TASK_HOOK } from '../src/extension-catalog.mjs';
 import { createTaskDispatcher } from '../src/task-effects.mjs';
-import { consumeTaskEffect, runTaskEffectSimulation, taskEffectScenarioExamples, taskEffectSyntax } from '../src/task-effect-simulation.mjs';
+import { consumeTaskEffect, taskEffectScenarioExamples, taskEffectSyntax } from '../src/task-effect-simulation.mjs';
 import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 
 const owner = 'sam', authorize = () => {};
@@ -16,7 +16,7 @@ function setup(t) {
   const lifecycle = createLifecycle(db, { compiler });
   let dispatcher;
   t.after(async () => { await dispatcher?.close(); db.close(); });
-  return { db, native, compiler, lifecycle, projectId: native.listProjects(owner)[0].id,
+  return { db, native, lifecycle, projectId: native.listProjects(owner)[0].id,
     dispatch() { dispatcher = createTaskDispatcher({ db, lifecycle }); return dispatcher; } };
 }
 
@@ -30,45 +30,27 @@ function ruleAndCases(host, projectId, title) {
   return { program, match, nonmatch, missing };
 }
 
-async function seedPriorSelection({ db, compiler, lifecycle, projectId }, host, title) {
+async function activateCheckedRule({ db, lifecycle, projectId }, host, title) {
   const { program, match } = ruleAndCases(host, projectId, title);
-  const source = Buffer.from(JSON.stringify(program)), cases = [JSON.stringify(match)], suite = json(cases);
-  const { artifact, diagnostics } = await compiler.compile(source, { definition: host });
-  assert.deepEqual(diagnostics, []);
-  const run = await runTaskEffectSimulation({ artifactBytes: artifact, host, scenarios: cases });
-  assert.equal(run.status, 'PASS', JSON.stringify(run));
-
-  const extensionId = 'saved-prior-rule', revisionId = 'saved-prior-revision', evidenceId = 'saved-prior-proof';
-  const versions = { suite: 'task-effects-authored/1', fixtureVersion: 'daymark-task-effect-fixtures/1', simulator: 'daymark-task-effect-simulation/1' };
-  const pins = { ...host.pins, rawSourceDigest: digest(source), compiledSourceDigest: JSON.parse(artifact).sourceDigest,
-    artifactDigest: digest(artifact), suiteDigest: digest(suite), fixture: versions.fixtureVersion };
-  const identity = json(pins);
-  const suiteIdentity = digest(json({ ...versions, simulator: identity, cases: [{ id: match.id, digest: digest(cases[0]) }] }));
-  const proof = json({ identity: { dependencies: pins, ...versions, suiteDigest: suiteIdentity }, reports: run.reports });
-  const bindingPins = json({ ...pins, approvedEvidenceId: evidenceId });
-  // Reconstruct the rows an earlier deployment saved using its actual compiler and simulation.
-  transaction(db, () => {
-    lifecycle.admit(owner, { extensionId, operationId: 'saved-prior-creation', hash: digest(source), name: 'Earlier task rule' }, authorize);
-    db.prepare('INSERT INTO extension_revisions VALUES (?,?,?,?,?)').run(revisionId, owner, 'authored', identity, 'customer');
-    db.prepare('INSERT INTO extension_authored VALUES (?,?,?,?,?,?)').run(revisionId, owner, 'Earlier task rule', source, artifact, suite);
-    db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(revisionId, owner, extensionId);
-    db.prepare('UPDATE extensions SET hook_id=?,draft_version=2,draft_revision_id=? WHERE id=? AND owner_id=?').run(TASK_HOOK, revisionId, extensionId, owner);
-    db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)').run(evidenceId, owner, revisionId, identity, suiteIdentity, proof, 1);
-    db.prepare('INSERT INTO extension_approvals VALUES (?,?,?)').run(owner, revisionId, evidenceId);
-    db.prepare('UPDATE extension_selections SET revision_id=?,generation=1,binding_pins=? WHERE owner_id=? AND hook_id=?').run(revisionId, bindingPins, owner, TASK_HOOK);
-    db.prepare("INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,1,'activate')").run(owner, revisionId);
-  });
+  const { extensionId } = admitTaskDraft(db, lifecycle, { owner });
+  let state = await lifecycle.compile(owner, { extensionId, draftVersion: 0, hookId: TASK_HOOK, source: JSON.stringify(program) }, authorize);
+  state = await lifecycle.proposeScenarios(owner, { extensionId, revisionId: state.revisionId, draftVersion: state.draftVersion, cases: [JSON.stringify(match)] }, authorize);
+  const { revisionId, draftVersion } = state, input = { extensionId, revisionId, draftVersion };
+  state = await lifecycle.simulate(owner, input, authorize);
+  assert.equal(state.evidence.passed, true);
+  const evidenceId = state.evidence.id;
+  state = lifecycle.approve(owner, { ...input, evidenceId }, authorize);
+  lifecycle.activate(owner, { ...input, generation: state.selection.generation, evidenceId }, authorize);
+  const artifact = lifecycle.execution(owner, revisionId, extensionId).artifactBytes;
+  const proof = db.prepare('SELECT payload FROM extension_evidence WHERE id=?').get(evidenceId).payload;
+  const bindingPins = db.prepare('SELECT binding_pins FROM extension_selections WHERE owner_id=? AND hook_id=?').get(owner, TASK_HOOK).binding_pins;
   return { extensionId, revisionId, evidenceId, artifact, proof, bindingPins };
 }
 
-test('an earlier closed task-read result still executes for queued and new completions under its saved approval', async t => {
+test('a checked revision executes queued and new completions and keeps its approval when a draft branches', async t => {
   const fixture = setup(t), { db, native, lifecycle, projectId } = fixture;
-  const host = loadHost(TASK_HOOK, PREVIOUS_TASK_DEFINITION), oldModel = JSON.parse(host.dcmBytes);
-  assert.equal(host.definitionId, 'daymark.task-completed/2');
-  assert.equal(oldModel.capabilities['tasks.get'].version, '1');
-  assert.deepEqual(oldModel.types.Task.fields, { id: 'TaskId', projectId: 'ProjectId', status: 'TaskStatus' });
-  const title = 'Earlier rule follow-up';
-  const saved = await seedPriorSelection(fixture, host, title);
+  const host = loadHost(TASK_HOOK), title = 'Checked rule follow-up';
+  const saved = await activateCheckedRule(fixture, host, title);
   assert.equal(lifecycle.state(owner, saved.extensionId).selection.eligible, true);
   assert.equal(lifecycle.evidence(owner, saved.evidenceId, saved.extensionId).passed, true);
   assert.deepEqual(lifecycle.execution(owner, saved.revisionId, saved.extensionId).artifactBytes, Buffer.from(saved.artifact));
@@ -86,7 +68,6 @@ test('an earlier closed task-read result still executes for queued and new compl
     await dispatcher.wake();
     const status = dispatcher.status(owner, source.id);
     assert.equal(status.state, 'FINISHED');
-    // Success requires the exact three fields of the old model's closed read result.
     assert.deepEqual(status.outcome.result, { status: 'CREATED' });
     assert.equal(status.receipt.effect, 'CONFIRMED');
     assert.equal(native.getTask(owner, status.receipt.value.id).title, title);
@@ -95,11 +76,11 @@ test('an earlier closed task-read result still executes for queued and new compl
   await checkCompletion(queued);
   await checkCompletion(complete('Completed under the retained selection'));
 
-  const selectedPins = JSON.parse(saved.bindingPins), currentPins = loadHost(TASK_HOOK).pins;
+  const selectedPins = JSON.parse(saved.bindingPins);
   const updatePins = db.prepare('UPDATE extension_selections SET binding_pins=? WHERE owner_id=? AND hook_id=?');
   const held = [
     { ...selectedPins, packageIntegrity: 'sha512-' + Buffer.alloc(64, 1).toString('base64') },
-    { ...selectedPins, definitionId: currentPins.definitionId, modelDigest: currentPins.modelDigest, modelRef: currentPins.modelRef },
+    { ...selectedPins, definitionId: 'daymark.task-completed/2' },
   ].map(pins => {
     updatePins.run(json(pins), owner, TASK_HOOK);
     try { return complete('Completion with unsupported execution pins'); }
@@ -129,7 +110,7 @@ test('an earlier closed task-read result still executes for queued and new compl
   assert.equal(draft.evidence, null);
 
   const scenario = JSON.parse(original.cases[0]);
-  scenario.id = 'rechecked-prior-model';
+  scenario.id = 'rechecked-current-model';
   const cases = [JSON.stringify(scenario)];
   draft = await lifecycle.proposeScenarios(owner, { extensionId, revisionId: restartedId, draftVersion: draft.draftVersion, cases }, authorize);
   assert.notEqual(draft.revisionId, restartedId);
@@ -211,7 +192,8 @@ test('a checked title rule copies the exact saved title, skips a different title
   assert.equal(created.state, 'FINISHED');
   assert.equal(created.receipt.effect, 'CONFIRMED');
   assert.equal(native.getTaskForCustomization(owner, created.receipt.value.id).title, title);
-  assert.deepEqual(status(different.id).outcome.result, { status: 'NO_OP' });
+  const skipped = status(different.id);
+  assert.deepEqual(skipped.outcome.result, { status: 'NO_OP' }, JSON.stringify(skipped));
   assert.equal(status(probe.id).outcome.classification, 'BUSINESS_REJECTION');
   assert.deepEqual(status(probe.id).outcome.error, { code: 'TASK_NOT_FOUND', path: '/steps/3' });
   assert.equal(status(overflow.id).outcome.classification, 'LIMIT_EXCEEDED');

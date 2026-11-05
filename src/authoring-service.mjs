@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, transaction } from './data.mjs';
-import { loadHost, TASK_HOOK, TASK_DEFINITION, taskDefinitionIds, digest, json } from './extension-catalog.mjs';
+import { loadHost, TASK_HOOK, TASK_DEFINITION, digest, json } from './extension-catalog.mjs';
 import { readAuthoringConfig } from './authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
 import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './authoring-agent.mjs';
@@ -66,7 +66,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   transaction(db, () => {
     for (const row of db.prepare("SELECT * FROM authoring_conversations WHERE status IN ('RUNNING','CANCELLING')").all()) {
       const value = decode(row);
-      if (!taskDefinitionIds.includes(value.state.definitionId)) continue;
+      if (value.state.definitionId !== TASK_DEFINITION || !linkFor(row.owner_id, row.id)) continue;
       value.state.status = 'BLOCKED'; value.state.lastResult = { status: 'BLOCKED', code: 'RUN_INTERRUPTED' };
       value.state.continuation = undefined; value.state.pending = undefined; value.state.evidenceHandle = null;
       value.view.code = 'RUN_INTERRUPTED'; value.view.review = null;
@@ -96,9 +96,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       next: rows.length > page.length ? cursor({ scope, id: last.id, createdAt: last.created_at }) : null };
   }
   function messagePage(owner, id, before, maxBytes = 262144) {
-    if (!rowFor(owner, id)) throw error(404, 'STALE_CONVERSATION');
-    const link = linkFor(owner, id);
-    if (link) lifecycle.assertAvailable(owner, link.extension_id);
+    const row = rowFor(owner, id), link = linkFor(owner, id);
+    if (!row || !link || decode(row).state.definitionId !== TASK_DEFINITION) throw error(404, 'STALE_CONVERSATION');
+    lifecycle.assertAvailable(owner, link.extension_id);
     const scope = encode(['messages', owner, id]);
     const anchor = before === undefined ? null : parseCursor(before, scope);
     if (anchor && (Object.keys(anchor).length !== 3 || !integer(anchor.sequence) || typeof anchor.inclusive !== 'boolean'
@@ -177,13 +177,14 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   }
   function dto(row, bounded = true) {
     const { state, operations, view } = decode(row), link = row.extension_id ? { extension_id: row.extension_id, purpose: row.purpose } : linkFor(row.owner_id, row.id);
-    const current = link ? lifecycle.state(row.owner_id, link.extension_id) : lifecycle.collection(row.owner_id);
+    if (!link || state.definitionId !== TASK_DEFINITION) throw error(404, 'STALE_CONVERSATION');
+    const current = lifecycle.state(row.owner_id, link.extension_id);
     let review = view.review ?? null;
     if (review) review = { revisionId: review.revisionId, draftVersion: review.draftVersion, suiteDigest: review.suiteDigest,
-      evidenceId: review.evidenceId, eligible: state.definitionId === TASK_DEFINITION && !!link && review.eligible === true && same(review, draftHandles(current)) };
+      evidenceId: review.evidenceId, eligible: review.eligible === true && same(review, draftHandles(current)) };
     const result = { id: row.id, version: row.version, status: row.status, runId: row.run_id,
       operation: operation(operations.at(-1).id, operations.at(-1).runId, operations.at(-1).version), messages: [], messagesBefore: null,
-      extensionId: link?.extension_id ?? null, purpose: link?.purpose ?? null, retired: state.definitionId !== TASK_DEFINITION,
+      extensionId: link.extension_id, purpose: link.purpose, retired: false,
       code: view.code ? codeFor(view.code) : null, review, draft: state.handles ?? { revisionId: null, draftVersion: 0, suiteDigest: null },
       selection: { revisionId: current.selection.revision?.id ?? null, generation: current.selection.generation } };
     if (bounded) {
@@ -200,8 +201,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const filter = extensionId === undefined ? '' : ' AND l.extension_id=?';
     const args = [owner, ...(extensionId === undefined ? [] : [extensionId])];
     if (anchor && (Object.keys(anchor).length !== 3 || !token(anchor.id) || !integer(anchor.createdAt)
-        || !db.prepare(`SELECT 1 FROM authoring_conversations c LEFT JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE c.owner_id=?${filter} AND c.id=? AND c.created_at=?`).get(...args, anchor.id, anchor.createdAt))) throw error(400, 'INVALID_TOOL_ARGUMENTS');
-    const query = `SELECT c.* FROM authoring_conversations c LEFT JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE c.owner_id=?${filter} AND (l.extension_id IS NULL OR EXISTS(SELECT 1 FROM extensions e WHERE e.owner_id=l.owner_id AND e.id=l.extension_id AND e.deleted_at IS NULL))`;
+        || !db.prepare(`SELECT 1 FROM authoring_conversations c JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE c.owner_id=?${filter} AND c.id=? AND c.created_at=?`).get(...args, anchor.id, anchor.createdAt))) throw error(400, 'INVALID_TOOL_ARGUMENTS');
+    const query = `SELECT c.*,l.extension_id,l.purpose FROM authoring_conversations c JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE c.owner_id=?${filter} AND EXISTS(SELECT 1 FROM extensions e WHERE e.owner_id=l.owner_id AND e.id=l.extension_id AND e.deleted_at IS NULL)`;
     const rows = db.prepare(`${query}${anchor ? ' AND (c.created_at<? OR (c.created_at=? AND c.id<?))' : ''} ORDER BY c.created_at DESC,c.id DESC LIMIT 21`)
       .all(...args, ...(anchor ? [anchor.createdAt, anchor.createdAt, anchor.id] : []));
     const page = rows.slice(0, 20), last = page.at(-1);
@@ -210,7 +211,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const current = saved?.definitionId === TASK_DEFINITION && (running(latest)
       || item.retired === false && same(saved.handles, draftHandles(item)) && transportMatches(saved)) ? dto(latest, false) : null;
     const result = { availability: availability(), conversations: page.map(row => ({ id: row.id, version: row.version, status: row.status,
-      extensionId: linkFor(owner, row.id)?.extension_id ?? null, purpose: linkFor(owner, row.id)?.purpose ?? null,
+      extensionId: row.extension_id, purpose: row.purpose,
       runId: row.run_id, creationOperationId: row.creation_operation_id, operationId: decode(row).operations.at(-1).id })),
     next: rows.length > page.length ? cursor({ scope, id: last.id, createdAt: last.created_at }) : null,
     current };
@@ -594,15 +595,14 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   function cancel(owner, id, input, lease) {
     assertLease(lease);
     if (!object(input) || Object.keys(input).length !== 2 || !token(input.runId) || !integer(input.expectedVersion)) throw error(400, 'INVALID_TOOL_ARGUMENTS');
-    const row = rowFor(owner, id); if (!row) throw error(404, 'STALE_CONVERSATION');
-    const link = linkFor(owner, id);
-    if (link) lifecycle.assertAvailable(owner, link.extension_id);
+    const row = rowFor(owner, id), link = linkFor(owner, id);
+    if (!row || !link || decode(row).state.definitionId !== TASK_DEFINITION) throw error(404, 'STALE_CONVERSATION');
+    lifecycle.assertAvailable(owner, link.extension_id);
     if (row.run_id !== input.runId || row.version !== input.expectedVersion) throw error(409, 'STALE_CONVERSATION');
     if (['RUNNING', 'CANCELLING'].includes(row.status)) {
       const running = live.get(input.runId);
-      const status = !running && decode(row).state.definitionId !== TASK_DEFINITION ? 'CANCELLED' : 'CANCELLING';
-      db.prepare('UPDATE authoring_conversations SET cancel_requested=1,status=? WHERE id=? AND owner_id=? AND run_id=? AND version=?')
-        .run(status, id, owner, input.runId, input.expectedVersion);
+      db.prepare("UPDATE authoring_conversations SET cancel_requested=1,status='CANCELLING' WHERE id=? AND owner_id=? AND run_id=? AND version=?")
+        .run(id, owner, input.runId, input.expectedVersion);
       running?.controller.abort();
     }
     return read(owner, id);

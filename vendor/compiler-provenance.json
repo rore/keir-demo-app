@@ -1,40 +1,25 @@
 {
   "schema": "keir-demo-compiler-distribution/1",
-  "compiler": "keir-compiler-java/0.1.0-SNAPSHOT",
-  "profile": "keir-effect/4",
-  "profiles": [
-    "keir-read/2",
-    "keir-effect/3",
-    "keir-effect/4"
-  ],
+  "compiler": "keir-compiler-java/0.1.0",
+  "status": "verified-release",
+  "release": "v0.1.0",
   "artifact": {
-    "file": "keir-compiler-java-0.1.0-SNAPSHOT-cli.jar",
-    "sha256": "sha256:631a681210b6e57126f02a916ce5d86ea1797fb1833819799be65a5bdf172d9f",
-    "bytes": 8815071
+    "file": "keir-compiler-java-0.1.0-cli.jar",
+    "sha256": "sha256:06330d6dedaf172236f0921de8b85d92d47b77bc6c5d0c937ba3d94393cc934b",
+    "bytes": 8812623
+  },
+  "distribution": {
+    "file": "keir-compiler-cli-0.1.0.zip",
+    "sha256": "sha256:1b6f83635c6850a77159c1649cf7922597d326b2d3573f11d7cc178e5de54260"
   },
   "source": {
     "repository": "https://github.com/rore/keir-core",
-    "recorded_producer_revision": "84763506ad501ca0c6cb01103c8053803ad8adf1",
-    "integrated_revision": "9be8eb4af5694e14ab3efdc84c111c9449c0e68f"
+    "revision": "e5e2eb7f4bc4cc6ccd2817511793605eef88a384"
   },
   "java": {
     "bytecode_minimum": 21,
     "class_major": 65,
     "qualified_runtime": "SapMachine 21.0.12+8-LTS"
   },
-  "dependencies": {
-    "count": 19,
-    "metadata": "compiler-NOTICES.txt",
-    "preserved_original_notice_count": 5
-  },
-  "qualification": {
-    "scope": "Reviewed compiler/Java/Node host-bound contract conformance; native application guarantees are verified separately.",
-    "uncompressed_third_party_payloads_match_previous_distribution": true,
-    "byte_identical_rebuild_claimed": false
-  },
-  "release": {
-    "qualified_use_scope": "User-authorized internal demo consumption. No repository visibility or public package release change is part of this qualification.",
-    "project_license_context": "Repository README: license selection and public release are pending; no open-source license grant is implied. This is not an internal-consumption approval gate.",
-    "third_party_materials": "Preserve the declared dependency metadata and available original license/notice payloads; normal third-party terms remain applicable."
-  }
+  "notices": "compiler-notices/THIRD-PARTY.txt"
 }

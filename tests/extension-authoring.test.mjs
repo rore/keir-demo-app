@@ -2,9 +2,11 @@ import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
+import { createLifecycle } from '../src/extension-lifecycle.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { digest, TASK_HOOK, TASK_DEFINITION } from '../src/extension-catalog.mjs';
 import { taskCustomizationFixture, compileTaskCustomization } from './fixtures/task-customization.mjs';
+import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 
 const origin = 'http://127.0.0.1:32123';
 const fixture = taskCustomizationFixture(), source = fixture.source;
@@ -99,8 +101,7 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   const initial = (await callApi('extensions')).json();
   const baselineCount = count(db, "SELECT count(*) n FROM extensions WHERE owner_id='maya'");
   assert.equal((await callApi('authoring')).json().current, null);
-  assert.equal((await callApi(`authoring?extensionId=${initial.items[0].extension.id}`)).json().current, null);
-  assert.equal((await callApi(`extensions/${initial.items[0].extension.id}`)).json().extension.id, initial.items[0].extension.id);
+  assert.deepEqual(initial.items, []);
   assert.equal(count(db, "SELECT count(*) n FROM extensions WHERE owner_id='maya'"), baselineCount, 'GET reads allocate nothing');
 
   const legacyFiveField = { conversationId: null, operationId: 'old-request', text: 'Help me.', expectedVersion: 0, expectedDraftVersion: 0 };
@@ -127,7 +128,7 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   assert.equal(discovery.purpose, 'CREATE');
   assert.equal(discovery.currentDraft.revisionId, null);
   assert.equal(discovery.currentDraft.draftVersion, 0);
-  assert.equal(discovery.currentProposal, null, 'new creation does not inherit the seeded advice');
+  assert.equal(discovery.currentProposal, null, 'new creation does not inherit a proposal');
   assert.ok(discovery.supportedHooks.some(item => item.id === TASK_HOOK));
   assert.equal(discovery.supportedHooks.some(item => item.id === 'ClassifyTask'), false);
 
@@ -181,16 +182,19 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   assert.equal(mismatch.statusCode, 404);
 });
 
-test('foreign targets fail and an unlinked legacy chat stays readable but cannot resume', async t => {
+test('foreign targets and unlinked conversations are rejected', async t => {
   const { db, call: callApi, login } = await api(t);
+  const lifecycle = createLifecycle(db);
+  const { extensionId: ownId } = admitTaskDraft(db, lifecycle);
+  const { extensionId: foreignId } = admitTaskDraft(db, lifecycle, { owner: 'leo' });
   await login();
   const own = await callApi('extensions');
   assert.equal(own.statusCode, 200);
-  const ownId = own.json().items[0].extension.id;
+  assert.deepEqual(own.json().items.map(item => item.extension.id), [ownId]);
   await login('leo');
   const foreign = await callApi('extensions');
   assert.equal(foreign.statusCode, 200);
-  const foreignId = foreign.json().items[0].extension.id;
+  assert.deepEqual(foreign.json().items.map(item => item.extension.id), [foreignId]);
   await login('maya');
   const before = { extensions: count(db, "SELECT count(*) n FROM extensions WHERE owner_id='maya'"),
     conversations: count(db, "SELECT count(*) n FROM authoring_conversations WHERE owner_id='maya'"),
@@ -208,15 +212,13 @@ test('foreign targets fail and an unlinked legacy chat stays readable but cannot
     'legacy-run', 'AWAITING_USER', 0, 123, JSON.stringify({ handles: { revisionId: null, draftVersion: 0, suiteDigest: null } }),
     JSON.stringify([{ id: 'legacy-operation', runId: 'legacy-run', version: 1 }]), JSON.stringify({ messages: [], code: null, review: null }), 123);
   const read = await callApi('authoring/conversations/legacy-chat');
-  assert.equal(read.statusCode, 200);
-  assert.equal(read.json().extensionId, null);
-  assert.equal(read.json().purpose, null);
+  assert.equal(read.statusCode, 404);
   const resume = await callApi('authoring/turn', start('legacy-resume', 'Continue old work.', { kind: 'resume', extensionId: ownId }, {
     conversationId: 'legacy-chat', expectedVersion: 1,
   }));
   assert.equal(resume.statusCode, 410); assert.equal(resume.json().code, 'LEGACY_CUSTOMIZATION_RETIRED');
   assert.equal((await callApi('authoring')).json().current, null);
-  assert.equal((await callApi(`authoring?extensionId=${ownId}`)).json().current, null);
+  assert.notEqual((await callApi(`authoring?extensionId=${ownId}`)).json().current?.id, 'legacy-chat');
 });
 
 test('unsupported requests wait for a decision; refusal leaves no program, assent can compile only a draft', async t => {

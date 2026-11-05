@@ -1,217 +1,161 @@
 import { DatabaseSync, backup } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync } from 'node:fs';
-import { resolve, join } from 'node:path';
-import { loadCatalog, loadHost, digest, json, TASK_HOOK, taskDefinitionIds } from './extension-catalog.mjs';
+import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync, readSync,
+  lstatSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
+import { resolve, join, dirname } from 'node:path';
+import { loadHost, digest, json, TASK_HOOK } from './extension-catalog.mjs';
 import { taskEffectProofMatches } from './task-effect-simulation.mjs';
 
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
   'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
 const authoringHistoryTables = ['authoring_dispatches', 'authoring_messages', 'authoring_operations'];
 const taskEffectTables = ['task_effect_receipts', 'task_completion_events'];
-function seedLifecycle(db) {
-  let catalog = [];
-  try { catalog = loadCatalog(); } catch { /* Invalid deployment leaves native tasks usable with no advice. */ }
-  const scoped = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extensions'").get();
-  const hookScoped = db.prepare('PRAGMA table_info(extension_selections)').all().some(column => column.name === 'hook_id');
-  for (const user of USERS) {
-    if (!scoped) db.prepare('INSERT INTO extension_states VALUES (?, 0, NULL)').run(user.id);
-    const template = catalog.find(item => item.id === (user.id === 'maya' ? 'pending' : user.id === 'leo' ? 'attention' : ''));
-    const revisionId = template ? randomUUID() : null;
-    if (template) {
-      db.prepare('INSERT INTO extension_revisions VALUES (?, ?, ?, ?, ?)').run(revisionId, user.id, template.id, template.identity, 'operator');
-      if (scoped) {
-        const extensionId = randomUUID();
-        db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,creation_operation_id,creation_hash,draft_version,draft_revision_id) VALUES (?,?,?,?,?,NULL,NULL,0,NULL)').run(extensionId, user.id, 'ClassifyTask', 'Task advice (saved setup)', Date.now());
-        db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(revisionId, user.id, extensionId);
-      }
-    }
-    if (hookScoped) {
-      db.prepare("INSERT INTO extension_selections(owner_id,hook_id,revision_id,generation) VALUES (?,'ClassifyTask',?,?)").run(user.id, revisionId, template ? 1 : 0);
-      db.prepare("INSERT INTO extension_selections(owner_id,hook_id,revision_id,generation) VALUES (?,'TaskCompleted',NULL,0)").run(user.id);
-    } else db.prepare('INSERT INTO extension_selections VALUES (?, ?, ?)').run(user.id, revisionId, template ? 1 : 0);
-    if (template) db.prepare('INSERT INTO extension_history(owner_id, revision_id, generation, operation) VALUES (?, ?, 1, ?)').run(user.id, revisionId, 'operator');
-  }
-}
+const schemaVersion = 10;
+const schema = `
+  CREATE TABLE users(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
+  CREATE TABLE projects(
+    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80),
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE(id, owner_id)
+  ) STRICT;
+  CREATE TABLE tasks(
+    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT NOT NULL,
+    title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 120),
+    notes TEXT NOT NULL CHECK(length(notes) <= 4000),
+    status TEXT NOT NULL CHECK(status IN ('open', 'completed')),
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT,
+    tags TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tags) AND json_type(tags) = 'array' AND json_array_length(tags) <= 8),
+    FOREIGN KEY(project_id, owner_id) REFERENCES projects(id, owner_id),
+    CHECK((status = 'open' AND completed_at IS NULL) OR (status = 'completed' AND completed_at IS NOT NULL))
+  ) STRICT;
+  CREATE INDEX tasks_by_project ON tasks(owner_id, project_id, created_at);
+  CREATE UNIQUE INDEX tasks_owner ON tasks(id,owner_id);
 
-function migrateLifecycle(db) {
-  transaction(db, () => {
-    db.exec(`
-      CREATE TABLE extension_revisions(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), template_id TEXT NOT NULL,
-        identity TEXT NOT NULL, provenance TEXT NOT NULL CHECK(provenance IN ('operator','customer')), UNIQUE(id,owner_id)) STRICT;
-      CREATE TABLE extension_states(owner_id TEXT PRIMARY KEY REFERENCES users(id), draft_version INTEGER NOT NULL CHECK(draft_version>=0),
-        draft_id TEXT, FOREIGN KEY(draft_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
-      CREATE TABLE extension_selections(owner_id TEXT PRIMARY KEY REFERENCES users(id), revision_id TEXT,
-        generation INTEGER NOT NULL CHECK(generation>=0), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
-      CREATE TABLE extension_evidence(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT NOT NULL,
-        identity TEXT NOT NULL, suite_identity TEXT NOT NULL, payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB))<=131072),
-        passed INTEGER NOT NULL CHECK(passed IN (0,1)), UNIQUE(id,owner_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
-      CREATE TABLE extension_approvals(owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT NOT NULL, evidence_id TEXT NOT NULL,
-        PRIMARY KEY(owner_id,revision_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
-        FOREIGN KEY(evidence_id,owner_id) REFERENCES extension_evidence(id,owner_id)) STRICT;
-      CREATE TABLE extension_history(id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT,
-        generation INTEGER NOT NULL, operation TEXT NOT NULL, FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
-      CREATE INDEX extension_history_owner ON extension_history(owner_id,id);
-      CREATE INDEX extension_evidence_revision ON extension_evidence(owner_id,revision_id);
-    `);
-    seedLifecycle(db);
-    db.exec('PRAGMA user_version = 2');
-  });
-}
+  CREATE TABLE extension_revisions(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), template_id TEXT NOT NULL,
+    identity TEXT NOT NULL, provenance TEXT NOT NULL CHECK(provenance IN ('operator','customer')), UNIQUE(id,owner_id)) STRICT;
 
-function migrateAuthored(db) {
-  transaction(db, () => {
-    db.exec(`CREATE TABLE extension_authored(
-      revision_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, label TEXT NOT NULL CHECK(length(label) BETWEEN 1 AND 80),
-      source BLOB NOT NULL CHECK(length(source) BETWEEN 1 AND 65536),
-      artifact BLOB NOT NULL CHECK(length(artifact) BETWEEN 1 AND 1048576),
-      suite TEXT CHECK(suite IS NULL OR length(CAST(suite AS BLOB))<=131072),
-      FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
-      PRAGMA user_version = 3;`);
-  });
-}
+  CREATE TABLE extension_evidence(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT NOT NULL,
+    identity TEXT NOT NULL, suite_identity TEXT NOT NULL, payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB))<=131072),
+    passed INTEGER NOT NULL CHECK(passed IN (0,1)), UNIQUE(id,owner_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
+  CREATE TABLE extension_approvals(owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT NOT NULL, evidence_id TEXT NOT NULL,
+    PRIMARY KEY(owner_id,revision_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
+    FOREIGN KEY(evidence_id,owner_id) REFERENCES extension_evidence(id,owner_id)) STRICT;
+  CREATE TABLE extension_history(id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id TEXT NOT NULL REFERENCES users(id), revision_id TEXT,
+    generation INTEGER NOT NULL, operation TEXT NOT NULL, FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
+  CREATE INDEX extension_history_owner ON extension_history(owner_id,id);
+  CREATE INDEX extension_evidence_revision ON extension_evidence(owner_id,revision_id);
 
-function migrateAuthoring(db) {
-  transaction(db, () => {
-    db.exec(`
-      CREATE TABLE authoring_budget(id INTEGER PRIMARY KEY CHECK(id=1),
-        reserved_micros INTEGER NOT NULL CHECK(reserved_micros BETWEEN 0 AND 9007199254740991)) STRICT;
-      INSERT INTO authoring_budget VALUES (1, 0);
-      CREATE TABLE authoring_conversations(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
-        creation_operation_id TEXT NOT NULL, version INTEGER NOT NULL CHECK(version BETWEEN 0 AND 9007199254740991),
-        run_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('IDLE','RUNNING','CANCELLING','AWAITING_USER','REVIEW_AVAILABLE','CANCELLED','BLOCKED','INTERRUPTED')),
-        cancel_requested INTEGER NOT NULL CHECK(cancel_requested IN (0,1)), updated_at INTEGER NOT NULL CHECK(updated_at>=0),
-        state TEXT NOT NULL, operations TEXT NOT NULL, view TEXT NOT NULL, UNIQUE(id,owner_id), UNIQUE(owner_id,creation_operation_id),
-        CHECK(length(CAST(state AS BLOB))+length(CAST(operations AS BLOB))+length(CAST(view AS BLOB))<=262144),
-        CHECK(length(CAST(view AS BLOB))<=131072), CHECK(length(CAST(operations AS BLOB))<=16384)) STRICT;
-      CREATE INDEX authoring_conversations_owner ON authoring_conversations(owner_id,updated_at);
-      PRAGMA user_version = 4;
-    `);
-  });
-}
+  CREATE TABLE extension_authored(
+    revision_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, label TEXT NOT NULL CHECK(length(label) BETWEEN 1 AND 80),
+    source BLOB NOT NULL CHECK(length(source) BETWEEN 1 AND 65536),
+    artifact BLOB NOT NULL CHECK(length(artifact) BETWEEN 1 AND 1048576),
+    suite TEXT CHECK(suite IS NULL OR length(CAST(suite AS BLOB))<=131072),
+    FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
 
-function migrateExtensions(db) {
-  transaction(db, () => {
-    db.exec(`
-      CREATE TABLE extensions(
-        id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), hook_id TEXT,
-        name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80), created_at INTEGER NOT NULL CHECK(created_at>=0),
-        creation_operation_id TEXT, creation_hash TEXT, draft_version INTEGER NOT NULL CHECK(draft_version>=0), draft_revision_id TEXT,
-        UNIQUE(id,owner_id), UNIQUE(owner_id,creation_operation_id),
-        FOREIGN KEY(draft_revision_id,owner_id,id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id)
-      ) STRICT;
-      CREATE TABLE extension_revision_links(
-        revision_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, extension_id TEXT NOT NULL,
-        UNIQUE(revision_id,owner_id,extension_id),
-        FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
-        FOREIGN KEY(extension_id,owner_id) REFERENCES extensions(id,owner_id)
-      ) STRICT;
-      CREATE TABLE extension_conversation_links(
-        conversation_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, extension_id TEXT NOT NULL,
-        purpose TEXT NOT NULL CHECK(purpose IN ('CREATE','REVISE')), base_revision_id TEXT, base_generation INTEGER,
-        FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id),
-        FOREIGN KEY(extension_id,owner_id) REFERENCES extensions(id,owner_id),
-        FOREIGN KEY(base_revision_id,owner_id,extension_id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id)
-      ) STRICT;
-      CREATE INDEX extension_items_owner ON extensions(owner_id,created_at);
-      CREATE INDEX extension_revisions_item ON extension_revision_links(owner_id,extension_id);
-      CREATE INDEX extension_conversations_item ON extension_conversation_links(owner_id,extension_id);
-    `);
-    for (const state of db.prepare('SELECT * FROM extension_states').all()) {
-      const revisions = db.prepare('SELECT id FROM extension_revisions WHERE owner_id=?').all(state.owner_id);
-      if (!revisions.length) {
-        if (state.draft_id) throw new Error('Invalid legacy draft lineage');
-        continue;
-      }
-      const id = randomUUID();
-      db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,creation_operation_id,creation_hash,draft_version,draft_revision_id) VALUES (?,?,?,?,?,NULL,NULL,0,NULL)').run(id, state.owner_id, 'ClassifyTask', 'Task advice (saved setup)', Date.now());
-      for (const row of revisions) db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(row.id, state.owner_id, id);
-      db.prepare('UPDATE extensions SET draft_version=?,draft_revision_id=? WHERE id=?').run(state.draft_version, state.draft_id, id);
-    }
-    for (const row of db.prepare('SELECT * FROM authoring_conversations').all()) {
-      let state, view;
-      try { state = JSON.parse(row.state); view = JSON.parse(row.view); } catch { continue; }
-      const ids = [state.handles?.revisionId, state.evidenceHandle?.revisionId, view.review?.revisionId].filter(value => value !== null && value !== undefined);
-      if (!ids.length || ids.some(id => typeof id !== 'string')) continue;
-      const links = ids.map(id => db.prepare('SELECT extension_id FROM extension_revision_links WHERE owner_id=? AND revision_id=?').get(row.owner_id, id));
-      if (links.some(link => !link) || new Set(links.map(link => link.extension_id)).size !== 1) continue;
-      const proofs = [state.evidenceHandle, view.review].filter(value => value?.evidenceId);
-      if (proofs.some(proof => !db.prepare('SELECT 1 FROM extension_evidence WHERE owner_id=? AND id=? AND revision_id=?').get(row.owner_id, proof.evidenceId, proof.revisionId))) continue;
-      db.prepare('INSERT INTO extension_conversation_links VALUES (?,?,?,?,?,NULL)').run(row.id, row.owner_id, links[0].extension_id, 'REVISE', ids[0]);
-    }
-    db.exec('DROP TABLE extension_states');
-    if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Extension migration failed integrity checks');
-    db.exec('PRAGMA user_version = 5');
-  });
-}
+  CREATE TABLE authoring_budget(id INTEGER PRIMARY KEY CHECK(id=1),
+    reserved_micros INTEGER NOT NULL CHECK(reserved_micros BETWEEN 0 AND 9007199254740991)) STRICT;
 
-function migrateAuthoringHistory(db) {
-  // Rebuilding adds a required timestamp without inventing a default for old rows.
-  db.exec('PRAGMA foreign_keys=OFF');
-  try {
-    transaction(db, () => {
-      db.exec(`CREATE TABLE authoring_conversations_v6(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
-        creation_operation_id TEXT NOT NULL, version INTEGER NOT NULL CHECK(version BETWEEN 0 AND 9007199254740991),
-        run_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('IDLE','RUNNING','CANCELLING','AWAITING_USER','REVIEW_AVAILABLE','CANCELLED','BLOCKED','INTERRUPTED')),
-        cancel_requested INTEGER NOT NULL CHECK(cancel_requested IN (0,1)), updated_at INTEGER NOT NULL CHECK(updated_at>=0),
-        state TEXT NOT NULL, operations TEXT NOT NULL, view TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),
-        UNIQUE(id,owner_id), UNIQUE(owner_id,creation_operation_id),
-        CHECK(length(CAST(state AS BLOB))+length(CAST(operations AS BLOB))+length(CAST(view AS BLOB))<=262144),
-        CHECK(length(CAST(view AS BLOB))<=131072), CHECK(length(CAST(operations AS BLOB))<=16384)) STRICT;
-        CREATE TABLE authoring_messages(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL,
-          sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 9007199254740991), message_id TEXT NOT NULL,
-          payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB))<=131072),
-          PRIMARY KEY(conversation_id,sequence), UNIQUE(conversation_id,message_id),
-          FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id)) STRICT;
-        CREATE TABLE authoring_operations(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL, operation_id TEXT NOT NULL,
-          body_hash TEXT NOT NULL, run_id TEXT NOT NULL, admitted_version INTEGER NOT NULL CHECK(admitted_version BETWEEN 0 AND 9007199254740991),
-          PRIMARY KEY(conversation_id,operation_id), UNIQUE(conversation_id,owner_id,run_id),
-          FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id)) STRICT;
-        CREATE TABLE authoring_dispatches(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL, run_id TEXT NOT NULL,
-          ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 9007199254740991), kind TEXT NOT NULL CHECK(kind IN ('provider','tool')),
-          call_id TEXT, reserved_micros INTEGER NOT NULL CHECK(reserved_micros BETWEEN 0 AND 9007199254740991),
-          outcome TEXT CHECK(outcome IN ('SUCCESS','REJECTED','UNKNOWN')),
-          PRIMARY KEY(conversation_id,run_id,ordinal), UNIQUE(conversation_id,run_id,call_id),
-          FOREIGN KEY(conversation_id,owner_id,run_id) REFERENCES authoring_operations(conversation_id,owner_id,run_id)) STRICT;`);
-      const insertMessage = db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)');
-      const insertOperation = db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)');
-      const insertDispatch = db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)');
-      for (const row of db.prepare('SELECT * FROM authoring_conversations ORDER BY rowid').all()) {
-        const state = JSON.parse(row.state), operations = JSON.parse(row.operations), view = JSON.parse(row.view);
-        if (!state || typeof state !== 'object' || Array.isArray(state) || !Number.isSafeInteger(state.createdAt) || state.createdAt < 0
-            || !Array.isArray(operations) || !view || typeof view !== 'object' || Array.isArray(view) || !Array.isArray(view.messages)
-            || state.journal !== undefined && !Array.isArray(state.journal)) throw new Error('Invalid legacy authoring history; no data was reset.');
-        for (const [index, value] of view.messages.entries()) {
-          if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string') throw new Error('Invalid legacy authoring message.');
-          insertMessage.run(row.id, row.owner_id, index + 1, value.id, JSON.stringify(value));
-        }
-        for (const item of operations) insertOperation.run(row.id, row.owner_id, item.id, item.hash, item.runId, item.version);
-        for (const item of state.journal ?? []) insertDispatch.run(row.id, row.owner_id, item.runId, item.ordinal,
-          item.kind, item.callId ?? null, item.reservedMicros, item.outcome ?? null);
-        delete state.journal; delete state.inputIds; delete state.callIds;
-        view.messages = [];
-        db.prepare('INSERT INTO authoring_conversations_v6 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(row.id, row.owner_id,
-          row.creation_operation_id, row.version, row.run_id, row.status, row.cancel_requested, row.updated_at,
-          JSON.stringify(state), JSON.stringify(operations.slice(-1)), JSON.stringify(view), state.createdAt);
-      }
-      db.exec(`DROP TABLE authoring_conversations;
-        ALTER TABLE authoring_conversations_v6 RENAME TO authoring_conversations;
-        CREATE INDEX authoring_conversations_owner ON authoring_conversations(owner_id,created_at,id);
-        CREATE TRIGGER authoring_created_at_immutable BEFORE UPDATE OF created_at ON authoring_conversations
-          WHEN NEW.created_at IS NOT OLD.created_at BEGIN SELECT RAISE(ABORT, 'Authoring creation time is immutable'); END;
-        CREATE TRIGGER authoring_dispatch_immutable BEFORE UPDATE ON authoring_dispatches
-          WHEN OLD.outcome IS NOT NULL OR NEW.conversation_id IS NOT OLD.conversation_id OR NEW.owner_id IS NOT OLD.owner_id
-            OR NEW.run_id IS NOT OLD.run_id OR NEW.ordinal IS NOT OLD.ordinal OR NEW.kind IS NOT OLD.kind
-            OR NEW.call_id IS NOT OLD.call_id OR NEW.reserved_micros IS NOT OLD.reserved_micros OR NEW.outcome IS NULL
-          BEGIN SELECT RAISE(ABORT, 'Authoring dispatch is immutable'); END;`);
-      if (db.prepare('PRAGMA foreign_key_check').all().length || db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok') throw new Error('Authoring migration failed integrity checks');
-      db.exec('PRAGMA user_version=6');
-    });
-  } finally {
-    db.exec('PRAGMA foreign_keys=ON');
-    if (db.prepare('PRAGMA foreign_keys').get().foreign_keys !== 1) throw new Error('Foreign keys are required.');
-  }
-}
+  CREATE TABLE authoring_conversations(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
+    creation_operation_id TEXT NOT NULL, version INTEGER NOT NULL CHECK(version BETWEEN 0 AND 9007199254740991),
+    run_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('IDLE','RUNNING','CANCELLING','AWAITING_USER','REVIEW_AVAILABLE','CANCELLED','BLOCKED','INTERRUPTED')),
+    cancel_requested INTEGER NOT NULL CHECK(cancel_requested IN (0,1)), updated_at INTEGER NOT NULL CHECK(updated_at>=0),
+    state TEXT NOT NULL, operations TEXT NOT NULL, view TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),
+    UNIQUE(id,owner_id), UNIQUE(owner_id,creation_operation_id),
+    CHECK(length(CAST(state AS BLOB))+length(CAST(operations AS BLOB))+length(CAST(view AS BLOB))<=262144),
+    CHECK(length(CAST(view AS BLOB))<=131072), CHECK(length(CAST(operations AS BLOB))<=16384)) STRICT;
+  CREATE TABLE authoring_messages(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence BETWEEN 1 AND 9007199254740991), message_id TEXT NOT NULL,
+    payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB))<=131072),
+    PRIMARY KEY(conversation_id,sequence), UNIQUE(conversation_id,message_id),
+    FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id)) STRICT;
+  CREATE TABLE authoring_operations(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+    body_hash TEXT NOT NULL, run_id TEXT NOT NULL, admitted_version INTEGER NOT NULL CHECK(admitted_version BETWEEN 0 AND 9007199254740991),
+    PRIMARY KEY(conversation_id,operation_id), UNIQUE(conversation_id,owner_id,run_id),
+    FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id)) STRICT;
+  CREATE TABLE authoring_dispatches(conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL, run_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 9007199254740991), kind TEXT NOT NULL CHECK(kind IN ('provider','tool')),
+    call_id TEXT, reserved_micros INTEGER NOT NULL CHECK(reserved_micros BETWEEN 0 AND 9007199254740991),
+    outcome TEXT CHECK(outcome IN ('SUCCESS','REJECTED','UNKNOWN')),
+    PRIMARY KEY(conversation_id,run_id,ordinal), UNIQUE(conversation_id,run_id,call_id),
+    FOREIGN KEY(conversation_id,owner_id,run_id) REFERENCES authoring_operations(conversation_id,owner_id,run_id)) STRICT;
+
+  CREATE INDEX authoring_conversations_owner ON authoring_conversations(owner_id,created_at,id);
+  CREATE TRIGGER authoring_created_at_immutable BEFORE UPDATE OF created_at ON authoring_conversations
+    WHEN NEW.created_at IS NOT OLD.created_at BEGIN SELECT RAISE(ABORT, 'Authoring creation time is immutable'); END;
+  CREATE TRIGGER authoring_dispatch_immutable BEFORE UPDATE ON authoring_dispatches
+    WHEN OLD.outcome IS NOT NULL OR NEW.conversation_id IS NOT OLD.conversation_id OR NEW.owner_id IS NOT OLD.owner_id
+      OR NEW.run_id IS NOT OLD.run_id OR NEW.ordinal IS NOT OLD.ordinal OR NEW.kind IS NOT OLD.kind
+      OR NEW.call_id IS NOT OLD.call_id OR NEW.reserved_micros IS NOT OLD.reserved_micros OR NEW.outcome IS NULL
+    BEGIN SELECT RAISE(ABORT, 'Authoring dispatch is immutable'); END;
+
+  CREATE TABLE extensions(
+    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), hook_id TEXT,
+    name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80), created_at INTEGER NOT NULL CHECK(created_at>=0),
+    creation_operation_id TEXT, creation_hash TEXT, draft_version INTEGER NOT NULL CHECK(draft_version>=0), draft_revision_id TEXT,
+    deleted_at INTEGER CHECK(deleted_at IS NULL OR deleted_at>=0),
+    UNIQUE(id,owner_id), UNIQUE(owner_id,creation_operation_id),
+    FOREIGN KEY(draft_revision_id,owner_id,id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id)
+  ) STRICT;
+  CREATE TABLE extension_revision_links(
+    revision_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, extension_id TEXT NOT NULL,
+    UNIQUE(revision_id,owner_id,extension_id),
+    FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
+    FOREIGN KEY(extension_id,owner_id) REFERENCES extensions(id,owner_id)
+  ) STRICT;
+  CREATE TABLE extension_conversation_links(
+    conversation_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, extension_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK(purpose IN ('CREATE','REVISE')), base_revision_id TEXT, base_generation INTEGER,
+    FOREIGN KEY(conversation_id,owner_id) REFERENCES authoring_conversations(id,owner_id),
+    FOREIGN KEY(extension_id,owner_id) REFERENCES extensions(id,owner_id),
+    FOREIGN KEY(base_revision_id,owner_id,extension_id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id)
+  ) STRICT;
+  CREATE INDEX extension_items_owner ON extensions(owner_id,created_at);
+  CREATE INDEX extension_revisions_item ON extension_revision_links(owner_id,extension_id);
+  CREATE INDEX extension_conversations_item ON extension_conversation_links(owner_id,extension_id);
+
+  CREATE TABLE extension_selections(
+    owner_id TEXT NOT NULL REFERENCES users(id), hook_id TEXT NOT NULL CHECK(hook_id='TaskCompleted'),
+    revision_id TEXT, generation INTEGER NOT NULL CHECK(generation BETWEEN 0 AND 9007199254740991),
+    binding_pins TEXT CHECK(binding_pins IS NULL OR length(CAST(binding_pins AS BLOB))<=32768),
+    PRIMARY KEY(owner_id,hook_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
+    CHECK(revision_id IS NOT NULL OR binding_pins IS NULL)) STRICT;
+
+  CREATE TABLE task_completion_events(
+    event_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), source_task_id TEXT NOT NULL UNIQUE,
+    original_key TEXT NOT NULL UNIQUE CHECK(length(original_key)=36), item_id TEXT, revision_id TEXT,
+    selection_generation INTEGER NOT NULL CHECK(selection_generation BETWEEN 0 AND 9007199254740991),
+    input TEXT NOT NULL CHECK(json_valid(input) AND length(CAST(input AS BLOB))<=4096),
+    pins TEXT CHECK(pins IS NULL OR length(CAST(pins AS BLOB))<=32768),
+    state TEXT NOT NULL CHECK(state IN ('NO_BINDING','PENDING','STARTED','FINISHED')),
+    revoked_at INTEGER CHECK(revoked_at IS NULL OR revoked_at>=0),
+    outcome TEXT CHECK(outcome IS NULL OR (json_valid(outcome) AND length(CAST(outcome AS BLOB))<=131072)),
+    reconciliation TEXT CHECK(reconciliation IS NULL OR (json_valid(reconciliation) AND length(CAST(reconciliation AS BLOB))<=32768)),
+    created_at TEXT NOT NULL, UNIQUE(owner_id,original_key),
+    FOREIGN KEY(source_task_id,owner_id) REFERENCES tasks(id,owner_id),
+    FOREIGN KEY(revision_id,owner_id,item_id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id),
+    CHECK((state='NO_BINDING' AND revision_id IS NULL) OR (state!='NO_BINDING' AND revision_id IS NOT NULL)),
+    CHECK((state='FINISHED' AND outcome IS NOT NULL) OR (state!='FINISHED' AND outcome IS NULL))) STRICT;
+  CREATE INDEX task_events_item ON task_completion_events(owner_id,item_id,state);
+  CREATE TABLE task_effect_receipts(
+    owner_id TEXT NOT NULL, capability_id TEXT NOT NULL CHECK(capability_id='tasks.create'), original_key TEXT NOT NULL,
+    capability_version TEXT NOT NULL CHECK(capability_version='1'), payload BLOB NOT NULL CHECK(length(payload)<=4096),
+    result TEXT NOT NULL CHECK(json_valid(result) AND length(CAST(result AS BLOB))<=4096), effect TEXT NOT NULL CHECK(effect IN ('CONFIRMED','NONE')),
+    created_task_id TEXT, PRIMARY KEY(owner_id,capability_id,original_key),
+    FOREIGN KEY(owner_id,original_key) REFERENCES task_completion_events(owner_id,original_key),
+    FOREIGN KEY(created_task_id,owner_id) REFERENCES tasks(id,owner_id),
+    CHECK((effect='CONFIRMED' AND created_task_id IS NOT NULL) OR (effect='NONE' AND created_task_id IS NULL))) STRICT;
+  CREATE TRIGGER task_event_immutable BEFORE UPDATE ON task_completion_events
+    WHEN NEW.event_id IS NOT OLD.event_id OR NEW.owner_id IS NOT OLD.owner_id OR NEW.source_task_id IS NOT OLD.source_task_id
+      OR NEW.original_key IS NOT OLD.original_key OR NEW.item_id IS NOT OLD.item_id OR NEW.revision_id IS NOT OLD.revision_id
+      OR NEW.selection_generation IS NOT OLD.selection_generation OR NEW.input IS NOT OLD.input OR NEW.pins IS NOT OLD.pins
+      OR NEW.created_at IS NOT OLD.created_at OR (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at)
+      OR (OLD.outcome IS NOT NULL AND NEW.outcome IS NOT OLD.outcome)
+      OR (NEW.state IS NOT OLD.state AND NOT ((OLD.state='PENDING' AND NEW.state='STARTED') OR (OLD.state='STARTED' AND NEW.state='FINISHED')))
+    BEGIN SELECT RAISE(ABORT,'Task event identity and settled outcome are immutable'); END;
+  CREATE TRIGGER task_receipt_immutable BEFORE UPDATE ON task_effect_receipts
+    BEGIN SELECT RAISE(ABORT,'Task effect receipts are immutable'); END;
+`;
 
 export const USERS = [
   { id: 'maya', name: 'Maya', description: 'A small design practice', project: 'The spring collection', tasks: ['Gather material references', 'Refine the packaging sketches', 'Send the first concept'] },
@@ -252,65 +196,11 @@ export function transaction(db, action) {
   catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
-function migrateTaskEffects(db) {
-  transaction(db, () => {
-    db.exec(`
-      CREATE UNIQUE INDEX tasks_owner ON tasks(id,owner_id);
-      CREATE TABLE extension_selections_v8(
-        owner_id TEXT NOT NULL REFERENCES users(id), hook_id TEXT NOT NULL CHECK(hook_id IN ('ClassifyTask','TaskCompleted')),
-        revision_id TEXT, generation INTEGER NOT NULL CHECK(generation BETWEEN 0 AND 9007199254740991),
-        binding_pins TEXT CHECK(binding_pins IS NULL OR length(CAST(binding_pins AS BLOB))<=32768),
-        PRIMARY KEY(owner_id,hook_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
-        CHECK(revision_id IS NOT NULL OR binding_pins IS NULL)) STRICT;
-      INSERT INTO extension_selections_v8(owner_id,hook_id,revision_id,generation)
-        SELECT owner_id,'ClassifyTask',revision_id,generation FROM extension_selections;
-      INSERT INTO extension_selections_v8(owner_id,hook_id,revision_id,generation) SELECT id,'TaskCompleted',NULL,0 FROM users;
-      DROP TABLE extension_selections;
-      ALTER TABLE extension_selections_v8 RENAME TO extension_selections;
-      CREATE TABLE task_completion_events(
-        event_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), source_task_id TEXT NOT NULL UNIQUE,
-        original_key TEXT NOT NULL UNIQUE CHECK(length(original_key)=36), item_id TEXT, revision_id TEXT,
-        selection_generation INTEGER NOT NULL CHECK(selection_generation BETWEEN 0 AND 9007199254740991),
-        input TEXT NOT NULL CHECK(json_valid(input) AND length(CAST(input AS BLOB))<=4096),
-        pins TEXT CHECK(pins IS NULL OR length(CAST(pins AS BLOB))<=32768),
-        state TEXT NOT NULL CHECK(state IN ('NO_BINDING','PENDING','STARTED','FINISHED')),
-        revoked_at INTEGER CHECK(revoked_at IS NULL OR revoked_at>=0),
-        outcome TEXT CHECK(outcome IS NULL OR (json_valid(outcome) AND length(CAST(outcome AS BLOB))<=131072)),
-        reconciliation TEXT CHECK(reconciliation IS NULL OR (json_valid(reconciliation) AND length(CAST(reconciliation AS BLOB))<=32768)),
-        created_at TEXT NOT NULL, UNIQUE(owner_id,original_key),
-        FOREIGN KEY(source_task_id,owner_id) REFERENCES tasks(id,owner_id),
-        FOREIGN KEY(revision_id,owner_id,item_id) REFERENCES extension_revision_links(revision_id,owner_id,extension_id),
-        CHECK((state='NO_BINDING' AND revision_id IS NULL) OR (state!='NO_BINDING' AND revision_id IS NOT NULL)),
-        CHECK((state='FINISHED' AND outcome IS NOT NULL) OR (state!='FINISHED' AND outcome IS NULL))) STRICT;
-      CREATE INDEX task_events_item ON task_completion_events(owner_id,item_id,state);
-      CREATE TABLE task_effect_receipts(
-        owner_id TEXT NOT NULL, capability_id TEXT NOT NULL CHECK(capability_id='tasks.create'), original_key TEXT NOT NULL,
-        capability_version TEXT NOT NULL CHECK(capability_version='1'), payload BLOB NOT NULL CHECK(length(payload)<=4096),
-        result TEXT NOT NULL CHECK(json_valid(result) AND length(CAST(result AS BLOB))<=4096), effect TEXT NOT NULL CHECK(effect IN ('CONFIRMED','NONE')),
-        created_task_id TEXT, PRIMARY KEY(owner_id,capability_id,original_key),
-        FOREIGN KEY(owner_id,original_key) REFERENCES task_completion_events(owner_id,original_key),
-        FOREIGN KEY(created_task_id,owner_id) REFERENCES tasks(id,owner_id),
-        CHECK((effect='CONFIRMED' AND created_task_id IS NOT NULL) OR (effect='NONE' AND created_task_id IS NULL))) STRICT;
-      CREATE TRIGGER task_event_immutable BEFORE UPDATE ON task_completion_events
-        WHEN NEW.event_id IS NOT OLD.event_id OR NEW.owner_id IS NOT OLD.owner_id OR NEW.source_task_id IS NOT OLD.source_task_id
-          OR NEW.original_key IS NOT OLD.original_key OR NEW.item_id IS NOT OLD.item_id OR NEW.revision_id IS NOT OLD.revision_id
-          OR NEW.selection_generation IS NOT OLD.selection_generation OR NEW.input IS NOT OLD.input OR NEW.pins IS NOT OLD.pins
-          OR NEW.created_at IS NOT OLD.created_at OR (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at)
-          OR (OLD.outcome IS NOT NULL AND NEW.outcome IS NOT OLD.outcome)
-          OR (NEW.state IS NOT OLD.state AND NOT ((OLD.state='PENDING' AND NEW.state='STARTED') OR (OLD.state='STARTED' AND NEW.state='FINISHED')))
-        BEGIN SELECT RAISE(ABORT,'Task event identity and settled outcome are immutable'); END;
-      CREATE TRIGGER task_receipt_immutable BEFORE UPDATE ON task_effect_receipts
-        BEGIN SELECT RAISE(ABORT,'Task effect receipts are immutable'); END;
-      PRAGMA user_version=8;
-    `);
-    if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Task effect migration failed integrity checks');
-  });
-}
-
 function seedRows(db) {
   const now = new Date().toISOString();
   for (const user of USERS) {
     db.prepare('INSERT INTO users(id, name) VALUES (?, ?)').run(user.id, user.name);
+    db.prepare('INSERT INTO extension_selections(owner_id,hook_id,revision_id,generation) VALUES (?,?,NULL,0)').run(user.id, TASK_HOOK);
     const projectId = randomUUID();
     db.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?)').run(projectId, user.id, user.project, now, now);
     user.tasks.forEach((title, index) => {
@@ -321,52 +211,89 @@ function seedRows(db) {
   }
 }
 
+const unsupportedFormat = () => new Error('Unsupported database format; no data was reset.');
+const rollbackMagic = Buffer.from('d9d505f920a163d7', 'hex');
+
+function readBytes(path, length, position = 0) {
+  const fd = openSync(path, 'r');
+  try {
+    const bytes = Buffer.alloc(length);
+    if (readSync(fd, bytes, 0, length, position) !== length) throw unsupportedFormat();
+    return bytes;
+  } finally { closeSync(fd); }
+}
+
+function inspectDataFile(path) {
+  const file = lstatSync(path, { throwIfNoEntry: false });
+  const journal = lstatSync(path + '-journal', { throwIfNoEntry: false });
+  if (lstatSync(path + '-wal', { throwIfNoEntry: false }) || lstatSync(path + '-shm', { throwIfNoEntry: false })
+      || journal && (!file || !journal.isFile())) throw unsupportedFormat();
+  if (!file) return null;
+  if (!file.isFile()) throw unsupportedFormat();
+
+  const header = readBytes(path, 100), pageSize = header.readUInt16BE(16);
+  if (header.toString('latin1', 0, 16) !== 'SQLite format 3\x00'
+      || pageSize !== 1 && (pageSize < 512 || (pageSize & (pageSize - 1)) !== 0)
+      || header[18] !== 1 || header[19] !== 1 || header[21] !== 64 || header[22] !== 32 || header[23] !== 32
+      || header.readUInt32BE(44) !== 4 || header.readUInt32BE(56) !== 1) throw unsupportedFormat();
+  if (header.readUInt32BE(60) !== schemaVersion) throw new Error('Unsupported database version; no data was reset.');
+  // SQLite can follow paths in super-journal pointers. Daymark only uses single-database transactions.
+  if (journal?.size >= 16 && readBytes(path + '-journal', 8, journal.size - 8).equals(rollbackMagic)) throw unsupportedFormat();
+  return { journal: !!journal };
+}
+
+const schemaIdentity = db => JSON.stringify(db.prepare('SELECT type, name, tbl_name, CAST(sql AS BLOB) AS sql FROM main.sqlite_schema ORDER BY type,name').all());
+let currentSchema;
+function assertCurrentDatabase(db) {
+  if (db.prepare('PRAGMA main.user_version').get().user_version !== schemaVersion)
+    throw new Error('Unsupported database version; no data was reset.');
+  if (currentSchema === undefined) {
+    const expected = new DatabaseSync(':memory:');
+    try { expected.exec(schema); currentSchema = schemaIdentity(expected); }
+    finally { expected.close(); }
+  }
+  if (schemaIdentity(db) !== currentSchema) throw new Error('Unsupported database schema; no data was reset.');
+  if (db.prepare('PRAGMA main.integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA main.foreign_key_check').all().length)
+    throw new Error('Database integrity check failed; no data was reset.');
+}
+
+function preflightData(path) {
+  const file = inspectDataFile(path);
+  if (!file) return false;
+  try {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try { assertCurrentDatabase(db); } finally { db.close(); }
+  } catch (error) {
+    // SQLITE_READONLY_ROLLBACK means SQLite could not read the file without recovering its journal.
+    if (error.code !== 'ERR_SQLITE_ERROR' || error.errcode !== 776 || !file.journal) throw error;
+    const journalPath = path + '-journal';
+    if (!readBytes(journalPath, 8).equals(rollbackMagic)) throw unsupportedFormat();
+    const disposable = mkdtempSync(join(dirname(path), '.daymark-recovery-'));
+    try {
+      const copy = join(disposable, 'app.sqlite');
+      copyFileSync(path, copy);
+      copyFileSync(journalPath, copy + '-journal');
+      const db = new DatabaseSync(copy);
+      try { assertCurrentDatabase(db); } finally { db.close(); }
+      const recovered = inspectDataFile(copy);
+      if (!recovered || recovered.journal) throw unsupportedFormat();
+    } finally { rmSync(disposable, { recursive: true, force: true }); }
+  }
+  return true;
+}
+
 export function openData(path) {
+  const existing = path !== ':memory:' && preflightData(path);
   const db = new DatabaseSync(path);
   try {
     db.exec('PRAGMA foreign_keys = ON');
     if (db.prepare('PRAGMA foreign_keys').get().foreign_keys !== 1) throw new Error('Foreign keys are required.');
-    const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version === 0) {
-      if (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().length) throw new Error('Unrecognized database; no data was reset.');
-      transaction(db, () => {
-        db.exec(`
-          CREATE TABLE users(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
-          CREATE TABLE projects(
-            id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
-            name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80),
-            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-            UNIQUE(id, owner_id)
-          ) STRICT;
-          CREATE TABLE tasks(
-            id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT NOT NULL,
-            title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 120),
-            notes TEXT NOT NULL CHECK(length(notes) <= 4000),
-            status TEXT NOT NULL CHECK(status IN ('open', 'completed')),
-            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT,
-            FOREIGN KEY(project_id, owner_id) REFERENCES projects(id, owner_id),
-            CHECK((status = 'open' AND completed_at IS NULL) OR (status = 'completed' AND completed_at IS NOT NULL))
-          ) STRICT;
-          CREATE INDEX tasks_by_project ON tasks(owner_id, project_id, created_at);
-          PRAGMA user_version = 1;
-        `);
-        seedRows(db);
-      });
-    } else if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(version)) throw new Error('Unsupported database version; no data was reset.');
-    if (version < 2) migrateLifecycle(db);
-    if (version < 3) migrateAuthored(db);
-    if (version < 4) migrateAuthoring(db);
-    if (version < 5) migrateExtensions(db);
-    if (version < 6) migrateAuthoringHistory(db);
-    if (version < 7) transaction(db, () => {
-      db.exec('ALTER TABLE extensions ADD COLUMN deleted_at INTEGER CHECK(deleted_at IS NULL OR deleted_at>=0); PRAGMA user_version=7;');
-    });
-    if (version < 8) migrateTaskEffects(db);
-    if (version < 9) transaction(db, () => {
-      db.exec(`ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'
-        CHECK(json_valid(tags) AND json_type(tags) = 'array' AND json_array_length(tags) <= 8)`);
-      if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Task tags migration failed integrity checks');
-      db.exec('PRAGMA user_version=9');
+    if (existing) assertCurrentDatabase(db);
+    else transaction(db, () => {
+      db.exec(schema);
+      db.exec('INSERT INTO authoring_budget VALUES (1, 0)');
+      seedRows(db);
+      db.exec('PRAGMA user_version=' + schemaVersion);
     });
     return db;
   } catch (error) { db.close(); throw error; }
@@ -382,9 +309,17 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
     mkdirSync(backupDir, { recursive: true });
     const backupPath = join(backupDir, `${Date.now()}-${randomUUID()}.sqlite`);
     await backupDatabase(db, backupPath);
-    const copy = new DatabaseSync(backupPath, { readOnly: true });
+    let copy;
     try {
-      if (copy.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || copy.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Backup verification failed; original data retained.');
+      const file = inspectDataFile(backupPath);
+      if (!file || file.journal) throw unsupportedFormat();
+      copy = new DatabaseSync(backupPath, { readOnly: true });
+      assertCurrentDatabase(copy);
+    } catch (error) {
+      copy?.close();
+      throw new Error('Backup verification failed; original data retained.', { cause: error });
+    }
+    try {
       for (const table of ['users', 'projects', 'tasks', ...taskEffectTables, ...lifecycleTables, ...authoringHistoryTables, 'authoring_conversations', 'authoring_budget']) {
         // Read text as bytes because SQLite's Node text reader can stop at embedded NUL.
         const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(({ name, type }) => type === 'TEXT' ? `CAST(${name} AS BLOB) AS ${name}` : name);
@@ -400,7 +335,6 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
       db.exec('DELETE FROM authoring_conversations');
       db.exec('DELETE FROM tasks; DELETE FROM projects; DELETE FROM users;');
       seedRows(db);
-      seedLifecycle(db);
     });
     return backupPath;
   } finally { db?.close(); release(); }
@@ -580,11 +514,9 @@ function taskEvent(row) {
 export function taskEffectService(db) {
   if (arguments.length !== 1 || typeof db?.prepare !== 'function') throw new TypeError('Task effects require one native database.');
   const tasks = taskService(db);
-  const hostPins = new Map();
-  for (const id of taskDefinitionIds) {
-    try { hostPins.set(id, Object.entries(loadHost(TASK_HOOK, id).pins)); }
-    catch { /* Unavailable definitions cannot authorize native effects. */ }
-  }
+  let host, hostPins;
+  try { host = loadHost(TASK_HOOK); hostPins = Object.entries(host.pins); }
+  catch { /* An unavailable definition cannot authorize native effects. */ }
   const event = (owner, id) => {
     const row = db.prepare('SELECT * FROM task_completion_events WHERE owner_id=? AND event_id=?').get(owner, id);
     if (!row) throw notFound();
@@ -598,12 +530,9 @@ export function taskEffectService(db) {
       const now = invocation.deadline.clock.nowMs();
       if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(invocation.deadline.expiresAtMs)
           || now >= invocation.deadline.expiresAtMs || context.eventId !== row.event_id || row.revoked_at !== null
-          || pins?.profile !== 'keir-effect/4'
-          || pins.modelRef?.format !== 'keir-dcm/effect-4' || pins.modelRef.digest !== pins.modelDigest
-          || pins.consumer?.kind !== 'EVENT_REPORT' || Object.hasOwn(pins, 'qualification')
+          || !pins || Object.hasOwn(pins, 'profile') || Object.hasOwn(pins, 'qualification')
           || context.input?.taskId !== row.source_task_id) return false;
-      const expected = hostPins.get(pins.definitionId);
-      if (!expected || expected.some(([name, value]) => json(pins[name]) !== json(value))) return false;
+      if (!hostPins || hostPins.some(([name, value]) => json(pins[name]) !== json(value))) return false;
       // Re-read persisted authority; a mutable current selection cannot replace the captured admission.
       const saved = db.prepare(`SELECT r.*,a.source,a.artifact,a.suite FROM task_completion_events v JOIN tasks t ON t.id=v.source_task_id AND t.owner_id=v.owner_id
       JOIN extension_revision_links l ON l.revision_id=v.revision_id AND l.owner_id=v.owner_id AND l.extension_id=v.item_id
@@ -616,11 +545,11 @@ export function taskEffectService(db) {
       const identity = JSON.parse(saved.identity), artifact = JSON.parse(Buffer.from(saved.artifact).toString('utf8'));
       if (json(pins) !== json({ ...identity, approvedEvidenceId: pins.approvedEvidenceId })
           || identity.artifactDigest !== digest(saved.artifact) || identity.rawSourceDigest !== digest(saved.source)
-          || artifact.profile !== 'keir-effect/4' || artifact.format !== 'keir-artifact/effect-4'
+          || artifact.format !== 'keir-artifact/1'
           || identity.compiledSourceDigest !== artifact.sourceDigest || identity.suiteDigest !== digest(saved.suite)) return false;
       const validProof = id => {
         const proof = db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? AND id=?').get(row.owner_id, saved.id, id);
-        return taskEffectProofMatches(saved, saved, proof);
+        return taskEffectProofMatches(saved, saved, proof, host);
       };
       const approval = db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(row.owner_id, saved.id);
       return !!approval && validProof(approval.evidence_id) && typeof pins.approvedEvidenceId === 'string' && validProof(pins.approvedEvidenceId);

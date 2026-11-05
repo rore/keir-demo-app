@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createCompiler } from '../../src/compiler.mjs';
 import { loadHost, TASK_HOOK } from '../../src/extension-catalog.mjs';
-import { taskEffectSyntax, taskEffectScenarioExamples, validateTaskEffectScenarios } from '../../src/task-effect-simulation.mjs';
+import { taskEffectSyntax, taskEffectScenarioExamples } from '../../src/task-effect-simulation.mjs';
 
 // Test programs vary customer constants; production authoring has no rule template.
 export function taskCustomizationFixture({ projectId = 'project1', otherProjectId = 'project2', title = 'Example follow-up task' } = {}) {
@@ -21,7 +21,6 @@ export function taskCustomizationFixture({ projectId = 'project1', otherProjectI
   for (const row of cases) for (const call of [...row.stubs, ...row.expect.calls]) if (call.capability === 'tasks.create') {
     call.args.projectId = projectId; call.args.title = title;
   }
-  validateTaskEffectScenarios(host, cases);
   const wrong = structuredClone(program);
   wrong.steps[2].let.cel = 'source.status == "COMPLETED"';
   const serialized = cases.map(row => JSON.stringify(row, null, 2));

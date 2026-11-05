@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData, taskService, taskEffectService, transaction, revokeTaskAdmissions } from '../src/data.mjs';
-import { removeSchemaAfter7, nativeEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
+import { nativeEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
 
 const stores = ['task_completion_events', 'task_effect_receipts'];
 const effects = nativeEffectService;
@@ -22,37 +22,11 @@ function snapshot(db) {
     return [name, db.prepare(`SELECT ${columns.join(',')} FROM ${name} ORDER BY rowid`).all()];
   }));
 }
-const schema = db => db.prepare('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').all();
 const jsonBytes = bytes => JSON.stringify({ x: 'é'.repeat((bytes - 8) / 2) });
 function integrity(db) {
   assert.equal(db.prepare('PRAGMA foreign_keys').get().foreign_keys, 1);
   assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
   assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-}
-function populateLegacy(db) {
-  const revision = db.prepare("SELECT id FROM extension_revisions WHERE owner_id='maya'").get().id;
-  const item = db.prepare('SELECT extension_id FROM extension_revision_links WHERE revision_id=?').get(revision).extension_id;
-  db.prepare('INSERT INTO extension_authored VALUES (?,?,?,?,?,?)').run(revision, 'maya', 'Original', Buffer.from([0, 255, 195, 169]), Buffer.from([255, 0, 1]), '{ "cases": ["original"] }');
-  db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)').run('legacy-proof', 'maya', revision, 'identity', 'suite', '{ "bytes":"\\u0000λ" }', 1);
-  db.prepare('INSERT INTO extension_approvals VALUES (?,?,?)').run('maya', revision, 'legacy-proof');
-  db.prepare('UPDATE extensions SET draft_revision_id=?,draft_version=8,deleted_at=123 WHERE id=?').run(revision, item);
-  db.prepare("UPDATE extension_selections SET generation=17 WHERE owner_id='maya'").run();
-  db.prepare("UPDATE tasks SET notes=? WHERE owner_id='maya'").run('original\u0000λ');
-  db.prepare('INSERT INTO authoring_conversations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run('legacy-chat', 'maya', 'legacy-create', 1, 'legacy-run', 'INTERRUPTED', 0, 456, '{ "opaque":"\\u0000λ" }', '[]', '{"messages":[]}', 123);
-  db.prepare('INSERT INTO extension_conversation_links VALUES (?,?,?,?,?,?)').run('legacy-chat', 'maya', item, 'REVISE', revision, 17);
-  db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run('legacy-chat', 'maya', 1, 'legacy-message', '{ "receipt":"original" }');
-  db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run('legacy-chat', 'maya', 'legacy-operation', 'original-hash', 'legacy-run', 1);
-  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run('legacy-chat', 'maya', 'legacy-run', 1, 'provider', null, 321, 'UNKNOWN');
-  db.exec('UPDATE authoring_budget SET reserved_micros=321');
-}
-function legacyFixture(t) {
-  const f = fixture(t), db = openData(f.path);
-  removeSchemaAfter7(db);
-  db.exec('PRAGMA user_version=7');
-  populateLegacy(db);
-  const before = snapshot(db), beforeSchema = schema(db);
-  db.close();
-  return { ...f, before, beforeSchema };
 }
 function insert(db, table, row) {
   return db.prepare(`INSERT INTO ${table}(${Object.keys(row).join(',')}) VALUES (${Object.keys(row).map(() => '?').join(',')})`).run(...Object.values(row));
@@ -83,127 +57,59 @@ function populatedEffects(db) {
   return { event, key, payload, createdId: result.value.id, service };
 }
 
-test('populated v8 retains exact task, customization and receipt bytes through v9 failure and recovery', t => {
+test('reopen retains exact task, customization and receipt bytes', t => {
   const { path } = fixture(t);
   let db = openData(path);
   const { event, createdId } = populatedEffects(db);
   db.prepare('UPDATE tasks SET title=?,notes=? WHERE id=?').run('  kept\u0000title  ', ' original\u0000notes λ ', event.source_task_id);
-  db.exec('ALTER TABLE tasks DROP COLUMN tags; PRAGMA user_version=8;');
-  const before = snapshot(db), beforeSchema = schema(db);
+  const before = snapshot(db);
   assert.equal(before.task_effect_receipts.length, 1);
   db.close();
 
-  const exec = DatabaseSync.prototype.exec;
-  DatabaseSync.prototype.exec = function (sql) {
-    if (/PRAGMA user_version\s*=\s*9/i.test(sql)) {
-      assert.ok(this.prepare('PRAGMA table_info(tasks)').all().some(column => column.name === 'tags'));
-      throw new Error('injected schema 9 failure');
-    }
-    return exec.call(this, sql);
-  };
-  try { assert.throws(() => openData(path), /injected schema 9 failure/); } finally { DatabaseSync.prototype.exec = exec; }
-  db = new DatabaseSync(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
-  assert.deepEqual(schema(db), beforeSchema);
-  assert.deepEqual(snapshot(db), before);
-  db.close();
-
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
   const { type, notnull, dflt_value } = db.prepare("SELECT * FROM pragma_table_info('tasks') WHERE name='tags'").get();
   assert.deepEqual({ type, notnull, dflt_value }, { type: 'TEXT', notnull: 1, dflt_value: "'[]'" });
-  const after = snapshot(db);
-  const { tasks, ...originalTables } = before;
-  const { tasks: upgradedTasks, ...upgradedTables } = after;
-  assert.deepEqual(upgradedTables, originalTables);
-  assert.deepEqual(upgradedTasks.map(row => ({ ...row })), tasks.map(row => ({ ...row, tags: new TextEncoder().encode('[]') })));
-  assert.deepEqual(schema(db).filter(row => row.name !== 'tasks'), beforeSchema.filter(row => row.name !== 'tasks'));
+  assert.deepEqual(snapshot(db), before);
   assert.deepEqual(taskService(db).getTask('maya', createdId).tags, []);
-  integrity(db);
-  db.close(); db = openData(path);
-  assert.deepEqual(snapshot(db), after);
   integrity(db); db.close();
 });
 
-test('populated schema 7 upgrades without changing old bytes, selection, history, tombstones or held UNKNOWN spend', t => {
-  const { path, before, beforeSchema } = legacyFixture(t);
-  let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
-  const after = snapshot(db);
-  assert.deepEqual(Object.keys(after), [...Object.keys(before), ...stores].sort());
-  for (const [table, rows] of Object.entries(before)) {
-    const actual = table === 'extension_selections'
-      ? db.prepare("SELECT CAST(owner_id AS BLOB) AS owner_id,CAST(revision_id AS BLOB) AS revision_id,generation FROM extension_selections WHERE hook_id='ClassifyTask' ORDER BY rowid").all()
-      : after[table];
-    if (table === 'tasks') assert.deepEqual(actual.map(row => ({ ...row })), rows.map(row => ({ ...row, tags: new Uint8Array([91, 93]) })));
-    else assert.deepEqual(actual, rows, table);
-  }
-  assert.deepEqual(db.prepare("SELECT owner_id,revision_id,generation,binding_pins FROM extension_selections WHERE hook_id='TaskCompleted' ORDER BY owner_id").all().map(row => ({ ...row })),
-    ['leo', 'maya', 'sam'].map(owner_id => ({ owner_id, revision_id: null, generation: 0, binding_pins: null })));
-  assert.equal(db.prepare("SELECT count(*) n FROM extension_selections WHERE hook_id='ClassifyTask' AND binding_pins IS NOT NULL").get().n, 0);
-  for (const table of stores) assert.deepEqual(after[table], []);
-  const oldObjects = new Set(beforeSchema.filter(row => !['extension_selections', 'tasks'].includes(row.name)).map(row => row.name));
-  assert.deepEqual(schema(db).filter(row => oldObjects.has(row.name)), beforeSchema.filter(row => oldObjects.has(row.name)));
-  integrity(db);
-  db.close(); db = openData(path);
-  assert.deepEqual(snapshot(db), after); integrity(db); db.close();
-});
-
-test('schema 8 DDL failure restores original selection table, index set, rows and version; future schema is untouched', t => {
-  const { path, before, beforeSchema } = legacyFixture(t), exec = DatabaseSync.prototype.exec;
-  DatabaseSync.prototype.exec = function (sql) {
-    const result = exec.call(this, sql);
-    if (sql.includes('CREATE TABLE task_completion_events')) throw new Error('injected schema 8 failure');
-    return result;
-  };
-  try { assert.throws(() => openData(path), /injected schema 8 failure/); } finally { DatabaseSync.prototype.exec = exec; }
-  let db = new DatabaseSync(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
-  assert.deepEqual(snapshot(db), before); assert.deepEqual(schema(db), beforeSchema);
-  db.exec('PRAGMA user_version=99'); db.close();
-  assert.throws(() => openData(path), /Unsupported database version/);
-  db = new DatabaseSync(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 99);
-  assert.deepEqual(snapshot(db), before); assert.deepEqual(schema(db), beforeSchema);
-  db.exec('PRAGMA user_version=7'); db.close();
-  db = openData(path); integrity(db); db.close();
-});
-
-test('schema 8 rejects duplicate event/key, cross-owner lineage and invalid state, byte and integer bounds', t => {
+test('current schema rejects duplicate event/key, cross-owner lineage and invalid state, byte and integer bounds', t => {
   let db; const { path } = fixture(t, () => db?.close()); db = openData(path);
   const event = eventRow(db); insert(db, stores[0], event);
   assert.throws(() => insert(db, stores[0], { ...event, event_id: randomUUID(), original_key: randomUUID() }), /UNIQUE/);
   assert.throws(() => insert(db, stores[0], eventRow(db, { original_key: event.original_key })), /UNIQUE/);
   const foreign = taskService(db).listTasks('leo', taskService(db).listProjects('leo')[0].id)[0];
-  const leoRevision = db.prepare("SELECT revision_id,extension_id FROM extension_revision_links WHERE owner_id='leo' LIMIT 1").get();
-  const mayaRevision = db.prepare("SELECT revision_id,extension_id FROM extension_revision_links WHERE owner_id='maya' LIMIT 1").get();
+  const { revisionId: leoRevision, extensionId: leoItem } = seedTaskEffectBinding(db, 'leo');
+  const { revisionId: mayaRevision, extensionId: mayaItem } = seedTaskEffectBinding(db);
   const invalidEvents = [
     [{ source_task_id: foreign.id }, /FOREIGN KEY/], [{ owner_id: 'missing' }, /FOREIGN KEY/],
-    [{ state: 'PENDING', item_id: leoRevision.extension_id, revision_id: leoRevision.revision_id }, /FOREIGN KEY/],
+    [{ state: 'PENDING', item_id: leoItem, revision_id: leoRevision }, /FOREIGN KEY/],
     [{ state: 'INVALID' }, /CHECK/], [{ state: 'FINISHED', outcome: '{}' }, /CHECK/],
     [{ state: 'PENDING' }, /CHECK/], [{ outcome: '{}' }, /CHECK/], [{ original_key: 'x'.repeat(35) }, /CHECK/],
     [{ selection_generation: -1 }, /CHECK/], [{ selection_generation: 9007199254740992 }, /CHECK/], [{ selection_generation: 1.5 }, /INTEGER/],
     [{ revoked_at: -1 }, /CHECK/], [{ input: jsonBytes(4098) }, /CHECK/],
     [{ pins: jsonBytes(32770) }, /CHECK/], [{ reconciliation: jsonBytes(32770) }, /CHECK/],
-    [{ state: 'FINISHED', item_id: mayaRevision.extension_id, revision_id: mayaRevision.revision_id, outcome: jsonBytes(131074) }, /CHECK/],
+    [{ state: 'FINISHED', item_id: mayaItem, revision_id: mayaRevision, outcome: jsonBytes(131074) }, /CHECK/],
     [{ input: 'invalid JSON' }, /CHECK/], [{ reconciliation: 'invalid JSON' }, /CHECK/],
   ];
   for (const [changes, error] of invalidEvents) assert.throws(() => insert(db, stores[0], eventRow(db, changes)), error);
   const boundary = eventRow(db, { selection_generation: 9007199254740991, input: jsonBytes(4096), pins: jsonBytes(32768), reconciliation: jsonBytes(32768) });
   insert(db, stores[0], boundary);
-  insert(db, stores[0], eventRow(db, { state: 'FINISHED', item_id: mayaRevision.extension_id, revision_id: mayaRevision.revision_id, outcome: jsonBytes(131072) }));
-  assert.throws(() => insert(db, 'extension_selections', { owner_id: 'maya', hook_id: 'ClassifyTask', revision_id: null, generation: 0 }), /UNIQUE/);
+  insert(db, stores[0], eventRow(db, { state: 'FINISHED', item_id: mayaItem, revision_id: mayaRevision, outcome: jsonBytes(131072) }));
+  assert.throws(() => insert(db, 'extension_selections', { owner_id: 'maya', hook_id: 'TaskCompleted', revision_id: null, generation: 0 }), /UNIQUE/);
   const selectionChanges = [
     [{ hook_id: 'OtherHook' }, /CHECK/], [{ generation: -1 }, /CHECK/], [{ generation: 9007199254740992 }, /CHECK/],
-    [{ revision_id: leoRevision.revision_id }, /FOREIGN KEY/], [{ binding_pins: '{}' }, /CHECK/],
-    [{ revision_id: mayaRevision.revision_id, binding_pins: jsonBytes(32770) }, /CHECK/],
+    [{ revision_id: leoRevision }, /FOREIGN KEY/], [{ binding_pins: '{}' }, /CHECK/],
+    [{ revision_id: mayaRevision, binding_pins: jsonBytes(32770) }, /CHECK/],
   ];
   for (const [changes, error] of selectionChanges) {
     const columns = Object.keys(changes);
     assert.throws(() => db.prepare(`UPDATE extension_selections SET ${columns.map(column => `${column}=?`).join(',')} WHERE owner_id='maya' AND hook_id='TaskCompleted'`).run(...Object.values(changes)), error);
   }
   db.prepare("UPDATE extension_selections SET revision_id=?,generation=?,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'")
-    .run(mayaRevision.revision_id, 9007199254740991, jsonBytes(32768));
+    .run(mayaRevision, 9007199254740991, jsonBytes(32768));
   const receiptEvent = eventRow(db); insert(db, stores[0], receiptEvent);
   const invalidReceipts = [
     [{ owner_id: 'leo' }, /FOREIGN KEY/], [{ original_key: randomUUID() }, /FOREIGN KEY/],
@@ -278,7 +184,7 @@ test('failed native revocation is atomic; successful revocation survives reopen 
   assert.equal(db.prepare("SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get().revision_id, null);
 });
 
-test('reset verifies both new stores, rolls failed reseeding back and clears keys only with their tasks after a verified backup', async t => {
+test('reset verifies both effect stores, rolls failed reseeding back and clears keys only with their tasks after a verified backup', async t => {
   const { path, directory } = fixture(t); let db = openData(path);
   const { event, key, payload, createdId } = populatedEffects(db), before = snapshot(db); db.close();
   for (const corrupt of ['DELETE FROM task_effect_receipts', `UPDATE task_completion_events SET reconciliation='{"tampered":true}'`]) {
@@ -288,11 +194,11 @@ test('reset verifies both new stores, rolls failed reseeding back and clears key
     }), /Backup differs/);
     db = openData(path); assert.deepEqual(snapshot(db), before); integrity(db); db.close();
   }
-  db = openData(path);
-  db.exec("CREATE TRIGGER fail_effect_reset BEFORE INSERT ON users BEGIN SELECT RAISE(ABORT,'seed blocked'); END"); db.close();
-  await assert.rejects(resetData(directory, true), /seed blocked/);
-  db = openData(path); assert.deepEqual(snapshot(db), before); integrity(db);
-  db.exec('DROP TRIGGER fail_effect_reset'); db.close();
+  await assert.rejects(resetData(directory, true, async (source, destination) => {
+    await backup(source, destination);
+    source.exec("CREATE TEMP TRIGGER fail_effect_reset BEFORE INSERT ON main.users BEGIN SELECT RAISE(ABORT,'seed blocked'); END");
+  }), /seed blocked/);
+  db = openData(path); assert.deepEqual(snapshot(db), before); integrity(db); db.close();
   const backupPath = await resetData(directory, true);
   const copy = new DatabaseSync(backupPath, { readOnly: true }); assert.deepEqual(snapshot(copy), before); copy.close();
   db = openData(path);

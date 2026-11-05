@@ -10,7 +10,7 @@ Open **Customizations** to start a rule or reopen its saved conversation. On nar
 
 Default storage is `.data/app.sqlite`, protected by `.data/app.lock`. Optional `--data-dir <directory>` on start/seed/reset selects isolated storage, resolved relative to the current directory. Pass the same location to all commands. Data/backups may contain your task text; keep them private and out of Git. Seeded data contains no credentials.
 
-New databases receive the fictional Maya, Leo and Sam accounts and sample data. Restart and seed preserve edits without duplicating fixtures. Supported schema upgrades are transactional and preserve native rows, saved customization bytes, history and accounting. Legacy advice and approvals remain historical. Retain a recoverable backup before deliberately upgrading an existing installation. Unknown schema versions, lock contention and database failures require investigation with the data preserved. Sessions are in memory, so restart requires sign-in while saved work persists. See [lifecycle recovery](read-extension-lifecycle.md#limits-and-recovery).
+New databases receive the fictional Maya, Leo and Sam accounts and sample data. Restart and seed preserve edits without duplicating fixtures. Start this version with a fresh data directory if you have data from an earlier Daymark build. Start, seed and reset check the current database version, schema and integrity before writable use. Keep older or unrecognized databases in place and use the app version that created them. Sessions are in memory, so restart requires sign-in while saved work persists. See [lifecycle recovery](read-extension-lifecycle.md#limits-and-recovery).
 
 Running native tasks requires Node 24.14.1, not Java or AI credentials. Optional authored-source compilation requires the independently packaged pinned compiler and Java 21. `KEIR_JAVA_BIN` may identify an existing Java executable in the app process's launch environment; it is trusted server configuration, not a request field. This setting does not install Java or change PATH/global configuration. If compilation is unavailable, native tasks and saved history remain usable.
 
@@ -28,7 +28,7 @@ A crash or forced termination, including Windows terminating a child process, ca
 
 ## Reset and restoration
 
-After stopping the app, `npm run reset -- --confirm` acquires the lock and creates a unique backup under `.data/backups/`. It checks SQLite integrity/foreign keys and compares every native row to the source, then resets fixtures in one transaction. Backup failure prevents reset; transaction failure restores previous rows. The lock stays held throughout. Backups remain for deliberate recovery; no retention job deletes them.
+After stopping the app, `npm run reset -- --confirm` acquires the lock and creates a unique backup under `.data/backups/`. It checks the current schema, SQLite integrity and foreign keys, compares native and customization rows to the source, then resets fixtures in one transaction. A backup failure prevents reset. A transaction failure restores previous rows. The lock stays held throughout.
 
 To restore: stop the app, verify no process owns its lock, preserve current `app.sqlite` separately, then copy a selected verified backup over `app.sqlite` in the same data directory. Restart and inspect expected projects/tasks for all people. Never overwrite a live database. Tests reopen the generated backup and verify saved edits; automatic recovery does not guess which copy is right.
 

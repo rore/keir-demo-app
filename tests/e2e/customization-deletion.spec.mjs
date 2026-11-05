@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
-import { digest } from '../../src/extension-catalog.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { seedTaskEffectBinding } from '../fixtures/task-effect-schema.mjs';
 
 const navigation = page => page.getByRole('navigation', { name: 'Main navigation' });
 const card = (page, id) => page.locator('.customization-card').filter({ has: page.locator('#edit-' + id) });
@@ -28,16 +29,23 @@ async function api(page, path, body, status = 200) {
   return response.value;
 }
 const deletionBody = state => ({ expectedName: state.extension.name, draftVersion: state.draftVersion, generation: state.selection.generation });
+function selectSavedTaskCustomization(db) {
+  const lifecycle = createLifecycle(db), { extensionId, revisionId, pins } = seedTaskEffectBinding(db);
+  const state = lifecycle.state('maya', extensionId);
+  return lifecycle.activate('maya', { extensionId, revisionId, draftVersion: state.draftVersion,
+    generation: state.selection.generation, evidenceId: pins.approvedEvidenceId }, () => {}).extension;
+}
 
 for (const width of [1440, 390]) test(`named confirmation cancels without a request and deletes the selected item at width ${width}`, async ({ page }, testInfo) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
-  const item = fixture.db.prepare('SELECT id FROM extensions WHERE owner_id=?').get('maya');
   const mutations = [];
   page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/delete')) mutations.push(request.postDataJSON()); });
   try {
+    const item = selectSavedTaskCustomization(fixture.db);
     await page.setViewportSize({ width, height: 900 }); await enter(page, fixture);
     const state = await api(page, 'extensions/' + item.id), beforeTasks = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
     const taskSelection = (await api(page, 'extensions')).selection;
+    expect(taskSelection.revision.extensionId).toBe(item.id);
     await collection(page); const saved = card(page, item.id), remove = saved.getByRole('button', { name: 'Delete', exact: true });
     await remove.click(); const confirm = saved.locator('#customization-delete-confirm');
     await expect(confirm).toBeFocused(); await expect(confirm).toBeInViewport({ ratio: 1 });
@@ -49,9 +57,8 @@ for (const width of [1440, 390]) test(`named confirmation cancels without a requ
     await remove.click(); await confirm.press('Enter');
     await expect(saved).toHaveCount(0); await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeFocused();
     expect(mutations).toEqual([deletionBody(state)]);
-    const current = await api(page, 'extensions'); expect(current.selection).toEqual(taskSelection);
-    const legacy = fixture.db.prepare("SELECT * FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
-    expect(legacy.revision_id).toBeNull(); expect(legacy.generation).toBe(state.selection.generation + 1);
+    const current = await api(page, 'extensions');
+    expect(current.selection).toMatchObject({ revision: null, generation: taskSelection.generation + 1 });
     expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(beforeTasks);
     await page.reload(); await collection(page); await expect(card(page, item.id)).toHaveCount(0);
     expect(fixture.requests).toHaveLength(0);
@@ -91,8 +98,8 @@ test('a task customization is authored, checked, approved, used and deleted thro
 
 test('stale confirmation requires a collection refresh and a new confirmation', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
-  const item = fixture.db.prepare('SELECT id,name FROM extensions WHERE owner_id=?').get('maya');
   try {
+    const item = selectSavedTaskCustomization(fixture.db);
     await enter(page, fixture); await collection(page); const saved = card(page, item.id);
     await saved.getByRole('button', { name: 'Delete', exact: true }).click();
     await expect(saved.locator('#customization-delete-confirm')).toBeFocused();
@@ -113,8 +120,8 @@ test('stale confirmation requires a collection refresh and a new confirmation', 
 
 test('busy feedback points to Stop and a foreign owner cannot delete the item', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
-  const item = fixture.db.prepare('SELECT id FROM extensions WHERE owner_id=?').get('maya');
   try {
+    const item = selectSavedTaskCustomization(fixture.db);
     await enter(page, fixture); const state = await api(page, 'extensions/' + item.id); await collection(page);
     await page.route('**/api/extensions/*/delete', route => route.fulfill({ status: 409, json: { message: 'Stop first', code: 'CUSTOMIZATION_BUSY' } }));
     const saved = card(page, item.id); await saved.getByRole('button', { name: 'Delete', exact: true }).click();
@@ -132,11 +139,11 @@ test('busy feedback points to Stop and a foreign owner cannot delete the item', 
 
 test('a lost deletion response needs an explicit same-confirmation check and keeps one selection transition', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
-  const item = fixture.db.prepare('SELECT id FROM extensions WHERE owner_id=?').get('maya');
   const bodies = []; let lose = true;
   try {
+    const item = selectSavedTaskCustomization(fixture.db);
     await enter(page, fixture); const state = await api(page, 'extensions/' + item.id); await collection(page);
-    const taskSelection = (await api(page, 'extensions')).selection;
+    expect((await api(page, 'extensions')).selection.revision.extensionId).toBe(item.id);
     await page.route('**/api/extensions/*/delete', async route => {
       bodies.push(route.request().postDataJSON()); const response = await route.fetch();
       expect(response.ok(), await response.text()).toBe(true);
@@ -148,40 +155,31 @@ test('a lost deletion response needs an explicit same-confirmation check and kee
     await expect(saved.getByRole('alert')).toContainText('may have finished'); expect(bodies).toHaveLength(1);
     await saved.getByRole('button', { name: 'Check deletion', exact: true }).click(); await expect(saved).toHaveCount(0);
     expect(bodies).toEqual([deletionBody(state), deletionBody(state)]);
-    expect((await api(page, 'extensions')).selection).toEqual(taskSelection);
-    expect(fixture.db.prepare("SELECT generation FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get().generation).toBe(state.selection.generation + 1);
+    expect((await api(page, 'extensions')).selection).toMatchObject({ revision: null, generation: state.selection.generation + 1 });
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });
 
-for (const kind of ['turn', 'resume', 'example']) test(`terminal ${kind} recovery reaches the deleted outcome and clears only its pending entry`, async ({ page }) => {
-  const fixture = await startAuthoringFixture({ unconfigured: kind === 'example' });
+for (const kind of ['turn', 'resume']) test(`terminal ${kind} recovery reaches the deleted outcome and clears only its pending entry`, async ({ page }) => {
+  const fixture = await startAuthoringFixture();
   const entryId = crypto.randomUUID(), unrelatedId = crypto.randomUUID(), operationId = crypto.randomUUID();
   try {
     await enter(page, fixture);
-    let state, submitted;
-    if (kind !== 'example') {
-      submitted = { target: { kind: 'create' }, conversationId: null, operationId,
-        text: `When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`, expectedVersion: 0, expectedDraftVersion: 0 };
-      let accepted = await api(page, 'authoring/turn', submitted, 202);
+    let submitted = { target: { kind: 'create' }, conversationId: null, operationId,
+      text: `When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`, expectedVersion: 0, expectedDraftVersion: 0 };
+    let accepted = await api(page, 'authoring/turn', submitted, 202);
+    await expect.poll(() => fixture.db.prepare('SELECT status FROM authoring_conversations WHERE id=?').get(accepted.conversation.id).status).not.toBe('RUNNING');
+    let state = await api(page, 'extensions/' + accepted.conversation.extensionId);
+    if (kind === 'resume') {
+      const conversation = await api(page, 'authoring/conversations/' + accepted.conversation.id);
+      submitted = { target: { kind: 'resume', extensionId: state.extension.id }, conversationId: conversation.id,
+        operationId: crypto.randomUUID(), text: `Confirmed: completing a task in ${fixture.metadata.projectName} should create ${fixture.metadata.title}; other projects should create nothing.`, expectedVersion: conversation.version, expectedDraftVersion: state.draftVersion };
+      accepted = await api(page, 'authoring/turn', submitted, 202);
       await expect.poll(() => fixture.db.prepare('SELECT status FROM authoring_conversations WHERE id=?').get(accepted.conversation.id).status).not.toBe('RUNNING');
-      state = await api(page, 'extensions/' + accepted.conversation.extensionId);
-      if (kind === 'resume') {
-        const conversation = await api(page, 'authoring/conversations/' + accepted.conversation.id);
-        submitted = { target: { kind: 'resume', extensionId: state.extension.id }, conversationId: conversation.id,
-          operationId: crypto.randomUUID(), text: `Confirmed: completing a task in ${fixture.metadata.projectName} should create ${fixture.metadata.title}; other projects should create nothing.`, expectedVersion: conversation.version, expectedDraftVersion: state.draftVersion };
-        accepted = await api(page, 'authoring/turn', submitted, 202);
-        await expect.poll(() => fixture.db.prepare('SELECT status FROM authoring_conversations WHERE id=?').get(accepted.conversation.id).status).not.toBe('RUNNING');
-        state = await api(page, 'extensions/' + state.extension.id);
-      }
-    } else {
-      const legacy = fixture.db.prepare("SELECT id FROM extensions WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
-      fixture.db.prepare('UPDATE extensions SET creation_operation_id=?,creation_hash=? WHERE id=?').run(operationId, digest('Historical guided-save receipt'), legacy.id);
-      state = await api(page, 'extensions/' + legacy.id);
-      submitted = { entryId, operationId, personal: true };
+      state = await api(page, 'extensions/' + state.extension.id);
     }
     await api(page, `extensions/${state.extension.id}/delete`, deletionBody(state));
-    const key = `daymark-studio-work:maya:${entryId}${kind === 'example' ? ':example' : ''}`;
+    const key = `daymark-studio-work:maya:${entryId}`;
     const unrelatedKey = `daymark-studio-work:maya:${unrelatedId}`;
     const unrelated = { target: { kind: 'create' }, conversationId: null, operationId: crypto.randomUUID(), text: 'A separate pending request.', expectedVersion: 0, expectedDraftVersion: 0 };
     await page.evaluate(({ key, submitted, unrelatedKey, unrelated }) => { sessionStorage.setItem(key, JSON.stringify(submitted)); sessionStorage.setItem(unrelatedKey, JSON.stringify(unrelated)); }, { key, submitted, unrelatedKey, unrelated });
@@ -189,15 +187,15 @@ for (const kind of ['turn', 'resume', 'example']) test(`terminal ${kind} recover
     const providerCalls = fixture.requests.length;
     await collection(page);
     const number = await page.evaluate(key => {
-      const keys = Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index)).filter(value => value.startsWith('daymark-studio-work:maya:') && !value.endsWith(':example'));
+      const keys = Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index)).filter(value => value.startsWith('daymark-studio-work:maya:'));
       return keys.indexOf(key) + 1;
     }, key);
-    await page.getByRole('button', { name: kind === 'example' ? 'Check submitted example 1' : 'Check submitted request ' + number, exact: true }).click();
+    await page.getByRole('button', { name: 'Check submitted request ' + number, exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Customization deleted', exact: true })).toBeFocused();
     await expect(page.getByRole('button', { name: /Retry submitted/ })).toHaveCount(0);
     expect(await page.evaluate(key => sessionStorage.getItem(key), key)).toBeNull();
     expect(JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), unrelatedKey))).toEqual(unrelated);
-    expect(calls).toEqual(kind === 'example' ? [] : ['/api/authoring/recover']); expect(fixture.requests).toHaveLength(providerCalls);
+    expect(calls).toEqual(['/api/authoring/recover']); expect(fixture.requests).toHaveLength(providerCalls);
     await page.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible(); await expect(card(page, state.extension.id)).toHaveCount(0);
   } finally { await fixture.close(); }
@@ -209,7 +207,9 @@ test('deletion keeps loaded earlier cards and leaves an unrelated selection unch
   const insert = fixture.db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,creation_operation_id,creation_hash,draft_version,draft_revision_id) VALUES (?, ?, NULL, ?, ?, NULL, NULL, 0, NULL)');
   ids.forEach((id, index) => insert.run(id, 'maya', 'Saved discussion ' + index, Date.now() + index));
   try {
+    const active = selectSavedTaskCustomization(fixture.db);
     await enter(page, fixture); const selection = (await api(page, 'extensions')).selection; await collection(page);
+    expect(selection.revision.extensionId).toBe(active.id);
     await expect(page.locator('.customization-card')).toHaveCount(20);
     await page.getByRole('button', { name: 'Load more customizations', exact: true }).click();
     await expect(page.locator('.customization-card')).toHaveCount(26);
@@ -223,12 +223,12 @@ test('deletion keeps loaded earlier cards and leaves an unrelated selection unch
 
 test('an owner switch fences the late confirmation snapshot before any deletion is submitted', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
-  const item = fixture.db.prepare("SELECT id FROM extensions WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
   let release, started, delivered;
   const hold = new Promise(resolve => { release = resolve; }), accepted = new Promise(resolve => { started = resolve; });
   const finished = new Promise(resolve => { delivered = resolve; }), posts = [];
   page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/delete')) posts.push(request.url()); });
   try {
+    const item = selectSavedTaskCustomization(fixture.db);
     await enter(page, fixture); await collection(page);
     await page.route('**/api/extensions/' + item.id, async route => {
       const response = await route.fetch(); started(); await hold;
@@ -249,10 +249,10 @@ test('an owner switch fences the late confirmation snapshot before any deletion 
 
 test('an owner switch fences a late deletion response and its confirmation', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
-  const item = fixture.db.prepare('SELECT id,name FROM extensions WHERE owner_id=?').get('maya');
   let release, started;
   const hold = new Promise(resolve => { release = resolve; }), accepted = new Promise(resolve => { started = resolve; });
   try {
+    const item = selectSavedTaskCustomization(fixture.db);
     await enter(page, fixture); await collection(page);
     await page.route('**/api/extensions/*/delete', async route => { const response = await route.fetch(); started(); await hold; await route.fulfill({ response }).catch(() => {}); });
     const saved = card(page, item.id); await saved.getByRole('button', { name: 'Delete', exact: true }).click(); await saved.locator('#customization-delete-confirm').click();

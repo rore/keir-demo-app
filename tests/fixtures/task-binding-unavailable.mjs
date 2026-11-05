@@ -12,11 +12,15 @@ const { createApp } = await import('../../src/app.mjs');
 const { openData } = await import('../../src/data.mjs');
 const { createLifecycle } = await import('../../src/extension-lifecycle.mjs');
 const { admitTaskDraft } = await import('./task-authoring.mjs');
+const { seedTaskEffectBinding } = await import('./task-effect-schema.mjs');
 const db = openData(':memory:');
 let app;
 try {
   // A blank conversation has no artifact, approval or executable selection.
   const { extensionId } = admitTaskDraft(db, createLifecycle(db));
+  const selected = seedTaskEffectBinding(db);
+  db.prepare("UPDATE extension_selections SET revision_id=?,binding_pins=?,generation=1 WHERE owner_id='maya' AND hook_id='TaskCompleted'")
+    .run(selected.revisionId, JSON.stringify(selected.pins));
   const origin = 'http://127.0.0.1:32123';
   app = await createApp({ db, origin, staticRoot: process.argv[2], compiler: {},
     authoring: { config: { status: 'unavailable', code: 'AI_NOT_CONFIGURED' } } });
@@ -29,7 +33,7 @@ try {
   const login = await request('POST', '/api/session', { token: bootstrap.json().contextToken, body: { userId: 'maya' } });
   assert.equal(login.statusCode, 200, login.body);
   const auth = { token: login.json().contextToken, cookie: login.cookies.find(value => value.name === 'keir_demo_session').value };
-  assert.deepEqual(boundVersions, ['2', '3'], 'the actual dispatcher rejects both exact model bindings');
+  assert.deepEqual(boundVersions, ['3'], 'the actual dispatcher rejects the current model binding');
   for (const path of ['/api/extensions', `/api/extensions/${extensionId}`]) {
     const response = await request('GET', path, auth);
     assert.equal(response.statusCode, 200, response.body);
@@ -46,14 +50,11 @@ try {
   }
   assert.deepEqual(db.prepare("SELECT * FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get(), before);
 
-  // Existing historical selection remains safely disableable without new write authority.
-  const selected = db.prepare(`SELECT l.extension_id,s.generation FROM extension_selections s
-    JOIN extension_revision_links l ON l.revision_id=s.revision_id AND l.owner_id=s.owner_id
-    WHERE s.owner_id='maya' AND s.hook_id='ClassifyTask'`).get();
-  const disabled = await request('POST', `/api/extensions/${selected.extension_id}/disable`, { ...auth, body: { generation: selected.generation } });
+  // An unavailable current selection remains safe to disable.
+  const disabled = await request('POST', `/api/extensions/${selected.extensionId}/disable`, { ...auth, body: { generation: before.generation } });
   assert.equal(disabled.statusCode, 200, disabled.body);
   assert.equal(disabled.json().executionAvailability.available, false);
-  assert.equal(db.prepare("SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get().revision_id, null);
+  assert.equal(db.prepare("SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get().revision_id, null);
 
   const projects = await request('GET', '/api/projects', auth);
   assert.equal(projects.statusCode, 200, projects.body);

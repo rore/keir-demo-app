@@ -5,12 +5,9 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { performance } from 'node:perf_hooks';
-import { runReadSimulation } from '@keir/runtime-node/read-simulation';
 import { openData } from '../src/data.mjs';
-import { createLifecycle, simulationCases } from '../src/extension-lifecycle.mjs';
-import { consumeAdvice } from '../src/task-read.mjs';
-import { loadCatalog, digest, TASK_HOOK } from '../src/extension-catalog.mjs';
+import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { digest, json, TASK_HOOK } from '../src/extension-catalog.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { runTaskEffectSimulation } from '../src/task-effect-simulation.mjs';
 import { createApp } from '../src/app.mjs';
@@ -48,14 +45,10 @@ async function approved(lifecycle, owner = 'maya', title) {
 }
 const activate = (lifecycle, state, owner = 'maya') => lifecycle.activate(owner, { ...currentInput(state),
   generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorized);
-function legacyState(db) {
-  return { revisions: db.prepare("SELECT * FROM extension_revisions WHERE template_id<>'authored' ORDER BY id").all(),
-    selections: db.prepare("SELECT * FROM extension_selections WHERE hook_id='ClassifyTask' ORDER BY owner_id").all(),
-    tasks: db.prepare('SELECT * FROM tasks ORDER BY id').all() };
-}
+const nativeTasks = db => db.prepare('SELECT * FROM tasks ORDER BY id').all();
 
 test('actual task evidence, separate approval/activation and named rollback affect only this owner', async t => {
-  const { db, lifecycle } = setup(t), legacy = legacyState(db);
+  const { db, lifecycle } = setup(t), legacy = nativeTasks(db);
   assert.equal(lifecycle.collection('maya').selection.revision, null);
   assert.equal(lifecycle.collection('sam').selection.revision, null);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
@@ -75,7 +68,7 @@ test('actual task evidence, separate approval/activation and named rollback affe
     generation: second.state.selection.generation }, authorized);
   assert.equal(restored.selection.revision.id, first.state.draft.id);
   assert.equal(lifecycle.collection('leo').selection.revision, null);
-  assert.deepEqual(legacyState(db), legacy, 'Checking, approval and activation create no task and preserve legacy records.');
+  assert.deepEqual(nativeTasks(db), legacy, 'Checking, approval and activation create no task and preserve native rows.');
 });
 
 test('approved evidence stays pinned when a later sample run becomes latest', async t => {
@@ -112,7 +105,7 @@ test('captured admission keeps exact approval authority without rereading deploy
   const { db, lifecycle } = setup(t), { state } = await approved(lifecycle);
   const active = activate(lifecycle, state), revisionId = active.draft.id, itemId = active.extension.id;
   const pins = JSON.parse(db.prepare("SELECT binding_pins FROM extension_selections WHERE owner_id='maya' AND hook_id=?").get(TASK_HOOK).binding_pins);
-  assert.equal(pins.profile, 'keir-effect/4'); assert.equal(pins.definitionId, 'daymark.task-completed/3');
+  assert.equal(Object.hasOwn(pins, 'profile'), false); assert.equal(pins.definitionId, 'daymark.task-completed/3');
   assert.equal(pins.approvedEvidenceId, state.approvedEvidenceId); assert.equal(Object.hasOwn(pins, 'qualification'), false);
   const context = { owner: 'maya', itemId, revisionId, pins };
   const later = await lifecycle.simulate('maya', currentInput(active), authorized);
@@ -146,6 +139,27 @@ test('active inspection exposes only its exact approved evidence, never a newer 
   db.prepare('UPDATE extension_evidence SET payload=? WHERE id=?').run('{}', proof);
   state = lifecycle.state('maya', id);
   assert.equal(state.selection.eligible, false); assert.equal(state.selection.approvedEvidenceId, null);
+});
+
+test('an unavailable runtime archive blocks execution and preserves exact saved source and evidence', async t => {
+  const { db, lifecycle } = setup(t), { state } = await approved(lifecycle);
+  const active = activate(lifecycle, state), { id } = active.extension, revision = active.draft.id;
+  const source = lifecycle.source('maya', revision, id);
+  const proof = lifecycle.evidence('maya', active.approvedEvidenceId, id);
+  const read = fs.readFileSync;
+  fs.readFileSync = (path, ...args) => {
+    if (String(path).endsWith('/vendor/keir-runtime-node-0.1.0.tgz')) throw new Error('Runtime archive unavailable');
+    return read(path, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    const reopened = createLifecycle(db);
+    assert.equal(reopened.executionAvailability().available, false);
+    assert.equal(reopened.state('maya', id).selection.eligible, false);
+    assert.deepEqual(reopened.source('maya', revision, id), source);
+    assert.deepEqual(reopened.evidence('maya', proof.id, id), proof);
+    assert.throws(() => reopened.execution('maya', revision, id), { status: 503 });
+  } finally { fs.readFileSync = read; syncBuiltinESMExports(); }
 });
 
 test('two source-owned customer titles use the same generic adapters and independently expected suites', async t => {
@@ -201,11 +215,31 @@ test('foreign IDs, session revocation, forged dependencies and incomplete or reo
   assert.throws(() => activate(lifecycle, state), { status: 409 });
 });
 
+test('a malformed later scenario prevents any dispatch or saved evidence', async t => {
+  let simulations = 0;
+  const { db, lifecycle } = setup(t, { runTaskSimulation: async () => { simulations++; assert.fail('Preflight must reject the whole suite'); } });
+  const state = await load(lifecycle), input = currentInput(state), examples = fixtureFor().cases;
+  const malformed = [examples[0], examples[1].replace('"format":', '"format": "keir-scenario/1", "format":')];
+  const evidenceCount = () => db.prepare('SELECT count(*) AS count FROM extension_evidence').get().count;
+  await assert.rejects(lifecycle.proposeScenarios('maya', { ...input, cases: malformed }, authorized),
+    { status: 400, diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/1' }] });
+  assert.equal(lifecycle.state('maya', input.extensionId).revisionId, input.revisionId);
+  assert.equal(evidenceCount(), 0);
+
+  const suite = json(malformed);
+  db.prepare('UPDATE extension_authored SET suite=? WHERE revision_id=?').run(suite, input.revisionId);
+  db.prepare('UPDATE extension_revisions SET identity=? WHERE id=?')
+    .run(json({ ...state.draft.pins, suiteDigest: digest(suite) }), input.revisionId);
+  await assert.rejects(lifecycle.simulate('maya', input, authorized), { status: 400 });
+  assert.equal(simulations, 0);
+  assert.equal(evidenceCount(), 0);
+});
+
 test('an independently wrong valid expectation runs the actual simulator and cannot create approval', async t => {
   const { lifecycle } = setup(t, { runTaskSimulation: options => {
     const scenarios = options.scenarios.map(text => JSON.parse(text));
     scenarios[0].expect.outcome.result.status = 'NO_OP'; scenarios[0].expect.consumption.result.status = 'NO_OP';
-    return runTaskEffectSimulation({ ...options, scenarios });
+    return runTaskEffectSimulation({ ...options, scenarios: scenarios.map(row => JSON.stringify(row)) });
   } });
   const loaded = await load(lifecycle), state = await lifecycle.simulate('maya', currentInput(loaded), authorized);
   assert.equal(state.evidence.passed, false);
@@ -302,40 +336,12 @@ test('transaction-time reauthorization rolls back selection and history atomical
 });
 
 test('source names do not determine authority and a third owner selects only their own authored revision', async t => {
-  const { db, lifecycle } = setup(t), before = legacyState(db), { state } = await approved(lifecycle, 'sam');
+  const { db, lifecycle } = setup(t), before = nativeTasks(db), { state } = await approved(lifecycle, 'sam');
   const result = activate(lifecycle, state, 'sam');
   assert.equal(result.owner.id, 'sam'); assert.equal(result.selection.revision.provenance, 'customer');
   assert.equal(lifecycle.collection('maya').selection.revision, null); assert.equal(lifecycle.collection('leo').selection.revision, null);
   assert.throws(() => lifecycle.source('maya', state.draft.id, state.extension.id), { status: 404 });
-  assert.deepEqual(legacyState(db), before);
-});
-
-async function legacyReport(template, row, { authorize = () => true, clock = { nowMs: () => Math.floor(performance.now()) } } = {}) {
-  const item = loadCatalog().find(item => item.id === template);
-  const consume = outcome => { const result = consumeAdvice(outcome); return result.status === 'DISPLAYED'
-    ? { status: 'DISPLAYED', code: result.classification } : { status: 'NOT_DISPLAYED' }; };
-  return runReadSimulation({ dcmBytes: item.dcmBytes, artifactBytes: item.artifactBytes, modelDigest: item.pins.modelDigest,
-    artifactDigest: item.pins.artifactDigest, compiler: item.pins.compiler, entrypoint: 'ClassifyTask', consumer: item.pins.consumer },
-  { scope: 'demo.task-advice:legacy-test', bindings: { actorId: 'maya' }, deadline: { clock, expiresAtMs: clock.nowMs() + 1000 },
-    authorize, consume, allowedReceipts: [...['DONE', 'PENDING', 'NEEDS_ATTENTION'].map(code => ({ status: 'DISPLAYED', code })), { status: 'NOT_DISPLAYED' }] }, row.bytes);
-}
-test('legacy read corpus retains both exact six-case suites without acquiring task-write selection authority', async () => {
-  for (const template of ['pending', 'attention']) {
-    const rows = simulationCases(template);
-    assert.deepEqual(rows.map(row => row.id), ['open', 'completed', 'missing', 'business-denied', 'host-denied', 'transient']);
-    for (const row of rows) assert.equal((await legacyReport(template, row, { authorize: () => row.id !== 'host-denied' })).status, 'PASS');
-  }
-});
-test('legacy actual simulator rejects overdue synchronous authorization and gives later cases fresh deadlines', async () => {
-  let delayed = false;
-  const rows = simulationCases('attention'), reports = [];
-  for (const row of rows) reports.push(await legacyReport('attention', row, { authorize: () => {
-    if (!delayed) { delayed = true; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100); }
-    return row.id !== 'host-denied';
-  } }));
-  assert.deepEqual(reports[0].native, { classification: 'LIMIT_EXCEEDED', code: 'BUDGET_EXCEEDED' });
-  assert.ok(reports.slice(1).every(report => report.status === 'PASS'));
-  assert.equal((await legacyReport('attention', rows[0])).status, 'PASS');
+  assert.deepEqual(nativeTasks(db), before);
 });
 
 test('real source compilation, independent suite edits and exact A/B approval/use survive restart', async t => {
@@ -344,8 +350,8 @@ test('real source compilation, independent suite edits and exact A/B approval/us
   t.after(() => { db.close(); rmSync(directory, { recursive: true }); });
   let lifecycle = create(db);
   admitTaskDraft(db, lifecycle, { extensionId: 'maya-task-fixture' });
-  const legacy = legacyState(db), fixture = fixtureFor(), id = itemId(lifecycle);
-  const duplicate = fixture.source.replace('"language": "keir/v0"', '"language": "keir/v0", "language": "keir/v0"');
+  const legacy = nativeTasks(db), fixture = fixtureFor(), id = itemId(lifecycle);
+  const duplicate = fixture.source.replace('"language": "keir/1"', '"language": "keir/1", "language": "keir/1"');
   await assert.rejects(lifecycle.compile('maya', { extensionId: id, hookId: TASK_HOOK, source: duplicate, draftVersion: 0 }, authorized), { status: 422 });
   assert.equal(lifecycle.state('maya', id).draftVersion, 0);
   let state = await lifecycle.compile('maya', { extensionId: id, hookId: TASK_HOOK, source: fixture.source, draftVersion: 0 }, authorized);
@@ -379,7 +385,7 @@ test('real source compilation, independent suite edits and exact A/B approval/us
   state = activate(lifecycle, state); assert.equal(state.selection.generation, 8); assert.equal(state.selection.revision.id, b.id);
   assert.ok(state.restoreTargets.some(row => row.id === a.id));
   state = lifecycle.rollback('maya', { extensionId: id, revisionId: a.id, generation: 8 }, authorized); assert.equal(state.selection.revision.id, a.id);
-  assert.deepEqual(legacyState(db), legacy);
+  assert.deepEqual(nativeTasks(db), legacy);
 });
 
 function readOnlyProgram(steps) {
@@ -391,7 +397,7 @@ function readOnlyProgram(steps) {
     { event: 'CALL_DISPATCHED', step, capability: 'tasks.get' }, { event: 'CALL_SUCCEEDED', step, capability: 'tasks.get' }])
     : [{ event: 'STEP_START', step: 'constant' }, { event: 'VALUE_BOUND', step: 'constant' }]), { event: 'RETURNED' }, { event: 'TERMINATED' }];
   const outcome = { classification: 'COMPLETED', result: { status: 'NO_OP' }, effects: [], trace: trace.map((event, sequence) => ({ sequence, ...event })) };
-  return { source: JSON.stringify(source), row: { format: 'keir-scenario/effect-4', id: 'normal', given: { input: { taskId: 'task1' }, fixture: 'normal' },
+  return { source: JSON.stringify(source), row: { format: 'keir-scenario/1', id: 'normal', given: { input: { taskId: 'task1' }, fixture: 'normal' },
     stubs: calls.map(call => ({ ...call, response: { kind: 'SUCCESS', value: { id: 'task1', projectId: 'project1', status: 'COMPLETED', title: 'Example task' } } })),
     expect: { outcome, calls, consumption: { status: 'REPORTED', classification: 'COMPLETED', result: outcome.result, effects: [] } } } };
 }

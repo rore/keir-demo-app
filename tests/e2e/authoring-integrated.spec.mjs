@@ -255,19 +255,19 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         const syntheticKey = 'synthetic-real-popup-key';
         await dialog.getByLabel('Service', { exact: true }).selectOption(provider);
         await dialog.getByLabel('API key', { exact: true }).fill(syntheticKey);
-        await dialog.getByLabel('Shared allowance (USD)', { exact: true }).fill('3');
+        await expect(dialog.getByLabel('Shared allowance (USD)', { exact: true })).toHaveValue('');
         await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
         await expect(dialog).toHaveCount(0);
         await expect(studio(page).locator('.rs-chat-note')).toContainText('Messages use your configured assistant');
         expect(setupRequests).toHaveLength(1);
         expect(fixture.requests).toEqual([]);
         const stored = JSON.parse(readFileSync(join(fixture.directory, 'ai-authoring.json'), 'utf8'));
-        expect(stored).toMatchObject({ provider, model: 'gpt-5.6-terra', apiKey: syntheticKey, maxUsd: '3' });
+        expect(stored).toMatchObject({ provider, model: 'gpt-5.6-terra', apiKey: syntheticKey, maxUsd: '' });
         const projection = await page.evaluate(async () => {
           const session = await (await fetch('/api/session')).json();
           return (await fetch('/api/authoring/setup', { headers: { 'X-Session-Context': session.contextToken } })).json();
         });
-        expect(projection.configuration).toMatchObject({ status: 'ready', source: 'local', provider, model: 'gpt-5.6-terra', maxUsd: '3' });
+        expect(projection.configuration).toMatchObject({ status: 'ready', source: 'local', provider, model: 'gpt-5.6-terra', maxUsd: null });
         expect(JSON.stringify(projection)).not.toContain(syntheticKey);
         expect(await page.evaluate(() => [...Object.values(localStorage), ...Object.values(sessionStorage)].join('\n'))).not.toContain(syntheticKey);
         await page.reload();

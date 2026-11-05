@@ -1,7 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
-import { PREVIOUS_TASK_DEFINITION } from '../../src/extension-catalog.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -206,7 +205,7 @@ test('one item shows its saved discussions and owner switching does not leak rec
   } finally { await fixture.close(); }
 });
 
-test('an upgraded customization opens its earlier discussion and continues in one transcript', async ({ page }) => {
+test('a revised customization opens its earlier discussion and continues in one transcript', async ({ page }) => {
   test.setTimeout(60_000);
   const fixture = await startAuthoringFixture();
   try {
@@ -216,7 +215,6 @@ test('an upgraded customization opens its earlier discussion and continues in on
     const { extensionId, state, proof } = await seedApprovedItem(page, fixture);
     const text = 'Earlier discussion for this saved customization.';
     const conversationId = await createDiscussion(page, extensionId, state, text);
-    fixture.db.prepare("UPDATE authoring_conversations SET state=json_set(state,'$.definitionId',?) WHERE id=?").run(PREVIOUS_TASK_DEFINITION, conversationId);
     const previous = 'An earlier checked result is still part of this conversation.';
     const insertMessage = fixture.db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)');
     insertMessage.run(conversationId, 'maya', 3, 'earlier-proof',

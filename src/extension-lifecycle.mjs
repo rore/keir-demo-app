@@ -1,57 +1,22 @@
 import { randomUUID } from 'node:crypto';
-import { performance } from 'node:perf_hooks';
-import { runReadSimulation } from '@keir/runtime-node/read-simulation';
 import { AppError, notFound, transaction, revokeTaskAdmissions } from './data.mjs';
-import { loadCatalog, loadHost, historicalDefinitionForPins, admitArtifact, hostBindings, digest, json, consumer, hook, TASK_HOOK, TASK_DEFINITION, taskDefinitionIds } from './extension-catalog.mjs';
-import { runTaskEffectSimulation, taskEffectProofMatches, validateTaskEffectScenarios } from './task-effect-simulation.mjs';
+import { loadHost, readCurrentDefinition, admitArtifact, digest, json, TASK_HOOK, TASK_DEFINITION } from './extension-catalog.mjs';
+import { runTaskEffectSimulation, taskEffectProofMatches, preflightTaskEffectScenarios } from './task-effect-simulation.mjs';
 
 const conflict = () => { throw new AppError(409, 'This extension changed. Review the current version before trying again.'); };
 const deleted = () => { const error = new AppError(410, 'This customization was deleted. Return to your customizations.'); error.code = 'CUSTOMIZATION_DELETED'; throw error; };
 const retired = () => { throw Object.assign(new AppError(410, 'This earlier customization is read-only. Start a new customization to change task behavior.'), { code: 'LEGACY_CUSTOMIZATION_RETIRED' }); };
-const suite = 'task-advice-lifecycle/1', fixtureVersion = 'task-advice-fixtures/1';
-const authoredSuite = 'task-advice-authored/1', authoredFixture = 'task-advice-authored-fixtures/1';
-const safeCodes = new Set(['AUTHORITY_DENIED', 'AUTHORITY_CHECK_FAILED', 'HOST_CONTEXT_INVALID', 'HOST_BINDING_INVALID', 'INPUT_INVALID',
-  'ADAPTER_EXCEPTION', 'ADAPTER_INVALID', 'ADAPTER_TRANSIENT', 'EXPRESSION_FAILED', 'BUDGET_EXCEEDED']);
 const abort = signal => { if (signal?.aborted) throw new AppError(499, 'Preparation stopped. Check saved state before trying again.'); };
-const allowedReceipts = [...['DONE', 'PENDING', 'NEEDS_ATTENTION'].map(code => ({ status: 'DISPLAYED', code })), { status: 'NOT_DISPLAYED' }];
-export function situation(example) {
-  const reads = example?.stubs?.filter(stub => stub.capability === 'tasks.get');
-  const response = reads?.length === 1 ? reads[0].response : undefined;
-  return {
-    taskStatus: response?.kind === 'SUCCESS' && ['OPEN', 'COMPLETED'].includes(response.value?.status) ? response.value.status : null,
-    readFailure: response?.kind === 'BUSINESS_REJECTION' && ['TASK_NOT_FOUND', 'ACCESS_DENIED'].includes(response.code) ? response.code
-      : response?.kind === 'TRANSIENT_FAILURE' ? 'TRANSIENT_FAILURE' : null,
-  };
-}
-export function simulationCases(templateId) {
-  const call = { step: 'source', capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' } };
-  return [
-    ['open', 'Open task', { kind: 'SUCCESS', value: { id: 'sample-task', status: 'OPEN' } }, 'COMPLETED', templateId === 'pending' ? 'PENDING' : 'NEEDS_ATTENTION'],
-    ['completed', 'Completed task', { kind: 'SUCCESS', value: { id: 'sample-task', status: 'COMPLETED' } }, 'COMPLETED', 'DONE'],
-    ['missing', 'Missing task', { kind: 'BUSINESS_REJECTION', code: 'TASK_NOT_FOUND' }, 'BUSINESS_REJECTION', 'TASK_NOT_FOUND'],
-    ['business-denied', 'Task access denied', { kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED' }, 'BUSINESS_REJECTION', 'ACCESS_DENIED'],
-    ['host-denied', 'Advice permission denied', null, 'FAILED', 'AUTHORITY_DENIED'],
-    ['transient', 'Read temporarily unavailable', { kind: 'TRANSIENT_FAILURE' }, 'FAILED', 'ADAPTER_TRANSIENT'],
-  ].map(([id, label, response, classification, code]) => {
-    const expected = { classification, code };
-    const row = { format: 'keir-read-simulation/1', id, input: { taskId: 'sample-task' }, stubs: response ? [{ ...call, response }] : [],
-      expect: { calls: response ? [call] : [], outcome: classification === 'COMPLETED' ? { classification, result: { classification: code } }
-        : { classification, error: { code, path: id === 'host-denied' ? '' : '/steps/0' } },
-      consumption: classification === 'COMPLETED' ? { status: 'DISPLAYED', code } : { status: 'NOT_DISPLAYED' } } };
-    return { id, label, expected, bytes: Buffer.from(json(row)) };
-  });
-}
+const versions = { suite: 'task-effects-authored/1', fixtureVersion: 'daymark-task-effect-fixtures/1', simulator: 'daymark-task-effect-simulation/1' };
 
-export function createLifecycle(db, { runSimulation = runReadSimulation, runTaskSimulation = runTaskEffectSimulation, compiler } = {}) {
-  let catalog = [], legacyHost;
-  const taskHosts = new Map();
-  try { legacyHost = loadHost(); catalog = loadCatalog(); } catch { /* Historical assets may be unavailable. */ }
-  for (const id of taskDefinitionIds) {
-    try { taskHosts.set(id, loadHost(TASK_HOOK, id)); } catch { /* One unavailable model does not disable the other. */ }
+export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulation, compiler } = {}) {
+  let host;
+  try { host = loadHost(); } catch { /* Native tasks remain available without the extension model. */ }
+  let savedDefinition = host;
+  if (!savedDefinition) {
+    try { savedDefinition = readCurrentDefinition(); } catch { /* Unrecognized saved pins stay unavailable. */ }
   }
-  const host = taskHosts.get(TASK_DEFINITION);
   const simulations = new Set();
-  function template(id) { return catalog.find(item => item.id === id); }
   function content(row) { return db.prepare('SELECT * FROM extension_authored WHERE owner_id=? AND revision_id=?').get(row.owner_id, row.id); }
   function authoredPins(value, definition = host) {
     if (!definition) throw new Error('Host unavailable');
@@ -60,42 +25,26 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     if (!/^sha256:[0-9a-f]{64}$/.test(artifact.sourceDigest)) throw new Error('Invalid source identity');
     return { ...definition.pins, rawSourceDigest: digest(value.source), compiledSourceDigest: artifact.sourceDigest,
       artifactDigest: digest(value.artifact), suiteDigest: value.suite === null ? null : digest(value.suite),
-      fixture: definition.pins.hook === TASK_HOOK ? 'daymark-task-effect-fixtures/1' : authoredFixture };
+      fixture: versions.fixtureVersion };
   }
-  function executableHost(pins) {
-    const candidate = taskHosts.get(pins.definitionId);
-    return candidate && Object.entries(candidate.pins).every(([key, value]) => json(pins[key]) === json(value)) ? candidate : null;
+  function matchesHost(candidate, pins) {
+    return candidate && pins?.hook === TASK_HOOK && !Object.hasOwn(pins, 'profile')
+      && Object.entries(candidate.pins).every(([key, value]) => json(pins[key]) === json(value));
   }
   function definition(row) {
-    const pins = JSON.parse(row.identity);
-    if (pins.hook !== TASK_HOOK) return { ...legacyHost, pins };
-    return executableHost(pins) ?? historicalDefinitionForPins(pins);
+    if (!matchesHost(savedDefinition, JSON.parse(row.identity))) throw new Error('Host definition mismatch');
+    return savedDefinition;
   }
-  const taskRevision = row => { try { return JSON.parse(row.identity).hook === TASK_HOOK; } catch { return false; } };
   function stored(row) {
-    if (!row) return null;
-    if (row.template_id !== 'authored') {
-      const item = template(row.template_id);
-      try {
-        const pins = JSON.parse(row.identity);
-        return item && digest(item.artifactBytes) === pins.artifactDigest && digest(Buffer.from(item.source)) === pins.sourceDigest
-          ? { ...item, pins, identity: row.identity } : null;
-      } catch { return null; }
-    }
+    if (row?.template_id !== 'authored') return null;
     try {
-      const value = content(row);
+      const value = content(row), selected = definition(row);
       if (!value) return null;
-      const savedPins = JSON.parse(row.identity), selected = historicalDefinitionForPins(savedPins);
-      const pins = authoredPins(value, { pins: savedPins });
+      const pins = authoredPins(value, selected);
       if (row.identity !== json(pins)) return null;
       return { id: row.id, kind: 'authored', label: value.label, identity: row.identity, pins,
-        artifactBytes: Buffer.from(value.artifact), dcmBytes: selected.dcmBytes, source: Buffer.from(value.source).toString('utf8'), suite: value.suite };
+        artifactBytes: Buffer.from(value.artifact), source: Buffer.from(value.source).toString('utf8'), suite: value.suite };
     } catch { return null; }
-  }
-  function executable(row) {
-    const item = stored(row);
-    if (!item || !taskRevision(row)) return item;
-    return executableHost(item.pins) ? item : null;
   }
   function revision(owner, id, extensionId) {
     const row = extensionId === undefined
@@ -104,7 +53,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     if (!row) throw notFound();
     return row;
   }
-  function valid(row) { return !!row && executable(row)?.identity === row.identity; }
+  function valid(row) { return !!host && !!row && stored(row)?.identity === row.identity; }
   function view(row) {
     if (!row) return null;
     let pins = {};
@@ -113,7 +62,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     const extension = db.prepare('SELECT e.id,CAST(e.name AS BLOB) AS name FROM extensions e JOIN extension_revision_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=?').get(row.owner_id, row.id);
     return { id: row.id, extensionId: extension?.id ?? null, extensionName: extension ? Buffer.from(extension.name).toString('utf8') : null, templateId: row.template_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
       label: item?.label ?? 'Unavailable saved change', pins, provenance: row.provenance,
-      suiteDigest: row.template_id === 'authored' ? item?.pins.suiteDigest ?? null : null };
+      suiteDigest: item?.pins.suiteDigest ?? null };
   }
   function draft(owner, extensionId, terminal = false) {
     if (typeof extensionId !== 'string' || !extensionId) throw notFound();
@@ -129,12 +78,12 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     if (item.draft_id) {
       try {
         const pins = JSON.parse(revision(owner, item.draft_id, extensionId).identity);
-        if (pins.profile === 'keir-effect/4' && taskDefinitionIds.includes(pins.definitionId)) return true;
+        if (pins.hook === TASK_HOOK && pins.definitionId === TASK_DEFINITION && pins.modelRef?.format === 'keir-dcm/1') return true;
       } catch { /* The original conversation can still identify a repairable current draft. */ }
     }
     return !!db.prepare(`SELECT 1 FROM extension_conversation_links l JOIN authoring_conversations c ON c.id=l.conversation_id AND c.owner_id=l.owner_id
       WHERE l.owner_id=? AND l.extension_id=? AND l.purpose='CREATE'
-        AND CASE WHEN json_valid(c.state) THEN json_extract(c.state,'$.definitionId') END IN (?,?)`).get(owner, extensionId, ...taskDefinitionIds);
+        AND CASE WHEN json_valid(c.state) THEN json_extract(c.state,'$.definitionId') END = ?`).get(owner, extensionId, TASK_DEFINITION);
   }
   const requireTask = (owner, extensionId) => { if (!taskItem(owner, extensionId)) retired(); };
   function selection(owner, hookId = TASK_HOOK) {
@@ -143,22 +92,17 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     return state;
   }
   function cases(row, item = stored(row)) {
-    if (row.template_id !== 'authored') return simulationCases(row.template_id);
     if (!item?.suite) return [];
     return JSON.parse(item.suite).map(text => {
       const value = JSON.parse(text), expected = value.expect.outcome;
-      if (taskRevision(row)) return { id: value.id, label: value.id, expected: { outcome: expected, calls: value.expect.calls, consumption: value.expect.consumption,
+      return { id: value.id, label: value.id, expected: { outcome: expected, calls: value.expect.calls, consumption: value.expect.consumption,
         createdTasks: expected.effects?.some(effect => effect.state === 'UNKNOWN') ? null
           : expected.effects?.some(effect => effect.state === 'CONFIRMED')
             ? value.expect.calls.filter(call => call.capability === 'tasks.create').map(call => ({ projectId: call.args.projectId, title: call.args.title })) : [] }, bytes: Buffer.from(text) };
-      return { id: value.id, label: value.id, expected: { classification: expected.classification,
-        code: expected.classification === 'COMPLETED' ? expected.result.classification : expected.error.code }, bytes: Buffer.from(text) };
     });
   }
-  function versions(row) { return taskRevision(row) ? { suite: 'task-effects-authored/1', fixtureVersion: 'daymark-task-effect-fixtures/1', simulator: 'daymark-task-effect-simulation/1' }
-    : row.template_id === 'authored' ? { suite: authoredSuite, fixtureVersion: authoredFixture } : { suite, fixtureVersion }; }
   function suiteIdentity(row) {
-    return digest(json({ ...versions(row), simulator: row.identity, cases: cases(row).map(item => ({ id: item.id, digest: digest(item.bytes) })) }));
+    return digest(json({ ...versions, simulator: row.identity, cases: cases(row).map(item => ({ id: item.id, digest: digest(item.bytes) })) }));
   }
   function evidence(owner, id, extensionId) {
     const row = db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND id=?').get(owner, id);
@@ -167,27 +111,10 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     return row;
   }
   const latestEvidence = row => db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(row.owner_id, row.id);
-  function passing(row, proof) {
-    if (taskRevision(row)) return taskEffectProofMatches(row, content(row), proof);
-    try {
-      if (!stored(row) || proof.owner_id !== row.owner_id || proof.revision_id !== row.id || proof.identity !== row.identity
-          || proof.suite_identity !== suiteIdentity(row) || proof.passed !== 1 || Buffer.byteLength(proof.payload) > 131072) return false;
-      const payload = JSON.parse(proof.payload), examples = cases(row);
-      return examples.length > 0 && json(payload.identity) === json({ dependencies: JSON.parse(row.identity), ...versions(row), suiteDigest: proof.suite_identity })
-        && payload.reports.length === examples.length && payload.reports.every((item, index) => {
-          const expected = examples[index];
-          return item.id === expected.id && item.label === expected.label && json(item.expected) === json(expected.expected)
-            && item.report.status === 'PASS' && item.report.format === 'keir-read-simulation-report/1' && item.report.mismatches.length === 0
-            && json(item.report.native) === json(expected.expected.classification === 'COMPLETED' ? { classification: 'COMPLETED' }
-              : { classification: expected.expected.classification, code: safeCodes.has(expected.expected.code) ? expected.expected.code : 'NATIVE_ERROR' })
-            && json(item.report.identity) === json({ modelDigest: JSON.parse(row.identity).modelDigest, artifactDigest: JSON.parse(row.identity).artifactDigest })
-            && json(item.report.consumption) === json(JSON.parse(expected.bytes).expect.consumption);
-        });
-    } catch { return false; }
-  }
+  function passing(row, proof) { return taskEffectProofMatches(row, content(row), proof, savedDefinition); }
   function eligible(row) {
-    if (!row || !taskRevision(row)) return false;
-    if (row && !db.prepare('SELECT 1 FROM extensions e JOIN extension_revision_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=? AND e.deleted_at IS NULL').get(row.owner_id, row.id)) return false;
+    if (!row) return false;
+    if (!db.prepare('SELECT 1 FROM extensions e JOIN extension_revision_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=? AND e.deleted_at IS NULL').get(row.owner_id, row.id)) return false;
     if (!valid(row)) return false;
     if (row.provenance === 'operator') return !!db.prepare("SELECT 1 FROM extension_history WHERE owner_id=? AND revision_id=? AND operation='operator'").get(row.owner_id, row.id);
     const approval = db.prepare('SELECT * FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(row.owner_id, row.id);
@@ -215,7 +142,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     if (row && !eligible(row)) conflict();
     let pins = null;
     if (row) {
-      const item = executable(row), approved = db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, row.id);
+      const item = stored(row), approved = db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, row.id);
       const approvedEvidenceId = approved?.evidence_id ?? null;
       if (operation === 'activate' && expectedEvidenceId !== approvedEvidenceId) conflict();
       pins = json({ ...item.pins, approvedEvidenceId });
@@ -350,16 +277,15 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     try { admitArtifact(value.artifact, host); authoredPins(value); } catch { throw new AppError(422, 'The compiled program does not match the host contract.'); }
     return value;
   }
-  function selectionInput(item) {
-    return { dcmBytes: item.dcmBytes, artifactBytes: item.artifactBytes, modelDigest: item.pins.modelDigest,
-      artifactDigest: item.pins.artifactDigest, compiler: item.pins.compiler, entrypoint: hook, consumer };
-  }
-  function fixture(owner, item, authorize, permitted = true) {
-    const clock = { nowMs: () => Math.floor(performance.now()) };
-    return { scope: `demo.task-advice:${owner}`, bindings: hostBindings(item.artifactBytes, owner),
-      deadline: { clock, expiresAtMs: clock.nowMs() + 1000 }, authorize: () => { authorize(); return permitted; }, allowedReceipts,
-      consume: outcome => outcome.classification === 'COMPLETED' ? { status: 'DISPLAYED', code: outcome.result.classification } : { status: 'NOT_DISPLAYED' },
-      responseCheck: (capability, args, response) => capability === 'tasks.get' && (response.kind !== 'SUCCESS' || response.value.id === args.taskId) };
+  function checkScenarios(row, item, rawCases) {
+    try { preflightTaskEffectScenarios(item.artifactBytes, definition(row), rawCases); }
+    catch (cause) {
+      const duplicate = cause?.code === 'DUPLICATE_SCENARIO_ID';
+      const error = new AppError(400, duplicate ? 'Scenario IDs must be unique.' : 'A scenario is invalid for the task-completion contract.');
+      error.diagnostics = [{ code: duplicate ? cause.code : 'INVALID_SCENARIO',
+        path: Number.isInteger(cause?.caseIndex) ? `/cases/${cause.caseIndex}` : '/cases' }];
+      throw error;
+    }
   }
   const api = {
     assertAvailable(owner, extensionId, terminal = false) { draft(owner, extensionId, terminal); },
@@ -370,7 +296,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     },
     hostCatalog() {
       return host ? { ...host.catalog, model: { dcm: host.dcmBytes.toString('utf8'), digest: host.pins.modelDigest,
-        profile: host.pins.profile, hook: host.pins.hook, consumer: host.pins.consumer, compiler: host.pins.compiler } } : { hooks: [] };
+        hook: host.pins.hook, consumer: host.pins.consumer, compiler: host.pins.compiler } } : { hooks: [] };
     },
     collection(owner, { before } = {}) {
       const base = { owner: ownerView(owner), selection: selectionView(owner), catalog: choices(), hostCatalog: host?.catalog ?? { hooks: [] }, executionAvailability: api.executionAvailability() };
@@ -434,14 +360,6 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
       db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,creation_operation_id,creation_hash,draft_version,draft_revision_id) VALUES (?,?,NULL,?,?,?,?,0,NULL)').run(extensionId, owner, name.trim(), Date.now(), operationId, hash);
       authorize(); return api.state(owner, extensionId);
     },
-    async createFromSource(owner, input, authorize, { signal } = {}) {
-      authorize(); abort(signal); ownerView(owner);
-      const name = input.label ?? 'Authored extension', hash = digest(json({ operationId: input.operationId, source: input.source, label: input.label }));
-      creationInput(input.operationId, hash, name);
-      const existing = creation(owner, input.operationId, hash);
-      if (existing) return api.state(owner, existing.id);
-      retired();
-    },
     delete(owner, input, authorize, assertIdle = () => {}) {
       return transaction(db, () => {
         authorize();
@@ -477,9 +395,6 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
         if (state.name !== name) db.prepare('UPDATE extensions SET name=? WHERE owner_id=? AND id=?').run(name, owner, input.extensionId);
       }); return api.state(owner, input.extensionId);
     },
-    load(owner, input, authorize) {
-      authorize(); draft(owner, input.extensionId); retired();
-    },
     async compile(owner, input, authorize, { signal } = {}) {
       authorize(); abort(signal); const state = draft(owner, input.extensionId);
       requireTask(owner, input.extensionId);
@@ -498,45 +413,18 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
         if (!eligible(row)) conflict();
         if (state.draft_id && state.draft_id !== row.id) db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)')
           .run(owner, state.draft_id, active.generation, 'draft-superseded');
-        if (row.template_id === 'authored') saveAuthored(owner, input.extensionId, content(row), definition(row));
-        else {
-          const id = randomUUID();
-          db.prepare('INSERT INTO extension_revisions VALUES (?,?,?,?,?)').run(id, owner, row.template_id, row.identity, 'customer');
-          saveHead(owner, input.extensionId, id);
-        }
+        saveAuthored(owner, input.extensionId, content(row), definition(row));
       }); return api.state(owner, input.extensionId);
     },
     async proposeScenarios(owner, input, authorize, { signal } = {}) {
-      authorize(); abort(signal); const row = currentDraft(owner, input), item = executable(row);
-      if (row.template_id !== 'authored') throw new AppError(400, 'Prepared examples retain their original checks.');
+      authorize(); abort(signal); const row = currentDraft(owner, input), item = stored(row);
       if (!Array.isArray(input.cases) || input.cases.length < 1 || input.cases.length > 8
           || input.cases.some(text => typeof text !== 'string' || !text.length || Buffer.byteLength(text) > 65536 || Buffer.from(text).toString('utf8') !== text))
         throw new AppError(400, 'Supply 1–8 case JSON strings, at most 65,536 UTF-8 bytes each.');
       const suiteBytes = json(input.cases);
       if (Buffer.byteLength(suiteBytes) > 131072) throw new AppError(413, 'The complete scenario suite exceeds 128 KiB.');
-      const ids = new Set();
-      for (const [index, text] of input.cases.entries()) {
-        abort(signal); authorize();
-        if (taskRevision(row)) {
-          try { validateTaskEffectScenarios(definition(row), [text]); }
-          catch { const error = new AppError(400, 'A scenario is invalid for the task-completion contract.');
-            error.diagnostics = [{ code: 'INVALID_SCENARIO', path: `/cases/${index}` }]; throw error; }
-        } else {
-        // Denied entry reuses native strict case validation without dispatch or evidence creation.
-        const report = await runReadSimulation(selectionInput(item), fixture(owner, item, authorize, false), Buffer.from(text));
-        if (report.status === 'INVALID_SCENARIO') {
-          const error = new AppError(400, 'A scenario is invalid for the host contract.');
-          error.diagnostics = [{ code: 'INVALID_SCENARIO', path: `/cases/${index}` }]; throw error;
-        }
-        if (['SETUP_ERROR', 'CONSUMER_ERROR'].includes(report.status)) throw new AppError(400, 'A scenario is invalid for the host contract.');
-        }
-        const id = JSON.parse(text).id;
-        if (ids.has(id)) {
-          const error = new AppError(400, 'Scenario IDs must be unique.');
-          error.diagnostics = [{ code: 'DUPLICATE_SCENARIO_ID', path: `/cases/${index}` }]; throw error;
-        }
-        ids.add(id);
-      }
+      authorize(); abort(signal);
+      checkScenarios(row, item, input.cases);
       commit(owner, input.extensionId, authorize, () => {
         abort(signal); currentDraft(owner, input);
         const value = content(row); saveAuthored(owner, input.extensionId, { ...value, suite: suiteBytes }, definition(row));
@@ -546,37 +434,26 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
       draft(owner, extensionId);
       const row = revision(owner, id, extensionId), item = stored(row);
       if (!item || item.identity !== row.identity) throw notFound();
-      const prepared = row.template_id !== 'authored';
       return { extensionId, revisionId: id, source: item.source, artifact: item.artifactBytes.toString('utf8'), pins: JSON.parse(row.identity),
-        cases: prepared ? cases(row).filter(example => example.id !== 'host-denied').map(example => example.bytes.toString('utf8')) : item.suite ? JSON.parse(item.suite) : [],
-        suiteDigest: prepared ? null : item.pins.suiteDigest,
-        hostCases: prepared ? cases(row).filter(example => example.id === 'host-denied').map(example => ({ case: example.bytes.toString('utf8'), editable: false, authority: 'host' })) : [] };
+        cases: item.suite ? JSON.parse(item.suite) : [], suiteDigest: item.pins.suiteDigest, hostCases: [] };
     },
     async simulate(owner, input, authorize, { signal } = {}) {
-      authorize(); abort(signal); const row = currentDraft(owner, input), item = executable(row), examples = cases(row, item);
-      if (!examples.length) throw new AppError(409, 'Save independent examples for this revision before running checks.');
+      authorize(); abort(signal); const row = currentDraft(owner, input), item = stored(row);
+      if (!item.suite) throw new AppError(409, 'Save independent examples for this revision before running checks.');
       if (simulations.has(owner) || simulations.size >= 2) throw new AppError(429, 'Sample checks are busy. Try again after the current check finishes.');
       simulations.add(owner);
       try {
-        let reports = [];
-        if (taskRevision(row)) {
-          const result = await runTaskSimulation({ artifactBytes: item.artifactBytes, host: definition(row), scenarios: examples.map(example => example.bytes.toString('utf8')), signal });
-          authorize(); abort(signal);
-          reports = result.reports;
-        } else {
-        for (const example of examples) {
-          authorize(); abort(signal);
-          const permitted = row.template_id === 'authored' || example.id !== 'host-denied';
-          const report = await runSimulation(selectionInput(item), fixture(owner, item, authorize, permitted), example.bytes);
-          reports.push({ id: example.id, label: example.label, expected: example.expected, report });
-        }
-        }
+        const rawCases = JSON.parse(item.suite);
+        checkScenarios(row, item, rawCases);
+        const result = await runTaskSimulation({ artifactBytes: item.artifactBytes, host: definition(row), scenarios: rawCases, signal });
+        authorize(); abort(signal);
+        const { reports } = result;
         const suiteDigest = suiteIdentity(row);
-        const payload = json({ identity: { dependencies: item.pins, ...versions(row), suiteDigest }, reports });
+        const payload = json({ identity: { dependencies: item.pins, ...versions, suiteDigest }, reports });
         if (Buffer.byteLength(payload) > 131072) throw new AppError(413, 'Sample evidence exceeds the host limit.');
         commit(owner, input.extensionId, authorize, () => {
           abort(signal); currentDraft(owner, input);
-          const proof = { owner_id: owner, revision_id: row.id, identity: row.identity, suite_identity: suiteDigest, payload, passed: reports.length === examples.length && reports.every(entry => entry.report.status === 'PASS') ? 1 : 0 };
+          const proof = { owner_id: owner, revision_id: row.id, identity: row.identity, suite_identity: suiteDigest, payload, passed: reports.length === rawCases.length && reports.every(entry => entry.report.status === 'PASS') ? 1 : 0 };
           db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)').run(randomUUID(), owner, row.id, proof.identity, suiteDigest, payload, passing(row, proof) ? 1 : 0);
         }); return api.state(owner, input.extensionId);
       } finally { simulations.delete(owner); }
@@ -618,7 +495,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
       if (!proof || proof.identity !== row.identity || proof.suite_identity !== suiteIdentity(row) || Buffer.byteLength(proof.payload) > 131072) return null;
       const view = api.evidence(owner, proof.id, input.extensionId);
       return view.id === proof.id && view.revisionId === row.id
-        && json(view.identity) === json({ dependencies: pins, ...versions(row), suiteDigest: proof.suite_identity }) ? view : null;
+        && json(view.identity) === json({ dependencies: pins, ...versions, suiteDigest: proof.suite_identity }) ? view : null;
     },
     evidence(owner, id, extensionId) {
       draft(owner, extensionId);
@@ -630,8 +507,6 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
       const reports = payload.reports.map(item => {
         const original = originals.find(example => example.id === item.id);
         if (!original) return item;
-        const example = JSON.parse(original.bytes);
-        if (taskRevision(row)) {
           const projectName = id => typeof id === 'string'
             ? db.prepare('SELECT name FROM projects WHERE owner_id=? AND id=?').get(owner, id)?.name ?? 'Example project' : undefined;
           const decorate = rows => rows === null ? null : rows?.map(value => ({ ...value, projectName: projectName(value.projectId) }));
@@ -639,8 +514,6 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
             report: { ...item.report, scenario: item.report.scenario ? { task: { ...item.report.scenario.task,
               projectName: projectName(item.report.scenario.task.projectId) } } : undefined,
               observed: item.report.observed ? { ...item.report.observed, createdTasks: decorate(item.report.observed.createdTasks) } : undefined } };
-        }
-        return { ...item, ...situation(example), expected: { ...item.expected, consumption: example.expect.consumption } };
       });
       return { id: proof.id, revisionId: proof.revision_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
         ...payload, reports, passed: passing(row, proof) };
@@ -664,7 +537,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
       const selected = selection(owner);
       if (!selected.revision_id) return null;
       const row = revision(owner, selected.revision_id);
-      return eligible(row) ? { owner, generation: selected.generation, revisionId: row.id, template: executable(row) } : null;
+      return eligible(row) ? { owner, generation: selected.generation, revisionId: row.id, template: stored(row) } : null;
     },
     current(captured) {
       try {
@@ -674,15 +547,15 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     },
     execution(owner, revisionId, extensionId) {
       const row = revision(owner, revisionId, extensionId);
-      if (!taskRevision(row) || !taskItem(owner, extensionId)) retired();
-      const item = executable(row);
-      if (!item) throw new AppError(503, 'The exact saved execution dependencies are unavailable.');
+      requireTask(owner, extensionId);
+      const item = stored(row);
+      if (!host || !item) throw new AppError(503, 'The exact saved execution dependencies are unavailable.');
       return { artifactBytes: item.artifactBytes, host: definition(row), pins: item.pins };
     },
     admissionCurrent(context) {
       try {
-        const state = draft(context.owner, context.itemId), row = revision(context.owner, context.revisionId, context.itemId), item = executable(row);
-        if (state.hook_id !== TASK_HOOK || !item || !eligible(row) || !executableHost(context.pins)) return false;
+        const state = draft(context.owner, context.itemId), row = revision(context.owner, context.revisionId, context.itemId), item = stored(row);
+        if (state.hook_id !== TASK_HOOK || !item || !eligible(row) || !matchesHost(host, context.pins)) return false;
         if (!Object.entries(item.pins).every(([key, value]) => json(context.pins[key]) === json(value))) return false;
         const capturedProof = context.pins.approvedEvidenceId && evidence(context.owner, context.pins.approvedEvidenceId, context.itemId);
         return !!capturedProof && capturedProof.revision_id === row.id && passing(row, capturedProof);

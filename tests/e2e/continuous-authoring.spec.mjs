@@ -3,7 +3,7 @@ import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { createCompiler } from '../../src/compiler.mjs';
-import { digest, TASK_HOOK } from '../../src/extension-catalog.mjs';
+import { TASK_HOOK } from '../../src/extension-catalog.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 
 // Authoring projections are fakes; saved task source and proof use the actual compiler/simulator.
@@ -525,38 +525,4 @@ test('a collection page held across an owner switch cannot replace the new owner
   release();
   await expect(page.locator('.customization-card').first()).toBeVisible();
   await expect(page.getByText('Late owner-private customization', { exact: true })).toHaveCount(0);
-});
-
-test('a lost legacy guided-save receipt uses its exact lookup off page one without a new save or write authority', async ({ page, demo }) => {
-  await signIn(page, demo.origin);
-  const legacy = demo.db.prepare("SELECT id FROM extensions WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
-  const operationId = crypto.randomUUID(), entryId = crypto.randomUUID();
-  // Preserve an original legacy receipt; recovery must never submit a fresh retired save.
-  demo.db.prepare('UPDATE extensions SET creation_operation_id=?,creation_hash=? WHERE id=?').run(operationId, digest('Historical guided-save receipt'), legacy.id);
-  const original = await api(page, demo.origin, 'extensions/' + legacy.id);
-  const source = await api(page, demo.origin, 'extensions/' + legacy.id + '/revisions/' + original.selection.revision.id);
-  const exactLookups = [], posts = [];
-  page.on('request', request => {
-    const path = new URL(request.url()).pathname;
-    if (path.startsWith('/api/extensions/creation/')) exactLookups.push(path);
-    if (path.startsWith('/api/') && request.method() !== 'GET') posts.push(path);
-  });
-  await page.route('**/api/extensions', async route => {
-    const response = await route.fetch(), body = await response.json();
-    return reply(route, { ...body, items: body.items.filter(item => item.extension.id !== legacy.id), next: 'older-items' });
-  });
-  await page.evaluate(({ operationId, entryId }) => {
-    sessionStorage.setItem('daymark-studio-work:maya:' + entryId + ':example', JSON.stringify({ operationId, personal: true }));
-  }, { operationId, entryId });
-  await collection(page);
-  await page.getByRole('button', { name: 'Check submitted example 1', exact: true }).click();
-  const ui = studio(page);
-  await expect(ui).toContainText('The earlier saved example was found.');
-  await expect(ui.getByRole('article', { name: 'Retired customization', exact: true })).toBeVisible();
-  await expect(ui.getByRole('button', { name: /^(Approve this change|Turn on for my tasks)$/ })).toHaveCount(0);
-  expect(posts).toEqual([]); expect(exactLookups).toEqual(['/api/extensions/creation/' + operationId]);
-  expect(new URL(page.url()).hash).toContain('customization=' + legacy.id);
-  expect(await api(page, demo.origin, 'extensions/' + legacy.id)).toEqual(original);
-  expect(await api(page, demo.origin, 'extensions/' + legacy.id + '/revisions/' + original.selection.revision.id)).toEqual(source);
-  expect(demo.requests).toEqual([]);
 });

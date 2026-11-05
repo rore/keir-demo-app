@@ -6,7 +6,7 @@ Compiling new customizations requires Java 21 and the independently pinned Keir 
 
 ## Configure a provider
 
-In the local app, open **Configure** and choose one of the supported provider/model options. Enter its API key and a positive decimal total allowance (up to six fractional digits), then save. Saving checks the values locally; it does not contact the provider, verify the key, start a draft, or incur a charge. The status means **settings saved**, not **provider verified**. Every save requires the full key; the app never reads it back or retains a masked key for reuse.
+In the local app, open **Configure** and choose a supported provider and model. Enter its API key. To cap Daymark spending, enter a positive USD amount with up to six decimal places. Leave the allowance blank to use AI without a Daymark spending cap. Saving checks the values locally and sends no provider request. Every save requires the full key.
 
 | `KEIR_AI_PROVIDER` | `KEIR_AI_MODEL` | Required key |
 | --- | --- | --- |
@@ -15,7 +15,7 @@ In the local app, open **Configure** and choose one of the supported provider/mo
 
 The saved settings file is `ai-authoring.json` in the app's chosen data directory (by default `.data/`). It is ignored by Git. Keep the data directory private and out of public assets, shared backups, and exports. The file contains the key in plaintext protected by the local OS account and directory permissions; it is not encrypted. POSIX creation uses mode `0600` where applicable; Windows uses the directory's inherited ACL. Configuration is shared across all three local demo people and is not production administrator authentication.
 
-The allowance is one positive, finite total shared across all demo owners in the database. The server reserves a conservative amount before each provider request. Reservations are durable and never refunded, including unused capacity, cancellation, interruption, or data reset. Changing settings or resetting data does not restore allowance. Choose an amount you are willing to spend; requests stop when it is exhausted. Do not put keys in browser code, chat, screenshots, logs, or public files.
+When set, the allowance is shared across all demo owners in the database. Daymark records a conservative cost estimate before each provider request, even with the cap off. Those records survive cancellations, settings changes and data resets. A cap must cover previous reservations and stops new requests when the remaining amount is too small. Provider charges still apply with either setting. Leave `KEIR_AI_MAX_USD` unset or blank for no Daymark cap when using environment configuration. Keep keys out of browser code, chat, screenshots, logs and public files.
 
 The provider can receive your authoring text, bounded recent conversation, the published host contract, format examples, current draft and cases, and bounded synthetic check summaries. Daymark offers owner-scoped project discovery for named project choices. The provider does not receive session cookies or protected runtime bindings. Avoid unrelated private information in messages.
 

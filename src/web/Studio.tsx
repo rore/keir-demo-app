@@ -27,7 +27,7 @@ export type Collection = { items: Pick<State, "extension" | "draftVersion" | "dr
 export type StudioTarget = { extensionId: string | null; conversationId?: string | null; recoveryId?: string; history?: boolean };
 type HostCatalog = {
   hooks: { id: string; label: string; description: string; effect: string; trigger: string }[];
-  model: { dcm: string; digest: string; profile: string; hook: string; consumer: object; compiler: unknown };
+  model: { dcm: string; digest: string; hook: string; consumer: object; compiler: unknown };
 };
 type Outcome = { classification: string; code?: string; error?: { code: string }; consumption?: { status: "DISPLAYED" | "NOT_DISPLAYED"; code?: string } };
 type TaskPreview = { id?: string; title: string; status?: "OPEN" | "COMPLETED"; projectId?: string; projectName?: string };
@@ -94,23 +94,6 @@ export function pendingRequests(ownerId: string) {
   } catch { /* The caller can keep an in-memory request when tab storage is unavailable. */ }
   return entries;
 }
-export function pendingGuidedRequests(ownerId: string) {
-  const entries: { entryId: string; operationId: string; personal: boolean }[] = [];
-  const prefix = "daymark-studio-work:" + ownerId + ":";
-  try {
-    for (let index = 0; index < sessionStorage.length; index++) {
-      const key = sessionStorage.key(index)!;
-      if (!key.startsWith(prefix) || !key.endsWith(":example")) continue;
-      const entryId = key.slice(prefix.length, -8);
-      if (!/^[0-9a-f-]{36}$/i.test(entryId)) continue;
-      let value;
-      try { value = JSON.parse(sessionStorage.getItem(key)!); } catch { continue; }
-      if (!value || !/^[0-9a-f-]{36}$/i.test(value.operationId) || typeof value.personal !== "boolean") continue;
-      entries.push({ entryId, operationId: value.operationId, personal: value.personal });
-    }
-  } catch { /* Tab storage can be unavailable. */ }
-  return entries;
-}
 type Setup = {
   configuration: { status: string; code: string | null; source: "local" | "environment" | "none"; provider: string | null; model: string | null; maxUsd: string | null };
   choices: { provider: string; model: string }[];
@@ -165,7 +148,7 @@ function savedTaskIllustration(cases: string[]): TaskIllustration | null {
   for (const text of cases) {
     try {
       const row: Case = JSON.parse(text);
-      if (row.format !== "keir-scenario/effect-4" || row.expect.outcome.classification !== "COMPLETED") continue;
+      if (row.format !== "keir-scenario/1" || row.expect.outcome.classification !== "COMPLETED") continue;
       const taskId = row.given.input.taskId;
       const reads = row.stubs.filter(call => call.capability === "tasks.get" && call.args.taskId === taskId && call.response?.kind === "SUCCESS");
       const source = reads[0]?.response?.value;
@@ -246,7 +229,9 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
     if (!key.current?.value || key.current.value.length > 4096 || /[^\x21-\x7e]/.test(key.current.value)) return reject("key", "Enter an API key of 1–4096 printable characters, without spaces.");
     const [whole, fraction = ""] = maxUsd.split(".");
     const micros = Number(whole) * 1_000_000 + Number(fraction.padEnd(6, "0"));
-    if (!/^\d+(?:\.\d{1,6})?$/.test(maxUsd) || !Number.isSafeInteger(micros) || micros <= 0) return reject("allowance", "Enter a positive USD allowance with up to six decimal places.");
+    if (maxUsd !== "" && (!/^\d+(?:\.\d{1,6})?$/.test(maxUsd) || !Number.isSafeInteger(micros) || micros <= 0)) {
+      return reject("allowance", "Enter a positive USD allowance with up to six decimal places, or leave it blank.");
+    }
     saving.current = true; setWaiting(true);
     callbacks.current.beginSave();
     const apiKey = key.current.value;
@@ -260,7 +245,7 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
       const code = (failure as { code?: string })?.code;
       uncertain.current ||= ![400, 401, 403, 409, 413, 415, 503].includes(status ?? 0);
       setError(status === 409 ? code === "AI_BUSY" ? "Settings were not saved. Authoring is still running or stopping. Wait for it to settle, then re-enter the key before explicitly saving again."
-        : code === "SPEND_LIMIT" ? "Settings were not saved. The total allowance must cover previous reservations. Re-enter the key before explicitly saving a larger total allowance."
+        : code === "SPEND_LIMIT" ? "Settings were not saved. Re-enter the key and choose an allowance that covers previous reservations, or leave it blank."
         : "Settings were not saved. Wait for running authoring to settle and check that the total allowance covers prior reservations. Re-enter the key before explicitly saving again."
         : status === 401 || status === 403 ? "The session or host check rejected these settings. Existing settings remain unchanged."
         : status === 400 || status === 413 || status === 415 ? "These settings were rejected. Check the supported service, model and allowance, then re-enter the key."
@@ -281,7 +266,8 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
         {readFailed && <p role="alert">Assistant settings could not be checked. <button type="button" disabled={waiting || reading} onClick={() => void read(!setup)}>Retry status</button></p>}
         {error && <p className="error" role="alert">{error}</p>}
         {setup && <>
-          <p>Current settings: {setup.configuration.provider ? setup.configuration.provider + " / " + setup.configuration.model + " · " + setup.configuration.maxUsd + " USD total" : "Not configured"}. Saving a key does not establish that it works.</p>
+          <p>Current settings: {setup.configuration.provider ? setup.configuration.provider + " / " + setup.configuration.model + " · "
+            + (setup.configuration.maxUsd === null ? "No Daymark spending cap" : setup.configuration.maxUsd + " USD total") : "Not configured"}. Saving a key does not establish that it works.</p>
           <label htmlFor="assistant-provider">Service</label>
           <select id="assistant-provider" value={provider} disabled={waiting} aria-invalid={invalid === "provider"} onChange={event => {
             setProvider(event.target.value); setModel(setup.choices.find(item => item.provider === event.target.value)?.model ?? ""); if (key.current) key.current.value = "";
@@ -293,7 +279,7 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
           <p id="assistant-key-help">The key is saved privately on the demo server. Enter it for every save; the saved secret is never returned to this form.</p>
           <label htmlFor="assistant-allowance">Shared allowance (USD)</label>
           <input id="assistant-allowance" inputMode="decimal" value={maxUsd} disabled={waiting} aria-invalid={invalid === "allowance"} onChange={event => setMaxUsd(event.target.value)} aria-describedby="assistant-allowance-help" />
-          <p id="assistant-allowance-help">This is the total lifetime allowance, not added credit. Each service request reserves allowance, including interrupted or cancelled work. Previous reservations are retained; requests stop when the allowance runs out.</p>
+          <p id="assistant-allowance-help">Optional. Leave blank to allow provider charges without a Daymark spending cap. If set, this is the total allowance across the demo. It includes estimated costs from earlier requests.</p>
           <p>Replacing settings requires a new conversation for future requests. Saved customizations, sample results and approval remain available.</p>
         </>}
       </div>
@@ -381,7 +367,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [activeProof, setActiveProof] = useState<Evidence | null>(null);
   const [activeSummaryError, setActiveSummaryError] = useState("");
   const [restart, setRestart] = useState<{ draftVersion: number; revisionId: string; generation: number; activeLabel: string; draftLabel: string } | null>(null);
-  const [pendingExample, setPendingExample] = useState(() => pendingGuidedRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId)) ?? null);
   const [recoveryError, setRecoveryError] = useState("");
   const [deleted, setDeleted] = useState(false);
   const deletedTitle = useRef<HTMLHeadingElement>(null);
@@ -480,16 +465,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     } catch { setRecoveryError("This browser could not save recovery information. Keep this page open until the submitted request is confirmed."); }
     setPendingTurn(value);
   }
-  function deletedOutcome(failure: unknown, kind: "turn" | "example", operationId: string) {
+  function deletedOutcome(failure: unknown, operationId: string) {
     const problem = failure as { status?: number; code?: string };
     if (problem?.status !== 410 || problem.code !== "CUSTOMIZATION_DELETED") return false;
-    const key = recoveryKey + (kind === "example" ? ":example" : "");
+    const key = recoveryKey;
     try {
       const saved = JSON.parse(sessionStorage.getItem(key) ?? "null");
       if (saved?.operationId === operationId) sessionStorage.removeItem(key);
     } catch { setRecoveryError("This browser could not clear the matching recovery entry. Returning to it will check the same saved outcome."); }
-    if (kind === "turn") setPendingTurn(old => old?.operationId === operationId ? null : old);
-    else setPendingExample(old => old?.operationId === operationId ? null : old);
+    setPendingTurn(old => old?.operationId === operationId ? null : old);
     deletedRef.current = true; setDeleted(true); setTrusted(false); setRetryTurn(false);
     setAuthoringError(""); setError(""); setConversation(null); setMessages([]); setState(null);
     return true;
@@ -523,22 +507,21 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const canReview = viewedCurrent && !reviewLoading && reviewEvidence?.id === savedReview?.evidenceId
     && reviewEvidence?.revisionId === savedReview?.revision.id && reviewEvidence?.passed && decisionObservationsKnown;
   const activeAuthoring = running(conversation);
-  const legacyConversation = !!conversation && conversation.extensionId === null;
   const staleConversation = !!conversation && !!state?.extension && (conversation.extensionId !== state.extension.id
     || conversation.draft.draftVersion !== state.draftVersion || conversation.draft.revisionId !== (state.draft?.id ?? null)
     || conversation.draft.suiteDigest !== (state.draft?.suiteDigest ?? null));
   const contextRecovery = (conversation?.status === "BLOCKED" && conversation.code === "CONTEXT_LIMIT"
     || !!contextContinuation && contextContinuation.conversationId === conversation?.id)
-    && !legacyConversation && !staleConversation && !historyView;
+    && !staleConversation && !historyView;
   const earlierMessagesFailed = messagePageError?.scope === messageHistory.current?.scope && messagePageError?.before === messagesBefore;
-  const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn || !!pendingExample;
-  const sendDisabled = retired || disabled || legacyConversation || historyView || activeView;
+  const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn;
+  const sendDisabled = retired || disabled || historyView || activeView;
   const reviewReady = !!savedReview && (savedReview.revision.kind !== "authored" || !!reviewSource && reviewSource.key === review
     && reviewSource.ownerId === savedReview.owner.id && reviewSource.revisionId === savedReview.revision.id && reviewSource.suiteDigest === savedReview.suiteDigest);
   const reviewedApproved = viewedCurrent && !!state?.approved && state.approvedEvidenceId === savedReview?.evidenceId && review === reviewKey;
-  const reviewAllowed = !retired && !!decisionEvidenceId && !!state?.draft && !disabled && !legacyConversation && !staleConversation && !historyView
+  const reviewAllowed = !retired && !!decisionEvidenceId && !!state?.draft && !disabled && !staleConversation && !historyView
     && !contextRecovery && !restart;
-  const showSavedBehavior = !retired && !!state?.draft && !legacyConversation && !historyView && !restart;
+  const showSavedBehavior = !retired && !!state?.draft && !historyView && !restart;
   const inlineAvailable = showSavedBehavior && !staleConversation && !contextRecovery;
   const failedEvidenceId = state?.evidence && !state.evidence.passed && state.evidence.revisionId === state.draft?.id ? state.evidence.id : null;
   const viewingCurrentFailure = viewedDraft && !!failedEvidenceId && savedReview?.evidenceId === failedEvidenceId;
@@ -998,7 +981,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   function returnToCurrent() {
-    if (locked.current || pendingTurn || pendingExample) return;
+    if (locked.current || pendingTurn) return;
     requestedConversation.current = null;
     historyMode.current = false; setHistoryView(false); setConversation(null); setReview("");
     messageHistory.current = null; setMessagesBefore(null);
@@ -1010,7 +993,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     void loadAuthoring(undefined, state);
   }
   function continueSaved() {
-    if (!conversation || retired || !authoring?.availability.available || disabled || staleConversation || legacyConversation) return;
+    if (!conversation || retired || !authoring?.availability.available || disabled || staleConversation) return;
     const operationId = crypto.randomUUID();
     if (contextRecovery) setContextContinuation({ conversationId: conversation.id, expectedVersion: conversation.version });
     void submitAuthoring({ target: { kind: "resume", extensionId: extensionId.current! }, conversationId: conversation.id,
@@ -1048,7 +1031,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     } catch (failure) {
       if (!mounted.current || serial.current !== turn) return;
       if (recoveredResponse) throw failure;
-      if (deletedOutcome(failure, "turn", input.operationId)) return;
+      if (deletedOutcome(failure, input.operationId)) return;
       if ((failure as { code?: string }).code === "LEGACY_CUSTOMIZATION_RETIRED") { setRetiredOperation(true); setRetryTurn(false); setAuthoringError(authoringReason("LEGACY_CUSTOMIZATION_RETIRED")); return; }
       if ((failure as { status?: number }).status !== 404) throw failure;
     }
@@ -1077,7 +1060,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           retainTurn(null); setText(value => value === input.text ? "" : value); setObservationPaused(false);
         } catch (failure) {
           if (!mounted.current || serial.current !== turn) return;
-          if (!acceptedResponse && deletedOutcome(failure, "turn", input.operationId)) return;
+          if (!acceptedResponse && deletedOutcome(failure, input.operationId)) return;
           const problem = failure as { status?: number; code?: string };
           if (!acceptedResponse && problem.code === "LEGACY_CUSTOMIZATION_RETIRED") {
             setRetiredOperation(true); setRetryTurn(false); setAuthoringError(authoringReason(problem.code)); return;
@@ -1115,7 +1098,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         }
       }
     } catch (failure) {
-      if (mounted.current && serial.current === turn && deletedOutcome(failure, "turn", input.operationId)) return;
+      if (mounted.current && serial.current === turn && deletedOutcome(failure, input.operationId)) return;
       if (mounted.current && serial.current === turn) setAuthoringError("The submitted request's outcome could not be checked. Check authoring status before retrying; nothing will be sent automatically.");
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
@@ -1141,12 +1124,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     document.getElementById("studio-title")?.focus();
     void (async () => {
       if (pendingTurn) await submitAuthoring(pendingTurn, true);
-      else if (pendingExample) await checkExampleRequest();
       if (!mounted.current || deletedRef.current) return;
       const loaded = await refresh();
       if (!mounted.current || !loaded) return;
       if (pendingTurn && extensionId.current && messageHistory.current?.scope !== "item:" + extensionId.current) await loadAuthoring(undefined, loaded);
-      else if (!pendingTurn && !pendingExample) await loadAuthoring(initialTarget.current.conversationId, loaded);
+      else if (!pendingTurn) await loadAuthoring(initialTarget.current.conversationId, loaded);
       if (mounted.current && entry === "start") document.getElementById("studio-message")?.focus();
     })();
     void readHostCatalog();
@@ -1243,7 +1225,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }, [busy]);
 
   async function mutate(operation: string, body: object, message: string, selection = false) {
-    if (locked.current || !trusted || activeAuthoring || pendingTurn || !extensionId.current || legacyConversation || retired && operation !== "disable") return;
+    if (locked.current || !trusted || activeAuthoring || pendingTurn || !extensionId.current || retired && operation !== "disable") return;
     if (executionUnavailable && ["activate", "rollback"].includes(operation)) return;
     locked.current = true;
     const turn = ++serial.current;
@@ -1448,29 +1430,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (mounted.current && serial.current === turn) setError("Saved history could not be loaded. No customization was changed.");
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
-  function clearExampleRequest() {
-    setPendingExample(null);
-    try { sessionStorage.removeItem(recoveryKey + ":example"); } catch { /* The exact operation still prevents duplicate creation. */ }
-  }
-  async function readExampleRequest(operationId: string, turn: number) {
-    const saved = await callbacks.current.request<State>("extensions/creation/" + encodeURIComponent(operationId), "GET", undefined, authoringLifetime.current.signal).catch(failure => {
-      if ((failure as { status?: number }).status === 404) return null; throw failure;
-    });
-    if (!mounted.current || serial.current !== turn) return;
-    setRetiredOperation(true);
-    if (!saved?.extension) { setError("This earlier submitted example has no confirmed saved customization. It is retired and will not be saved again."); return; }
-    if (saved.owner.id !== ownerId || saved.extension.creationOperationId !== operationId || extensionId.current && extensionId.current !== saved.extension.id) throw new Error("Example recovery mismatch");
-    extensionId.current = saved.extension.id; apply(saved); callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null }); clearExampleRequest();
-    say("The earlier saved example was found. Its history is retained; it cannot be resumed as a task-creating customization.");
-  }
-  async function checkExampleRequest() {
-    if (locked.current || !pendingExample) return;
-    locked.current = true; const turn = ++serial.current;
-    setBusy("Checking the submitted example…"); setError("");
-    try { await readExampleRequest(pendingExample.operationId, turn); }
-    catch (failure) { if (mounted.current && serial.current === turn && !deletedOutcome(failure, "example", pendingExample.operationId)) { setTrusted(false); setError("The submitted example could not be checked. Check its saved status before retrying."); } }
-    finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
-  }
   function submit(event: FormEvent) {
     event.preventDefault();
     if (locked.current || !text.trim() || sendDisabled || !authoring?.availability.available) return;
@@ -1511,7 +1470,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     <button className="quiet-button" onClick={() => callbacks.current.unavailable()}>Back to Customizations</button></section>;
   return <section className={`read-studio${reviewOpen ? " rs-review-open" : ""}`} aria-label="Customization Studio">
     <div className="sr-only" role="status">{busy || notice}</div>
-    <header className="rs-header"><div><p className="rs-breadcrumb">Customization Studio</p><div className="rs-title"><h1 id="studio-title" tabIndex={-1} title={state?.extension?.name}>{state?.extension?.name ?? (target.extensionId ? "Opening customization…" : legacyConversation ? "Earlier conversation" : target.conversationId ? "Opening conversation…" : "New customization")}</h1>
+    <header className="rs-header"><div><p className="rs-breadcrumb">Customization Studio</p><div className="rs-title"><h1 id="studio-title" tabIndex={-1} title={state?.extension?.name}>{state?.extension?.name ?? (target.extensionId ? "Opening customization…" : target.conversationId ? "Opening conversation…" : "New customization")}</h1>
       {state?.extension && <CustomizationName key={state.owner.id + "/" + state.extension.id} ownerId={state.owner.id} itemId={state.extension.id} name={state.extension.name} disabled={disabled || !!restart} request={request} saved={next => {
         if (!mounted.current || next.owner.id !== ownerId || next.extension?.id !== extensionId.current) return;
         setState(old => old?.extension?.id === next.extension!.id ? { ...old, extension: { ...old.extension, name: next.extension!.name },
@@ -1569,14 +1528,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             </article>;
           })}
           {retired && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3><p>Its source, examples, discussion and history remain available. It cannot run or be resumed as a task-creating customization. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
-          {legacyConversation && <p role="status">Earlier discussion · read-only. No customization link has been confirmed.</p>}
           {historyView && !activeAuthoring && <article className="rs-message rs-decision"><p>Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.</p>
-            <button disabled={!!busy || !!pendingTurn || !!pendingExample} onClick={returnToCurrent}>Return to current changes</button></article>}
+            <button disabled={!!busy || !!pendingTurn} onClick={returnToCurrent}>Return to current changes</button></article>}
           {conversation?.review && !eligibleOffer && <article className="rs-message"><p>These saved examples do not support approval of the current changes.</p>
             <button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void (inlineAvailable && conversation.review!.evidenceId === failedEvidenceId
               ? openReview(conversation.review!.evidenceId) : showEvidence(conversation.review!.evidenceId))}>{conversation.review.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button></article>}
           {conversation && !contextRecovery && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
-          {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT", "EXPIRED"].includes(conversation?.code ?? "") && !activeAuthoring && !legacyConversation && !staleConversation && !historyView && !retired && <button disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue here from saved work"}</button>}
+          {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT", "EXPIRED"].includes(conversation?.code ?? "") && !activeAuthoring && !staleConversation && !historyView && !retired && <button disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue here from saved work"}</button>}
           {state?.extension && ownActive && !historyView && !staleConversation && <article className="rs-message">
             <p>{state.draft && state.draft.id !== ownActive.id ? "Your current setup is still on. Your saved changes are not in use yet." : "This setup is in use."}</p>
             {state.draft && state.draft.id !== ownActive.id && checkedDraftSummary && <p>Checked examples for your saved changes: {checkedDraftSummary}.</p>}
@@ -1587,8 +1545,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {authoringError && <p role="alert">{authoringError}</p>}
           {recoveryError && <p role="alert">{recoveryError}</p>}
           {pendingTurn && <article className="rs-message"><strong>Submitted request</strong><p>{pendingTurn.text}</p></article>}
-          {pendingExample && <div className="rs-recovery"><button disabled={!!busy} onClick={() => void checkExampleRequest()}>Check submitted example</button>
-</div>}
           {(authoringError || observationPaused || pendingTurn) && <div className="rs-recovery"><button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring()}>{!authoring && authoringError ? "Retry status" : "Check authoring status"}</button>
             {pendingTurn && retryTurn && !retired && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}</div>}
           {showSavedBehavior && state?.draft && <article className="rs-sheet rs-inline-behavior" aria-labelledby="studio-saved-change">
@@ -1694,7 +1650,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!restart && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
         {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
-        <form hidden={retired || legacyConversation || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Daymark assistant</label>
+        <form hidden={retired || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Daymark assistant</label>
           <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder="Describe what you want or answer a question…"
             onKeyDown={event => {
               if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;

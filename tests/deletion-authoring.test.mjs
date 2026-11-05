@@ -9,7 +9,7 @@ import { createApp } from '../src/app.mjs';
 import { createLifecycle as lifecycleFactory } from '../src/extension-lifecycle.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
-import { TASK_HOOK, digest, json } from '../src/extension-catalog.mjs';
+import { TASK_HOOK } from '../src/extension-catalog.mjs';
 import { taskCustomizationFixture } from './fixtures/task-customization.mjs';
 import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 
@@ -24,40 +24,6 @@ const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 
 const lease = { sessionId: 'synthetic-session', current: () => true };
 const authorize = () => {};
 
-test('explicit Stop settles nonlive retired runs without rewriting saved JSON, original receipts or UNKNOWN spending', async t => {
-  const db = openData(':memory:'), lifecycle = createLifecycle(db), fixture = admitTaskDraft(db, lifecycle, { operationId: 'legacy-stop-operation' });
-  const original = { conversationId: null, operationId: 'legacy-stop-operation', text: 'Original saved request.', expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'create' } };
-  const state = { ...fixture.conversationState, continuation: { opaque: 'old-private-continuation' } }; delete state.definitionId;
-  state.usage.reservedMicros = 321;
-  const rawState = ' ' + JSON.stringify(state) + ' ', rawView = '{ "messages": [], "code": null, "review": null }';
-  db.prepare("UPDATE authoring_conversations SET state=?,view=?,status='RUNNING' WHERE id=?").run(rawState, rawView, fixture.conversationId);
-  db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run(fixture.conversationId, 'maya', original.operationId, digest(json(original)), state.runId, 0);
-  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run(fixture.conversationId, 'maya', state.runId, 1, 'provider', null, 321, 'UNKNOWN');
-  db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run(fixture.conversationId, 'maya', 1, 'original-message', '{ "id": "original-message", "role": "user", "kind": "text", "text": "Original saved request." }');
-  db.exec('UPDATE authoring_budget SET reserved_micros=321');
-  const header = () => db.prepare('SELECT * FROM authoring_conversations WHERE id=?').get(fixture.conversationId);
-  const retained = () => Object.fromEntries(['authoring_operations', 'authoring_dispatches', 'authoring_messages', 'authoring_budget']
-    .map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
-  const beforeHeader = header(), before = retained(); let requests = 0;
-  const service = createAuthoringService({ db, lifecycle, config, providerFactory: () => {
-    requests++; assert.fail('Retired Stop or recovery must never construct a provider.');
-  } });
-  t.after(async () => { await service.close(); db.close(); });
-  assert.deepEqual(header(), beforeHeader, 'startup remains byte-preserving');
-  const confirmation = { runId: state.runId, expectedVersion: 0 };
-  assert.throws(() => service.cancel('leo', fixture.conversationId, confirmation, lease), { status: 404 });
-  assert.throws(() => service.cancel('maya', fixture.conversationId, { ...confirmation, runId: 'wrong-run' }, lease), { code: 'STALE_CONVERSATION' });
-  assert.throws(() => service.cancel('maya', fixture.conversationId, { ...confirmation, expectedVersion: 1 }, lease), { code: 'STALE_CONVERSATION' });
-  assert.deepEqual(header(), beforeHeader);
-  const stopped = service.cancel('maya', fixture.conversationId, confirmation, lease);
-  assert.equal(stopped.status, 'CANCELLED'); assert.equal(stopped.retired, true);
-  assert.equal((await service.wait('maya', fixture.conversationId)).status, 'CANCELLED');
-  assert.deepEqual({ ...header() }, { ...beforeHeader, status: 'CANCELLED', cancel_requested: 1 });
-  assert.deepEqual(retained(), before);
-  assert.equal(service.recover('maya', original).operation.id, original.operationId);
-  assert.equal((await service.turn('maya', original, lease)).conversation.status, 'CANCELLED');
-  assert.deepEqual(retained(), before); assert.equal(requests, 0);
-});
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const done = { calls: [], text: 'Saved discussion.', usage: { inputTokens: 1, outputTokens: 1 } };
 function provider(complete = async () => done) {
@@ -272,7 +238,7 @@ test('deleted authoring receipts and UNKNOWN spending survive reopen without pai
   assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, config.reserveMicros);
 });
 
-test('deleted linked discussions are filtered before paging; deleted anchors and legacy unlinked discussions remain valid', async t => {
+test('deleted and unlinked discussions are filtered before paging while deleted anchors remain valid', async t => {
   const { db, lifecycle, service } = direct(t);
   const deletedItem = firstItem(lifecycle);
   const kept = admitTaskDraft(db, lifecycle, { operationId: 'kept-item' }).state;
@@ -287,22 +253,17 @@ test('deleted linked discussions are filtered before paging; deleted anchors and
   assert.equal(first.conversations.length, 20); assert.ok(first.next);
   const anchor = JSON.parse(Buffer.from(first.next, 'base64url').toString('utf8'));
   const anchorLink = db.prepare('SELECT extension_id FROM extension_conversation_links WHERE conversation_id=?').get(anchor.id);
-  // Pick a retained legacy discussion from the other item; migration intentionally leaves ambiguous links absent.
-  const legacyId = conversations.find(id => id !== anchor.id && db.prepare('SELECT extension_id FROM extension_conversation_links WHERE conversation_id=?').get(id).extension_id !== anchorLink.extension_id);
-  db.prepare('DELETE FROM extension_conversation_links WHERE conversation_id=?').run(legacyId);
+  const unlinkedId = conversations.find(id => id !== anchor.id && db.prepare('SELECT extension_id FROM extension_conversation_links WHERE conversation_id=?').get(id).extension_id !== anchorLink.extension_id);
+  db.prepare('DELETE FROM extension_conversation_links WHERE conversation_id=?').run(unlinkedId);
   lifecycle.delete('maya', confirmation(lifecycle, anchorLink.extension_id), authorize, () => service.assertItemIdle('maya', anchorLink.extension_id));
   const after = service.list('maya');
-  const expected = db.prepare(`SELECT c.id FROM authoring_conversations c LEFT JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id
-    WHERE c.owner_id='maya' AND (l.extension_id IS NULL OR l.extension_id<>?) ORDER BY c.created_at DESC,c.id DESC`).all(anchorLink.extension_id).map(row => row.id);
+  const expected = db.prepare(`SELECT c.id FROM authoring_conversations c JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id
+    WHERE c.owner_id='maya' AND l.extension_id<>? ORDER BY c.created_at DESC,c.id DESC`).all(anchorLink.extension_id).map(row => row.id);
   assert.deepEqual(after.conversations.map(item => item.id), expected);
   assert.equal(after.next, null);
-  assert.ok(after.conversations.some(item => item.id === legacyId && item.extensionId === null));
-  assert.equal(service.read('maya', legacyId).extensionId, null);
-  assert.ok(service.messages('maya', legacyId).messages.length > 0);
-  const legacy = service.read('maya', legacyId);
-  await assert.rejects(service.turn('maya', { conversationId: legacyId, operationId: 'legacy-resume', text: 'Continue.',
-    expectedVersion: legacy.version, expectedDraftVersion: legacy.draft.draftVersion,
-    target: { kind: 'resume', extensionId: kept.extension.id } }, lease), { status: 404 });
+  assert.ok(after.conversations.every(item => item.id !== unlinkedId));
+  assert.throws(() => service.read('maya', unlinkedId), { status: 404 });
+  assert.throws(() => service.messages('maya', unlinkedId), { status: 404 });
   const continued = service.list('maya', undefined, first.next);
   assert.deepEqual(continued.conversations.map(item => item.id), expected.filter(id => {
     const row = db.prepare('SELECT created_at FROM authoring_conversations WHERE id=?').get(id);

@@ -5,8 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData } from '../src/data.mjs';
-import { createLegacyV4 } from './fixtures/legacy-v4.mjs';
-import { legacySelections } from './fixtures/task-effect-schema.mjs';
 
 const existingTables = ['users', 'projects', 'tasks', 'extension_revisions', 'extension_selections',
   'extension_evidence', 'extension_approvals', 'extension_history', 'extension_authored'];
@@ -14,7 +12,7 @@ const authoringHistoryTables = ['authoring_messages', 'authoring_operations', 'a
 const authoringTables = ['authoring_budget', 'authoring_conversations', ...authoringHistoryTables];
 const allDataTables = [...existingTables, ...authoringTables, 'extensions', 'extension_revision_links', 'extension_conversation_links'];
 const snapshot = (db, tables) => Object.fromEntries(tables.map(table => [table,
-  table === 'extension_selections' ? legacySelections(db) : db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'keir-authoring-data-'));
   t.after(() => { assert.ok(directory.startsWith(join(tmpdir(), 'keir-authoring-data-'))); rmSync(directory, { recursive: true, force: true }); });
@@ -27,40 +25,7 @@ function insertConversation(db, overrides = {}) {
   db.prepare(`INSERT INTO authoring_conversations(${Object.keys(row).join(',')}) VALUES (${Object.keys(row).map(() => '?').join(',')})`).run(...Object.values(row));
 }
 
-test('populated v3 migrates once, retaining every native/lifecycle byte and existing budget on reopen', t => {
-  const { path } = fixture(t);
-  let db = createLegacyV4(path);
-  db.exec('DROP TABLE authoring_conversations; DROP TABLE authoring_budget; PRAGMA user_version=3');
-  db.prepare("UPDATE tasks SET notes=? WHERE id=(SELECT id FROM tasks LIMIT 1)").run('Original native notes: \u0000\u03bb');
-  const revision = db.prepare("SELECT id FROM extension_revisions WHERE owner_id='owner-a'").get().id;
-  db.prepare('INSERT INTO extension_authored VALUES (?, ?, ?, ?, ?, ?)').run(revision, 'owner-a', 'Original source',
-    Buffer.from([0, 255, 195, 169, 10]), Buffer.from([123, 0, 255, 125]), '{"independent":"\u03bb"}');
-  db.prepare('INSERT INTO extension_evidence VALUES (?, ?, ?, ?, ?, ?, ?)').run('evidence-1', 'owner-a', revision,
-    'exact identity', 'exact suite identity', '{"original":"\u03bb"}', 1);
-  db.prepare('INSERT INTO extension_approvals VALUES (?, ?, ?)').run('owner-a', revision, 'evidence-1');
-  db.prepare('UPDATE extension_states SET draft_version=7, draft_id=? WHERE owner_id=?').run(revision, 'owner-a');
-  const original = snapshot(db, existingTables);
-  const migrated = { ...original, tasks: original.tasks.map(row => Object.assign(Object.create(null), row, { tags: '[]' })) };
-  db.close();
-
-  db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
-  assert.equal(db.prepare("SELECT draft_revision_id FROM extensions WHERE owner_id='owner-a'").get().draft_revision_id, revision);
-  assert.deepEqual(snapshot(db, existingTables), migrated);
-  assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 0 });
-  assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 0);
-  db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(9007199254740991);
-  insertConversation(db, { owner_id: 'owner-a' });
-  const authoring = snapshot(db, authoringTables);
-  db.close();
-  db = openData(path);
-  assert.deepEqual(snapshot(db, existingTables), migrated);
-  assert.deepEqual(snapshot(db, authoringTables), authoring);
-  assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
-  db.close();
-});
-
-test('schema 6 retains ownership, identity, statuses, integer bounds and bounded projection bytes', t => {
+test('current schema retains ownership, identity, statuses, integer bounds and bounded projection bytes', t => {
   const { path } = fixture(t), db = openData(path);
   insertConversation(db);
   assert.throws(() => insertConversation(db, { id: 'conversation-2' }), /UNIQUE/);
@@ -100,32 +65,6 @@ test('schema 6 retains ownership, identity, statuses, integer bounds and bounded
   for (const value of [0, 9007199254740991]) db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(value);
   assert.throws(() => db.prepare('INSERT INTO authoring_budget VALUES (1, 0)').run(), /UNIQUE/);
   assert.throws(() => db.prepare('INSERT INTO authoring_budget VALUES (2, 0)').run(), /CHECK/);
-  db.close();
-});
-
-test('schema 4 migration rolls back partial DDL and rejects unsupported versions without resetting rows', t => {
-  const { path } = fixture(t);
-  let db = createLegacyV4(path);
-  const original = snapshot(db, existingTables);
-  db.exec('DROP TABLE authoring_conversations; DROP TABLE authoring_budget; CREATE TABLE authoring_conversations(conflict TEXT); PRAGMA user_version=3');
-  db.close();
-  assert.throws(() => openData(path), /already exists/);
-  db = new DatabaseSync(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
-  assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='authoring_budget'").get().n, 0);
-  assert.deepEqual(snapshot(db, existingTables), original);
-  db.exec('DROP TABLE authoring_conversations; CREATE TABLE authoring_budget(id INTEGER PRIMARY KEY, reserved_micros INTEGER); INSERT INTO authoring_budget VALUES (1, 1234)');
-  db.close();
-  assert.throws(() => openData(path), /already exists/);
-  db = new DatabaseSync(path);
-  assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, 1234);
-  db.exec('PRAGMA user_version=99');
-  db.close();
-  assert.throws(() => openData(path), /Unsupported database version/);
-  db = new DatabaseSync(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 99);
-  assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, 1234);
-  assert.deepEqual(snapshot(db, existingTables), original);
   db.close();
 });
 
@@ -178,12 +117,36 @@ test('failed reset rolls conversation deletion back without releasing reserved b
   db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run('conversation-1', 'maya', 1, 'message-1', '{"id":"message-1","receipt":{"evidenceId":"proof"}}');
   db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run('conversation-1', 'maya', 'operation-1', 'exact-body-hash', 'run-1', 1);
   db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run('conversation-1', 'maya', 'run-1', 1, 'provider', null, 2345, 'UNKNOWN');
-  db.exec(`UPDATE authoring_budget SET reserved_micros=2345;
-    CREATE TRIGGER fail_authoring_reset BEFORE INSERT ON users BEGIN SELECT RAISE(ABORT, 'seed blocked'); END;`);
+  db.exec('UPDATE authoring_budget SET reserved_micros=2345');
   const original = snapshot(db, allDataTables);
   db.close();
-  await assert.rejects(resetData(directory, true), /seed blocked/);
+  await assert.rejects(resetData(directory, true, async (source, backupPath) => {
+    await backup(source, backupPath);
+    source.exec("CREATE TEMP TRIGGER fail_authoring_reset BEFORE INSERT ON main.users BEGIN SELECT RAISE(ABORT, 'seed blocked'); END");
+  }), /seed blocked/);
   db = openData(path);
   assert.deepEqual(snapshot(db, allDataTables), original);
   db.close();
+});
+
+test('current schema enforces owner/run lineage and immutable creation time and dispatch outcomes', t => {
+  const { path } = fixture(t), db = openData(path);
+  insertConversation(db, { id: 'conversation', created_at: 1, run_id: 'run' });
+  db.exec("INSERT INTO authoring_operations VALUES ('conversation','maya','op','hash','run',1)");
+  db.exec("INSERT INTO authoring_dispatches VALUES ('conversation','maya','run',1,'provider',NULL,99,NULL)");
+  db.close();
+  const reopened = openData(path);
+  assert.throws(() => reopened.exec('UPDATE authoring_conversations SET created_at=2'), /immutable/);
+  reopened.exec('UPDATE authoring_conversations SET created_at=created_at');
+  for (const sql of ["UPDATE authoring_dispatches SET reserved_micros=0", "UPDATE authoring_dispatches SET outcome='invalid'",
+    "INSERT INTO authoring_messages VALUES ('conversation','leo',1,'foreign','{}')",
+    "INSERT INTO authoring_operations VALUES ('conversation','leo','foreign','hash','foreign-run',1)",
+    "INSERT INTO authoring_dispatches VALUES ('conversation','leo','run',2,'tool','call',0,NULL)",
+    "INSERT INTO authoring_dispatches VALUES ('conversation','maya','missing-run',2,'tool','call',0,NULL)"])
+    assert.throws(() => reopened.exec(sql));
+  reopened.exec("UPDATE authoring_dispatches SET outcome='UNKNOWN'");
+  assert.throws(() => reopened.exec("UPDATE authoring_dispatches SET outcome='SUCCESS'"), /immutable/);
+  assert.throws(() => reopened.exec('UPDATE authoring_dispatches SET reserved_micros=0'), /immutable/);
+  assert.equal(reopened.prepare('SELECT reserved_micros FROM authoring_dispatches').get().reserved_micros, 99);
+  assert.deepEqual(reopened.prepare('PRAGMA foreign_key_check').all(), []); reopened.close();
 });

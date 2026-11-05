@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Collection, State, StudioTarget } from "./Studio";
-import { pendingGuidedRequests, pendingRequests } from "./Studio";
+import { pendingRequests } from "./Studio";
 
 export default function Customizations({ request, changed, beforeSelectionChange, open, focusAction = "", notice = "" }: {
   request: <T>(path: string, method?: string, body?: object) => Promise<T>;
@@ -11,16 +11,12 @@ export default function Customizations({ request, changed, beforeSelectionChange
   notice?: string;
 }) {
   const [state, setState] = useState<Collection | null>(null);
-  const [legacy, setLegacy] = useState<{ id: string; extensionId: string | null }[]>([]);
-  const [legacyNext, setLegacyNext] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState("");
   const [loadedItems, setLoadedItems] = useState(false);
   const [moreError, setMoreError] = useState("");
   const lifetime = useRef(0), paging = useRef(false);
   const [error, setError] = useState(false);
-  const [historyError, setHistoryError] = useState(false);
   const [recoveries, setRecoveries] = useState<ReturnType<typeof pendingRequests>>([]);
-  const [guidedRecoveries, setGuidedRecoveries] = useState<ReturnType<typeof pendingGuidedRequests>>([]);
   const [retry, setRetry] = useState(0);
   const [deletion, setDeletion] = useState<{ id: string; name: string; draftVersion: number; generation: number; selected: boolean; message: string; blocked: boolean; uncertain: boolean } | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -31,41 +27,31 @@ export default function Customizations({ request, changed, beforeSelectionChange
   useEffect(() => {
     let current = true;
     ++lifetime.current; paging.current = false; deletingRef.current = false; setDeletion(null); setDeleting(false); setLoadingMore(""); setLoadedItems(false);
-    setError(false); setHistoryError(false);
+    setError(false);
     document.getElementById("customizations-heading")?.focus();
     callbacks.current.request<Collection>("extensions").then(next => {
       if (!current) return;
       callbacks.current.changed(next.selection.generation);
       setState(next);
       setRecoveries(pendingRequests(next.owner.id));
-      setGuidedRecoveries(pendingGuidedRequests(next.owner.id));
     }).catch(() => { if (current) setError(true); });
-    callbacks.current.request<{ conversations: { id: string; extensionId: string | null }[]; next?: string | null }>("authoring").then(next => {
-      if (current) { setLegacy(next.conversations.filter(item => item.extensionId === null)); setLegacyNext(next.next ?? null); }
-    }).catch(() => { if (current) setHistoryError(true); });
     return () => { current = false; ++lifetime.current; };
   }, [retry]);
   useEffect(() => { if (state && focusAction) document.getElementById(focusAction)?.focus({ preventScroll: true }); }, [state?.owner.id, focusAction]);
-  async function loadMore(kind: "items" | "conversations") {
-    const cursor = kind === "items" ? state?.next : legacyNext;
+  async function loadMore() {
+    const cursor = state?.next;
     if (!cursor || !state || paging.current || deletingRef.current) return;
     paging.current = true;
     const turn = lifetime.current, ownerId = state.owner.id;
     const focus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const position = { x: window.scrollX, y: window.scrollY };
-    setLoadingMore(kind); setMoreError("");
+    setLoadingMore("items"); setMoreError("");
     try {
-      if (kind === "items") {
-        const next = await callbacks.current.request<Collection>("extensions?before=" + encodeURIComponent(cursor));
-        if (lifetime.current !== turn) return;
-        if (next.owner.id !== ownerId) throw new Error("Customization owner mismatch");
-        setState(old => old ? { ...old, items: [...old.items, ...next.items.filter(item => !old.items.some(row => row.extension?.id === item.extension?.id))], next: next.next } : old);
-        setLoadedItems(true);
-      } else {
-        const next = await callbacks.current.request<{ conversations: typeof legacy; next: string | null }>("authoring?before=" + encodeURIComponent(cursor));
-        if (lifetime.current !== turn) return;
-        setLegacy(old => [...old, ...next.conversations.filter(item => item.extensionId === null && !old.some(row => row.id === item.id))]); setLegacyNext(next.next);
-      }
+      const next = await callbacks.current.request<Collection>("extensions?before=" + encodeURIComponent(cursor));
+      if (lifetime.current !== turn) return;
+      if (next.owner.id !== ownerId) throw new Error("Customization owner mismatch");
+      setState(old => old ? { ...old, items: [...old.items, ...next.items.filter(item => !old.items.some(row => row.extension?.id === item.extension?.id))], next: next.next } : old);
+      setLoadedItems(true);
     } catch {
       if (lifetime.current === turn) setMoreError("Earlier saved work could not be loaded. Your current list is kept; try Load more again.");
     } finally { if (lifetime.current === turn) {
@@ -89,7 +75,6 @@ export default function Customizations({ request, changed, beforeSelectionChange
       if (lifetime.current !== turn) return;
       if (saved.owner.id !== ownerId || saved.extension?.id !== id) throw new Error("Customization identity mismatch");
       setState(old => old ? { ...old, items: old.items.map(item => item.extension!.id === id ? saved : item) } : old);
-      // A retired item can belong to a different hook from the collection's current task selection.
       setDeletion({ id, name: saved.extension.name, draftVersion: saved.draftVersion, generation: saved.selection.generation,
         selected: saved.selection.revision?.extensionId === id, message: "", blocked: false, uncertain: false });
       requestAnimationFrame(() => { if (lifetime.current === turn) document.getElementById("customization-delete-confirm")?.focus(); });
@@ -185,17 +170,11 @@ export default function Customizations({ request, changed, beforeSelectionChange
           </section>}
         </article>;
       })}
-    {(state?.next || loadedItems) && <button disabled={!!loadingMore || deleting} aria-disabled={!state?.next} onClick={() => void loadMore("items")}>{state?.next ? "Load more customizations" : "All customizations loaded"}</button>}
+    {(state?.next || loadedItems) && <button disabled={!!loadingMore || deleting} aria-disabled={!state?.next} onClick={() => void loadMore()}>{state?.next ? "Load more customizations" : "All customizations loaded"}</button>}
     {moreError && <p role="status">{moreError}</p>}
-    {(!!recoveries.length || !!guidedRecoveries.length) && <section aria-label="Submitted requests"><h2>Submitted requests</h2><p>Check what was saved before deciding whether to retry.</p>
+    {!!recoveries.length && <section aria-label="Submitted requests"><h2>Submitted requests</h2><p>Check what was saved before deciding whether to retry.</p>
       {recoveries.map((item, index) => <p key={item.entryId}><button onClick={() => open({ extensionId: item.turn.target.kind === "create" ? null : item.turn.target.extensionId,
         conversationId: item.turn.conversationId, recoveryId: item.entryId })}>Check submitted request {index + 1}</button></p>)}
-      {guidedRecoveries.map((item, index) => <p key={item.entryId}><button onClick={() => open({ extensionId: null, recoveryId: item.entryId })}>Check submitted example {index + 1}</button></p>)}
     </section>}
-    {(!!legacy.length || !!legacyNext) && <details><summary>Earlier conversations</summary><p>These discussions have no confirmed customization link and can be read without changing saved work.</p>
-      {legacy.map((item, index) => <p key={item.id}><button onClick={() => open({ extensionId: null, conversationId: item.id })}>Read earlier conversation {index + 1}</button></p>)}
-      {legacyNext && <button disabled={!!loadingMore} onClick={() => void loadMore("conversations")}>Load earlier conversations</button>}
-    </details>}
-    {historyError && <p role="status">Earlier conversations could not be checked. <button onClick={() => setRetry(old => old + 1)}>Try again</button></p>}
   </main>;
 }

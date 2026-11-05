@@ -153,20 +153,6 @@ test('rename accepts exact embedded-NUL legacy preconditions while rejecting NUL
   assert.equal((await call(path, { name: 'Clear legacy name', expectedName: 'Clear legacy name' })).statusCode, 200);
 });
 
-test('legacy names and source stay readable while rename and new direct-source creation remain retired', async t => {
-  const db = openData(':memory:'), lifecycle = createLifecycle(db);
-  t.after(() => db.close());
-  const legacy = lifecycle.state('maya', lifecycle.collection('maya').items[0].extension.id);
-  const before = snapshot(db), source = lifecycle.source('maya', legacy.selection.revision.id, legacy.extension.id);
-  assert.equal(legacy.retired, true);
-  assert.throws(() => lifecycle.rename('maya', { extensionId: legacy.extension.id, name: 'New legacy name', expectedName: legacy.extension.name }, authorized),
-    { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
-  await assert.rejects(lifecycle.createFromSource('maya', { operationId: 'retired-source', source: source.source }, authorized),
-    { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
-  assert.deepEqual(lifecycle.source('maya', legacy.selection.revision.id, legacy.extension.id), source);
-  assert.deepEqual(snapshot(db), before);
-});
-
 test('AI creation uses a neutral name without backfilling existing names or changing creation deduplication', async t => {
   const db = openData(':memory:'), lifecycle = createLifecycle(db, { compiler });
   const existing = db.prepare('SELECT id,name FROM extensions ORDER BY id').all();

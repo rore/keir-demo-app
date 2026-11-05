@@ -43,7 +43,7 @@ test('replacement cannot persist while a cancelled provider is settling and neve
   assert.equal(held(db), original.reserveMicros);
 });
 
-test('key-only settings revisions survive restart, fence old chains and preserve the shared ledger through reset', async t => {
+test('disabling the allowance survives restart, fences old chains and preserves reservations through reset', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'keir-ai-reconfigure-'));
   const path = join(directory, 'app.sqlite'), file = join(directory, 'ai-authoring.json');
   let db, service, settings, requests = [];
@@ -58,7 +58,8 @@ test('key-only settings revisions survive restart, fence old chains and preserve
   const first = settings.prepare(settingsInput()); service.configure(first.config, first.persist);
   const aInput = input('configuration-a'), a = await service.turn('maya', aInput, lease);
   const aSaved = await service.wait('maya', a.conversation.id), creditA = held(db);
-  const second = settings.prepare(settingsInput('synthetic-key-b')); service.configure(second.config, second.persist);
+  const second = settings.prepare(settingsInput('synthetic-key-b', '')); service.configure(second.config, second.persist);
+  assert.equal(settings.publicConfiguration().maxUsd, null);
   const revision = settings.config.settingsRevision;
   assert.notEqual(revision, first.config.settingsRevision);
   const resumeA = input('resume-a', { target: { kind: 'resume', extensionId: aSaved.extensionId }, conversationId: aSaved.id, expectedVersion: aSaved.version });
@@ -67,6 +68,9 @@ test('key-only settings revisions survive restart, fence old chains and preserve
   assert.equal(held(db), creditA);
   const b = await service.turn('leo', input('configuration-b'), lease);
   const bSaved = await service.wait('leo', b.conversation.id), creditB = held(db);
+  assert.equal(creditB, creditA + second.config.reserveMicros);
+  const tooLow = settings.prepare(settingsInput('synthetic-key-b', '0.5'));
+  assert.throws(() => service.configure(tooLow.config, tooLow.persist), { code: 'SPEND_LIMIT', status: 409 });
   assert.deepEqual(requests, ['synthetic-key-a', 'synthetic-key-b']);
   for (const row of db.prepare('SELECT state FROM authoring_conversations').all()) {
     assert.equal(row.state.includes('synthetic-key-'), false);
@@ -74,6 +78,7 @@ test('key-only settings revisions survive restart, fence old chains and preserve
   }
   await close(); open();
   assert.equal(settings.config.settingsRevision, revision);
+  assert.equal(settings.publicConfiguration().maxUsd, null);
   assert.equal(held(db), creditB); assert.equal(requests.length, 2, 'startup never dispatches');
   await assert.rejects(service.turn('maya', resumeA, lease), { code: 'CONFIG_CHANGED' });
   const resumed = await service.turn('leo', input('resume-b', { target: { kind: 'resume', extensionId: bSaved.extensionId }, conversationId: bSaved.id, expectedVersion: bSaved.version }), lease);

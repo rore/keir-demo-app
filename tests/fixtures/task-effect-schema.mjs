@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { taskEffectService } from '../../src/data.mjs';
 import { digest, json, loadHost, TASK_HOOK } from '../../src/extension-catalog.mjs';
 import { taskEffectSyntax, taskEffectScenarioExamples } from '../../src/task-effect-simulation.mjs';
 
-// Trusted storage setup only; these synthetic bytes are never compiled, bound or invoked.
+// Compiled from taskEffectSyntax with the pinned CLI so storage checks can admit the exact proof without launching Java.
+const artifact = readFileSync(new URL('./current-task-effect-artifact.json', import.meta.url));
 export function seedTaskEffectBinding(db, owner = 'maya') {
   const extensionId = randomUUID(), revisionId = randomUUID(), evidenceId = randomUUID();
   const host = loadHost(TASK_HOOK), source = Buffer.from(taskEffectSyntax(host));
-  const scenarios = taskEffectScenarioExamples(host), suite = json(scenarios), compiledSourceDigest = digest(json(JSON.parse(source)));
-  const artifact = Buffer.from(json({ sourceDigest: compiledSourceDigest, profile: 'keir-effect/4', format: 'keir-artifact/effect-4' }));
+  const scenarios = taskEffectScenarioExamples(host), suite = json(scenarios), compiledSourceDigest = JSON.parse(artifact).sourceDigest;
   const identity = { ...host.pins, artifactDigest: digest(artifact), rawSourceDigest: digest(source), compiledSourceDigest,
     suiteDigest: digest(suite), fixture: 'daymark-task-effect-fixtures/1' };
   db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,draft_version) VALUES (?,?,?,?,?,0)')
@@ -30,7 +31,6 @@ export function seedTaskEffectBinding(db, owner = 'maya') {
   db.prepare('INSERT INTO extension_approvals VALUES (?,?,?)').run(owner, revisionId, evidenceId);
   return { revisionId, extensionId, pins: { ...identity, approvedEvidenceId: evidenceId } };
 }
-
 export function invocationFor(effects, owner, eventId, requestKey = effects.keyFor(owner, eventId)) {
   const event = effects.status(owner, eventId);
   return { requestKey, event: { id: eventId, source: event.sourceTaskId }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 } };
@@ -46,25 +46,4 @@ export function nativeEffectService(db) {
       return service.createTaskOnce(owner, key, input, context ?? (event && invocationFor(service, owner, event.event_id, key)));
     },
   };
-}
-
-// Only current-schema fixtures use this; frozen historical databases keep their original DDL.
-export function removeSchemaAfter7(db) {
-  db.exec(`ALTER TABLE tasks DROP COLUMN tags;
-    DROP TABLE task_effect_receipts;
-    DROP TABLE task_completion_events;
-    DROP INDEX tasks_owner;
-    CREATE TABLE extension_selections_legacy(owner_id TEXT PRIMARY KEY REFERENCES users(id), revision_id TEXT,
-      generation INTEGER NOT NULL CHECK(generation>=0),
-      FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id)) STRICT;
-    INSERT INTO extension_selections_legacy(owner_id,revision_id,generation)
-      SELECT owner_id,revision_id,generation FROM extension_selections WHERE hook_id='ClassifyTask';
-    DROP TABLE extension_selections;
-    ALTER TABLE extension_selections_legacy RENAME TO extension_selections;`);
-}
-
-export function legacySelections(db, asBytes = false) {
-  const scoped = db.prepare('PRAGMA table_info(extension_selections)').all().some(column => column.name === 'hook_id');
-  const columns = asBytes ? 'CAST(owner_id AS BLOB) AS owner_id,CAST(revision_id AS BLOB) AS revision_id,generation' : 'owner_id,revision_id,generation';
-  return db.prepare(`SELECT ${columns} FROM extension_selections${scoped ? " WHERE hook_id='ClassifyTask'" : ''} ORDER BY rowid`).all();
 }

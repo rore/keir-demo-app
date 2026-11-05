@@ -24,15 +24,20 @@ export function readAuthoringConfig(env = process.env, settingsRevision) {
   const tariff = tariffs[provider];
   if (env.KEIR_AI_MODEL !== tariff.model) return unavailable('AI_CONFIG_INVALID');
   const cap = env.KEIR_AI_MAX_USD;
-  if (typeof cap !== 'string' || cap !== cap.trim() || !/^\d+(?:\.\d{1,6})?$/.test(cap)) return unavailable('AI_CONFIG_INVALID');
-  const [whole, fraction = ''] = cap.split('.');
-  const maxMicros = Number(whole) * 1_000_000 + Number(fraction.padEnd(6, '0'));
-  if (!Number.isSafeInteger(maxMicros) || maxMicros <= 0) return unavailable('AI_CONFIG_INVALID');
+  const uncapped = cap === undefined || cap === '';
+  // With no spending cap, the durable ledger still has its safe-integer bound.
+  let maxMicros = Number.MAX_SAFE_INTEGER;
+  if (!uncapped) {
+    if (typeof cap !== 'string' || !/^\d+(?:\.\d{1,6})?$/.test(cap) || cap !== cap.trim()) return unavailable('AI_CONFIG_INVALID');
+    const [whole, fraction = ''] = cap.split('.');
+    maxMicros = Number(whole) * 1_000_000 + Number(fraction.padEnd(6, '0'));
+    if (!Number.isSafeInteger(maxMicros) || maxMicros <= 0) return unavailable('AI_CONFIG_INVALID');
+  }
   const apiKey = env[tariff.key];
   if (typeof apiKey !== 'string' || apiKey.length === 0 || apiKey.length > 4096 || /[^\x21-\x7e]/.test(apiKey)) {
     return unavailable('AI_CREDENTIALS_MISSING');
   }
-  const result = { status: 'ready', provider, model: tariff.model, maxMicros,
+  const result = { status: 'ready', provider, model: tariff.model, maxMicros, ...(uncapped && { uncapped }),
     reserveMicros: Math.ceil(135168 * tariff.input + 4096 * tariff.output) };
   Object.defineProperty(result, 'apiKey', { value: apiKey, enumerable: false });
   if (settingsRevision !== undefined) Object.defineProperty(result, 'settingsRevision', { value: settingsRevision, enumerable: false });

@@ -1,31 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { loadHost, loadCatalog, definitionForPins, historicalDefinitionForPins, admitArtifact, hostBindings, digest, json, TASK_HOOK, TASK_DEFINITION, PREVIOUS_TASK_DEFINITION } from '../src/extension-catalog.mjs';
+import { loadHost, definitionForPins, admitArtifact, hostBindings, digest, TASK_HOOK, TASK_DEFINITION } from '../src/extension-catalog.mjs';
 import { createCompiler } from '../src/compiler.mjs';
-import { consumeTaskEffect, runTaskEffectSimulation, validateTaskEffectScenarios, taskEffectSyntax, taskEffectScenarioExamples } from '../src/task-effect-simulation.mjs';
+import { consumeTaskEffect, decodeTaskEffectScenarios, preflightTaskEffectScenarios, runTaskEffectSimulation, taskEffectSyntax, taskEffectScenarioExamples } from '../src/task-effect-simulation.mjs';
 import { taskCustomizationFixture } from './fixtures/task-customization.mjs';
 
 const host = loadHost(TASK_HOOK);
 const examples = () => taskEffectScenarioExamples(host).map(text => JSON.parse(text));
 const invalid = { status: 'NOT_REPORTED', code: 'OUTCOME_INVALID' };
 
-test('catalog keeps exact legacy definitions and exposes a separate generic effect definition', () => {
-  const legacy = loadHost();
-  assert.equal(legacy.pins.profile, 'keir-read/2');
-  assert.equal(legacy.pins.modelRef, undefined);
-  assert.equal(loadCatalog().length, 2);
-  assert.equal(admitArtifact(loadCatalog()[0].artifactBytes, legacy).entrypoint, 'ClassifyTask');
+test('catalog admits one exact public task definition', () => {
   assert.equal(host.definitionId, TASK_DEFINITION);
   assert.equal(TASK_DEFINITION, 'daymark.task-completed/3');
   assert.equal(host.pins.definitionId, TASK_DEFINITION);
-  assert.equal(host.pins.profile, 'keir-effect/4');
   assert.equal(host.pins.modelDigest, digest(host.dcmBytes));
   assert.equal(host.pins.modelRef.digest, host.pins.modelDigest);
   assert.deepEqual(definitionForPins(host.pins).dcmBytes, host.dcmBytes);
   const model = JSON.parse(host.dcmBytes);
-  assert.equal(model.format, 'keir-dcm/effect-4');
-  assert.equal(model.assurance, 'HOST_BOUND_SINGLE_WRITE');
+  assert.equal(model.format, 'keir-dcm/1');
+  assert.ok(!Object.hasOwn(model, 'assurance'));
   assert.equal(model.hostKey.type, 'demo.TaskCompletionKey/1');
   assert.deepEqual(Object.keys(model.capabilities).sort(), ['tasks.create', 'tasks.get']);
   assert.equal(model.capabilities['tasks.get'].version, '2');
@@ -39,33 +33,9 @@ test('catalog keeps exact legacy definitions and exposes a separate generic effe
     { ...host.pins, modelRef: { ...host.pins.modelRef, domainVersion: '1' } }, { ...host.pins, adapter: 'customer-adapter' }])
     assert.throws(() => definitionForPins(changed));
   assert.throws(() => loadHost('customer-hook'));
+  assert.throws(() => loadHost(TASK_HOOK, 'daymark.task-completed/2'));
   assert.deepEqual(hostBindings(Buffer.from(JSON.stringify({ steps: [{ op: 'CALL', capability: 'tasks.create' }] })), 'owner'), { actorId: 'owner' });
   assert.deepEqual(hostBindings(Buffer.from(JSON.stringify({ steps: [{ op: 'BIND' }] })), 'owner'), {});
-});
-
-test('archived effect3 projection preserves raw compiler bytes without current package admission', () => {
-  const source = readFileSync(new URL('./fixtures/task-effect-3/source.json', import.meta.url));
-  const bytes = readFileSync(new URL('./fixtures/task-effect-3/artifact.json', import.meta.url)), artifact = JSON.parse(bytes);
-  assert.equal(digest(source), 'sha256:986e6ab08858fb77139bbf86ca391969ebcee2ad96da514eba7db051a508cf9f');
-  assert.equal(digest(bytes), 'sha256:67393a661db66c1e85cca298794727a2736ebe58f200022bc8c97e60bf19d957');
-  assert.equal(artifact.profile, 'keir-effect/3');
-  assert.equal(artifact.format, 'keir-artifact/effect-3');
-  assert.equal(artifact.sourceDigest, digest(Buffer.from(json(JSON.parse(source)))));
-  const pins = { ...host.pins, profile: artifact.profile, modelRef: artifact.modelRef, modelDigest: artifact.modelRef.digest,
-    compiler: artifact.compiler, environment: artifact.environment, packageIntegrity: 'saved-package-integrity' };
-  delete pins.definitionId;
-  const historical = historicalDefinitionForPins(pins);
-  assert.equal(historical.definitionId, 'daymark.task-completed/1');
-  assert.equal(historical.pins.packageIntegrity, 'saved-package-integrity');
-  assert.equal(digest(historical.dcmBytes), artifact.modelRef.digest);
-  assert.equal(JSON.parse(historical.dcmBytes).assurance, 'HOST_QUALIFIED_SINGLE_WRITE');
-  assert.throws(() => definitionForPins(pins));
-  for (const changed of [{ ...pins, modelDigest: host.pins.modelDigest }, { ...pins, profile: 'keir-effect/4' },
-    { ...pins, definitionId: TASK_DEFINITION }, { ...pins, consumer: { ...pins.consumer, version: 'other' } }])
-    assert.throws(() => historicalDefinitionForPins(changed));
-  const outcome = examples()[0].expect.outcome;
-  assert.deepEqual(consumeTaskEffect(outcome, historical), consumeTaskEffect(outcome, host));
-  assert.deepEqual(consumeTaskEffect(outcome, { ...historical, dcmBytes: host.dcmBytes }), invalid);
 });
 
 test('consumer reports runtime effects and never infers creation from the program label', () => {
@@ -112,8 +82,13 @@ test('consumer rejects forged ledgers, invalid outcomes, trace fields and caller
 });
 
 test('scenario validation closes authority fields, formats, stub shapes, bounds and suite identities before runtime', async () => {
-  const [normal] = examples();
-  const mutate = edit => { const value = structuredClone(normal); edit(value); return value; };
+  const [normal, later] = examples(), valid = JSON.stringify(normal);
+  const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
+  const compiled = await compiler.compile(Buffer.from(taskEffectSyntax(host)), { definition: host });
+  assert.deepEqual(compiled.diagnostics, []);
+  const artifactBytes = compiled.artifact;
+  assert.equal((await runTaskEffectSimulation({ artifactBytes, host, scenarios: [valid] })).status, 'PASS');
+  const mutate = edit => { const value = structuredClone(later); edit(value); return JSON.stringify(value); };
   for (const row of [
     mutate(row => { row.format = 'keir-scenario/effect-2'; }),
     mutate(row => { row.given.actorId = 'other-owner'; }),
@@ -125,35 +100,44 @@ test('scenario validation closes authority fields, formats, stub shapes, bounds 
     mutate(row => { row.stubs[0].response.effect = 'CONFIRMED'; }),
     mutate(row => { delete row.stubs[0].response.value.title; }),
     mutate(row => { row.stubs[0].response.value.title = 'a'.repeat(121); }),
-    mutate(row => { row.stubs[1].response.effect = 'NONE'; }),
-    mutate(row => { row.stubs[1].args.sourceTaskId = 'task1'; }),
+    mutate(row => { row.stubs[0].response.value.title = '界'.repeat(120); }),
+    mutate(row => { row.stubs[0].response.value.id = 'different-task'; }),
+    mutate(row => { row.stubs[0].response.value.status = true; }),
+    mutate(row => { row.stubs[0].args.sourceTaskId = 'task1'; }),
+    mutate(row => { row.stubs[0].protectedArgs.actorId = 'other-owner'; row.expect.calls[0].protectedArgs.actorId = 'other-owner'; }),
     mutate(row => { row.stubs[0].protectedArgs.extra = 'actor'; }),
-    mutate(row => { row.expect.outcome.effects = []; }),
-    mutate(row => { row.expect.consumption.effects = []; }),
+    mutate(row => { row.expect.calls[0].args.taskId = 'different-task'; }),
+    mutate(row => { row.expect.outcome.trace[1].sequence = 2; }),
+    mutate(row => { row.expect.consumption.effects = [{ step: 'created', capability: 'tasks.create', state: 'CONFIRMED' }]; }),
     mutate(row => { row.extra = true; }),
-    '\ufeff' + JSON.stringify(normal),
-    JSON.stringify(normal).replace('"id":', '"format":"keir-scenario/effect-4","id":'),
-    JSON.stringify(normal).replace('"fixture":"normal"', '"fixture":"normal","fixtur\\u0065":"normal"'),
+    later,
+    '\ufeff' + JSON.stringify(later),
+    JSON.stringify(later).replace('"id":', '"format":"keir-scenario/1","id":'),
+    JSON.stringify(later).replace('"fixture":"normal"', '"fixture":"normal","fixtur\\u0065":"normal"'),
     Buffer.from([255]),
     ' '.repeat(65_537),
   ]) {
-    const result = await runTaskEffectSimulation({ artifactBytes: Buffer.from('{}'), host, scenarios: [row] });
+    assert.throws(() => preflightTaskEffectScenarios(artifactBytes, host, [valid, row]),
+      { caseIndex: 1, code: 'INVALID_SCENARIO' });
+    const result = await runTaskEffectSimulation({ artifactBytes, host, scenarios: [valid, row] });
     assert.equal(result.status, 'FAIL');
     assert.deepEqual(result.mismatches, [{ stage: 'SCENARIO', code: 'INVALID' }]);
     assert.deepEqual(result.reports, []);
   }
-  const duplicate = await runTaskEffectSimulation({ artifactBytes: Buffer.from('{}'), host, scenarios: [normal, normal] });
+  assert.throws(() => preflightTaskEffectScenarios(artifactBytes, host, [valid, valid]),
+    { caseIndex: 1, code: 'DUPLICATE_SCENARIO_ID' });
+  const duplicate = await runTaskEffectSimulation({ artifactBytes, host, scenarios: [valid, valid] });
   assert.equal(duplicate.status, 'FAIL');
   assert.deepEqual(duplicate.reports, []);
 });
 
-test('scenario valid data does not confer effect4 support', async () => {
-  assert.deepEqual(validateTaskEffectScenarios(host, taskEffectScenarioExamples(host)), examples());
-  const result = await runTaskEffectSimulation({ artifactBytes: Buffer.from('{}'), host, scenarios: taskEffectScenarioExamples(host) });
-  assert.equal(result.status, 'FAIL');
-  assert.equal(result.identity.profile, 'keir-effect/4');
-  assert.equal(result.reports.length, 6);
-  assert.ok(result.reports.every(row => row.report.status === 'FAIL' && row.report.mismatches[0].stage === 'SETUP'));
+test('malformed later raw case rejects before artifact and model admission', () => {
+  const [valid] = taskEffectScenarioExamples(host);
+  let hostReads = 0;
+  const unreadableHost = { get pins() { hostReads++; throw Error('Host was accessed'); } };
+  assert.throws(() => preflightTaskEffectScenarios(Buffer.from('{}'), unreadableHost, [valid, '{}']),
+    { caseIndex: 1, code: 'INVALID_SCENARIO' });
+  assert.equal(hostReads, 0);
 });
 
 test('scenario test fixtures vary source constants and preserve independent failure expectations', () => {
@@ -167,19 +151,30 @@ test('scenario test fixtures vary source constants and preserve independent fail
   assert.equal(b.steps[3].args.title.literal, 'Review the new collection');
   assert.deepEqual(a.steps.filter(item => item.call).map(item => item.call), b.steps.filter(item => item.call).map(item => item.call));
   assert.deepEqual(first.host.pins, second.host.pins);
-  const rows = validateTaskEffectScenarios(second.host, second.cases);
+  const rows = decodeTaskEffectScenarios(second.cases);
   assert.equal(rows[0].expect.calls[1].args.projectId, 'project42');
   assert.equal(rows[0].expect.calls[1].args.title, 'Review the new collection');
   assert.deepEqual(rows.slice(2).map(row => row.expect.outcome.classification), ['COMPLETED', 'BUSINESS_REJECTION', 'BUSINESS_REJECTION', 'FAILED']);
   assert.ok(rows.slice(2).every(row => row.expect.calls.length === 1 && row.expect.outcome.effects.length === 0));
 });
 
-test('installed effect4 runtime runs exact compiled bytes with independent match/nonmatch and changed source constants', async () => {
+test('installed runtime runs exact compiled bytes with independent match/nonmatch and changed source constants', async () => {
   const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
   const source = taskEffectSyntax(host);
   const compiled = await compiler.compile(Buffer.from(source), { definition: host });
   assert.deepEqual(compiled.diagnostics, []);
-  assert.equal(admitArtifact(compiled.artifact, host).profile, 'keir-effect/4');
+  const artifact = admitArtifact(compiled.artifact, host);
+  assert.equal(artifact.format, 'keir-artifact/1');
+  for (const changed of [
+    { ...artifact, format: 'keir-artifact/effect-4' },
+    { ...artifact, profile: 'keir-effect/4' },
+    { ...artifact, compiler: 'keir-compiler-java/0.0.0' },
+    { ...artifact, modelRef: { ...artifact.modelRef, digest: 'sha256:' + '0'.repeat(64) } },
+  ]) {
+    const failure = await runTaskEffectSimulation({ artifactBytes: Buffer.from(JSON.stringify(changed)), host, scenarios: taskEffectScenarioExamples(host) });
+    assert.equal(failure.status, 'FAIL');
+    assert.deepEqual(failure.reports, []);
+  }
   const base = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host, scenarios: taskEffectScenarioExamples(host) });
   assert.equal(base.status, 'PASS', JSON.stringify(base));
   assert.equal(base.reports[0].report.observed.effect, 'CONFIRMED');
@@ -195,69 +190,57 @@ test('installed effect4 runtime runs exact compiled bytes with independent match
   for (const row of cases) for (const call of [...row.stubs, ...row.expect.calls]) if (call.capability === 'tasks.create') {
     call.args.projectId = 'project42'; call.args.title = 'Review the new collection';
   }
-  const other = await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: cases });
+  const other = await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: cases.map(row => JSON.stringify(row)) });
   assert.equal(other.status, 'PASS', JSON.stringify(other));
-  const wrongStep = structuredClone(cases[0]); wrongStep.stubs[0].step = 'wrongStep';
-  const mismatch = await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: [wrongStep] });
+  const wrongArgs = structuredClone(cases[0]);
+  wrongArgs.stubs[1].args.title = wrongArgs.expect.calls[1].args.title = 'Different title';
+  const mismatch = await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: [JSON.stringify(wrongArgs)] });
   assert.equal(mismatch.status, 'FAIL');
   assert.ok(mismatch.reports[0].report.mismatches.some(item => item.stage === 'STUB'));
   assert.equal(mismatch.reports[0].report.calls[0].step, 'source');
   const leftover = structuredClone(cases[1]); leftover.stubs.push(cases[0].stubs[1]);
-  assert.equal((await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: [leftover] })).status, 'FAIL');
+  assert.deepEqual((await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: [JSON.stringify(leftover)] })).reports, []);
   assert.deepEqual(readFileSync(new URL('../extensions/task-effect/title/dcm.json', import.meta.url)), host.dcmBytes);
 });
 
-test('previous task definition still compiles and simulates exact version 1 reads', async () => {
-  const previous = loadHost(TASK_HOOK, PREVIOUS_TASK_DEFINITION);
-  const scenarios = taskEffectScenarioExamples(previous);
-  const [match] = validateTaskEffectScenarios(previous, scenarios);
-  assert.equal(match.stubs[0].version, '1');
-  assert.deepEqual(match.stubs[0].response.value, { id: 'task1', projectId: 'project1', status: 'COMPLETED' });
-  assert.throws(() => validateTaskEffectScenarios(host, scenarios));
-  assert.throws(() => validateTaskEffectScenarios(previous, examples()));
-  match.stubs[0].response.value.title = 'Example task';
-  assert.throws(() => validateTaskEffectScenarios(previous, [match]));
-  const compiled = await createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN })
-    .compile(Buffer.from(taskEffectSyntax(previous)), { definition: previous });
-  assert.deepEqual(compiled.diagnostics, []);
-  const result = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host: previous, scenarios });
-  assert.equal(result.status, 'PASS', JSON.stringify(result));
-  assert.equal(result.reports[0].report.scenario.task.title, 'Example task');
-});
-
-test('title-aware simulation matches exactly, copies the full title and stops before writing on byte overflow', async () => {
-  const title = 'A' + '界'.repeat(85);
+test('title-aware simulation matches exactly, preserves the composed title and stops on concatenation overflow', async () => {
+  const title = 'ABC' + '界'.repeat(84);
   const differentCase = 'a' + title.slice(1);
-  const oversized = '界'.repeat(120);
-  assert.equal(Buffer.byteLength(title), 256);
-  assert.equal(oversized.length, 120);
-  assert.ok(Buffer.byteLength(oversized) > 256);
+  const atLimit = title + 'x';
+  assert.equal(Buffer.byteLength(title), 255);
+  assert.equal(Buffer.byteLength(atLimit), 256);
   const program = JSON.parse(taskEffectSyntax(host));
-  program.steps[2].let.cel += ' && source.title == ' + JSON.stringify(title);
-  program.steps[3].args.title = { cel: 'source.title' };
+  program.steps[2].let.cel += ' && source.title != ' + JSON.stringify(differentCase);
+  program.steps[3].args.title = { cel: 'source.title + "x"' };
   const compiled = await createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN })
     .compile(Buffer.from(JSON.stringify(program)), { definition: host });
   assert.deepEqual(compiled.diagnostics, []);
 
-  const [match, nonmatch, , overflow] = examples();
+  const [match, nonmatch] = examples();
   match.stubs[0].response.value.title = title;
-  match.stubs[1].args.title = title;
-  match.expect.calls[1].args.title = title;
+  match.stubs[1].args.title = atLimit;
+  match.expect.calls[1].args.title = atLimit;
   nonmatch.id = 'different-case';
   nonmatch.stubs[0].response.value = { ...match.stubs[0].response.value, title: differentCase };
+  const overflow = structuredClone(match);
   overflow.id = 'title-byte-limit';
-  overflow.stubs[0].response = { kind: 'SUCCESS', value: { ...match.stubs[0].response.value, title: oversized } };
+  overflow.stubs[0].response.value.title = atLimit;
+  overflow.stubs.pop();
+  overflow.expect.calls.pop();
   const outcome = overflow.expect.outcome;
   outcome.classification = 'LIMIT_EXCEEDED';
-  outcome.error = { code: 'BUDGET_EXCEEDED', path: '/steps/1/title' };
-  outcome.trace.at(-1).code = outcome.error.code;
+  delete outcome.result;
+  outcome.effects = [];
+  outcome.error = { code: 'BUDGET_EXCEEDED', path: '/steps/3' };
+  const intent = outcome.trace.findIndex(event => event.event === 'EFFECT_INTENT');
+  outcome.trace = [...outcome.trace.slice(0, intent), { sequence: intent, event: 'TERMINATED', code: outcome.error.code }];
   overflow.expect.consumption = consumeTaskEffect(outcome, host);
 
-  const result = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host, scenarios: [match, nonmatch, overflow] });
+  const result = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host, scenarios: [match, nonmatch, overflow].map(row => JSON.stringify(row)) });
   assert.equal(result.status, 'PASS', JSON.stringify(result));
   const [copied, skipped, limited] = result.reports.map(item => item.report);
-  assert.deepEqual([copied, skipped, limited].map(report => report.scenario.task.title), [title, differentCase, oversized]);
-  assert.deepEqual(copied.observed.createdTasks, [{ projectId: 'project1', title }]);
+  assert.deepEqual([copied, skipped, limited].map(report => report.scenario.task.title), [title, differentCase, atLimit]);
+  assert.deepEqual(copied.observed.createdTasks, [{ projectId: 'project1', title: atLimit }]);
   assert.deepEqual(skipped.observed, { effect: 'NONE', createdTasks: [] });
   assert.deepEqual(limited.observed, { effect: 'NONE', createdTasks: [] });
   assert.equal(limited.native.classification, 'LIMIT_EXCEEDED');
@@ -265,7 +248,7 @@ test('title-aware simulation matches exactly, copies the full title and stops be
   assert.deepEqual(limited.calls.map(call => call.capability), ['tasks.get']);
 });
 
-test('installed effect4 simulator rejects authority inside reached functions with truthful no effect', async () => {
+test('installed simulator rejects authority inside reached functions with truthful no effect', async () => {
   const fixture = taskCustomizationFixture();
   const compiled = await createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN }).compile(Buffer.from(fixture.source), { definition: host });
   assert.deepEqual(compiled.diagnostics, []);
@@ -284,7 +267,7 @@ test('installed effect4 simulator rejects authority inside reached functions wit
   receipt.state = 'NONE';
   outcome.trace = [...outcome.trace.slice(0, receipt.sequence + 1), { sequence: receipt.sequence + 1, event: 'TERMINATED', code: 'ACCESS_DENIED' }];
   write.expect.consumption = consumeTaskEffect(outcome, host);
-  const result = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host, scenarios: [...rows, write] });
+  const result = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host, scenarios: [...rows, write].map(row => JSON.stringify(row)) });
   assert.equal(result.status, 'PASS', JSON.stringify(result));
   assert.ok(result.reports.every(row => row.report.native.classification === 'BUSINESS_REJECTION'));
   assert.deepEqual(result.reports.map(row => row.report.calls.length), [1, 1, 1, 2]);

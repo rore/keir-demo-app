@@ -59,9 +59,13 @@ test('scoped lifecycle API enforces exact shapes, session, draft/selection versi
   await login();
   const initial = (await call(extensionPath(db))).json();
   assert.equal((await call('extensions?owner=leo')).statusCode, 400);
-  for (const bad of [{ templateId: 'attention', draftVersion: 0, owner: 'leo' }, { templateId: '../leo.json', draftVersion: 0 }, [], { templateId: 'attention', draftVersion: -1 }])
-    assert.equal((await call(extensionPath(db, 'draft'), bad)).statusCode, 400);
-  assert.equal((await call(extensionPath(db, 'draft'), { templateId: 'attention', draftVersion: 0 }, { origin: 'http://invalid.local' })).statusCode, 403);
+  assert.equal((await call('authoring/example')).statusCode, 404);
+  assert.equal((await call('extensions', { operationId: 'retired', source: actual.source })).statusCode, 404);
+  assert.equal((await call(extensionPath(db, 'draft'), { templateId: 'pending', draftVersion: 0 })).statusCode, 404);
+  assert.equal((await call('tasks/example/advice', {})).statusCode, 404);
+  for (const bad of [{ hookId: TASK_HOOK, source: actual.source, draftVersion: 0, owner: 'leo' }, { hookId: 'ClassifyTask', source: actual.source, draftVersion: 0 }, [], { hookId: TASK_HOOK, source: actual.source, draftVersion: -1 }])
+    assert.equal((await call(extensionPath(db, 'compile'), bad)).statusCode, 400);
+  assert.equal((await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, draftVersion: 0 }, { origin: 'http://invalid.local' })).statusCode, 403);
   let state = (await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, draftVersion: 0 })).json();
   state = (await call(extensionPath(db, 'scenarios'), { revisionId: state.draft.id, draftVersion: state.draftVersion, cases: actual.cases })).json();
   const input = { revisionId: state.draft.id, draftVersion: state.draftVersion };

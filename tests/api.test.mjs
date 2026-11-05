@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openData, taskEffectService } from '../src/data.mjs';
+import { openData, taskEffectService, taskService } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 import { seedTaskEffectBinding, invocationFor } from './fixtures/task-effect-schema.mjs';
 
@@ -33,8 +33,8 @@ test('an admitted owner A completion keeps its exact native context after the br
   const projects = await app.inject(request('GET', '/api/projects', maya)), projectId = projects.json()[0].id;
   const source = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId, title: 'Owner A source' }, headers: jsonHeaders }));
   assert.equal(source.statusCode, 201);
-  const completed = await app.inject(request('POST', `/api/tasks/${source.json().id}/complete`, { ...maya, body: {}, headers: jsonHeaders }));
-  assert.equal(completed.statusCode, 200);
+  // Hold dispatch until after the session switch while creating the normal native event.
+  assert.equal(taskService(db).completeTask('maya', source.json().id).status, 'completed');
   const eventId = db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(source.json().id).event_id;
   const leo = await signIn(app, 'leo', maya);
   const effects = taskEffectService(db), invocation = invocationFor(effects, 'maya', eventId);

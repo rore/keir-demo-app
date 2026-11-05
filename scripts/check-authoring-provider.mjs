@@ -11,6 +11,7 @@ export async function checkAuthoringProvider({ live = false, env = process.env, 
   if ((!host || !context) && typeof runCheck !== 'function' || !Array.isArray(inputs) || !inputs.length) return { status: 'NOT_RUN', code: 'HOST_FIXTURE_REQUIRED' };
   const config = readAuthoringConfig(env);
   if (config.status !== 'ready') return { status: 'NOT_RUN', code: config.code };
+  if (config.uncapped) return { status: 'NOT_RUN', code: 'ALLOWANCE_REQUIRED' };
   if (runCheck) {
     try { return await runCheck({ config, inputs, fetchImpl }); }
     catch { return { status: 'BLOCKED', code: 'QUALIFICATION_FAILED' }; }

@@ -244,24 +244,18 @@ test('a held real reaction read survives a selection transition without replay o
   } finally { release?.(); }
 });
 
-test('narrow Studio keeps retired operator history read-only and restores an approved task choice after restart', async ({ page, demo }) => {
+test('narrow Studio inspects current saved source and keeps a restored task choice after restart', async ({ page, demo }) => {
   await page.setViewportSize({ width: 390, height: 844 }); await enter(page, demo.origin);
   await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByLabel('Destination', { exact: true }).selectOption('customizations');
-  const collection = await nativeRequest(page, 'extensions'), legacy = collection.items.find(item => item.retired);
-  const historical = await nativeRequest(page, 'extensions/' + legacy.extension.id);
-  expect(historical.selection.revision.provenance).toBe('operator'); expect(historical.selection.eligible).toBe(false);
-  expect(historical.restoreTargets).toEqual([]);
-  await page.getByRole('article', { name: legacy.extension.name, exact: true }).getByRole('button', { name: 'Open history', exact: true }).click();
-  await expect(studio(page).getByRole('article', { name: 'Retired customization', exact: true })).toBeVisible();
-  await openDetails(page);
-  await studio(page).getByRole('button', { name: 'Inspect saved source and examples', exact: true }).click();
-  await expect(studio(page).getByLabel('Artifact pins for inspection', { exact: true })).toContainText('keir-read/2');
-  await expect(studio(page).getByRole('button', { name: /^Restore / })).toHaveCount(0);
-  await studio(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   const saved = await savedLifecycle(page, demo.origin);
   await page.getByRole('article', { name: saved.extension.name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/ }).click();
   const ui = studio(page);
+  await openDetails(page);
+  await ui.getByRole('button', { name: 'Inspect saved source and examples', exact: true }).click();
+  await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toContainText('keir/1');
+  await expect(ui.getByLabel('Artifact pins for inspection', { exact: true })).toContainText('keir-dcm/1');
+  await closeDetails(page);
   await ui.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
   await openDetails(page); await ui.getByText('Manage saved customization', { exact: true }).click();
   const option = ui.getByLabel('Previously in use').locator('option').filter({ hasText: 'Original follow-up · customer approved' });
@@ -431,7 +425,6 @@ async function savedLifecycle(page, origin) {
   const response = await page.request.get(base + '/api/extensions', { headers: { 'x-session-context': contextToken } });
   expect(response.ok()).toBe(true);
   const collection = await response.json();
-  collection.items = collection.items.filter(item => !item.retired);
   expect(collection.items).toHaveLength(1);
   const state = await page.request.get(base + '/api/extensions/' + collection.items[0].extension.id, { headers: { 'x-session-context': contextToken } });
   expect(state.ok()).toBe(true);
@@ -485,26 +478,31 @@ test('exact authored review fails closed on unavailable or mismatched saved docu
 });
 
 test('a held exact-source review cannot enter a different owner or a re-entered workspace', async ({ page, context, demo }) => {
-  let release, arrived, delivered, heldOnce = false;
+  await enter(page, demo.origin); await open(page);
+  const proposed = await compileSaved(page, await expectedExample(page));
+  const sourceRoute = '**/api/extensions/' + proposed.extension.id + '/revisions/' + proposed.draft.id;
+  let release, arrived, delivered, holdOldWorkspace = true;
+  const gate = new Promise(resolve => { release = resolve; });
   const started = new Promise(resolve => { arrived = resolve; }), finished = new Promise(resolve => { delivered = resolve; });
-  await page.route('**/api/extensions/*/revisions/*', async route => {
-    if (heldOnce) return route.continue();
-    heldOnce = true;
-    const response = await route.fetch(); arrived(); await new Promise(resolve => { release = resolve; });
+  await page.route(sourceRoute, async route => {
+    if (!holdOldWorkspace) return route.continue();
+    const response = await route.fetch(); arrived(); await gate;
     try { await route.fulfill({ response }); } catch { /* Workspace replacement aborts the old read. */ }
     delivered();
   });
-  const ui = await authoredReady(page, demo.origin, false), other = await context.newPage();
+  const ui = studio(page), other = await context.newPage();
   try {
+    expect((await checkSaved(page)).evidence.passed).toBe(true);
     await started; await expect(approval(page)).toHaveCount(0);
     await other.goto(demo.origin); await other.getByLabel('Demo person', { exact: true }).selectOption('leo');
     await expect(page.getByRole('button', { name: 'Continue as Leo' })).toBeVisible();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveCount(0);
+    holdOldWorkspace = false;
     await page.getByRole('button', { name: 'Continue as Leo' }).click();
     await page.getByLabel('Demo person', { exact: true }).selectOption('maya');
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya'); await tasks(page);
     await page.getByRole('button', { name: 'Gather material references', exact: true }).click(); await open(page);
-    release(); await finished; await page.unroute('**/api/extensions/*/revisions/*');
+    release(); await finished; await page.unroute(sourceRoute);
     expect((await savedLifecycle(page, demo.origin)).approved).toBe(false);
     await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
     await openSavedChanges(page);

@@ -32,7 +32,7 @@ async function nativeData(page) {
     return { project, source: tasks.find(task => task.status === 'open'), created };
   });
 }
-async function publicStudio(page, { mismatch = false, retired = false, unavailable = false, unavailableRead = false, unknownEffect = false, noActive = false } = {}) {
+async function publicStudio(page, { mismatch = false, unavailable = false, unavailableRead = false, unknownEffect = false, noActive = false } = {}) {
   const task = { id: 'example-task', title: 'Finish packaging sketches', status: 'COMPLETED', projectId: 'example-project', projectName: 'Launch' };
   const effect = title => ({ projectId: task.projectId, projectName: task.projectName, title });
   const report = (id, revisionId, title, failed = false) => ({ id, revisionId, kind: 'authored', identity: {}, passed: !failed, reports: [{
@@ -41,13 +41,13 @@ async function publicStudio(page, { mismatch = false, retired = false, unavailab
   }] });
   const a = { id: 'active-revision', templateId: 'authored', kind: 'authored', suiteDigest: 'suite-a', label: 'Untrusted active label', pins: {}, provenance: 'customer', extensionId: 'task-customization', extensionName: 'My follow-up' };
   const b = { ...a, id: 'draft-revision', suiteDigest: 'suite-b', label: 'Source says CREATED but this is not effect evidence' };
-  let state = { owner: { id: 'maya', name: 'Maya' }, extension: { id: 'task-customization', name: 'My follow-up', hookId: retired ? 'ClassifyTask' : 'TaskCompleted' }, retired,
+  let state = { owner: { id: 'maya', name: 'Maya' }, extension: { id: 'task-customization', name: 'My follow-up', hookId: 'TaskCompleted' }, retired: false,
     executionAvailability: unavailable ? { available: false, message: 'Task customizations cannot run in this installation yet. Your tasks still work.' } : undefined, catalog: [], draftVersion: 2, draft: b, evidence: { id: 'proof-b', revisionId: b.id, passed: !mismatch }, approved: false, approvedEvidenceId: null,
-    selection: { generation: 7, revision: noActive ? null : a, eligible: !noActive && !retired && !unavailable, approvedEvidenceId: noActive ? null : 'proof-a' }, history: [], restoreTargets: [], evidenceHistory: [{ id: 'proof-b', revisionId: b.id }], historyNext: null };
+    selection: { generation: 7, revision: noActive ? null : a, eligible: !noActive && !unavailable, approvedEvidenceId: noActive ? null : 'proof-a' }, history: [], restoreTargets: [], evidenceHistory: [{ id: 'proof-b', revisionId: b.id }], historyNext: null };
   const proofs = { 'proof-a': report('proof-a', a.id, 'Review completion'), 'proof-b': report('proof-b', b.id, 'Prepare next step', mismatch) }, mutations = [];
-  const conversation = { id: 'task-discussion', extensionId: state.extension.id, retired, purpose: 'REVISE', version: 1, status: 'REVIEW_AVAILABLE', runId: 'run-one',
+  const conversation = { id: 'task-discussion', extensionId: state.extension.id, retired: false, purpose: 'REVISE', version: 1, status: 'REVIEW_AVAILABLE', runId: 'run-one',
     operation: { id: 'operation-one', runId: 'run-one', version: 1 }, draft: { revisionId: b.id, draftVersion: 2, suiteDigest: b.suiteDigest },
-    selection: { revisionId: noActive ? null : a.id, generation: 7 }, code: null, review: { revisionId: b.id, draftVersion: 2, suiteDigest: b.suiteDigest, evidenceId: 'proof-b', eligible: !mismatch && !retired },
+    selection: { revisionId: noActive ? null : a.id, generation: 7 }, code: null, review: { revisionId: b.id, draftVersion: 2, suiteDigest: b.suiteDigest, evidenceId: 'proof-b', eligible: !mismatch },
     messages: [{ id: 'checked', role: 'assistant', kind: 'review', text: 'The saved examples compare the current follow-up with your proposed next step.', receipt: { revisionId: b.id, draftVersion: 2, suiteDigest: b.suiteDigest, evidenceId: 'proof-b' } }] };
   await page.route('**/api/extensions**', async route => {
     const url = new URL(route.request().url()), path = url.pathname;
@@ -56,7 +56,7 @@ async function publicStudio(page, { mismatch = false, retired = false, unavailab
     else if (path.endsWith('/catalog')) return route.continue();
     else if (path.endsWith('/evidence/proof-a')) body = proofs['proof-a'];
     else if (path.endsWith('/evidence/proof-b')) body = proofs['proof-b'];
-    else if (path.endsWith('/revisions/' + b.id)) body = { revisionId: b.id, source: '{"entrypoint":"TaskCompleted"}', artifact: '{"profile":"keir-effect/4"}', pins: {}, cases: ['independent example'], suiteDigest: b.suiteDigest };
+    else if (path.endsWith('/revisions/' + b.id)) body = { revisionId: b.id, source: '{"entrypoint":"TaskCompleted"}', artifact: '{"format":"keir-artifact/1"}', pins: {}, cases: ['independent example'], suiteDigest: b.suiteDigest };
     else if (path.endsWith('/approve')) { mutations.push({ path, body: route.request().postDataJSON() }); state = { ...state, approved: true, approvedEvidenceId: 'proof-b' }; body = state; }
     else if (path.endsWith('/activate')) { mutations.push({ path, body: route.request().postDataJSON() }); state = { ...state, selection: { generation: 8, revision: b, eligible: true, approvedEvidenceId: 'proof-b' } }; body = state; }
     else if (path === '/api/extensions/task-customization') body = state;
@@ -154,16 +154,6 @@ test('an independently expected UNKNOWN stays reviewable without claiming a task
   await expect(proposed.locator('.rs-created-example')).toHaveCount(0);
   await expect(proposed).not.toContainText('No task was created.');
   await expect(studio(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
-});
-
-test('retired customizations preserve history access and require a fresh customization', async ({ page, demo }) => {
-  await enter(page, demo); const { mutations } = await publicStudio(page, { retired: true });
-  await expect(studio(page).getByRole('article', { name: 'Retired customization', exact: true })).toBeVisible();
-  await expect(studio(page).getByLabel('Message to Daymark assistant')).toBeHidden();
-  await expect(studio(page).getByRole('button', { name: /Approve this change|Turn on for my tasks|Continue guided example|Try a guided example/ })).toHaveCount(0);
-  await studio(page).getByRole('button', { name: 'Start a new customization', exact: true }).click();
-  await expect(studio(page).getByRole('heading', { name: 'What would you like to change about your work?', exact: true })).toBeVisible();
-  expect(mutations).toEqual([]);
 });
 
 test('a source-authored CREATED label does not become a native task link', async ({ page, demo }) => {
