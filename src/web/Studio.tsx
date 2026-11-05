@@ -461,6 +461,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         ?? (state?.selection.revision?.extensionId === extensionId.current ? state.selection.revision.id : null), selectionGeneration: state!.selection.generation };
   }
   const retired = state?.retired === true || conversation?.retired === true || retiredOperation;
+  const earlierModelDiscussion = conversation?.retired === true && !!conversation.extensionId && !!state?.extension && !state.retired;
   const executionUnavailable = state?.executionAvailability?.available === false;
   const offer = conversation?.review;
   const eligibleOffer = offer?.eligible === true && !!state?.draft && offer.revisionId === state.draft.id
@@ -1345,9 +1346,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <strong>{message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}{message.evidenceId && !retired && message.evidenceId === decisionEvidenceId && <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview()}>View saved changes</button>}{message.evidenceId && (retired || message.evidenceId !== decisionEvidenceId) && <button id={"studio-evidence-link-" + message.evidenceId} disabled={!!busy} className="rs-link"
               onClick={() => void showEvidence(message.evidenceId!)}>{message.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button>}
           </article>)}
-          {retired && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3><p>Its source, examples, discussion and history remain available. It cannot run or be resumed as a task-creating customization. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
+          {retired && !earlierModelDiscussion && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3><p>Its source, examples, discussion and history remain available. It cannot run or be resumed as a task-creating customization. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
           {legacyConversation && <p role="status">Earlier discussion · read-only. No customization link has been confirmed.</p>}
-          {(historyView || staleConversation) && !activeAuthoring && <article className="rs-message rs-decision"><p>Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.</p>
+          {(historyView || staleConversation || earlierModelDiscussion) && !activeAuthoring && <article className="rs-message rs-decision"><p>Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.</p>
             <button disabled={!!busy || !!pendingTurn || !!pendingExample} onClick={returnToCurrent}>Return to current changes</button></article>}
           {conversation?.review && !eligibleOffer && <article className="rs-message"><p>These saved examples do not support approval of the current changes.</p>
             <button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void showEvidence(conversation.review!.evidenceId)}>{conversation.review.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button></article>}

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { PREVIOUS_TASK_DEFINITION } from '../../src/extension-catalog.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -205,5 +206,32 @@ test('adopting another saved discussion clears recovery and owner switching does
     expect(await api(page, `extensions/${savedItem.extensionId}`)).toEqual(savedItem.state);
     expect((await api(page, `authoring?extensionId=${encodeURIComponent(savedItem.extensionId)}`)).conversations.map(item => item.id)).toContain(oldConversationId);
     expect((await api(page, `authoring/conversations/${encodeURIComponent(oldConversationId)}`)).status).toBe('AWAITING_USER');
+  } finally { await fixture.close(); }
+});
+
+test('an earlier model discussion is readable and returns to the same saved customization', async ({ page }) => {
+  const fixture = await startAuthoringFixture();
+  try {
+    await page.goto(fixture.origin);
+    await page.getByRole('button', { name: 'Continue as Maya' }).click();
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    const { extensionId, state } = await seedApprovedItem(page, fixture);
+    const text = 'Earlier discussion for this saved customization.';
+    const conversationId = await createDiscussion(page, extensionId, state, text);
+    fixture.db.prepare("UPDATE authoring_conversations SET state=json_set(state,'$.definitionId',?) WHERE id=?").run(PREVIOUS_TASK_DEFINITION, conversationId);
+    const providerCalls = fixture.requests.length;
+
+    await page.evaluate(({ extensionId, conversationId }) => {
+      location.hash = new URLSearchParams({ customization: extensionId, conversation: conversationId }).toString();
+    }, { extensionId, conversationId });
+    const ui = studio(page);
+    await expect(ui.getByText(text, { exact: true })).toBeVisible();
+    await expect(ui.getByRole('article', { name: 'Retired customization', exact: true })).toHaveCount(0);
+    await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeHidden();
+    await ui.getByRole('button', { name: 'Return to current changes', exact: true }).click();
+    await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(new RegExp('#customization=' + extensionId + '$'));
+    expect(await api(page, 'extensions/' + extensionId)).toEqual(state);
+    expect(fixture.requests).toHaveLength(providerCalls);
   } finally { await fixture.close(); }
 });

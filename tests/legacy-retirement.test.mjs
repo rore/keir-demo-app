@@ -25,7 +25,7 @@ test('old unbound task conversations remain retired while fresh definition admis
     { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
   assert.equal(compiles, 0); assert.deepEqual(snapshot(db), before);
 
-  assert.equal(TASK_DEFINITION, 'daymark.task-completed/2');
+  assert.equal(TASK_DEFINITION, 'daymark.task-completed/3');
   const fresh = admitTaskDraft(db, lifecycle, { extensionId: 'new-unbound-task' });
   await assert.rejects(lifecycle.compile('maya', { extensionId: fresh.extensionId, hookId: 'TaskCompleted', source: '{}', draftVersion: 0 }, () => {}), { status: 503 });
   const retained = lifecycle.state('maya', fresh.extensionId);

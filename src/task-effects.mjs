@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
 import { AppError, taskService, taskEffectService } from './data.mjs';
-import { hostBindings, json, loadHost, TASK_HOOK, digest } from './extension-catalog.mjs';
+import { hostBindings, json, loadHost, TASK_HOOK, TASK_DEFINITION, taskDefinitionIds, digest } from './extension-catalog.mjs';
 import { consumeTaskEffect } from './task-effect-simulation.mjs';
 
 const denied = effect => ({ kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED', ...(effect ? { effect: 'NONE' } : {}) });
@@ -10,7 +10,8 @@ const denied = effect => ({ kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED', .
 export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(performance.now()) }) {
   const tasks = taskService(db);
   const effects = taskEffectService(db);
-  let closing = false, running = null, requested = false, after = 0, host, binding, preparedSlot;
+  let closing = false, running = null, requested = false, after = 0, preparedSlot;
+  const bindings = new Map();
   function current(owner, invocation) {
     const captured = effects.contextFor(owner, invocation), now = invocation.deadline.clock.nowMs();
     if (closing || captured.revokedAt !== null || captured.state !== 'STARTED'
@@ -18,19 +19,20 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
         || !lifecycle.admissionCurrent(captured)) return null;
     return captured;
   }
-  const mode = 'real', implementations = {
-    'tasks.get': { version: '1', mode, keyType: 'demo.TaskCompletionKey/1', invoke: async (args, protectedArgs, remainingMs, context) => {
+  const mode = 'real', keyType = 'demo.TaskCompletionKey/1';
+  const readTask = withTitle => ({ version: withTitle ? '2' : '1', mode, keyType, invoke: async (args, protectedArgs, remainingMs, context) => {
       try {
         if (remainingMs <= 0 || !current(protectedArgs.actorId, context)) return denied();
-        const task = tasks.getTask(protectedArgs.actorId, args.taskId);
+        const task = withTitle ? tasks.getTaskForCustomization(protectedArgs.actorId, args.taskId) : tasks.getTask(protectedArgs.actorId, args.taskId);
         if (!current(protectedArgs.actorId, context)) return denied();
-        return { kind: 'SUCCESS', value: { id: task.id, projectId: task.projectId, status: task.status === 'open' ? 'OPEN' : 'COMPLETED' } };
+        return { kind: 'SUCCESS', value: { id: task.id, projectId: task.projectId, status: task.status === 'open' ? 'OPEN' : 'COMPLETED',
+          ...(withTitle ? { title: task.title } : {}) } };
       } catch (error) {
         if (['HOST_KEY_INVALID', 'HOST_CONTEXT_INVALID', 'AUTHORITY_DENIED'].includes(error.code)) return denied();
         return error.status === 404 ? { kind: 'BUSINESS_REJECTION', code: 'TASK_NOT_FOUND' } : { kind: 'TRANSIENT_FAILURE' };
       }
-    } },
-    'tasks.create': { version: '1', mode, keyType: 'demo.TaskCompletionKey/1', invoke: async (args, protectedArgs, remainingMs, context) => {
+  } });
+  const createTask = { version: '1', mode, keyType, invoke: async (args, protectedArgs, remainingMs, context) => {
       try {
         if (remainingMs <= 0 || !current(protectedArgs.actorId, context)) return denied(true);
         return effects.createTaskOnce(protectedArgs.actorId, context.requestKey, args, context);
@@ -39,10 +41,14 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
         if (error.status === 400) return { kind: 'BUSINESS_REJECTION', code: 'TASK_INVALID', effect: 'NONE' };
         return { kind: 'UNKNOWN_COMMIT', effect: 'UNKNOWN' };
       }
-    } },
-  };
-  try { host = loadHost(TASK_HOOK); binding = bindModel(host.dcmBytes, implementations); }
-  catch { /* Invalid registration leaves ordinary native CRUD and retained audit available. */ }
+  } };
+  for (const id of taskDefinitionIds) {
+    try {
+      const host = loadHost(TASK_HOOK, id);
+      const binding = bindModel(host.dcmBytes, { 'tasks.get': readTask(id === TASK_DEFINITION), 'tasks.create': createTask });
+      if (binding.boundModel && !binding.diagnostic) bindings.set(id, { host, boundModel: binding.boundModel });
+    } catch { /* An unavailable model leaves the other binding and native tasks available. */ }
+  }
   function eventForTask(owner, taskId) {
     tasks.getTask(owner, taskId);
     return db.prepare('SELECT event_id FROM task_completion_events WHERE owner_id=? AND source_task_id=?').get(owner, taskId)?.event_id;
@@ -66,18 +72,21 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
     if (row.revoked_at !== null) return;
     const pins = JSON.parse(row.pins ?? 'null');
     // Legacy admissions remain historical; package support must never upgrade their authority.
-    if (pins?.profile !== 'keir-effect/4' || pins.definitionId !== 'daymark.task-completed/2') return;
+    const binding = pins?.profile === 'keir-effect/4' ? bindings.get(pins.definitionId) : null;
+    if (!binding) return;
+    const { host, boundModel } = binding;
     let execution;
     try { execution = lifecycle.execution(row.owner_id, row.revision_id, row.item_id); } catch { /* Keep unavailable work unclaimed. */ }
-    if (!execution || !binding?.boundModel || binding.diagnostic || json(execution.host.pins) !== json(host.pins)) {
+    if (!execution || json(execution.host.pins) !== json(host.pins)) {
       return;
     }
     const captured = effects.status(row.owner_id, row.event_id), artifactDigest = digest(execution.artifactBytes);
     if (artifactDigest !== captured.pins.artifactDigest || !lifecycle.admissionCurrent(captured)) return;
-    if (preparedSlot?.artifactDigest !== artifactDigest) {
-      const result = prepareProgram(execution.artifactBytes, binding.boundModel);
+    const modelDigest = host.pins.modelDigest;
+    if (preparedSlot?.artifactDigest !== artifactDigest || preparedSlot.modelDigest !== modelDigest) {
+      const result = prepareProgram(execution.artifactBytes, boundModel);
       if (result.diagnostic || !result.prepared) return;
-      preparedSlot = { artifactDigest, prepared: result.prepared };
+      preparedSlot = { modelDigest, artifactDigest, prepared: result.prepared };
     }
     // Preparation grants no execution authority; the native deadline covers claim and invocation.
     const deadline = { clock: { nowMs: clock }, expiresAtMs: clock() + 1000 };
@@ -122,7 +131,7 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
   }
   return Object.freeze({
     wake,
-    availability() { return binding?.boundModel && !binding.diagnostic ? { available: true }
+    availability() { return bindings.has(TASK_DEFINITION) ? { available: true }
       : { available: false, message: 'Task customizations are unavailable. Your tasks still work.' }; },
     dependenciesChanged() { after = 0; return wake(); },
     status: publicStatus,

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { loadHost, loadCatalog, definitionForPins, historicalDefinitionForPins, admitArtifact, hostBindings, digest, json, TASK_HOOK, TASK_DEFINITION } from '../src/extension-catalog.mjs';
+import { loadHost, loadCatalog, definitionForPins, historicalDefinitionForPins, admitArtifact, hostBindings, digest, json, TASK_HOOK, TASK_DEFINITION, PREVIOUS_TASK_DEFINITION } from '../src/extension-catalog.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { consumeTaskEffect, runTaskEffectSimulation, validateTaskEffectScenarios, taskEffectSyntax, taskEffectScenarioExamples } from '../src/task-effect-simulation.mjs';
 import { taskCustomizationFixture } from './fixtures/task-customization.mjs';
@@ -17,7 +17,7 @@ test('catalog keeps exact legacy definitions and exposes a separate generic effe
   assert.equal(loadCatalog().length, 2);
   assert.equal(admitArtifact(loadCatalog()[0].artifactBytes, legacy).entrypoint, 'ClassifyTask');
   assert.equal(host.definitionId, TASK_DEFINITION);
-  assert.equal(TASK_DEFINITION, 'daymark.task-completed/2');
+  assert.equal(TASK_DEFINITION, 'daymark.task-completed/3');
   assert.equal(host.pins.definitionId, TASK_DEFINITION);
   assert.equal(host.pins.profile, 'keir-effect/4');
   assert.equal(host.pins.modelDigest, digest(host.dcmBytes));
@@ -28,6 +28,8 @@ test('catalog keeps exact legacy definitions and exposes a separate generic effe
   assert.equal(model.assurance, 'HOST_BOUND_SINGLE_WRITE');
   assert.equal(model.hostKey.type, 'demo.TaskCompletionKey/1');
   assert.deepEqual(Object.keys(model.capabilities).sort(), ['tasks.create', 'tasks.get']);
+  assert.equal(model.capabilities['tasks.get'].version, '2');
+  assert.equal(model.types.Task.fields.title, 'String');
   for (const capability of Object.values(model.capabilities)) assert.equal(capability.parameters.actorId.binding, 'host');
   assert.deepEqual(model.capabilities['tasks.create'].parameters.projectId, { binding: 'agent', type: 'ProjectId' });
   assert.deepEqual(model.capabilities['tasks.create'].parameters.title, { binding: 'agent', type: 'String' });
@@ -121,6 +123,8 @@ test('scenario validation closes authority fields, formats, stub shapes, bounds 
     mutate(row => { row.given.fixture = 'no-effect-grant'; }),
     mutate(row => { row.given.input.taskId = '\ud800'; }),
     mutate(row => { row.stubs[0].response.effect = 'CONFIRMED'; }),
+    mutate(row => { delete row.stubs[0].response.value.title; }),
+    mutate(row => { row.stubs[0].response.value.title = 'a'.repeat(121); }),
     mutate(row => { row.stubs[1].response.effect = 'NONE'; }),
     mutate(row => { row.stubs[1].args.sourceTaskId = 'task1'; }),
     mutate(row => { row.stubs[0].protectedArgs.extra = 'actor'; }),
@@ -200,7 +204,65 @@ test('installed effect4 runtime runs exact compiled bytes with independent match
   assert.equal(mismatch.reports[0].report.calls[0].step, 'source');
   const leftover = structuredClone(cases[1]); leftover.stubs.push(cases[0].stubs[1]);
   assert.equal((await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: [leftover] })).status, 'FAIL');
-  assert.deepEqual(readFileSync(new URL('../extensions/task-effect/dcm.json', import.meta.url)), host.dcmBytes);
+  assert.deepEqual(readFileSync(new URL('../extensions/task-effect/title/dcm.json', import.meta.url)), host.dcmBytes);
+});
+
+test('previous task definition still compiles and simulates exact version 1 reads', async () => {
+  const previous = loadHost(TASK_HOOK, PREVIOUS_TASK_DEFINITION);
+  const scenarios = taskEffectScenarioExamples(previous);
+  const [match] = validateTaskEffectScenarios(previous, scenarios);
+  assert.equal(match.stubs[0].version, '1');
+  assert.deepEqual(match.stubs[0].response.value, { id: 'task1', projectId: 'project1', status: 'COMPLETED' });
+  assert.throws(() => validateTaskEffectScenarios(host, scenarios));
+  assert.throws(() => validateTaskEffectScenarios(previous, examples()));
+  match.stubs[0].response.value.title = 'Example task';
+  assert.throws(() => validateTaskEffectScenarios(previous, [match]));
+  const compiled = await createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN })
+    .compile(Buffer.from(taskEffectSyntax(previous)), { definition: previous });
+  assert.deepEqual(compiled.diagnostics, []);
+  const result = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host: previous, scenarios });
+  assert.equal(result.status, 'PASS', JSON.stringify(result));
+  assert.equal(result.reports[0].report.scenario.task.title, 'Example task');
+});
+
+test('title-aware simulation matches exactly, copies the full title and stops before writing on byte overflow', async () => {
+  const title = 'A' + '界'.repeat(85);
+  const differentCase = 'a' + title.slice(1);
+  const oversized = '界'.repeat(120);
+  assert.equal(Buffer.byteLength(title), 256);
+  assert.equal(oversized.length, 120);
+  assert.ok(Buffer.byteLength(oversized) > 256);
+  const program = JSON.parse(taskEffectSyntax(host));
+  program.steps[2].let.cel += ' && source.title == ' + JSON.stringify(title);
+  program.steps[3].args.title = { cel: 'source.title' };
+  const compiled = await createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN })
+    .compile(Buffer.from(JSON.stringify(program)), { definition: host });
+  assert.deepEqual(compiled.diagnostics, []);
+
+  const [match, nonmatch, , overflow] = examples();
+  match.stubs[0].response.value.title = title;
+  match.stubs[1].args.title = title;
+  match.expect.calls[1].args.title = title;
+  nonmatch.id = 'different-case';
+  nonmatch.stubs[0].response.value = { ...match.stubs[0].response.value, title: differentCase };
+  overflow.id = 'title-byte-limit';
+  overflow.stubs[0].response = { kind: 'SUCCESS', value: { ...match.stubs[0].response.value, title: oversized } };
+  const outcome = overflow.expect.outcome;
+  outcome.classification = 'LIMIT_EXCEEDED';
+  outcome.error = { code: 'BUDGET_EXCEEDED', path: '/steps/1/title' };
+  outcome.trace.at(-1).code = outcome.error.code;
+  overflow.expect.consumption = consumeTaskEffect(outcome, host);
+
+  const result = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host, scenarios: [match, nonmatch, overflow] });
+  assert.equal(result.status, 'PASS', JSON.stringify(result));
+  const [copied, skipped, limited] = result.reports.map(item => item.report);
+  assert.deepEqual([copied, skipped, limited].map(report => report.scenario.task.title), [title, differentCase, oversized]);
+  assert.deepEqual(copied.observed.createdTasks, [{ projectId: 'project1', title }]);
+  assert.deepEqual(skipped.observed, { effect: 'NONE', createdTasks: [] });
+  assert.deepEqual(limited.observed, { effect: 'NONE', createdTasks: [] });
+  assert.equal(limited.native.classification, 'LIMIT_EXCEEDED');
+  assert.deepEqual(limited.native.error, outcome.error);
+  assert.deepEqual(limited.calls.map(call => call.capability), ['tasks.get']);
 });
 
 test('installed effect4 simulator rejects authority inside reached functions with truthful no effect', async () => {

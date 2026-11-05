@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, transaction } from './data.mjs';
-import { loadHost, TASK_HOOK, TASK_DEFINITION, digest, json } from './extension-catalog.mjs';
+import { loadHost, TASK_HOOK, TASK_DEFINITION, taskDefinitionIds, digest, json } from './extension-catalog.mjs';
 import { readAuthoringConfig } from './authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
 import { createAuthoringState, runAuthoringTurn } from './authoring-agent.mjs';
@@ -61,7 +61,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   transaction(db, () => {
     for (const row of db.prepare("SELECT * FROM authoring_conversations WHERE status IN ('RUNNING','CANCELLING')").all()) {
       const value = decode(row);
-      if (value.state.definitionId !== TASK_DEFINITION) continue;
+      if (!taskDefinitionIds.includes(value.state.definitionId)) continue;
       value.state.status = 'BLOCKED'; value.state.lastResult = { status: 'BLOCKED', code: 'RUN_INTERRUPTED' };
       value.state.continuation = undefined; value.state.pending = undefined; value.state.evidenceHandle = null;
       value.view.code = 'RUN_INTERRUPTED'; value.view.review = null;
@@ -146,7 +146,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const rows = db.prepare(`${query}${anchor ? ' AND (c.created_at<? OR (c.created_at=? AND c.id<?))' : ''} ORDER BY c.created_at DESC,c.id DESC LIMIT 21`)
       .all(...args, ...(anchor ? [anchor.createdAt, anchor.createdAt, anchor.id] : []));
     const page = rows.slice(0, 20), last = page.at(-1);
-    const current = extensionId === undefined ? null : db.prepare(`${query} ORDER BY c.created_at DESC,c.id DESC LIMIT 1`).get(...args);
+    const current = extensionId === undefined ? null : db.prepare(`${query}
+      AND CASE WHEN json_valid(c.state) THEN json_extract(c.state,'$.definitionId') END=?
+      ORDER BY c.created_at DESC,c.id DESC LIMIT 1`).get(...args, TASK_DEFINITION);
     return { availability: availability(), conversations: page.map(row => ({ id: row.id, version: row.version, status: row.status,
       extensionId: linkFor(owner, row.id)?.extension_id ?? null, purpose: linkFor(owner, row.id)?.purpose ?? null,
       runId: row.run_id, creationOperationId: row.creation_operation_id, operationId: decode(row).operations.at(-1).id })),

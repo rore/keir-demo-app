@@ -5,7 +5,7 @@ import { createAuthoringService } from '../src/authoring-service.mjs';
 import { createApp } from '../src/app.mjs';
 import { createLifecycle as lifecycleFactory, simulationCases, situation } from '../src/extension-lifecycle.mjs';
 import { createCompiler } from '../src/compiler.mjs';
-import { loadHost, digest, json, TASK_DEFINITION, TASK_HOOK } from '../src/extension-catalog.mjs';
+import { loadHost, digest, json, PREVIOUS_TASK_DEFINITION, TASK_DEFINITION, TASK_HOOK } from '../src/extension-catalog.mjs';
 import { authoringExample, businessContext, evidenceSummary } from '../src/authoring-example.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { join } from 'node:path';
@@ -33,7 +33,7 @@ function authoringStorage(db) {
 }
 
 test('task authoring admits immutable definition authority before failed compile and retains it through reload and continuation', async t => {
-  assert.equal(TASK_DEFINITION, 'daymark.task-completed/2');
+  assert.equal(TASK_DEFINITION, 'daymark.task-completed/3');
   const db = openData(':memory:'), lease = { sessionId: 'task-definition-test', current: () => true };
   const definitionConfig = { ...config, maxMicros: 5_000_000 };
   let service, attempts = 0, requests = 0;
@@ -111,6 +111,52 @@ for (const definitionId of [undefined, 'daymark.task-completed/1']) test(`task a
   assert.deepEqual(authoringStorage(db).authoring_dispatches, before.authoring_dispatches);
   assert.deepEqual(authoringStorage(db).authoring_budget, before.authoring_budget);
   assert.equal(requests, count, 'Stop does not resume a retired provider chain');
+});
+
+test('the previous model discussion stays in history while a fresh revision uses the current model', async t => {
+  const db = openData(':memory:'), lifecycle = createLifecycle(db), lease = { sessionId: 'model-upgrade-test', current: () => true };
+  let service, requests = 0;
+  const providerFactory = () => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros, complete: async () => {
+    requests++;
+    return { calls: [], text: 'Saved discussion.', usage: { inputTokens: 1, outputTokens: 1 } };
+  } });
+  const open = () => createAuthoringService({ db, lifecycle, config, providerFactory });
+  t.after(async () => { await service?.close(); db.close(); });
+  service = open();
+  const original = taskTurn('previous-model-discussion'), started = await service.turn('maya', original, lease);
+  const prior = await service.wait('maya', started.conversation.id);
+  const { id, extensionId } = prior;
+  assert.equal(prior.purpose, 'CREATE');
+  await service.close();
+
+  const saved = JSON.parse(db.prepare('SELECT state FROM authoring_conversations WHERE id=?').get(id).state);
+  saved.definitionId = PREVIOUS_TASK_DEFINITION;
+  db.prepare("UPDATE authoring_conversations SET state=?,status='RUNNING' WHERE id=?").run(JSON.stringify(saved), id);
+  const before = authoringStorage(db);
+  service = open();
+  const history = service.read('maya', id);
+  assert.equal(history.retired, true);
+  assert.equal(history.status, 'INTERRUPTED');
+  assert.equal(history.code, 'RUN_INTERRUPTED');
+  assert.deepEqual(history.messages, prior.messages);
+  assert.equal(service.recover('maya', original).conversation.id, id);
+  assert.equal(service.list('maya', extensionId).current, null);
+  assert.deepEqual(service.list('maya', extensionId).conversations.map(item => item.id), [id]);
+  assert.deepEqual(authoringStorage(db).authoring_budget, before.authoring_budget);
+  assert.equal(requests, 1);
+
+  const item = lifecycle.state('maya', extensionId);
+  const fresh = await service.turn('maya', { conversationId: null, operationId: 'current-model-discussion',
+    text: 'Revise this task customization.', expectedVersion: 0, expectedDraftVersion: item.draftVersion,
+    target: { kind: 'revise', extensionId, baseRevisionId: null, selectionGeneration: item.selection.generation } }, lease);
+  const current = await service.wait('maya', fresh.conversation.id);
+  assert.equal(current.status, 'IDLE');
+  assert.equal(current.extensionId, extensionId);
+  assert.notEqual(current.id, id);
+  assert.equal(service.list('maya', extensionId).current.id, current.id);
+  assert.deepEqual(service.read('maya', id), history);
+  assert.equal(JSON.parse(db.prepare('SELECT state FROM authoring_conversations WHERE id=?').get(current.id).state).definitionId, TASK_DEFINITION);
+  assert.equal(requests, 2);
 });
 
 test('task authoring discovers every project page without exposing other owners or native tasks and rejects foreign cursors', async t => {

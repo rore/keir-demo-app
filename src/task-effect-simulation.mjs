@@ -133,7 +133,13 @@ function validateCall(call, dcm, stub = false) {
   const response = call.response, write = call.capability === 'tasks.create';
   if (response?.kind === 'SUCCESS') {
     closed(response, ['kind', 'value', ...(write ? ['effect'] : [])]);
-    scalarRecord(response.value, write ? ['id'] : ['id', 'projectId', 'status']);
+    const fields = Object.keys(dcm.types[dcm.capabilities[call.capability].result].fields);
+    closed(response.value, fields);
+    for (const field of fields) {
+      const value = response.value[field];
+      // Native titles can exceed the runtime byte limit. Submit the full title to the runtime.
+      requireThat(field === 'title' ? typeof value === 'string' && value.isWellFormed() && value.trim() && value.length <= 120 : bounded(value));
+    }
     requireThat(write ? response.effect === 'CONFIRMED' : ['OPEN', 'COMPLETED'].includes(response.value.status));
   } else if (response?.kind === 'BUSINESS_REJECTION') {
     closed(response, ['kind', 'code', ...(write ? ['effect'] : [])]);
@@ -234,12 +240,13 @@ async function runCase(artifactBytes, host, row, signal) {
   if (!same(native, row.expect.outcome)) add('OUTCOME', 'MISMATCH');
   if (!same(calls, row.expect.calls)) add('CALLS', 'MISMATCH');
   if (!same(consumption, row.expect.consumption)) add('CONSUMPTION', 'MISMATCH');
-  const read = row.stubs.find(call => call.capability === 'tasks.get' && call.response.kind === 'SUCCESS');
+  const read = row.stubs.find(call => call.capability === 'tasks.get' && call.response.kind === 'SUCCESS' && call.response.value.id === row.given.input.taskId);
   const expectedEffect = row.expect.outcome.effects[0]?.state;
   return { id: row.id, label: row.id, expected: { ...row.expect, createdTasks: expectedEffect === 'UNKNOWN' ? null : expectedEffect === 'CONFIRMED'
     ? row.expect.calls.filter(call => call.capability === 'tasks.create').map(call => ({ projectId: call.args.projectId, title: call.args.title })) : [] }, report: {
     status: violations.length ? 'FAIL' : 'PASS', native, consumption, calls, mismatches: violations,
-    scenario: { task: { id: row.given.input.taskId, title: 'Example task', ...(read ? { status: read.response.value.status, projectId: read.response.value.projectId } : {}) } },
+    scenario: { task: { id: row.given.input.taskId, title: read?.response.value.title ?? 'Example task',
+      ...(read ? { status: read.response.value.status, projectId: read.response.value.projectId } : {}) } },
     observed: observations(calls, native, consumption, violations),
   } };
 }
@@ -308,8 +315,9 @@ export function taskEffectSyntax(host) {
     ], return: { record: { status: { cel: 'eligible ? "CREATED" : "NO_OP"' } } } }, null, 2);
 }
 export function taskEffectScenarioExamples(host) {
-  checkedHost(host);
-  const read = { step: 'source', capability: 'tasks.get', version: '1', args: { taskId: 'task1' }, protectedArgs: { actorId: 'user1' } };
+  const model = JSON.parse(checkedHost(host).dcmBytes), capability = model.capabilities['tasks.get'];
+  const withTitle = own(model.types[capability.result].fields, 'title');
+  const read = { step: 'source', capability: 'tasks.get', version: capability.version, args: { taskId: 'task1' }, protectedArgs: { actorId: 'user1' } };
   const rows = [
     ['matching-project', 'project1', 'COMPLETED', true],
     ['other-project', 'project2', 'COMPLETED', false],
@@ -328,7 +336,7 @@ export function taskEffectScenarioExamples(host) {
     const outcome = { classification: 'COMPLETED', result: { status: match ? 'CREATED' : 'NO_OP' },
       effects: match ? [{ step: 'created', capability: 'tasks.create', state: 'CONFIRMED' }] : [], trace: events.map((event, sequence) => ({ sequence, ...event })) };
     return { format: 'keir-scenario/effect-4', id, given: { input: { taskId: 'task1' }, fixture: 'normal' },
-      stubs: [{ ...read, response: { kind: 'SUCCESS', value: { id: 'task1', projectId, status } } },
+      stubs: [{ ...read, response: { kind: 'SUCCESS', value: { id: 'task1', projectId, status, ...(withTitle && { title: 'Example task' }) } } },
         ...(match ? [{ ...write, response: { kind: 'SUCCESS', value: { id: 'task2' }, effect: 'CONFIRMED' } }] : [])],
       expect: { outcome, calls: match ? [read, write] : [read], consumption: consumeTaskEffect(outcome, host) } };
   });

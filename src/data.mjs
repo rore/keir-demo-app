@@ -2,7 +2,7 @@ import { DatabaseSync, backup } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { loadCatalog, digest, json } from './extension-catalog.mjs';
+import { loadCatalog, digest, json, taskDefinitionIds } from './extension-catalog.mjs';
 import { taskEffectProofMatches } from './task-effect-simulation.mjs';
 
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
@@ -444,6 +444,12 @@ export function taskService(db) {
     },
     listTasks(owner, id) { project(owner, id); return db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND project_id = ? ORDER BY created_at, id`).all(owner, id); },
     getTask: task,
+    getTaskForCustomization(owner, id) {
+      // SQLite TEXT reads stop at embedded NUL; the model must see the saved title without truncation.
+      const row = db.prepare('SELECT id, project_id AS projectId, status, CAST(title AS BLOB) AS title FROM tasks WHERE owner_id=? AND id=?').get(owner, id);
+      if (!row) throw notFound();
+      return { ...row, title: Buffer.from(row.title).toString('utf8') };
+    },
     createTask(owner, input) {
       fields(input, ['projectId', 'title', 'notes']);
       if (typeof input.projectId !== 'string') throw new AppError(400, 'Choose a project.');
@@ -527,7 +533,7 @@ export function taskEffectService(db) {
       const now = invocation.deadline.clock.nowMs();
       if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(invocation.deadline.expiresAtMs)
           || now >= invocation.deadline.expiresAtMs || context.eventId !== row.event_id || row.revoked_at !== null
-          || pins?.profile !== 'keir-effect/4' || pins.definitionId !== 'daymark.task-completed/2'
+          || pins?.profile !== 'keir-effect/4' || !taskDefinitionIds.includes(pins.definitionId)
           || pins.modelRef?.format !== 'keir-dcm/effect-4' || pins.modelRef.digest !== pins.modelDigest
           || pins.consumer?.kind !== 'EVENT_REPORT' || Object.hasOwn(pins, 'qualification')
           || context.input?.taskId !== row.source_task_id) return false;

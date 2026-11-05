@@ -95,7 +95,7 @@ test('captured admission keeps exact approval authority without rereading deploy
   const { db, lifecycle } = setup(t), { state } = await approved(lifecycle);
   const active = activate(lifecycle, state), revisionId = active.draft.id, itemId = active.extension.id;
   const pins = JSON.parse(db.prepare("SELECT binding_pins FROM extension_selections WHERE owner_id='maya' AND hook_id=?").get(TASK_HOOK).binding_pins);
-  assert.equal(pins.profile, 'keir-effect/4'); assert.equal(pins.definitionId, 'daymark.task-completed/2');
+  assert.equal(pins.profile, 'keir-effect/4'); assert.equal(pins.definitionId, 'daymark.task-completed/3');
   assert.equal(pins.approvedEvidenceId, state.approvedEvidenceId); assert.equal(Object.hasOwn(pins, 'qualification'), false);
   const context = { owner: 'maya', itemId, revisionId, pins };
   const later = await lifecycle.simulate('maya', currentInput(active), authorized);
@@ -361,13 +361,13 @@ function readOnlyProgram(steps) {
   const source = JSON.parse(fixtureFor().source);
   source.steps = steps.length ? steps.map(id => ({ id, call: 'tasks.get', args: { taskId: { cel: 'input.taskId' } } })) : [{ id: 'constant', let: { cel: 'true' } }];
   source.return = { record: { status: { cel: steps.length ? `${steps.at(-1)}.status == "COMPLETED" ? "NO_OP" : "NO_OP"` : 'constant ? "NO_OP" : "CREATED"' } } };
-  const calls = steps.map(step => ({ step, capability: 'tasks.get', version: '1', args: { taskId: 'task1' }, protectedArgs: { actorId: 'user1' } }));
+  const calls = steps.map(step => ({ step, capability: 'tasks.get', version: '2', args: { taskId: 'task1' }, protectedArgs: { actorId: 'user1' } }));
   const trace = [{ event: 'INVOCATION_START' }, ...(steps.length ? steps.flatMap(step => [{ event: 'STEP_START', step },
     { event: 'CALL_DISPATCHED', step, capability: 'tasks.get' }, { event: 'CALL_SUCCEEDED', step, capability: 'tasks.get' }])
     : [{ event: 'STEP_START', step: 'constant' }, { event: 'VALUE_BOUND', step: 'constant' }]), { event: 'RETURNED' }, { event: 'TERMINATED' }];
   const outcome = { classification: 'COMPLETED', result: { status: 'NO_OP' }, effects: [], trace: trace.map((event, sequence) => ({ sequence, ...event })) };
   return { source: JSON.stringify(source), row: { format: 'keir-scenario/effect-4', id: 'normal', given: { input: { taskId: 'task1' }, fixture: 'normal' },
-    stubs: calls.map(call => ({ ...call, response: { kind: 'SUCCESS', value: { id: 'task1', projectId: 'project1', status: 'COMPLETED' } } })),
+    stubs: calls.map(call => ({ ...call, response: { kind: 'SUCCESS', value: { id: 'task1', projectId: 'project1', status: 'COMPLETED', title: 'Example task' } } })),
     expect: { outcome, calls, consumption: { status: 'REPORTED', classification: 'COMPLETED', result: outcome.result, effects: [] } } } };
 }
 test('actual zero-call and renamed repeated-read task programs preserve bindings, call order and intended rejection', async t => {

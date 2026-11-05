@@ -9,17 +9,24 @@ export const json = value => JSON.stringify(sorted(value));
 export const consumer = Object.freeze({ id: 'demo.taskadvice', version: '1', kind: 'DISPLAY' });
 export const hook = 'ClassifyTask';
 export const TASK_HOOK = 'TaskCompleted';
-export const TASK_DEFINITION = 'daymark.task-completed/2';
+export const PREVIOUS_TASK_DEFINITION = 'daymark.task-completed/2';
+export const TASK_DEFINITION = 'daymark.task-completed/3';
+export const taskDefinitionIds = Object.freeze([PREVIOUS_TASK_DEFINITION, TASK_DEFINITION]);
+const taskDefinition = { profile: 'keir-effect/4', adapter: 'native-task-effect/1' };
+const taskDefinitions = Object.freeze({
+  [PREVIOUS_TASK_DEFINITION]: { ...taskDefinition, directory: 'task-effect', id: PREVIOUS_TASK_DEFINITION },
+  [TASK_DEFINITION]: { ...taskDefinition, directory: 'task-effect/title', id: TASK_DEFINITION },
+});
 const definitions = Object.freeze({
   [hook]: { directory: 'task-read', id: 'daymark.task-read/1', profile: 'keir-read/2', adapter: 'native-task-read/1' },
-  [TASK_HOOK]: { directory: 'task-effect', id: TASK_DEFINITION, profile: 'keir-effect/4', adapter: 'native-task-effect/1' },
+  [TASK_HOOK]: taskDefinitions[TASK_DEFINITION],
 });
 
 const load = path => readFileSync(new URL('../' + path, import.meta.url));
 // Historical projection uses known model bytes, never current package admission.
 const historicalModels = [
   { path: 'extensions/task-read/dcm.json', definition: definitions[hook], hook },
-  { path: 'extensions/task-effect/dcm.json', definition: definitions[TASK_HOOK], hook: TASK_HOOK },
+  ...Object.values(taskDefinitions).map(definition => ({ path: `extensions/${definition.directory}/dcm.json`, definition, hook: TASK_HOOK })),
   { path: 'extensions/task-effect/legacy-3/dcm.json', definition: { ...definitions[TASK_HOOK], id: 'daymark.task-completed/1', profile: 'keir-effect/3' }, hook: TASK_HOOK },
 ].flatMap(item => {
   try {
@@ -36,12 +43,13 @@ export function historicalDefinitionForPins(pins) {
   if (!known) throw new Error('Unsupported historical definition');
   for (const [name, value] of Object.entries(known.expected)) if (json(pins[name]) !== json(value)) throw new Error('Historical definition mismatch');
   if (pins.definitionId !== undefined && pins.definitionId !== known.definition.id
-      || known.definition.profile === 'keir-effect/4' && pins.definitionId !== TASK_DEFINITION) throw new Error('Historical definition mismatch');
+      || known.definition.profile === 'keir-effect/4' && pins.definitionId !== known.definition.id) throw new Error('Historical definition mismatch');
   return { definitionId: known.definition.id, dcmBytes: Buffer.from(known.bytes), pins: JSON.parse(json(pins)) };
 }
-export function loadHost(hookId = hook) {
+export function loadHost(hookId = hook, definitionId = TASK_DEFINITION) {
   if (!Object.hasOwn(definitions, hookId)) throw new Error('Unsupported host definition');
-  const definition = definitions[hookId];
+  if (hookId === TASK_HOOK && !taskDefinitionIds.includes(definitionId)) throw new Error('Unsupported host definition');
+  const definition = hookId === TASK_HOOK ? taskDefinitions[definitionId] : definitions[hookId];
   const pins = JSON.parse(load(`extensions/${definition.directory}/selection.json`));
   const task = hookId === TASK_HOOK;
   const runtime = task ? JSON.parse(load('vendor/provenance.json')) : pins.runtime;
@@ -69,7 +77,8 @@ export function loadHost(hookId = hook) {
 
 export function definitionForPins(pins) {
   if (!pins || !Object.hasOwn(definitions, pins.hook)) throw new Error('Unsupported host definition');
-  const host = loadHost(pins.hook);
+  if (pins.hook === TASK_HOOK && !taskDefinitionIds.includes(pins.definitionId)) throw new Error('Unsupported host definition');
+  const host = loadHost(pins.hook, pins.definitionId);
   for (const [name, expected] of Object.entries(host.pins)) {
     if (json(pins[name]) !== json(expected)) throw new Error('Host definition mismatch');
   }

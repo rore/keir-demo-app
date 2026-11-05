@@ -129,6 +129,8 @@ test('offline native provider repairs scenario syntax from discovered formats wh
     else if (index === 1) {
       assert.equal(result.ok, true);
       const discovery = result.result;
+      assert.equal(discovery.dcm.capabilities['tasks.get'].version, '2');
+      assert.equal(discovery.dcm.types.Task.fields.title, 'String');
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));
       desired = customerExamples(discovery.sourceExample, discovery.scenarioExamples, project.id, other.id);

@@ -31,10 +31,10 @@ try {
   assert.equal(sam.state.draft.pins.artifactDigest, maya.state.draft.pins.artifactDigest);
   assert.equal(digest(lifecycle.execution('sam', sam.input.revisionId, sam.input.extensionId).artifactBytes), sam.state.draft.pins.artifactDigest);
 
-  let binds = 0, prepares = 0, now = 0, beforeInvoke;
-  const invocations = [];
+  let prepares = 0, now = 0, beforeInvoke;
+  const invocations = [], boundVersions = [];
   mock.module('@keir/runtime-node', { namedExports: { ...actual,
-    bindModel(...args) { binds++; return actual.bindModel(...args); },
+    bindModel(...args) { boundVersions.push(JSON.parse(args[0]).domain.version); return actual.bindModel(...args); },
     prepareProgram(...args) { prepares++; return actual.prepareProgram(...args); },
     invokeProgram(...args) {
       invocations.push({ prepared: args[0], input: args[1], invocation: args[2] });
@@ -85,7 +85,7 @@ try {
   assert.equal(native.listTasks('sam', project.id).filter(task => task.title === fixture.metadata.title).length, 1);
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
 
-  assert.equal(binds, 1); assert.equal(prepares, 1); assert.equal(invocations.length, 4);
+  assert.deepEqual(boundVersions, ['2', '3']); assert.equal(prepares, 1); assert.equal(invocations.length, 4);
   assert.ok(invocations.every(row => row.prepared === invocations[0].prepared));
   assert.deepEqual(invocations.map(row => row.invocation.bindings.actorId), ['sam', 'maya', 'sam', 'sam']);
   assert.deepEqual(invocations.map(row => row.invocation.deadline.expiresAtMs), [1000, 1100, 1200, 1300]);
@@ -104,6 +104,6 @@ try {
   assert.deepEqual(dispatcher.status('sam', first.source.id), first.status, 'A later event never changes the first receipt or outcome.');
   assert.deepEqual(dispatcher.status('sam', revoked.source.id), revoked.status);
   assert.deepEqual(dispatcher.status('sam', expired.source.id), expired.status);
-  process.stdout.write(JSON.stringify({ binds, prepares, invocations: invocations.length,
+  process.stdout.write(JSON.stringify({ boundVersions, prepares, invocations: invocations.length,
     outcomes: ['CONFIRMED', 'NO_OP', 'REVOKED', 'EXPIRED'] }));
 } finally { await dispatcher?.close(); db.close(); }

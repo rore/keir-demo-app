@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { mock } from 'node:test';
 
 const runtime = await import('@keir/runtime-node');
-let binds = 0;
-mock.module('@keir/runtime-node', { namedExports: { ...runtime, bindModel() {
-  binds++;
+const boundVersions = [];
+mock.module('@keir/runtime-node', { namedExports: { ...runtime, bindModel(dcmBytes) {
+  boundVersions.push(JSON.parse(dcmBytes).domain.version);
   return { boundModel: null, diagnostic: { code: 'ADMISSION_INVALID', path: '' } };
 } } });
 
@@ -29,7 +29,7 @@ try {
   const login = await request('POST', '/api/session', { token: bootstrap.json().contextToken, body: { userId: 'maya' } });
   assert.equal(login.statusCode, 200, login.body);
   const auth = { token: login.json().contextToken, cookie: login.cookies.find(value => value.name === 'keir_demo_session').value };
-  assert.equal(binds, 1, 'the actual dispatcher attempts binding and receives the diagnostic');
+  assert.deepEqual(boundVersions, ['2', '3'], 'the actual dispatcher rejects both exact model bindings');
   for (const path of ['/api/extensions', `/api/extensions/${extensionId}`]) {
     const response = await request('GET', path, auth);
     assert.equal(response.statusCode, 200, response.body);
