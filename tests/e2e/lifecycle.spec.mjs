@@ -94,7 +94,7 @@ async function prepare(page, label = 'Customer follow-up') {
   await lifecyclePost(page, 'scenarios', { revisionId: compiled.draft.id, draftVersion: compiled.draftVersion, cases: fixture.cases });
   expect((await checkSaved(page)).evidence.passed).toBe(true);
   await expect(approval(page)).toBeEnabled();
-  await expect(decision(page).getByRole('region', { name: 'Checked proposed behavior', exact: true }).locator('.rs-example:visible')).toHaveCount(1);
+  await expect(decision(page).getByRole('region', { name: 'Checked proposed behavior', exact: true }).locator('.rs-compact-case:visible')).toHaveCount(fixture.cases.length);
   await latestExamples(page);
   const proposed = studio(page).getByRole('region', { name: 'Saved proposed example', exact: true });
   await expect(proposed.locator('.rs-example:visible')).toHaveCount(1);
@@ -388,7 +388,7 @@ for (const width of [1440, 390]) test(`real authored source, independent example
   await expect(approval(page)).toBeEnabled();
   const proposed = decision(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
   await expect(proposed.locator('.rs-example:visible')).toHaveCount(1);
-  await expect(proposed.getByText('Matches what you wanted', { exact: true })).toHaveCount(1);
+  await expect(proposed.getByText('Matches', { exact: true })).toBeVisible();
   await approve(page);
   expect((await savedLifecycle(page, demo.origin)).selection.revision.label).toBe('Original follow-up');
   await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();

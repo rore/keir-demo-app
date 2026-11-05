@@ -113,15 +113,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(await saved(page, activeId)).toEqual(activeBefore);
       expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification', 'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
       const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
-      await expect(proposed.locator('.rs-example:visible')).toHaveCount(1);
+      await expect(proposed.locator('.rs-compact-case:visible')).toHaveCount(documents.cases.length);
       await expect(proposed).toContainText(fixture.metadata.title);
       await decision.getByRole('button', { name: 'Inspect examples and what’s in use', exact: true }).click();
       const comparison = ui.getByRole('article', { name: 'Sample results', exact: true });
       await expect(comparison.getByRole('region', { name: 'Checked behavior currently in use', exact: true })).toContainText('Existing customer follow-up');
       await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
       await expandCheckedExamples(decision);
-      await expect(proposed.locator('.rs-example:visible')).toHaveCount(6);
-      await expect(proposed.locator('.rs-example').nth(1)).toContainText('Create no task.');
+      await expect(proposed.locator('.rs-compact-case').nth(1)).toContainText('No task was created.');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(decision.getByLabel('Saved source for approval', { exact: true })).toHaveText(documents.source);
       for (let index = 0; index < documents.cases.length; index++)

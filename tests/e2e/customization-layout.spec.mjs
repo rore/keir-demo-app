@@ -336,12 +336,12 @@ test('approved run stays exact after a newer run and remount until explicit reap
   await enter(page, demo); await openStudio(page, false); const proposed = await choose(page, proposedLabel);
   await checkChoice(page); await picture(page, 'conversation-default'); await approve(page);
   const approved = await savedState(page), a = approved.approvedEvidenceId; expect(a).toBe(approved.evidence.id);
-  await ui(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'Hide simulation', exact: true }).click();
   await expect(ui(page).locator('.rs-preview')).toBeHidden(); await checkChoice(page);
   const b = (await savedState(page)).evidence.id; expect(b).not.toBe(a); expect((await savedState(page)).approvedEvidenceId).toBe(a);
   await page.reload(); await expect(ui(page).locator('.rs-preview')).toBeHidden();
   await openSavedChanges(page); await expect(ui(page).getByRole('button', { name: 'Turn on for my tasks' })).toBeEnabled();
-  await ui(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'Hide simulation', exact: true }).click();
   let results = await openRun(page, a); await results.locator('.rs-example-details > summary').click();
   await expect(results).toContainText(`Evidence: ${a}`); await openExampleDetails(results);
   await expect(results.getByText('Approved run', { exact: true })).toBeVisible();
@@ -389,38 +389,57 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);
     await prepareChoice(page, proposedLabel); await composer.fill('Keep this unsent thought'); await checkChoice(page);
     const named = studio.getByRole('button', { name: 'View saved changes', exact: true }).first();
-    await named.click(); const heading = studio.getByRole('heading', { name: 'Checked examples', exact: true });
+    await named.click(); const heading = studio.getByRole('heading', { name: 'Simulation', exact: true });
     await expect(heading).toBeFocused();
     const results = studio.getByRole('article', { name: 'Current decision' });
     const action = results.getByRole('button', { name: 'Approve this change', exact: true });
     await expect(action).toBeEnabled();
     const log = studio.getByRole('log');
-    await expect(log.getByRole('heading', { name: 'Your saved change', exact: true })).toBeVisible();
+    await expect(log.getByRole('heading', { name: 'About this rule', exact: true })).toBeVisible();
     await expect(log.getByRole('article', { name: 'Current decision' })).toHaveCount(1);
     await expect(composer).toBeInViewport();
-    const disclosures = results.locator('details:has(> .rs-example)');
-    await expect(disclosures).toHaveCount(6);
-    await expect(results.locator('details:has(> .rs-example)[open]')).toHaveCount(1);
-    await disclosures.first().locator(':scope > summary').click();
-    await expect(results.locator('.rs-example:visible')).toHaveCount(0);
+    const rows = results.locator('.rs-compact-case');
+    await expect(rows).toHaveCount(6);
+    await expect(results.locator('.rs-compact-case:visible')).toHaveCount(6);
     await expect(results.getByText('These results cover only the recorded examples. Other situations remain untested.', { exact: true })).toBeVisible();
-    await disclosures.nth(1).locator(':scope > summary').click();
-    await expect(disclosures.nth(1).locator('.rs-example')).toBeVisible();
+    await expect(rows.nth(1)).toBeVisible();
+    if (viewport.width === 1440 || viewport.width === 390) {
+      const summary = log.getByRole('article', { name: 'About this rule', exact: true });
+      await expect(summary).toContainText('can request a follow-up titled');
+      await summary.evaluate(node => node.scrollIntoView({ block: 'start' }));
+      await picture(page, `studio-saved-rule-${viewport.width}x${viewport.height}`);
+      const simulation = results.getByRole('heading', { name: 'Simulation', exact: true });
+      await simulation.evaluate(node => node.scrollIntoView({ block: 'start' }));
+      await picture(page, `studio-simulation-rows-${viewport.width}x${viewport.height}`);
+    }
     await action.evaluate(button => button.scrollIntoView({ block: 'center' }));
     await expect(action).toBeInViewport({ ratio: 0.99 });
     const id = (await savedState(page)).evidence.id;
-    await results.getByRole('button', { name: 'Hide checked examples', exact: true }).click(); await expect(named).toBeFocused();
+    await results.getByRole('button', { name: 'Hide simulation', exact: true }).click(); await expect(named).toBeFocused();
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);
     await page.keyboard.press('Tab'); expect(await page.evaluate(() => !!document.activeElement?.closest('.rs-preview'))).toBe(false);
     await named.click(); await expect(heading).toBeFocused();
     await expect(action).toBeEnabled();
-    await expect(disclosures.nth(1).locator('.rs-example')).toBeVisible();
+    await expect(rows.nth(1)).toBeVisible();
     await expect(composer).toHaveValue('Keep this unsent thought');
     await results.getByText('Exact saved change and checks', { exact: true }).click();
     await expect(results).toContainText(`Evidence: ${id}`);
     await expect(results.getByLabel('Exact checked examples', { exact: true })).toContainText(id);
     await expect(results).toContainText('Example only · no real tasks changed');
     await bounded(page); await picture(page, `on-demand-results-${viewport.width}x${viewport.height}`);
+    if (viewport.width === 1440 || viewport.width === 390) {
+      const inspect = results.getByRole('button', { name: 'Inspect examples and what’s in use', exact: true });
+      await inspect.click();
+      const comparison = studio.getByRole('article', { name: 'Sample results', exact: true });
+      const singleColumn = /^\d+(?:\.\d+)?px$/;
+      await expect(comparison.locator('.rs-proof-comparison').first()).toHaveCSS('grid-template-columns', singleColumn);
+      await expect(comparison.locator('.rs-example dl').first()).toHaveCSS('grid-template-columns', singleColumn);
+      if (viewport.width === 1440) await expect(rows.first()).toHaveCSS('grid-template-columns', singleColumn);
+      await picture(page, `studio-comparison-${viewport.width}x${viewport.height}`);
+      await studio.getByRole('button', { name: 'Back to conversation', exact: true }).click();
+      await expect(inspect).toBeFocused();
+      await expect(composer).toHaveValue('Keep this unsent thought');
+    }
   });
 }
 
@@ -599,18 +618,20 @@ for (const operation of ['simulate', 'approve', 'activate']) {
       }
       const anchor = operation === 'simulate'
         ? results.getByRole('region', { name: 'Saved proposed example', exact: true }).getByRole('article', { name: nonmatchLabel, exact: true })
-        : results.getByRole('article', { name: nonmatchLabel, exact: true });
+        : results.getByRole('article', { name: `Example: Task completed in ${nonmatch.projectName}`, exact: true });
       const content = await anchor.locator('dd').allTextContents();
       const scroller = operation === 'simulate' ? studio.locator('.rs-canvas') : studio.getByRole('log');
-      await scroller.focus(); await anchor.scrollIntoViewIfNeeded();
-      await expect(anchor).toBeInViewport(); const position = (await anchor.boundingBox()).y;
+      await scroller.focus(); await anchor.evaluate(node => node.scrollIntoView({ block: 'start' }));
+      await expect(anchor).toBeInViewport();
+      expect(await scrollTop(scroller)).toBeGreaterThan(0);
+      const position = (await anchor.boundingBox()).y;
       release(); await finished; await expect(results).toBeVisible(); await expect(results).toContainText(`Evidence: ${original.evidence.id}`);
       expect(await anchor.locator('dd').allTextContents()).toEqual(content); await expect(scroller).toBeFocused(); expect(await scrollTop(scroller)).toBeGreaterThan(0);
       expect(Math.abs((await anchor.boundingBox()).y - position)).toBeLessThanOrEqual(1);
       if (operation !== 'simulate') {
         await openRun(page, original.evidence.id);
         results = await selectOtherExample(page);
-        await expect(results.getByRole('region', { name: 'Saved proposed example', exact: true }).getByRole('article', { name: nonmatchLabel, exact: true }).locator('dd')).toHaveText(content);
+        await expect(results.getByRole('region', { name: 'Saved proposed example', exact: true }).getByRole('article', { name: nonmatchLabel, exact: true }).locator('dd').last()).toContainText(content[0].trim());
       }
       await openExampleDetails(results);
       if (proof) expect(await results.getByLabel('Saved synthetic simulation report', { exact: true }).textContent()).toBe(proof);

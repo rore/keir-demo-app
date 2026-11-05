@@ -85,17 +85,28 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await ui.getByText(fixture.metadata.mismatchText, { exact: true }).locator('..').getByRole('button', { name: 'View checked examples', exact: true }).click();
     await expect(decision(page)).toBeVisible();
     await expandCheckedExamples(decision(page));
-    const mismatch = decision(page).getByRole('article', { name: `Example: Completed task in “${fixture.metadata.otherProjectName}”`, exact: true });
+    const mismatch = decision(page).getByRole('article', { name: `Example: Task completed in ${fixture.metadata.otherProjectName}`, exact: true });
     await expect(mismatch).toHaveCount(1);
-    await expect(mismatch.locator('.rs-mismatch')).toHaveText('Task creation was not confirmed in this example');
-    await expect(mismatch.locator('dd')).toHaveText(['Create no task.', 'No task-creation result was observed.']);
+    await expect(mismatch.getByText('Could not check this example', { exact: true })).toBeVisible();
+    await expect(mismatch.locator('dd')).toHaveText(['This check couldn’t verify whether a task was created.', 'Create no task.', 'The rule and the saved example didn’t match.']);
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
     expect((await read('extensions')).approved).toBe(false); expect((await read('extensions')).selection).toEqual(selection);
     expect(mutations).toEqual([]);
     expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 
-    await decision(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
+    mkdirSync(resolve('build/screens'), { recursive: true });
+    await mismatch.evaluate(node => node.scrollIntoView({ block: 'center' }));
+    await page.screenshot({ path: resolve('build/screens', 'authoring-integrated-mismatch.png'), fullPage: true });
+    const composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
+    await composer.fill('Keep this unsent correction');
+    await mismatch.getByRole('button', { name: 'Describe a correction', exact: true }).press('Enter');
+    await expect(composer).toBeFocused();
+    await expect(composer).toHaveValue('Keep this unsent correction');
+    await decision(page).getByRole('button', { name: 'Ask for a correction', exact: true }).press('Enter');
+    await expect(composer).toBeFocused();
+    await expect(composer).toHaveValue('Keep this unsent correction');
+    await decision(page).getByRole('button', { name: 'Hide simulation', exact: true }).click();
     expect(fixture.requests).toHaveLength(5);
     await send(page, 'Correct the saved source so only completed tasks in the chosen project create the named task. Keep exactly the same independent expected examples.');
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
@@ -111,7 +122,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     expect((await read(`extensions/revisions/${failed.review.revisionId}`))).toEqual(wrong);
     await openSavedChanges(page);
     await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
-    await expect(decision(page).locator('.rs-example:visible')).toHaveCount(1);
+    await expect(decision(page).locator('.rs-compact-case:visible')).toHaveCount(passedProof.reports.length);
     await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
     for (let index = 0; index < saved.cases.length; index++)
@@ -361,9 +372,11 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       for (const [index, report] of proof.reports.entries()) {
         const example = examples.nth(index);
         await expect(example).toBeVisible();
-        await expect(example.locator('h4')).toHaveText(report.report.scenario.task.title);
-        await expect(example.locator('dd').first()).toContainText(index === 0 ? fixture.metadata.title : 'Create no task.');
-        await expect(example.locator('.rs-match')).toHaveCount(1);
+        const sample = example.getByText(`Sample task: “${report.report.scenario.task.title}”`);
+        if (report.report.scenario.task.status) await expect(sample).toBeVisible();
+        else await expect(sample).toHaveCount(0);
+        await expect(example.locator('dd')).toContainText(index === 0 ? fixture.metadata.title : 'No task was created.');
+        await expect(example.getByText('Matches', { exact: true })).toBeVisible();
         if (!index) {
           const exact = decision(page).getByLabel('Exact checked examples', { exact: true });
           await expect(exact).toBeHidden();
@@ -375,6 +388,9 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
       await expect(decision(page)).toContainText('Example only · no real tasks changed');
+      await ui.getByRole('button', { name: 'Ask about this rule', exact: true }).press('Enter');
+      await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeFocused();
+      await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
       for (let index = 0; index < fixture.metadata.cases.length; index++)

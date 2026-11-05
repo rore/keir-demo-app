@@ -28,7 +28,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }
       const heading = page.getByRole('heading', { name, exact: true });
       await expect(heading).toBeVisible();
       await expect(page.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
-      await expect(page.getByRole('region', { name: 'Customization Studio', exact: true })).not.toContainText('Checked examples');
+      await expect(page.getByRole('region', { name: 'Customization Studio', exact: true })).not.toContainText('Simulation');
       const geometry = await heading.evaluate(node => ({ height: node.getBoundingClientRect().height,
         line: parseFloat(getComputedStyle(node).lineHeight), width: node.getBoundingClientRect().width }));
       expect(geometry.height).toBeLessThanOrEqual(geometry.line + 1);

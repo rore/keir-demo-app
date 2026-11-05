@@ -7,7 +7,7 @@ import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const review = page => studio(page).getByRole('article', { name: 'Current decision', exact: true });
-const behavior = page => studio(page).getByRole('article', { name: 'Your saved change', exact: true });
+const behavior = page => studio(page).getByRole('article', { name: 'About this rule', exact: true });
 const composer = page => studio(page).getByLabel('Message to Daymark assistant', { exact: true });
 const turnOn = page => review(page).getByRole('button', { name: 'Turn on for my tasks', exact: true });
 const reviewLink = page => studio(page).getByRole('button', { name: /^(View saved changes|View latest changes)$/ }).first();
@@ -59,10 +59,10 @@ async function expectProof(page, id) {
 }
 
 async function expectIllustration(page, expectedTitle) {
-  await expect(behavior(page)).toContainText('Completed example task');
-  await expect(behavior(page)).toContainText('Expected unfinished follow-up');
-  await expect(behavior(page).getByText('Example task', { exact: true })).toBeVisible();
-  await expect(behavior(page).getByText(expectedTitle, { exact: true })).toBeVisible();
+  await expect(behavior(page)).toContainText('About this rule');
+  await expect(behavior(page)).toContainText(`can request a follow-up titled “${expectedTitle}”`);
+  await expect(behavior(page)).toContainText('A full summary isn’t available for this version.');
+  await expect(behavior(page)).not.toContainText('Completed example task');
 }
 
 async function holdNext(page, url, { afterResponse = false } = {}) {
@@ -76,6 +76,31 @@ async function holdNext(page, url, { afterResponse = false } = {}) {
   }, { times: 1 });
   return { started: started.promise, release: released.resolve };
 }
+
+test('the rule summary rejects artifact bytes that differ from the saved revision pin', async ({ page, request }) => {
+  const fixture = await startAuthoringFixture({ unconfigured: true });
+  try {
+    const { extensionId, input } = await seed(page, request, fixture);
+    const url = `**/api/extensions/${extensionId}/revisions/${input.revisionId}`;
+    const changedTitle = 'Unverified follow-up';
+    await page.route(url, async route => {
+      const response = await route.fetch();
+      const saved = await response.json();
+      const artifact = saved.artifact.replace(fixture.metadata.title, changedTitle);
+      expect(artifact).not.toBe(saved.artifact);
+      await route.fulfill({ response, json: { ...saved, artifact } });
+    });
+    const served = page.waitForResponse(response => response.url().endsWith(`/revisions/${input.revisionId}`));
+    await openItem(page, extensionId);
+    await served;
+    await expect(behavior(page)).toContainText('A full summary isn’t available for this version.');
+    await expect(behavior(page)).not.toContainText(changedTitle);
+    await page.unroute(url);
+    await page.reload();
+    await expectIllustration(page, fixture.metadata.title);
+    await expect(review(page)).toBeHidden();
+  } finally { await fixture.close(); }
+});
 
 test('a competing approval cannot substitute its proof during turn-on', async ({ page, request }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true, projectName: 'Studio QA' });
@@ -91,13 +116,12 @@ test('a competing approval cannot substitute its proof during turn-on', async ({
 
     await openItem(page, extensionId);
     await expectIllustration(page, metadata.title);
-    await expect(behavior(page)).toContainText('When, in this saved example, a task in Studio QA is completed.');
-    await expect(behavior(page).locator('.rs-behavior-pair').getByText('Studio QA', { exact: true })).toHaveCount(2);
-    await expect(behavior(page)).toContainText('This illustration covers one saved situation.');
+    await expect(behavior(page)).toContainText('After a task completes');
+    await expect(behavior(page)).not.toContainText('Studio QA');
     await expect(review(page)).toBeHidden();
     await composer(page).fill('Keep my unsent next change');
     await reviewLink(page).click();
-    await expect(review(page).getByRole('heading', { name: 'Checked examples', exact: true })).toBeVisible();
+    await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
     await expect(turnOn(page)).toBeEnabled();
     await expectProof(page, proofA.id);
 

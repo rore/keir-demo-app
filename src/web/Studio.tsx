@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import "./Studio.css";
 
-type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: object; provenance: "operator" | "customer" };
+type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: { artifactDigest?: string }; provenance: "operator" | "customer" };
 type History = { id: number; generation: number; operation: string; revisionId: string | null; label?: string | null };
 export type State = {
   retired?: boolean;
@@ -32,10 +32,10 @@ type HostCatalog = {
 type Outcome = { classification: string; code?: string; error?: { code: string }; consumption?: { status: "DISPLAYED" | "NOT_DISPLAYED"; code?: string } };
 type TaskPreview = { id?: string; title: string; status?: "OPEN" | "COMPLETED"; projectId?: string; projectName?: string };
 type EffectObservation = { effect: "CONFIRMED" | "NONE" | "UNKNOWN" | "NOT_OBSERVED"; createdTasks: TaskPreview[] | null };
-type SavedSource = { extensionId?: string; revisionId: string; source: string; artifact: string; pins: object; cases: string[]; suiteDigest: string | null };
+type SavedSource = { extensionId?: string; revisionId: string; source: string; artifact: string; pins: { artifactDigest?: string }; cases: string[]; suiteDigest: string | null };
 type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"; identity: object; passed: boolean; reports: {
   id: string; label: string; expected: { createdTasks?: TaskPreview[] | null; [key: string]: unknown }; taskStatus?: "OPEN" | "COMPLETED" | null; readFailure?: "TASK_NOT_FOUND" | "ACCESS_DENIED" | "TRANSIENT_FAILURE" | null;
-  report: { status: string; scenario?: { task: TaskPreview }; observed?: EffectObservation; native?: Outcome; calls?: { capability: string }[]; consumption?: { status: string; code?: string }; mismatches: object[] };
+  report: { status: string; scenario?: { task: TaskPreview }; observed?: EffectObservation; native?: Outcome; calls?: { capability: string }[]; consumption?: { status: string; code?: string }; mismatches: { stage?: string; code?: string }[] };
 }[] };
 type SavedReview = { owner: State["owner"]; extension: NonNullable<State["extension"]>; revision: Revision;
   draftVersion: number; evidenceId: string; suiteDigest: string | null; selection: State["selection"] };
@@ -139,36 +139,35 @@ type Props = {
 const knownTask = (task?: TaskPreview) => !!task && typeof task.title === "string" && !!task.title.trim() && typeof task.projectId === "string" && !!task.projectId;
 const knownScenarioTask = (task?: TaskPreview) => !!task && typeof task.id === "string" && !!task.id && typeof task.title === "string" && !!task.title.trim();
 const knownTasks = (tasks?: TaskPreview[] | null) => Array.isArray(tasks) && tasks.every(knownTask);
-type TaskIllustration = { source: TaskPreview; expected: TaskPreview };
-function savedTaskIllustration(cases: string[]): TaskIllustration | null {
-  type CaseCall = { capability: string; step: string; args: { taskId?: string; projectId?: string; title?: string };
-    response?: { kind: string; value?: TaskPreview } };
-  type Case = { format: string; given: { input: { taskId: string } }; stubs: CaseCall[];
-    expect: { calls: CaseCall[]; outcome: { classification: string; effects: { capability: string; step: string; state: string }[] } } };
-  for (const text of cases) {
-    try {
-      const row: Case = JSON.parse(text);
-      if (row.format !== "keir-scenario/1" || row.expect.outcome.classification !== "COMPLETED") continue;
-      const taskId = row.given.input.taskId;
-      const reads = row.stubs.filter(call => call.capability === "tasks.get" && call.args.taskId === taskId && call.response?.kind === "SUCCESS");
-      const source = reads[0]?.response?.value;
-      const creates = row.expect.calls.filter(call => call.capability === "tasks.create");
-      const effect = row.expect.outcome.effects;
-      const expected = creates[0]?.args;
-      if (reads.length === 1 && source?.id === taskId && source?.status === "COMPLETED" && knownScenarioTask(source)
-          && creates.length === 1 && effect.length === 1 && effect[0].state === "CONFIRMED" && effect[0].capability === "tasks.create"
-          && effect[0].step === creates[0].step && typeof expected?.title === "string" && expected.title && typeof expected.projectId === "string" && expected.projectId)
-        return { source, expected: { title: expected.title, projectId: expected.projectId } };
-    } catch { /* Older or incomplete scenario data has no illustration. */ }
-  }
-  return null;
+type RuleAction = { title: string; projectId?: string };
+async function savedRuleAction(saved: SavedSource, artifactDigest: string): Promise<RuleAction | null> {
+  if (typeof saved.artifact !== "string" || saved.pins?.artifactDigest !== artifactDigest) return null;
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(saved.artifact));
+  const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
+  if ("sha256:" + digest !== artifactDigest) return null;
+  const artifact = JSON.parse(saved.artifact);
+  if (artifact?.format !== "keir-artifact/1" || artifact.entrypoint !== "TaskCompleted" || !Array.isArray(artifact.steps)) return null;
+  const creates = artifact.steps.filter((step: { op?: string; capability?: string }) => step?.op === "CALL" && step.capability === "tasks.create");
+  const create = creates[0];
+  if (creates.length !== 1 || create.version !== "1") return null;
+  const title = create.args?.title, project = create.args?.projectId;
+  if (title?.type !== "String" || typeof title.literal !== "string" || !title.literal.trim()) return null;
+  return { title: title.literal, ...(project?.type === "ProjectId" && typeof project.literal === "string" ? { projectId: project.literal } : {}) };
 }
+const mismatchReason = {
+  STUB: "The rule and the saved example didn’t match.",
+  OUTCOME: "The rule's result differed from the saved expectation.",
+  CALLS: "The operations called differed from the saved expectation.",
+  CONSUMPTION: "The reported outcome differed from the saved expectation.",
+  SETUP: "This example could not run with the saved inputs.",
+} as const;
 const knownObservation = (value?: EffectObservation) => !!value && knownTasks(value.createdTasks)
   && (value.effect === "CONFIRMED" && !!value.createdTasks!.length || value.effect === "NONE" && value.createdTasks!.length === 0);
-const taskNames = (tasks: TaskPreview[], project?: string) => tasks.map(task => `“${task.title}” in ${project ?? (task.projectName ? `“${task.projectName}”` : "the chosen project")}`).join(", ");
-const observedTasks = (value?: EffectObservation, project?: string) => !knownObservation(value) ? value?.effect === "UNKNOWN" ? "A task may have been created; this check did not confirm it." : "No task-creation result was observed."
+type ProjectLabel = string | ((task: TaskPreview) => string);
+const taskNames = (tasks: TaskPreview[], project?: ProjectLabel) => tasks.map(task => `“${task.title}” in ${(typeof project === "function" ? project(task) : project) ?? (task.projectName ? `“${task.projectName}”` : "the chosen project")}`).join(", ");
+const observedTasks = (value?: EffectObservation, project?: ProjectLabel) => !knownObservation(value) ? value?.effect === "UNKNOWN" ? "A task may have been created; this check did not confirm it." : "No task-creation result was observed."
   : value!.createdTasks!.length ? `Created ${taskNames(value!.createdTasks!, project)}.` : "No task was created.";
-const expectedTasks = (value: Evidence["reports"][number]["expected"], project?: string) => value.createdTasks === null ? "An uncertain result: a task may or may not be created." : !knownTasks(value.createdTasks) ? "The expected task result was not recorded."
+const expectedTasks = (value: Evidence["reports"][number]["expected"], project?: ProjectLabel) => value.createdTasks === null ? "An uncertain result: a task may or may not be created." : !knownTasks(value.createdTasks) ? "The expected task result was not recorded."
   : value.createdTasks!.length ? `Create ${taskNames(value.createdTasks!, project)}.` : "Create no task.";
 const checkedUncertainty = (item: Evidence["reports"][number]) => item.expected.createdTasks === null && item.report.observed?.effect === "UNKNOWN" && item.report.observed.createdTasks === null;
 const checkedObservation = (item: Evidence["reports"][number]) => knownScenarioTask(item.report.scenario?.task) && (knownTasks(item.expected.createdTasks) && knownObservation(item.report.observed) || checkedUncertainty(item));
@@ -393,7 +392,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [exampleId, setExampleId] = useState<string | null>(null);
   const [review, setReview] = useState("");
   const [reviewSource, setReviewSource] = useState<(SavedSource & { ownerId: string; key: string }) | null>(null);
-  const [illustrated, setIllustrated] = useState<{ key: string; example: TaskIllustration } | null>(null);
+  const [ruleAction, setRuleAction] = useState<{ key: string; action: RuleAction | null } | null>(null);
   const [reviewError, setReviewError] = useState("");
   const [inspection, setInspection] = useState<(SavedSource & { key: string; historical: boolean }) | null>(null);
   const [restore, setRestore] = useState("");
@@ -543,19 +542,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   };
   const exampleTitle = (item: Evidence["reports"][number], index: number) => "Saved example: " + exampleLabel(item, index);
   const mainExample = reviewEvidence?.reports.find(item => item.expected.createdTasks?.length) ?? reviewEvidence?.reports[0];
-  const illustrationItem = showSavedBehavior && trusted && state?.draft?.kind === "authored" ? state.extension?.id : undefined;
-  const illustrationRevision = illustrationItem ? state?.draft?.id : undefined;
-  const illustrationSuite = illustrationItem ? state?.draft?.suiteDigest : undefined;
-  const illustrationKey = illustrationItem && illustrationRevision && illustrationSuite
-    ? `${ownerId}/${illustrationItem}/${illustrationRevision}/${illustrationSuite}` : "";
-  const proposedExample = state && savedReview && sameReviewRevision(state, savedReview) && reviewEvidence?.id === savedReview.evidenceId
-    ? reviewEvidence?.reports.find(item => item.report.scenario?.task.status === "COMPLETED" && knownScenarioTask(item.report.scenario.task)
-      && knownTasks(item.expected.createdTasks) && item.expected.createdTasks?.length === 1) : undefined;
-  const illustration = illustrated?.key === illustrationKey ? illustrated.example : null;
-  const sourceTask = illustration?.source ?? proposedExample?.report.scenario?.task;
-  const expectedTask = illustration?.expected ?? proposedExample?.expected.createdTasks?.[0];
-  const sourceProject = projects.find(project => project.id === sourceTask?.projectId)?.name ?? sourceTask?.projectName;
-  const expectedProject = projects.find(project => project.id === expectedTask?.projectId)?.name ?? expectedTask?.projectName;
+  const summaryItem = showSavedBehavior && trusted && state?.draft?.kind === "authored" ? state.extension?.id : undefined;
+  const summaryRevision = summaryItem ? state?.draft?.id : undefined;
+  const summarySuite = state?.draft?.suiteDigest ?? null;
+  const summaryDigest = state?.draft?.pins.artifactDigest;
+  const summaryKey = summaryItem && summaryRevision && summaryDigest
+    ? JSON.stringify([ownerId, summaryItem, summaryRevision, summarySuite, summaryDigest]) : "";
+  const summaryPending = !!summaryKey && ruleAction?.key !== summaryKey;
+  const summarized = ruleAction?.key === summaryKey ? ruleAction.action : null;
+  const destination = projects.find(project => project.id === summarized?.projectId)?.name;
   const matchingExamples = reviewEvidence?.reports.filter(item => item.report.status === "PASS" && checkedObservation(item)).length ?? 0;
   const behaviorSummary = summarizeExamples(reviewEvidence);
   const activeSelectionMatches = !!activeSnapshot && activeSnapshot.ownerId === state?.owner.id && activeSnapshot.extensionId === state.extension?.id
@@ -564,13 +559,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const checkedDraftSummary = canReview && reviewReady && review === reviewKey ? behaviorSummary : "";
   const checkedActiveSummary = activeProof && activeSelectionMatches && state?.selection.eligible ? summarizeExamples(activeProof) : "";
 
-  function checkedExample(item: Evidence["reports"][number], index: number) {
+  function checkedExample(item: Evidence["reports"][number], index: number, compact = false) {
     const source = item.report.scenario?.task, observed = knownObservation(item.report.observed), expected = knownTasks(item.expected.createdTasks);
     const readFailure = observed && item.report.observed?.effect === "NONE" && Array.isArray(item.report.calls)
       && item.report.calls.at(-1)?.capability === "tasks.get" ? item.report.native?.error?.code : undefined;
-    const readExplanation = readFailure === "TASK_NOT_FOUND" ? " The source task could not be found."
-      : readFailure === "ACCESS_DENIED" ? " The source task could not be checked because access was denied."
-      : readFailure === "ADAPTER_TRANSIENT" ? " The source task was temporarily unavailable." : "";
+    const readExplanation = readFailure === "TASK_NOT_FOUND" ? " The task could not be found."
+      : readFailure === "ACCESS_DENIED" ? " The task could not be checked because access was denied."
+      : readFailure === "ADAPTER_TRANSIENT" ? " The task was temporarily unavailable." : "";
     const wanted = item.expected.createdTasks?.[0], actual = item.report.observed?.createdTasks?.[0];
     const differentProject = expected && observed && item.report.observed?.effect === "CONFIRMED"
       && item.expected.createdTasks?.length === 1 && item.report.observed.createdTasks?.length === 1
@@ -581,6 +576,39 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       return wanted?.projectName === actual?.projectName ? `“${task.projectName}” (the ${label} project)` : undefined;
     }
     const wantedProject = projectLabel(wanted, "expected"), actualProject = projectLabel(actual, "different");
+    if (compact) {
+      const failed = item.report.status === "FAIL" || item.report.status === "MISMATCH";
+      const uncertain = item.report.observed?.effect === "UNKNOWN";
+      const matchesUncertainty = !failed && item.report.status === "PASS" && checkedUncertainty(item);
+      const matches = !failed && item.report.status === "PASS" && checkedObservation(item);
+      const situation = source?.status === "COMPLETED" ? `Task completed${source.projectName ? ` in ${source.projectName}` : ""}`
+        : source?.status === "OPEN" ? "Task is still unfinished" : readExplanation.trim() || "Task situation wasn’t recorded";
+      const outcomes = [...(expected ? item.expected.createdTasks! : []), ...(observed ? item.report.observed!.createdTasks! : [])];
+      const outcomeProject = (task: TaskPreview) => {
+        const name = task.projectName && task.projectName !== "Example project" ? `“${task.projectName}”` : "";
+        const shared = [...new Set(outcomes.filter(other => (other.projectName || "Example project") === (task.projectName || "Example project")).map(other => other.projectId))];
+        const label = shared.length > 1 ? `sample project ${shared.indexOf(task.projectId) + 1}` : "the sample project";
+        return name ? shared.length > 1 ? `${name} (${label})` : name : `${label} (name unavailable)`;
+      };
+      const stage = item.report.mismatches?.find(mismatch => Object.hasOwn(mismatchReason, mismatch.stage ?? ""))?.stage;
+      const reason = stage ? mismatchReason[stage as keyof typeof mismatchReason] : undefined;
+      return <article className="rs-example rs-compact-case" key={item.id} aria-label={"Example: " + situation}
+        data-result={failed ? "mismatch" : uncertain ? "unknown" : matches ? "match" : "unavailable"}>
+        <div className="rs-compact-situation"><strong>{situation}</strong>
+          {source?.status && knownScenarioTask(source) && <small>Sample task: “{source.title}”{source.projectName && source.status !== "COMPLETED" && ` · ${source.projectName}`}</small>}
+        </div>
+        <span className="rs-example-result">{failed ? stage === "STUB" && !observed && !uncertain ? "Could not check this example" : "Needs correction"
+          : matchesUncertainty ? "Matches the expected uncertainty. Task creation is not confirmed."
+          : matches ? "Matches" : uncertain ? "Unknown" : "Result unavailable"}</span>
+        <dl><div><dt>What happened</dt><dd>{failed && !observed && !uncertain ? "This check couldn’t verify whether a task was created."
+          : observedTasks(item.report.observed, actualProject ?? outcomeProject)}{differentProject && " The created task used a different project than expected."}</dd></div>
+          {(failed || matchesUncertainty) && <div><dt>Expected</dt><dd>{expectedTasks(item.expected, wantedProject ?? outcomeProject)}</dd></div>}
+          {failed && <div><dt>This example needs a correction</dt><dd>{reason ?? "The saved check did not pass."}</dd></div>}
+        </dl>
+        {failed && viewingCurrentFailure && <button type="button" className="rs-link rs-case-correction" disabled={sendDisabled || !authoring?.availability.available}
+          onClick={() => document.getElementById("studio-message")?.focus()}>Describe a correction</button>}
+      </article>;
+    }
     return <article className="rs-example" key={item.id} aria-label={"Example: " + exampleLabel(item, index)}>
       {knownScenarioTask(source) ? <div className="rs-example-task"><span className="rs-task-mark" aria-hidden="true">{source!.status === "COMPLETED" ? "✓" : "○"}</span><div><small>Example task · {source!.projectName ?? (source!.projectId ? "Example project" : "Project not observed")}</small><h4>{source!.title}</h4><p>{source!.status === "COMPLETED" ? "Completed" : source!.status === "OPEN" ? "Unfinished" : "Status not recorded"}</p></div></div>
         : <p>Earlier saved example · the task situation was not recorded in this format.</p>}
@@ -617,7 +645,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       && comparison.selection.approvedEvidenceId === state.selection.approvedEvidenceId && state.selection.eligible;
     const matching = comparison?.proof.reports.find(item => JSON.stringify(item.report.scenario?.task) === JSON.stringify(proposed.report.scenario?.task));
     return <section aria-label="Checked behavior currently in use"><h4>{comparison && !sameSelection ? "Earlier version viewed in use" : "Currently in use"}</h4>
-      {comparison ? matching ? checkedExample(matching, comparison.proof.reports.indexOf(matching)) : <><p>No saved check covers this same task situation.</p><details><summary>Last checked examples for this version</summary>{comparison.proof.reports.map(checkedExample)}</details></>
+      {comparison ? matching ? checkedExample(matching, comparison.proof.reports.indexOf(matching)) : <><p>No saved check covers this same task situation.</p><details><summary>Last checked examples for this version</summary>{comparison.proof.reports.map((item, index) => checkedExample(item, index))}</details></>
         : <p role="status">{comparisonError}</p>}
       {comparison && !sameSelection && <p>What’s in use changed. These are the original saved examples; reopen to check the current selection.</p>}
     </section>;
@@ -723,11 +751,16 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   function preserveReviewReading() {
     const scroller = currentPane.current.open ? canvas.current : chatLog.current;
     const bounds = scroller?.getBoundingClientRect();
-    const visible = scroller && bounds && bounds.height > 0 ? Array.from(scroller.querySelectorAll<HTMLElement>(".rs-example")).filter(row => {
-      const rect = row.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
-    }) : [];
-    const anchor = visible.find(row => row.closest("details[open]")) ?? visible[0];
-    readingAnchor.current = anchor && scroller ? { scroller, element: anchor, top: anchor.getBoundingClientRect().top, revision: readingRevision.current } : null;
+    readingAnchor.current = null;
+    if (!scroller || !bounds || bounds.height <= 0) return;
+    const visible = Array.from(scroller.querySelectorAll<HTMLElement>(".rs-example"))
+      .map(element => ({ element, rect: element.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom);
+    visible.sort((first, second) => Math.abs(first.rect.top - bounds.top) - Math.abs(second.rect.top - bounds.top));
+    const closest = visible[0];
+    const proposed = visible.find(row => row.rect.top === closest?.rect.top && row.element.closest('[aria-label="Saved proposed example"]'));
+    const anchor = visible.find(row => row.element.closest("details[open]")) ?? proposed ?? closest;
+    if (anchor) readingAnchor.current = { scroller, element: anchor.element, top: anchor.rect.top, revision: readingRevision.current };
   }
   function apply(next: State) {
     if (next.owner.id !== ownerId || next.extension?.id !== extensionId.current && !(next.extension === null && extensionId.current === null)) throw new Error("Customization identity mismatch");
@@ -749,22 +782,22 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       anchor.scroller.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top;
       if (anchor.scroller === canvas.current) canvasScroll.current = anchor.scroller.scrollTop;
     }
-  }, [state, illustrated]);
+  }, [state, ruleAction]);
   useEffect(() => {
-    if (!illustrationKey || !illustrationItem || !illustrationRevision) return;
+    if (!summaryKey || !summaryItem || !summaryRevision || !summaryDigest) return;
     const load = new AbortController();
-    void callbacks.current.request<SavedSource>(`${extensionPath(illustrationItem)}/revisions/${encodeURIComponent(illustrationRevision)}`, "GET", undefined, load.signal)
-      .then(saved => {
-        if (load.signal.aborted || !mounted.current || extensionId.current !== illustrationItem || saved.extensionId !== illustrationItem
-            || saved.revisionId !== illustrationRevision || saved.suiteDigest !== illustrationSuite || !Array.isArray(saved.cases)) return;
-        const example = savedTaskIllustration(saved.cases);
-        if (example) {
-          preserveReviewReading();
-          setIllustrated({ key: illustrationKey, example });
-        }
-      }).catch(() => { /* Exact evidence review remains independent of this illustration. */ });
+    const current = () => !load.signal.aborted && mounted.current && extensionId.current === summaryItem;
+    void callbacks.current.request<SavedSource>(`${extensionPath(summaryItem)}/revisions/${encodeURIComponent(summaryRevision)}`, "GET", undefined, load.signal)
+      .then(async saved => {
+        if (!current() || saved.extensionId !== summaryItem || saved.revisionId !== summaryRevision || saved.suiteDigest !== summarySuite) return null;
+        return savedRuleAction(saved, summaryDigest);
+      }).catch(() => null).then(action => {
+        if (!current()) return;
+        preserveReviewReading();
+        setRuleAction({ key: summaryKey, action });
+      });
     return () => load.abort();
-  }, [illustrationKey, illustrationItem, illustrationRevision, illustrationSuite]);
+  }, [summaryKey, summaryItem, summaryRevision, summarySuite, summaryDigest]);
   function focusInline(id: string) {
     const intent = ++focusIntent.current, reading = ++readingRevision.current;
     followConversation.current = false;
@@ -1480,17 +1513,22 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     {error && <div role="alert" className="rs-error">{error} <button onClick={() => void refresh(true)} disabled={!!busy}>Retry</button></div>}
     {executionUnavailable && <p role="status" className="rs-setup-notice">{state?.executionAvailability?.message || "Task customizations cannot run in this installation yet. Your tasks still work."}</p>}
     {state && <div className="rs-status-summary" aria-label="Customization status">
-      <div><strong id="studio-customization-status" tabIndex={-1}>{state.extension ? ownActive ? state.selection.eligible ? "On for my tasks" : "Couldn’t check what’s in use"
+      <div><strong id="studio-customization-status" tabIndex={-1}>{state.extension ? ownActive ? state.selection.eligible
+        ? state.draft && !selectedDraft ? "Earlier version in use" : "On for my tasks" : "Couldn’t check what’s in use"
         : state.approved ? "Approved · Still off" : state.draft ? "Draft · Not in use" : "In discussion · Not in use" : "New customization · Not saved"}</strong>
-        {ownActive && state.draft && !selectedDraft && <span>{!state.evidence ? "Earlier version in use · Revised change not checked" : state.approved ? "Saved changes · Approved · Still off" : "Saved changes · Not in use"}</span>}
+        {ownActive && state.draft && !selectedDraft && <span>{!state.evidence ? "Saved changes · Examples pending" : state.approved ? "Saved changes · Approved · Still off" : "Saved changes · Not in use"}</span>}
         {state.selection.revision && !ownActive && <span>{state.selection.eligible ? "Another customization is in use" : "Couldn’t check the saved selection"}</span>}</div>
       <div className="rs-summary-actions">
-        {decisionEvidenceId && <button id="studio-view-saved" disabled={!reviewAllowed} onClick={() => void openReview(latestReviewAvailable && inlineOpen ? newerEvidenceId ?? decisionEvidenceId : decisionEvidenceId)}>{latestReviewAvailable && inlineOpen ? "View latest changes" : "View saved changes"}</button>}
+        {decisionEvidenceId && <button id="studio-view-saved" aria-label={latestReviewAvailable && inlineOpen ? "View latest changes" : "View saved changes"}
+          disabled={!reviewAllowed} onClick={() => void openReview(latestReviewAvailable && inlineOpen ? newerEvidenceId ?? decisionEvidenceId : decisionEvidenceId)}>
+          <span className="rs-full-label">{latestReviewAvailable && inlineOpen ? "View latest changes" : "View saved changes"}</span>
+          <span className="rs-short-label" aria-hidden="true">{latestReviewAvailable && inlineOpen ? "Latest" : "Saved"}</span></button>}
         {inlineAvailable && !decisionEvidenceId && <button onClick={() => {
           if (currentPane.current.open) closeReview();
           focusInline("studio-saved-change");
         }}>Return to saved change</button>}
-        {ownActive && state.selection.eligible && <button onClick={backToTasks}>Back to tasks</button>}
+        {ownActive && state.selection.eligible && <button aria-label="Back to tasks" onClick={backToTasks}>
+          <span className="rs-full-label">Back to tasks</span><span className="rs-short-label" aria-hidden="true">Tasks</span></button>}
         {ownActive && <button aria-label="Turn off this customization" disabled={disabled || !!restart} onClick={() => void mutate("disable", { generation: state.selection.generation }, "This customization is off. Earlier tasks and receipts are kept.", true)}>
           <span className="rs-full-label">Turn off this customization</span><span className="rs-short-label" aria-hidden="true">Turn off</span></button>}
       </div>
@@ -1518,7 +1556,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               && message.evidenceId === decisionEvidenceId;
             const latestExplanation = message.who === "Studio" && !message.evidenceId && !!message.conversationId
               && message.conversationId === conversation?.id && messages.at(-1)?.id === message.id && reviewAllowed;
-            return <article className={`rs-message ${message.who === "You" ? "rs-yours" : ""}`} data-conversation-message={!!message.conversationId || undefined} key={message.id}>
+            return <article className={`rs-message ${message.who === "You" ? "rs-yours" : "rs-assistant"}`} data-conversation-message={!!message.conversationId || undefined} key={message.id}>
               <strong>{message.who === "Studio" ? "Daymark assistant" : message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}
               {message.evidenceId && (currentReceipt
                 ? <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview()}>View saved changes</button>
@@ -1536,7 +1574,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {conversation && !contextRecovery && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
           {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT", "EXPIRED"].includes(conversation?.code ?? "") && !activeAuthoring && !staleConversation && !historyView && !retired && <button disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue here from saved work"}</button>}
           {state?.extension && ownActive && !historyView && !staleConversation && <article className="rs-message">
-            <p>{state.draft && state.draft.id !== ownActive.id ? "Your current setup is still on. Your saved changes are not in use yet." : "This setup is in use."}</p>
+            <p>{!trusted || !state.selection.eligible ? "Daymark couldn’t check which version is in use."
+              : state.draft && state.draft.id !== ownActive.id ? "Your current setup is still on. Your saved changes are not in use yet." : "This setup is in use."}</p>
             {state.draft && state.draft.id !== ownActive.id && checkedDraftSummary && <p>Checked examples for your saved changes: {checkedDraftSummary}.</p>}
             {state.draft && state.draft.id !== ownActive.id && checkedActiveSummary && <p>Checked examples for your current setup: {checkedActiveSummary}.</p>}
             <button id="studio-view-active" className="rs-link" disabled={!!busy} onClick={() => void showActive()}>View what’s in use</button>
@@ -1548,56 +1587,44 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {(authoringError || observationPaused || pendingTurn) && <div className="rs-recovery"><button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring()}>{!authoring && authoringError ? "Retry status" : "Check authoring status"}</button>
             {pendingTurn && retryTurn && !retired && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}</div>}
           {showSavedBehavior && state?.draft && <article className="rs-sheet rs-inline-behavior" aria-labelledby="studio-saved-change">
-            <h3 id="studio-saved-change" tabIndex={-1}>Your saved change</h3>
-            {sourceTask && expectedTask ? <>
-              <p><strong>When, in this saved example,</strong> a task {sourceProject && <>in <strong>{sourceProject}</strong> </>}is completed.</p>
-              <p><strong>Then</strong> the saved expectation is one unfinished follow-up.</p>
-              <div className="rs-behavior-pair">
-                <div><span>Completed example task</span><strong>{sourceTask.title}</strong><p>{sourceProject ?? "Example project"}</p></div>
-                <div><span>Expected unfinished follow-up</span><strong>{expectedTask.title.startsWith(sourceTask.title) && expectedTask.title !== sourceTask.title
-                  ? <>{sourceTask.title}<mark>{expectedTask.title.slice(sourceTask.title.length)}</mark></> : expectedTask.title}</strong>
-                  <p>{expectedProject ?? (sourceTask.projectId && sourceTask.projectId === expectedTask.projectId ? "Same example project" : "Example project name unavailable")}</p></div>
-              </div>
-              <p className="muted">This illustration covers one saved situation.</p>
-            </> : <>
-              {state.extension?.hookId === "TaskCompleted" && <p>This change starts after a task completion.</p>}
-              <p>A verified description of the rule is unavailable. Saved source is in History and details.</p>
-            </>}
+            <h3 id="studio-saved-change" tabIndex={-1}>About this rule</h3>
+            {summarized && <p>After a task completes, this rule can request a follow-up titled “{summarized.title}”
+              {destination && <> in “{destination}”</>}.</p>}
+            {summaryPending ? <p className="muted" role="status">Reading the saved rule…</p> : <p className="muted">A full summary isn’t available for this version. {state.evidence
+              ? "See which situations were checked and what happened in the simulation."
+              : "Sample checks show what happens in the cases you try."}</p>}
+            {!sendDisabled && authoring?.availability.available && <button className="rs-link" onClick={() => document.getElementById("studio-message")?.focus()}>Ask about this rule</button>}
             {!state.evidence && !decisionEvidenceId && <p>This revision has no checked examples yet.</p>}
-            {inlineAvailable && ((decisionEvidenceId || failedEvidenceId) ? <button className="rs-primary" disabled={disabled} onClick={() => void openReview()}>Review checked examples</button>
+            {inlineAvailable && ((decisionEvidenceId || failedEvidenceId) ? <button className="rs-primary" disabled={disabled} onClick={() => void openReview()}>View simulation</button>
               : state.draft.suiteDigest || state.draft.kind === "prepared"
                 ? <button className="rs-primary" disabled={disabled} onClick={() => void mutate("simulate", { revisionId: state.draft!.id, draftVersion: state.draftVersion }, "Example check saved.")}>
                   {ownActive && !selectedDraft ? "Check this revised change" : "Check examples"}</button>
                 : <button disabled={sendDisabled || !authoring?.availability.available} onClick={() => document.getElementById("studio-message")?.focus()}>Discuss example checks</button>)}
           </article>}
           {savedReview && state && <article id="studio-review" hidden={!inlineOpen} className="rs-sheet rs-review rs-inline-review" aria-label="Current decision">
-            <h3 id="studio-review-heading" tabIndex={-1}>Checked examples</h3>
+            <h3 id="studio-review-heading" tabIndex={-1}>Simulation</h3>
             <p className="rs-review-status">{viewedInUse ? "On for my tasks" : reviewLoading ? "Checking saved results…"
               : !viewedDraft || !inlineAvailable ? "Earlier saved changes · read-only" : reviewError ? "Saved results unavailable for a decision" : viewingCurrentFailure ? "Check needs a correction"
               : !viewedCurrent || review !== reviewKey ? "Saved examples · read-only" : reviewedApproved ? "Approved · Still off" : "Ready for your review"}</p>
             {reviewError && <div role="alert"><p>{reviewError}</p>{(viewedCurrent || viewingCurrentFailure) && <button disabled={disabled} onClick={() => void openReview(savedReview.evidenceId)}>Check saved results again</button>}</div>}
             {!viewedCurrent && !viewingCurrentFailure && !viewedInUse && !reviewLoading && <p>Saved work or its use changed. These examples are read-only. Open the latest changes before making a decision.</p>}
             {reviewEvidence && <>
-              <p className="muted">Example only · no real tasks changed</p>
-              {(viewedInUse || savedReview.selection.revision) && <p>{viewedInUse ? `“${savedReview.extension.name}” is now in use. New matching task completions can use this change. Turning it on does not complete or replay earlier tasks.`
-                : savedReview.selection.eligible ? `Currently in use: “${savedReview.selection.revision!.extensionName}”.`
+              <p className="muted">{reviewEvidence.reports.length} sample {reviewEvidence.reports.length === 1 ? "case" : "cases"} · Example only · no real tasks changed</p>
+              {(viewedInUse || state.selection.revision && state.selection.generation === savedReview.selection.generation) && <p>{viewedInUse ? `“${savedReview.extension.name}” is now in use. New matching task completions can use this change. Turning it on does not complete or replay earlier tasks.`
+                : trusted && state.selection.eligible ? state.selection.revision!.extensionId !== savedReview.extension.id
+                  ? `Another customization is in use: “${state.selection.revision!.extensionName}”.`
+                  : state.selection.revision!.id === savedReview.revision.id
+                    ? "This version is in use from a different checked run."
+                    : `A different version of “${savedReview.extension.name}” is in use.`
                   : "The saved selection could not be checked. Its use is unverified."}</p>}
               <section className="rs-inline-cases" aria-label="Checked proposed behavior" key={reviewEvidence.id}>
-                {reviewEvidence.reports.map((item, index) => {
-                  const match = item.report.status === "PASS" && checkedObservation(item);
-                  return <details key={item.id} open={index === 0}>
-                    <summary><span className="rs-case-line"><span>{exampleLabel(item, index)}</span><span className="rs-example-result" data-match={match}>
-                      {match ? "Matches" : item.report.status === "FAIL" ? "Needs correction" : "Result unavailable"}
-                    </span></span></summary>
-                    {checkedExample(item, index)}
-                  </details>;
-                })}
+                {reviewEvidence.reports.map((item, index) => checkedExample(item, index, true))}
               </section>
               {matchingExamples > 0 && <p>{matchingExamples === 1 ? "One recorded example matched" : `${matchingExamples} recorded examples matched`} what you wanted.</p>}
               <p className="rs-coverage">These results cover only the recorded examples. Other situations remain untested.</p>
               {mainExample && savedReview.selection.revision && <button className="rs-link" disabled={!!busy} onClick={() => void showEvidence(savedReview.evidenceId)}>Inspect examples and what’s in use</button>}
-              {viewingCurrentFailure && <p>This check did not pass. <button disabled={sendDisabled || !authoring?.availability.available}
-                onClick={() => document.getElementById("studio-message")?.focus()}>Fix this example</button></p>}
+              {viewingCurrentFailure && <div className="rs-decision-actions"><p>Discuss the correction, then check the examples again.</p><button className="rs-primary" disabled={sendDisabled || !authoring?.availability.available}
+                onClick={() => document.getElementById("studio-message")?.focus()}>Ask for a correction</button></div>}
               {reviewedApproved && !viewedInUse && !executionUnavailable && <p>Turn on “{savedReview.extension.name}”{savedReview.selection.revision
                 ? savedReview.selection.revision.extensionId !== savedReview.extension.id
                   ? ` instead of “${savedReview.selection.revision.extensionName}”. Switching turns it off and keeps it saved.`
@@ -1609,11 +1636,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
                     void mutate("activate", { revisionId: savedReview.revision.id, draftVersion: savedReview.draftVersion, generation: savedReview.selection.generation, evidenceId: savedReview.evidenceId },
                       `“${savedReview.extension.name}” is now in use. Your tasks have not changed.`, true);
                   }}>{savedReview.selection.revision && savedReview.selection.revision.extensionId !== savedReview.extension.id ? "Switch to this customization" : "Turn on for my tasks"}</button>
-                  : <button className="rs-primary" disabled={reviewActionDisabled} onClick={() => {
+                  : <><p>Approval saves your decision. Turn on the saved change separately when you’re ready.</p><button className="rs-primary" disabled={reviewActionDisabled} onClick={() => {
                     if (reviewActionDisabled) return;
                     void mutate("approve", { revisionId: savedReview.revision.id, draftVersion: savedReview.draftVersion, evidenceId: savedReview.evidenceId },
                       "This change is approved and ready to turn on. Your current setup has not changed.");
-                  }}>Approve this change</button>}
+                  }}>Approve this change</button></>}
                 </div>}
               <details><summary>Exact saved change and checks</summary>
                 <p>Revision: {savedReview.revision.id}</p><p>Evidence: {savedReview.evidenceId}</p>
@@ -1628,7 +1655,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               {state.approved && newerEvidenceId && <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview(newerEvidenceId)}>Review the newer checked examples</button>}
               {state.approved && failedEvidenceId && failedEvidenceId !== savedReview.evidenceId && <button className="rs-link" disabled={disabled} onClick={() => void openReview(failedEvidenceId)}>Inspect latest failed check</button>}
             </>}
-            <button className="rs-link" onClick={hideInline}>Hide checked examples</button>
+            <button className="rs-link" onClick={hideInline}>Hide simulation</button>
           </article>}
           <div ref={chatEnd} />
         </div>
@@ -1651,7 +1678,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
         <form hidden={retired || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Daymark assistant</label>
-          <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder="Describe what you want or answer a question…"
+          <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder="Ask or describe a change…"
             onKeyDown={event => {
               if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
               event.preventDefault();

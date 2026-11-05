@@ -54,16 +54,16 @@ async function openItem(page, id) {
 }
 async function openReview(page) {
   await studio(page).getByRole('button', { name: 'View saved changes', exact: true }).click();
-  await expect(review(page).getByRole('heading', { name: 'Checked examples', exact: true })).toBeVisible();
+  await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
 }
 async function closeReview(page) {
-  await review(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
+  await review(page).getByRole('button', { name: 'Hide simulation', exact: true }).click();
   await expect(review(page)).toBeHidden();
 }
 async function expectIllustration(page, title) {
-  const saved = studio(page).getByRole('article', { name: 'Your saved change', exact: true });
-  await expect(saved.getByText('Expected unfinished follow-up', { exact: true })).toBeVisible();
-  await expect(saved.getByText(title, { exact: true })).toBeVisible();
+  const saved = studio(page).getByRole('article', { name: 'About this rule', exact: true });
+  await expect(saved).toContainText('About this rule');
+  await expect(saved).toContainText(`can request a follow-up titled “${title}”`);
 }
 async function holdResponse(page, url, { fail = false } = {}) {
   let entered, release, delivered;
@@ -128,7 +128,7 @@ test('saved review stays readable before its reachable actions at short, phone a
       await openReview(page);
       const action = review(page).getByRole('button', { name: 'Approve this change', exact: true });
       await expect(action).toBeEnabled();
-      const summary = review(page).getByRole('heading', { name: 'Checked examples', exact: true });
+      const summary = review(page).getByRole('heading', { name: 'Simulation', exact: true });
       await summary.scrollIntoViewIfNeeded();
       await expect(summary).toBeInViewport({ ratio: 0.99 });
       const summaryBox = await summary.boundingBox(), actionBox = await action.boundingBox();
@@ -207,7 +207,7 @@ for (const resource of ['proof', 'source']) test(`reading inside an explicit rev
     await expectIllustration(page, fixture.metadata.title);
     hold = await holdResponse(page, `**/api/${path}/${resource === 'proof' ? 'evidence/' + state.evidence.id : 'revisions/' + state.draft.id}`);
     await openReview(page); await hold.started;
-    await review(page).getByRole('heading', { name: 'Checked examples', exact: true }).click();
+    await review(page).getByRole('heading', { name: 'Simulation', exact: true }).click();
     await studio(page).getByRole('log').dispatchEvent('wheel', { deltaY: 80 });
     await page.keyboard.press('PageDown');
     hold.release(); await hold.finished;

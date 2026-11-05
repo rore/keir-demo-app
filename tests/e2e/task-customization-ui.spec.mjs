@@ -118,7 +118,7 @@ test('without a current version the proposed proof uses the conversation width',
   expect(width.proof).toBeGreaterThanOrEqual(width.available * 0.98);
   await page.screenshot({ path: testInfo.outputPath('sole-proposed-proof.png'), fullPage: true });
   await studio(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
-  await studio(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'Hide simulation', exact: true }).click();
   await expect(studio(page).getByRole('log', { name: 'Studio conversation' })).toContainText('This change is approved and saved.');
   await expect(studio(page)).not.toContainText('ready to turn on');
   await page.screenshot({ path: testInfo.outputPath('approved-unavailable-chat.png'), fullPage: true });
@@ -137,9 +137,8 @@ test('a checked unavailable-source case can prove no effect without inventing ta
   await enter(page, demo); await publicStudio(page, { unavailableRead: true });
   await studio(page).locator('#studio-view-saved').click();
   const proposed = studio(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
-  await expect(proposed).toContainText('Task unavailable');
-  await expect(proposed).toContainText('Project not observed');
-  await expect(proposed).toContainText('Status not recorded');
+  await expect(proposed).toContainText('Task situation wasn’t recorded');
+  await expect(proposed).not.toContainText('Sample task:');
   await expect(proposed).toContainText('No task was created.');
   await expect(studio(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
 });

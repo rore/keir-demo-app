@@ -416,7 +416,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   const requested = [];
   page.on('request', request => { const path = new URL(request.url()).pathname; if (/^\/api\/extensions\/[^/]+\/evidence\//.test(path)) requested.push(path.split('/').at(-1)); });
   await offerButton.click();
-  await expect(ui.getByRole('heading', { name: eligible ? 'Checked examples' : 'Earlier examples', exact: true })).toBeVisible();
+  await expect(ui.getByRole('heading', { name: eligible ? 'Simulation' : 'Earlier examples', exact: true })).toBeVisible();
   expect(requested).toEqual([first.evidence.id]);
   expect((await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json()).approved).toBe(false);
   if (eligible) {
