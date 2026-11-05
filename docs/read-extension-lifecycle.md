@@ -1,6 +1,6 @@
 # Review and use a task customization
 
-Choose **Customizations** from Daymark's normal navigation to start an empty conversation or reopen a named saved item. The current candidate supports the published `TaskCompleted` contract: a matching new native completion can create a task in an existing project. Integrated release qualification is still pending; real effects require compatible current-contract bytes and current native host authority described in [task effects](task-effects.md). Native CRUD remains available when effects cannot run.
+Choose **Customizations** to start a rule or reopen a saved item. Each customization has one visible conversation. Use **Load earlier messages** to read more of it without sending a provider request. Under `TaskCompleted`, a matching new completion can create one task in an existing project you can access. Real effects require compatible artifacts and current native host permission. Native task management remains available when effects cannot run. See [task effects](task-effects.md).
 
 1. Choose **New customization** and describe your goal. Opening or typing saves nothing and calls no provider. The first accepted message creates a distinct owner-scoped item. The assistant discovers accessible projects and clarifies the project, created-task title and matching behavior.
 2. Agree on matching and nonmatching examples. The assistant compiles the source and checks synthetic situations, explaining disagreements with the independently wanted results. Source owns the chosen project and title; a hidden task-specific adapter does not choose them.
@@ -53,6 +53,6 @@ Before deliberately upgrading an existing installation, stop its owning app and 
 
 ## Package and verification
 
-The runtime and compiler are independently packaged and pinned through repository provenance and the lockfile. Only the current `keir-effect/4` contract and host definition `daymark.task-completed/2` are eligible for new execution. Package names or the experimental version alone do not establish compatibility. See [task effects](task-effects.md) for the binding and native authority boundary. A synthetic compiler fixture does not establish a release result.
+The runtime and compiler are independently packaged and pinned through repository provenance and the lockfile. New compilations use `keir-effect/4` and host definition `daymark.task-completed/3`. Existing approved selections using `daymark.task-completed/2` keep their exact compatible model and package pins. See [task effects](task-effects.md) for the binding and native authority boundary.
 
 The [verification guide](../tests/README.md) distinguishes public-projection UI tests, actual compiler/simulator checks, native persistence/process tests, integrated qualification and optional live-provider checks. No live-provider compatibility or integrated release result is asserted by this lifecycle guide.
