@@ -348,6 +348,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [pendingExample, setPendingExample] = useState(() => pendingGuidedRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId)) ?? null);
   const [recoveryError, setRecoveryError] = useState("");
   const [deleted, setDeleted] = useState(false);
+  const deletedTitle = useRef<HTMLHeadingElement>(null);
   const deletedRef = useRef(false);
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupNotice, setSetupNotice] = useState("");
@@ -451,7 +452,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     else setPendingExample(old => old?.operationId === operationId ? null : old);
     deletedRef.current = true; setDeleted(true); setTrusted(false); setRetryTurn(false);
     setAuthoringError(""); setError(""); setConversation(null); setMessages([]); setState(null);
-    requestAnimationFrame(() => { if (mounted.current) document.getElementById("studio-deleted-title")?.focus(); });
     return true;
   }
   function turnTarget(): TurnTarget {
@@ -1044,6 +1044,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   useEffect(() => {
     if (restart) document.getElementById("studio-restart-confirm")?.focus();
   }, [restart]);
+  useLayoutEffect(() => {
+    if (deleted) deletedTitle.current?.focus();
+  }, [deleted]);
   useEffect(() => {
     if (!busy && focusUse.current) {
       const intent = focusUse.current; focusUse.current = null;
@@ -1299,7 +1302,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       (invoker?.isConnected && invoker.getClientRects().length ? invoker : document.getElementById("assistant-configure") ?? document.getElementById("studio-message"))?.focus({ preventScroll: true });
     });
   }
-  if (deleted) return <section className="read-studio" aria-label="Customization Studio"><header className="rs-header"><h1 id="studio-deleted-title" tabIndex={-1}>Customization deleted</h1></header>
+  if (deleted) return <section className="read-studio" aria-label="Customization Studio"><header className="rs-header"><h1 id="studio-deleted-title" ref={deletedTitle} tabIndex={-1}>Customization deleted</h1></header>
     <p role="status">This submitted request belongs to a deleted customization. It cannot be continued. Nothing was retried or created.</p>
     {recoveryError && <p role="alert">{recoveryError}</p>}
     <button className="quiet-button" onClick={() => callbacks.current.unavailable()}>Back to Customizations</button></section>;
