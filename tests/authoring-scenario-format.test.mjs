@@ -7,6 +7,7 @@ import { loadHost, TASK_HOOK } from '../src/extension-catalog.mjs';
 import { authoringExample } from '../src/authoring-example.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
+import { createTaskDispatcher } from '../src/task-effects.mjs';
 import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 
 const caseIds = ['matching-project', 'other-project', 'unfinished-task', 'missing-task', 'access-denied', 'read-unavailable'];
@@ -112,10 +113,17 @@ test('real task scenario admission rejects malformed read-error formats without 
   assert.deepEqual(rows(db, nativeTables), Object.fromEntries(nativeTables.map(table => [table, before[table]])));
 });
 
-test('offline native provider repairs scenario syntax from discovered formats while retaining all six requested examples', async t => {
+test('offline authoring checks an exact suffix and repairs scenario syntax without dropping requested examples', async t => {
   const { db, lifecycle, project, other } = setup(t);
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-format-key' });
   const before = rows(db, nativeTables), calls = [];
+  const suffix = ' – 🧪', expectedTitle = 'Re\u0301sumé 🚀 – 🧪';
+  const overflowTitle = 'A' + '界'.repeat(85), overflowId = 'suffix-overflow';
+  const suffixCaseIds = [...caseIds, overflowId];
+  assert.equal(Buffer.byteLength(overflowTitle), 256);
+  assert.ok(Buffer.byteLength(overflowTitle + suffix) > 256);
+  assert.ok((overflowTitle + suffix).length <= 120);
+  assert.notEqual(expectedTitle, expectedTitle.normalize());
   let desired, independent, compiled, extensionId;
   const service = createAuthoringService({ db, lifecycle, config, fetchImpl: async (url, init) => {
     assert.equal(url, 'https://api.openai.com/v1/responses');
@@ -125,15 +133,38 @@ test('offline native provider repairs scenario syntax from discovered formats wh
     const output = body.input.filter(value => value.type === 'function_call_output').at(-1);
     const result = output ? JSON.parse(output.output) : null;
     let name, args;
-    if (index === 0) { name = 'discover_catalog'; args = {}; }
-    else if (index === 1) {
+    if (index === 0) {
+      assert.match(body.instructions, /source\.title \+ " – follow-up"/);
+      assert.match(body.instructions, /exceeds 256 UTF-8 bytes after concatenation/);
+      name = 'discover_catalog'; args = {};
+    } else if (index === 1) {
       assert.equal(result.ok, true);
       const discovery = result.result;
       assert.equal(discovery.dcm.capabilities['tasks.get'].version, '2');
       assert.equal(discovery.dcm.types.Task.fields.title, 'String');
+      assert.match(discovery.businessContext.supported, /append a fixed suffix/);
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));
       desired = customerExamples(discovery.sourceExample, discovery.scenarioExamples, project.id, other.id);
+      const program = JSON.parse(desired.source), createStep = program.steps.findIndex(step => step.call === 'tasks.create');
+      program.steps[createStep].args.title = { cel: 'source.title + ' + JSON.stringify(suffix) };
+      desired.source = JSON.stringify(program);
+
+      const [matching] = desired.cases;
+      matching.stubs[0].response.value.title = 'Re\u0301sumé 🚀';
+      matching.stubs[1].args.title = expectedTitle;
+      matching.expect.calls[1].args.title = expectedTitle;
+      const overflow = structuredClone(matching);
+      overflow.id = overflowId;
+      overflow.stubs[0].response.value.title = overflowTitle;
+      overflow.stubs.pop();
+      const trace = overflow.expect.outcome.trace.slice(0, overflow.expect.outcome.trace.findIndex(event => event.event === 'EFFECT_INTENT'));
+      const error = { code: 'BUDGET_EXCEEDED', path: `/steps/${createStep}` };
+      trace.push({ sequence: trace.length, event: 'TERMINATED', code: error.code });
+      overflow.expect.calls.pop();
+      overflow.expect.outcome = { classification: 'LIMIT_EXCEEDED', error, effects: [], trace };
+      overflow.expect.consumption = { status: 'REPORTED', classification: 'LIMIT_EXCEEDED', error, effects: [] };
+      desired.cases.push(overflow);
       independent = serialize(desired.cases);
       name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: desired.source, expectedDraftVersion: discovery.currentDraft.draftVersion };
     } else if (index === 2) {
@@ -158,9 +189,13 @@ test('offline native provider repairs scenario syntax from discovered formats wh
       name = 'simulate_draft'; args = { revisionId: result.result.revisionId, expectedDraftVersion: result.result.draftVersion };
     } else if (index === 6) {
       assert.equal(result.ok, true);
-      assert.deepEqual(result.result.summary.cases.map(value => value.id), caseIds);
-      assert.ok(result.result.summary.cases.every(value => value.status === 'PASS'));
-      name = 'offer_review'; args = { summary: 'All six independently expected examples passed, including unavailable reads. Your tasks have not changed.' };
+      const { cases } = result.result.summary;
+      assert.deepEqual(cases.map(value => value.id), suffixCaseIds);
+      assert.ok(cases.every(value => value.status === 'PASS'));
+      assert.equal(cases[0].actual.observed.createdTasks[0].title, expectedTitle);
+      assert.equal(cases.at(-1).actual.native.classification, 'LIMIT_EXCEEDED');
+      assert.deepEqual(cases.at(-1).actual.observed, { effect: 'NONE', createdTasks: [] });
+      name = 'offer_review'; args = { summary: 'The examples confirmed the exact follow-up title and no creation when a title exceeds the size limit. Your tasks have not changed.' };
     } else assert.fail('The local protocol script must not add a paid request or discard a case.');
     calls.push(name);
     return new Response(JSON.stringify({ status: 'completed', output: [
@@ -170,7 +205,7 @@ test('offline native provider repairs scenario syntax from discovered formats wh
   } });
   t.after(() => service.close());
   const started = await service.turn('maya', { conversationId: null, operationId: 'scenario-format-recovery', expectedVersion: 0, expectedDraftVersion: 0,
-    target: { kind: 'create' }, text: 'In Format regression project, create Prepare customer review after completion. Check matching, other-project, unfinished, missing, denied and transient-read cases. Keep every requested example.' },
+    target: { kind: 'create' }, text: 'In Format regression project, create a follow-up after completion using the completed task title plus " – 🧪". Check matching, other-project, unfinished, missing, denied, transient-read and oversized result cases. Keep every requested example.' },
   { sessionId: 'format-regression-session', current: () => true });
   const settled = await service.wait('maya', started.conversation.id);
   assert.equal(settled.status, 'REVIEW_AVAILABLE', JSON.stringify(settled));
@@ -180,7 +215,25 @@ test('offline native provider repairs scenario syntax from discovered formats wh
   assert.equal(state.approved, false);
   assert.equal(state.evidence.id, settled.review.evidenceId);
   assert.equal(state.evidence.passed, true);
+  const overflow = lifecycle.evidence('maya', state.evidence.id, extensionId).reports.at(-1).report;
+  assert.deepEqual(overflow.native.error, { code: 'BUDGET_EXCEEDED', path: '/steps/3' });
+  assert.deepEqual(overflow.calls.map(call => call.capability), ['tasks.get']);
+  assert.deepEqual(overflow.native.effects, []);
   assert.deepEqual(lifecycle.source('maya', state.draft.id, extensionId).cases, independent);
   assert.deepEqual(rows(db, nativeTables), before);
   assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, config.reserveMicros * calls.length);
+
+  const selection = { extensionId, ...input(state) };
+  const approved = lifecycle.approve('maya', { ...selection, evidenceId: settled.review.evidenceId }, () => {});
+  lifecycle.activate('maya', { ...selection, generation: approved.selection.generation }, () => {});
+  const native = taskService(db);
+  const source = native.createTask('maya', { projectId: project.id, title: 'Re\u0301sumé 🚀' });
+  native.completeTask('maya', source.id);
+  const dispatcher = createTaskDispatcher({ db, lifecycle });
+  await dispatcher.wake();
+  const saved = dispatcher.status('maya', source.id);
+  await dispatcher.close();
+  assert.equal(saved.receipt.effect, 'CONFIRMED');
+  assert.equal(native.getTask('maya', saved.receipt.value.id).title, expectedTitle);
+  assert.equal(db.prepare('SELECT revision_id FROM task_completion_events WHERE source_task_id=?').get(source.id).revision_id, state.draft.id);
 });

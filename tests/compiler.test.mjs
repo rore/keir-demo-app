@@ -69,8 +69,8 @@ async function cleaned(call) {
 test('distribution is the pinned independent compiler and notice metadata resolves', async () => {
   const info = JSON.parse(await readFile(join(vendor, 'compiler-provenance.json')));
   assert.equal(sha(await readFile(join(vendor, jarName))), info.artifact.sha256.slice(7));
-  assert.equal(info.artifact.sha256, 'sha256:64cd2507ed3bde34b99b14b1db16c9c0cfbf1bbd74f4cb7cd55ea213f2f60608');
-  assert.equal(info.artifact.bytes, 8_814_604);
+  assert.equal(info.artifact.sha256, 'sha256:631a681210b6e57126f02a916ce5d86ea1797fb1833819799be65a5bdf172d9f');
+  assert.equal(info.artifact.bytes, 8_815_071);
   assert.equal(info.profile, 'keir-effect/4');
   assert.deepEqual(info.profiles, ['keir-read/2', 'keir-effect/3', 'keir-effect/4']);
   const notices = await readFile(join(vendor, info.dependencies.metadata), 'utf8');
@@ -100,7 +100,7 @@ test('safe direct argv, immutable byte snapshots and minimal JVM environment', a
   assert.equal(call.args[0], '-Xmx256m');
   assert.equal(call.args[1], '-XX:-UsePerfData');
   assert.equal(call.args.at(-1), '--profile=keir-read/2');
-  assert.equal(sha(await readFile(call.args[5])), '64cd2507ed3bde34b99b14b1db16c9c0cfbf1bbd74f4cb7cd55ea213f2f60608');
+  assert.equal(sha(await readFile(call.args[5])), '631a681210b6e57126f02a916ce5d86ea1797fb1833819799be65a5bdf172d9f');
   assert.deepEqual(await readFile(call.args[6]), Buffer.from('submitted bytes'));
   assert.deepEqual(await readFile(call.args[7]), model);
   assert.deepEqual(Object.keys(call.options.env).filter(key => call.options.env[key] !== undefined && !['PATH', 'SystemRoot', 'WINDIR', 'SystemDrive', 'TEMP', 'TMP'].includes(key)), []);

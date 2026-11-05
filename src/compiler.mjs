@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
 const JAR = 'keir-compiler-java-0.1.0-SNAPSHOT-cli.jar';
-const JAR_BYTES = 8_814_604;
-const JAR_HASH = '64cd2507ed3bde34b99b14b1db16c9c0cfbf1bbd74f4cb7cd55ea213f2f60608';
+const JAR_BYTES = 8_815_071;
+const JAR_HASH = '631a681210b6e57126f02a916ce5d86ea1797fb1833819799be65a5bdf172d9f';
 const IDENTITY = 'keir-compiler-java/0.1.0-SNAPSHOT';
 const PROFILE = 'keir-read/2';
 const SOURCE_LIMIT = 65_536, OUTPUT_LIMIT = 1_048_576, ERROR_LIMIT = 16_384;

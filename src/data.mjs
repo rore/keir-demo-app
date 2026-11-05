@@ -2,7 +2,7 @@ import { DatabaseSync, backup } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { loadCatalog, digest, json, taskDefinitionIds } from './extension-catalog.mjs';
+import { loadCatalog, loadHost, digest, json, TASK_HOOK, taskDefinitionIds } from './extension-catalog.mjs';
 import { taskEffectProofMatches } from './task-effect-simulation.mjs';
 
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
@@ -520,6 +520,11 @@ function taskEvent(row) {
 export function taskEffectService(db) {
   if (arguments.length !== 1 || typeof db?.prepare !== 'function') throw new TypeError('Task effects require one native database.');
   const tasks = taskService(db);
+  const hostPins = new Map();
+  for (const id of taskDefinitionIds) {
+    try { hostPins.set(id, Object.entries(loadHost(TASK_HOOK, id).pins)); }
+    catch { /* Unavailable definitions cannot authorize native effects. */ }
+  }
   const event = (owner, id) => {
     const row = db.prepare('SELECT * FROM task_completion_events WHERE owner_id=? AND event_id=?').get(owner, id);
     if (!row) throw notFound();
@@ -533,10 +538,12 @@ export function taskEffectService(db) {
       const now = invocation.deadline.clock.nowMs();
       if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(invocation.deadline.expiresAtMs)
           || now >= invocation.deadline.expiresAtMs || context.eventId !== row.event_id || row.revoked_at !== null
-          || pins?.profile !== 'keir-effect/4' || !taskDefinitionIds.includes(pins.definitionId)
+          || pins?.profile !== 'keir-effect/4'
           || pins.modelRef?.format !== 'keir-dcm/effect-4' || pins.modelRef.digest !== pins.modelDigest
           || pins.consumer?.kind !== 'EVENT_REPORT' || Object.hasOwn(pins, 'qualification')
           || context.input?.taskId !== row.source_task_id) return false;
+      const expected = hostPins.get(pins.definitionId);
+      if (!expected || expected.some(([name, value]) => json(pins[name]) !== json(value))) return false;
       // Re-read persisted authority; a mutable current selection cannot replace the captured admission.
       const saved = db.prepare(`SELECT r.*,a.source,a.artifact,a.suite FROM task_completion_events v JOIN tasks t ON t.id=v.source_task_id AND t.owner_id=v.owner_id
       JOIN extension_revision_links l ON l.revision_id=v.revision_id AND l.owner_id=v.owner_id AND l.extension_id=v.item_id

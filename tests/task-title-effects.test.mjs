@@ -94,6 +94,26 @@ test('an earlier closed task-read result still executes for queued and new compl
   }
   await checkCompletion(queued);
   await checkCompletion(complete('Completed under the retained selection'));
+
+  const selectedPins = JSON.parse(saved.bindingPins), currentPins = loadHost(TASK_HOOK).pins;
+  const updatePins = db.prepare('UPDATE extension_selections SET binding_pins=? WHERE owner_id=? AND hook_id=?');
+  const held = [
+    { ...selectedPins, packageIntegrity: 'sha512-' + Buffer.alloc(64, 1).toString('base64') },
+    { ...selectedPins, definitionId: currentPins.definitionId, modelDigest: currentPins.modelDigest, modelRef: currentPins.modelRef },
+  ].map(pins => {
+    updatePins.run(json(pins), owner, TASK_HOOK);
+    try { return complete('Completion with unsupported execution pins'); }
+    finally { updatePins.run(saved.bindingPins, owner, TASK_HOOK); }
+  });
+  await dispatcher.wake();
+  await dispatcher.dependenciesChanged();
+  for (const source of held) {
+    const status = dispatcher.status(owner, source.id);
+    assert.equal(status.state, 'PENDING');
+    assert.equal(status.outcome, null);
+    assert.equal(status.receipt, null);
+  }
+  assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 2);
   assert.equal(native.listTasks(owner, projectId).filter(task => task.title === title).length, 2);
 
   const { extensionId, revisionId } = saved;
@@ -210,4 +230,78 @@ test('a checked title rule copies the exact saved title, skips a different title
   assert.ok(events.every(row => row.revision_id === input.revisionId && JSON.parse(row.pins).artifactDigest === artifactDigest));
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
   assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get().n, before + 1);
+});
+
+test('a checked suffix rule preserves Unicode and reaches the byte limit before dispatching a write', async t => {
+  const fixture = setup(t), { db, native, lifecycle, projectId } = fixture;
+  const host = loadHost(TASK_HOOK);
+  const title = 'Réparer l’étagère 🧰', suffix = ' — à vérifier';
+  const otherTitle = 'réparer l’étagère 🧰', limitTitle = '界'.repeat(85) + 'X';
+  const nativeLimitTitle = 'x'.repeat(120);
+  const createdTitle = title + suffix;
+  assert.equal(Buffer.byteLength(limitTitle), 256);
+  assert.ok((limitTitle + suffix).length <= 120 && Buffer.byteLength(limitTitle + suffix) > 256);
+  assert.ok((nativeLimitTitle + suffix).length > 120 && Buffer.byteLength(nativeLimitTitle + suffix) <= 256);
+  const { program, match, nonmatch } = ruleAndCases(host, projectId, createdTitle);
+  program.steps[2].let.cel += ` && source.title != ${JSON.stringify(otherTitle)}`;
+  program.steps[3].args.title = { cel: `source.title + ${JSON.stringify(suffix)}` };
+  match.id = 'unicode-suffix';
+  match.stubs[0].response.value.title = title;
+  nonmatch.id = 'different-title-case';
+  Object.assign(nonmatch.stubs[0].response.value, { projectId, title: otherTitle });
+  const limit = structuredClone(match);
+  limit.id = 'suffix-exceeds-runtime-byte-limit';
+  limit.stubs[0].response.value.title = limitTitle;
+  limit.stubs.length = 1;
+  limit.expect.calls.length = 1;
+  const trace = limit.expect.outcome.trace.slice(0, limit.expect.outcome.trace.findIndex(row => row.event === 'EFFECT_INTENT'));
+  trace.push({ sequence: trace.length, event: 'TERMINATED', code: 'BUDGET_EXCEEDED' });
+  const limitError = { code: 'BUDGET_EXCEEDED', path: '/steps/3' };
+  limit.expect.outcome = { classification: 'LIMIT_EXCEEDED', error: limitError, effects: [], trace };
+  limit.expect.consumption = consumeTaskEffect(limit.expect.outcome, host);
+  const cases = [match, nonmatch, limit].map(row => JSON.stringify(row));
+
+  const { extensionId } = admitTaskDraft(db, lifecycle, { owner });
+  let state = await lifecycle.compile(owner, { extensionId, draftVersion: 0, hookId: TASK_HOOK, source: JSON.stringify(program) }, authorize);
+  state = await lifecycle.proposeScenarios(owner, { extensionId, revisionId: state.revisionId, draftVersion: state.draftVersion, cases }, authorize);
+  const input = { extensionId, revisionId: state.revisionId, draftVersion: state.draftVersion };
+  state = await lifecycle.simulate(owner, input, authorize);
+  const proof = lifecycle.evidence(owner, state.evidence.id, extensionId);
+  assert.equal(proof.passed, true, JSON.stringify(proof.reports.map(row => ({ id: row.id, report: row.report }))));
+  const artifactDigest = digest(lifecycle.execution(owner, input.revisionId, extensionId).artifactBytes);
+  assert.equal(proof.identity.dependencies.artifactDigest, artifactDigest);
+  assert.deepEqual(proof.reports[0].report.calls[1].args, { projectId, title: createdTitle });
+  assert.equal(state.approved, false);
+  state = lifecycle.approve(owner, { ...input, evidenceId: proof.id }, authorize);
+  assert.equal(state.approvedEvidenceId, proof.id);
+  assert.equal(state.selection.revision, null);
+  lifecycle.activate(owner, { ...input, generation: state.selection.generation }, authorize);
+
+  const sources = [title, otherTitle, limitTitle, nativeLimitTitle].map(title => native.createTask(owner, { projectId, title }));
+  const before = native.listTasks(owner, projectId).length;
+  for (const source of sources) native.completeTask(owner, source.id);
+  const dispatcher = fixture.dispatch();
+  await dispatcher.wake();
+  const [created, skipped, stopped, rejected] = sources.map(source => dispatcher.status(owner, source.id));
+  for (const outcome of [created, skipped, stopped, rejected]) assert.equal(outcome.state, 'FINISHED');
+  assert.deepEqual(created.outcome.result, { status: 'CREATED' });
+  assert.equal(created.receipt.effect, 'CONFIRMED');
+  assert.equal(native.getTask(owner, created.receipt.value.id).title, createdTitle);
+  assert.deepEqual(skipped.outcome.result, { status: 'NO_OP' });
+  assert.equal(stopped.outcome.classification, 'LIMIT_EXCEEDED');
+  assert.deepEqual(stopped.outcome.error, limitError);
+  for (const outcome of [skipped, stopped]) {
+    assert.deepEqual(outcome.outcome.effects, []);
+    assert.equal(outcome.receipt, null);
+    assert.equal(outcome.outcome.trace.some(row => row.event === 'EFFECT_INTENT' || row.capability === 'tasks.create'), false);
+  }
+  assert.equal(rejected.outcome.classification, 'BUSINESS_REJECTION');
+  assert.deepEqual(rejected.outcome.error, { code: 'TASK_INVALID', path: '/steps/3' });
+  assert.deepEqual(rejected.outcome.effects, [{ step: 'created', capability: 'tasks.create', state: 'NONE' }]);
+  assert.equal(rejected.receipt, null);
+  const events = db.prepare('SELECT revision_id,pins FROM task_completion_events WHERE owner_id=?').all(owner);
+  assert.equal(events.length, 4);
+  assert.ok(events.every(row => row.revision_id === input.revisionId && JSON.parse(row.pins).artifactDigest === artifactDigest));
+  assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
+  assert.equal(native.listTasks(owner, projectId).length, before + 1);
 });

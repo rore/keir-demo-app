@@ -17,6 +17,11 @@ const taskDefinitions = Object.freeze({
   [PREVIOUS_TASK_DEFINITION]: { ...taskDefinition, directory: 'task-effect', id: PREVIOUS_TASK_DEFINITION },
   [TASK_DEFINITION]: { ...taskDefinition, directory: 'task-effect/title', id: TASK_DEFINITION },
 });
+// Keep the original saved /2 pins separate from the installed package that executes them.
+const previousTaskRuntimePins = Object.freeze({
+  environment: Object.freeze({ celJava: '0.14.0', celNode: '0.6.1', protobufJava: '4.35.1', protobufNode: '2.6.2' }),
+  packageIntegrity: 'sha512-JWj4U9+TiLgJzuVHgbgAGL9N2BPn3XVnbRTPMSS2/wKnFRb4pgQRNBijVc/E0RYKsJ+RB2mFTez2pMTIFEqHqg==',
+});
 const definitions = Object.freeze({
   [hook]: { directory: 'task-read', id: 'daymark.task-read/1', profile: 'keir-read/2', adapter: 'native-task-read/1' },
   [TASK_HOOK]: taskDefinitions[TASK_DEFINITION],
@@ -56,6 +61,10 @@ export function loadHost(hookId = hook, definitionId = TASK_DEFINITION) {
   if (!runtime || typeof runtime.archive !== 'string' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(runtime.integrity)) throw new Error('Invalid runtime package');
   const archive = load(task ? 'vendor/' + runtime.archive : runtime.archive);
   if ('sha512-' + createHash('sha512').update(archive).digest('base64') !== runtime.integrity) throw new Error('Invalid runtime package');
+  const runtimePins = task && definition.id === PREVIOUS_TASK_DEFINITION ? previousTaskRuntimePins
+    : { environment: runtime.environment, packageIntegrity: runtime.integrity };
+  if (task && (json(ENVIRONMENT) !== json(runtime.environment) || json(ENVIRONMENT) !== json(runtimePins.environment)))
+    throw new Error('Incompatible runtime environment');
   const dcmBytes = load(`extensions/${definition.directory}/dcm.json`);
   if (digest(dcmBytes) !== pins.modelDigest) throw new Error('Invalid model');
   const model = JSON.parse(dcmBytes);
@@ -70,9 +79,9 @@ export function loadHost(hookId = hook, definitionId = TASK_DEFINITION) {
     label: task ? 'Task completed' : 'Task status advice',
     description: task ? 'React after a task is completed' : 'Show advice when checking a saved task',
     effect: task ? 'WRITE' : 'READ', trigger: entrypoint.trigger }] }, programs: pins.programs,
-    pins: { modelDigest: pins.modelDigest, ...(task ? { modelRef, definitionId: definition.id } : {}), compiler: pins.compiler, environment: task ? ENVIRONMENT : runtime.environment,
+    pins: { modelDigest: pins.modelDigest, ...(task ? { modelRef, definitionId: definition.id } : {}), compiler: pins.compiler, ...runtimePins,
       profile: definition.profile, hook: hookId, consumer: task ? entrypoint.consumer : consumer,
-      packageIntegrity: runtime.integrity, adapter: definition.adapter } };
+      adapter: definition.adapter } };
 }
 
 export function definitionForPins(pins) {

@@ -9,13 +9,13 @@
   ],
   "artifact": {
     "file": "keir-compiler-java-0.1.0-SNAPSHOT-cli.jar",
-    "sha256": "sha256:64cd2507ed3bde34b99b14b1db16c9c0cfbf1bbd74f4cb7cd55ea213f2f60608",
-    "bytes": 8814604
+    "sha256": "sha256:631a681210b6e57126f02a916ce5d86ea1797fb1833819799be65a5bdf172d9f",
+    "bytes": 8815071
   },
   "source": {
     "repository": "https://github.com/rore/keir-core",
-    "recorded_producer_revision": "e39b50b4cadb3584c8d5cee73e935eac977d5978",
-    "integrated_revision": "95e5fd0426cb1d0ef486fd54f21e34ca6afd1f41"
+    "recorded_producer_revision": "84763506ad501ca0c6cb01103c8053803ad8adf1",
+    "integrated_revision": "9be8eb4af5694e14ab3efdc84c111c9449c0e68f"
   },
   "java": {
     "bytecode_minimum": 21,
