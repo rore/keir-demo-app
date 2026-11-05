@@ -30,7 +30,7 @@ test('project discovery pages are read-only tool results and task compilation ca
 test('task coaching requires discovered constants and independent expectations without treating program labels as native effects', async () => {
   const f = fixture(); await f.run();
   const instructions = f.requests[0].instructions;
-  for (const phrase of ['discover_projects', 'Project names may repeat', 'literal constants', 'FORMAT ONLY',
+  for (const phrase of ['discover_projects', 'Project names may repeat', 'customer-selected constant', 'FORMAT ONLY',
     'Only host-observed effect evidence', 'UNKNOWN never means no effect or safe retry', 'later completes that generated task',
     'independent expected scenarios', 'Legacy advice is retired and read-only']) assert.ok(instructions.includes(phrase), phrase);
   assert.doesNotMatch(instructions, /choose Check task advice|outside the discovered read-only contract/);

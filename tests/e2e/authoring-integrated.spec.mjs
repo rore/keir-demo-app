@@ -138,10 +138,12 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
   } finally { await fixture.close(); }
 });
 
-test('offline Studio resumes review of the same checked draft after discussing it', async ({ page }) => {
+test('offline Studio resumes the same checked draft and preserves review when the guide becomes unavailable', async ({ page }) => {
   test.setTimeout(60_000);
   const resumeRequest = 'Please go ahead with the change we just discussed.';
   const fixture = await startAuthoringFixture({ resumeRequest, provider: 'anthropic' });
+  let releaseRefresh;
+  const holdRefresh = new Promise(resolve => { releaseRefresh = resolve; });
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
@@ -188,6 +190,30 @@ test('offline Studio resumes review of the same checked draft after discussing i
     expect(resumedTranscript.messages.slice(0, transcript.messages.length)).toEqual(transcript.messages);
     expect(resumedTranscript.messages.at(-1).receipt.evidenceId).toBe(checked.review.evidenceId);
 
+    const blockedText = 'Please explain this saved change again.';
+    const recoveryRequests = [];
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/authoring/recover') recoveryRequests.push(request);
+    });
+    await page.route('**/api/authoring/turn', route => route.fulfill({ status: 503,
+      json: { code: 'AUTHORING_GUIDE_UNAVAILABLE' } }), { times: 1 });
+    await page.route('**/api/authoring?*', async route => {
+      const response = await route.fetch();
+      const saved = await response.json();
+      saved.availability = { ...saved.availability, available: false, code: 'AUTHORING_GUIDE_UNAVAILABLE' };
+      await holdRefresh;
+      await route.fulfill({ response, json: saved });
+    }, { times: 1 });
+    const refresh = page.waitForRequest(request => new URL(request.url()).pathname === '/api/authoring' && request.method() === 'GET');
+    await send(page, blockedText);
+    await refresh;
+    await expect(ui.getByRole('alert')).toContainText('native tasks and saved work remain available');
+    await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue(blockedText);
+    await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+    await expect(ui.getByText('Submitted request', { exact: true })).toHaveCount(0);
+    expect(recoveryRequests).toEqual([]);
+    expect(fixture.requests).toHaveLength(callsBefore + 4);
+
     await expect(decision(page)).toHaveCount(0);
     const evidenceResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/${evidencePath}`);
     await expect(ui.getByText(fixture.metadata.resumedOffer, { exact: true })).toHaveCount(0);
@@ -198,8 +224,15 @@ test('offline Studio resumes review of the same checked draft after discussing i
     expect(state.approved).toBe(false);
     expect(state.selection).toEqual(selection);
     expect(mutations).toEqual([]);
+    await decision(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
+    await expect(decision(page).getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
+    expect((await read('extensions')).selection).toEqual(selection);
+    expect(mutations).toHaveLength(1);
+    await decision(page).getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
+    await expect.poll(async () => (await read('extensions')).selection.revision?.id).toBe(checked.review.revisionId);
+    expect(mutations).toHaveLength(2);
     expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
-  } finally { await fixture.close(); }
+  } finally { releaseRefresh(); await fixture.close(); }
 });
 
 for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {

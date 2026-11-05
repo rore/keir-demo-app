@@ -954,6 +954,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           if (!acceptedResponse && problem.code === "LEGACY_CUSTOMIZATION_RETIRED") {
             setRetiredOperation(true); setRetryTurn(false); setAuthoringError(authoringReason(problem.code)); return;
           }
+          if (!acceptedResponse && problem.status === 503 && problem.code === "AUTHORING_GUIDE_UNAVAILABLE") {
+            retainTurn(null); setText(value => value || input.text);
+            setAuthoringError(authoringReason(problem.code));
+            setAuthoring(current => current && { ...current, availability: { ...current.availability, available: false, code: "AUTHORING_GUIDE_UNAVAILABLE" } });
+            void callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal).then(refreshed => {
+              if (mounted.current && serial.current === turn) setAuthoring(current => current && { ...current, availability: refreshed.availability });
+            }, () => {});
+            return;
+          }
           if (!acceptedResponse && problem.status === 409 && input.target.kind !== "create"
               && ["STALE_DRAFT", "STALE_CONVERSATION", "STALE_CONTEXT", "CONFIG_CHANGED"].includes(problem.code ?? "")) {
             const notice = problem.code === "CONFIG_CHANGED" ? authoringReason(problem.code)

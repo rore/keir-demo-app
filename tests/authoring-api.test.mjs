@@ -1,13 +1,14 @@
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises';
 import { AppError, openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
+import { createAuthoringProvider } from '../src/authoring-provider.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { createLifecycle as lifecycleFactory } from '../src/extension-lifecycle.mjs';
 import { createCompiler } from '../src/compiler.mjs';
@@ -58,6 +59,12 @@ const rowState = db => JSON.parse(db.prepare('SELECT state FROM authoring_conver
 const dispatches = (db, id = db.prepare('SELECT id FROM authoring_conversations ORDER BY rowid DESC LIMIT 1').get().id) =>
   db.prepare('SELECT * FROM authoring_dispatches WHERE conversation_id=? ORDER BY rowid').all(id);
 const reserved = db => db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
+const guideFile = new URL('../vendor/customer-authoring-guide-v2.md', import.meta.url);
+function substituteGuide(t, path) {
+  const open = fs.openSync;
+  return t.mock.method(fs, 'openSync', (file, ...options) =>
+    open(String(file) === guideFile.href ? path : file, ...options));
+}
 const keys = (value, expected) => assert.deepEqual(Object.keys(value).sort(), expected.sort());
 function removeFixture(directory) {
   assert.ok(resolve(directory).startsWith(resolve(tmpdir()) + sep));
@@ -316,13 +323,38 @@ test('authoring API rejects foreign sessions/owners/extra fields and deduplicate
 const java = process.env.KEIR_JAVA_BIN ?? (process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java');
 const checkedJava = spawnSync(java, ['-version'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
 const qualifiedJava = checkedJava.status === 0 && /version "(?:2[1-9]|[3-9][0-9])\./.test(checkedJava.stderr ?? '');
+test('a missing companion at app startup leaves native tasks available and rejects authoring before admission', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'daymark-guide-'));
+  t.after(() => removeFixture(directory));
+  substituteGuide(t, join(directory, 'missing.md'));
+  let providers = 0;
+  const { db, call, login } = await api(t, { config: configFor(), providerFactory: () => { providers++; } });
+  await login();
+  const task = db.prepare("SELECT id FROM tasks WHERE owner_id='maya' LIMIT 1").get();
+  assert.equal((await call('tasks/' + task.id)).statusCode, 200);
+  const listing = (await call('authoring')).json();
+  assert.equal(listing.availability.available, false);
+  assert.equal(listing.availability.code, 'AUTHORING_GUIDE_UNAVAILABLE');
+  const request = { conversationId: null, operationId: 'missing-guide', text: 'Prepare a change.',
+    expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'create' } };
+  const rejected = await call('authoring/turn', request);
+  assert.equal(rejected.statusCode, 503);
+  assert.equal(rejected.json().code, listing.availability.code);
+  assert.equal(providers, 0);
+  for (const table of ['authoring_conversations', 'authoring_operations', 'authoring_dispatches']) {
+    assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get().n, 0);
+  }
+  assert.equal(reserved(db), 0);
+});
+
 for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs real pinned-JAR diagnostics, saves original cases and offers exact simulator evidence without approval`,
   { skip: !qualifiedJava && !process.env.CI }, async t => {
     assert.ok(qualifiedJava, 'Qualified Java 21 is required in CI.');
     const cases = taskCases().map(item => '\n ' + item.bytes.toString() + '\n');
-    let compiledId, scenarioId, exactEvidenceId, latestEvidenceId, callApi;
+    let compiledId, scenarioId, exactEvidenceId, latestEvidenceId, callApi, providers = 0;
     const fake = wire(provider, async (body, index) => {
       const prior = lastTool(provider, body);
+      if (index === 6) return { text: 'The saved change is still here.' };
       if (index === 0) return { name: 'discover_catalog', arguments: {} };
       if (index === 1) return { name: 'compile_draft', arguments: { sourceJson: '{', expectedDraftVersion: prior.result.currentDraft.draftVersion } };
       if (index === 2) {
@@ -352,10 +384,14 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
       return { name: 'offer_review', arguments: { summary: 'Review these five independent cases. Other inputs are untested.' } };
     });
     const realCompiler = createCompiler({ javaExecutable: java });
-    const { db, call, login } = await api(t, { config: configFor(provider), fetchImpl: fake.fetchImpl }, { compiler: realCompiler });
+    const { db, call, login } = await api(t, { config: configFor(provider), providerFactory(config) {
+      providers++;
+      return createAuthoringProvider(config, { fetchImpl: fake.fetchImpl });
+    } }, { compiler: realCompiler });
     callApi = call;
     await login(); const selection = (await call(extensionPath(db))).json().selection;
-    const response = await call('authoring/turn', input(db, 'real-compile'));
+    const submitted = input(db, 'real-compile');
+    const response = await call('authoring/turn', submitted);
     assert.equal(response.statusCode, 202);
     const current = await settled(call, response.json().conversation.id);
     assert.equal(current.status, 'REVIEW_AVAILABLE', JSON.stringify(current)); assertDto(current);
@@ -385,6 +421,42 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
     assert.equal(reserved(db), configFor(provider).reserveMicros * 6);
     assert.equal(rowState(db).counts.compiles, 2);
     assert.equal(dispatches(db, current.id).length, 12); assert.ok(dispatches(db, current.id).every(item => item.outcome === 'SUCCESS'));
+    const index = 'authoring?extensionId=' + current.extensionId;
+    assert.equal((await call(index)).json().availability.available, true);
+    const directory = mkdtempSync(join(tmpdir(), 'daymark-guide-'));
+    t.after(() => removeFixture(directory));
+    const altered = join(directory, 'tampered.md'), original = fs.readFileSync(guideFile);
+    original[0] ^= 1;
+    fs.writeFileSync(altered, original);
+    const open = substituteGuide(t, altered);
+    const next = { ...submitted, operationId: 'resume-with-guide', expectedVersion: current.version, expectedDraftVersion: state.draftVersion };
+    const snapshot = () => ({
+      conversation: db.prepare('SELECT * FROM authoring_conversations WHERE id=?').get(current.id),
+      operations: db.prepare('SELECT * FROM authoring_operations ORDER BY rowid').all(),
+      dispatches: dispatches(db, current.id), reserved: reserved(db),
+    });
+    const savedBefore = snapshot();
+    const rejected = await call('authoring/turn', next);
+    assert.equal(rejected.statusCode, 503);
+    assert.equal(rejected.json().code, 'AUTHORING_GUIDE_UNAVAILABLE');
+    const unavailable = (await call(index)).json();
+    assert.equal(unavailable.availability.available, false);
+    assert.deepEqual(unavailable.current.review, review);
+    assert.deepEqual((await call(extensionPath(db, 'evidence/' + review.evidenceId))).json(), proof);
+    const replay = await call('authoring/turn', submitted);
+    assert.equal(replay.statusCode, 202);
+    assert.deepEqual(replay.json().operation, response.json().operation);
+    assert.deepEqual(snapshot(), savedBefore);
+    assert.equal(providers, 1);
+    assert.equal(fake.requests.length, 6);
+    open.mock.restore();
+    assert.equal((await call(index)).json().availability.available, true);
+    const restored = await call('authoring/turn', { ...next, conversationId: null, target: { kind: 'create' },
+      expectedVersion: 0, expectedDraftVersion: 0 });
+    assert.equal(restored.statusCode, 202);
+    assert.equal((await settled(call, restored.json().conversation.id)).status, 'IDLE');
+    assert.equal(providers, 2);
+    assert.equal(fake.requests.length, 7);
     const changed = await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source, draftVersion: 2 });
     assert.equal(changed.statusCode, 200);
     const historical = (await call('authoring/conversations/' + current.id)).json();

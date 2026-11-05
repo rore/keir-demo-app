@@ -3,10 +3,11 @@ import { AppError, transaction } from './data.mjs';
 import { loadHost, TASK_HOOK, TASK_DEFINITION, taskDefinitionIds, digest, json } from './extension-catalog.mjs';
 import { readAuthoringConfig } from './authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
-import { createAuthoringState, runAuthoringTurn } from './authoring-agent.mjs';
+import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './authoring-agent.mjs';
 import { authoringExample, businessContext, evidenceSummary } from './authoring-example.mjs';
 
 export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_INVALID', 'AI_CREDENTIALS_MISSING', 'HOST_UNAVAILABLE', 'LEGACY_CUSTOMIZATION_RETIRED',
+  'AUTHORING_GUIDE_UNAVAILABLE',
   'SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'CONVERSATION_LIMIT', 'CONFIG_CHANGED', 'BYTE_LIMIT', 'CONTEXT_LIMIT', 'TOKEN_LIMIT', 'TIME_LIMIT', 'EXPIRED',
   'RUN_INTERRUPTED', 'CANCELLED', 'STALE_CONTEXT', 'STALE_DRAFT', 'STALE_CONVERSATION', 'AI_BUSY', 'PROVIDER_TIMEOUT',
   'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', 'PROVIDER_RESPONSE_INVALID',
@@ -16,6 +17,7 @@ const safeMessage = code => ({
   AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create a customization. Native tasks remain available.',
   LEGACY_CUSTOMIZATION_RETIRED: 'This earlier customization is read-only. Its saved discussion and results are kept. Start a new customization to change task behavior.',
   AI_CONFIG_INVALID: 'The operator AI configuration needs attention.', AI_CREDENTIALS_MISSING: 'The operator AI credentials are unavailable.',
+  AUTHORING_GUIDE_UNAVAILABLE: 'The assistant guide is unavailable. Native tasks and saved review remain available.',
   SPEND_LIMIT: 'The operator AI allowance has been reached.', AI_BUSY: 'Another authoring request is still settling. Check its saved state.',
   PROVIDER_RATE_LIMIT: 'The AI service refused this request because of a request or account limit. Any saved proposal and examples are kept. Check the provider usage and limits before retrying manually.',
   STALE_DRAFT: 'The draft changed. Read saved state before continuing.', STALE_CONVERSATION: 'The conversation changed. Read saved state before continuing.',
@@ -53,9 +55,12 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     try { return { state: JSON.parse(row.state), operations: JSON.parse(row.operations), view: JSON.parse(row.view) }; }
     catch { throw error(503, 'HOST_RESULT_INVALID'); }
   };
-  const availability = () => ({ available: config.status === 'ready' && !!definition && !closing,
-    code: closing ? 'HOST_UNAVAILABLE' : config.status !== 'ready' ? config.code : !definition ? 'HOST_UNAVAILABLE' : null,
-    provider: config.status === 'ready' ? config.provider : null, model: config.status === 'ready' ? config.model : null });
+  function availability(guideReady) {
+    let code = closing ? 'HOST_UNAVAILABLE' : config.status !== 'ready' ? config.code : !definition ? 'HOST_UNAVAILABLE' : null;
+    if (code === null && !(guideReady ?? loadAuthoringInstructions())) code = 'AUTHORING_GUIDE_UNAVAILABLE';
+    return { available: code === null, code, provider: config.status === 'ready' ? config.provider : null,
+      model: config.status === 'ready' ? config.model : null };
+  }
 
   // Recovery is readback only. No provider, compiler or simulation is called at startup.
   transaction(db, () => {
@@ -507,7 +512,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     if (input.target.kind !== 'create' && usedOperation(owner, extensionId, input.operationId)
         || row && latest?.id !== row.id) throw error(409, 'STALE_CONVERSATION');
     if (prior && !same(prior.state.handles, current)) throw error(409, 'STALE_DRAFT');
-    const available = availability(); if (!available.available) throw error(503, available.code);
+    const instructions = loadAuthoringInstructions();
+    const available = availability(Boolean(instructions)); if (!available.available) throw error(503, available.code);
     if (closing || live.size >= 2 || [...live.values()].some(item => item.owner === owner)) throw error(429, 'AI_BUSY');
     if (latest && running(latest) || row && row.version !== input.expectedVersion || !row && input.expectedVersion !== 0) throw error(409, 'STALE_CONVERSATION');
     if (prior && !transportMatches(prior.state)) throw error(409, 'CONFIG_CHANGED');
@@ -518,7 +524,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     // Each explicit turn starts from fresh host context; old native tool chains are never replayed.
     state.continuation = undefined; state.pending = undefined; state.callIds = []; state.inputIds = []; state.evidenceHandle = null;
     delete state.contextFull;
-    const ctx = { owner, id, runId, lease, controller, input, hash, state, extensionId,
+    const ctx = { owner, id, runId, lease, controller, input, hash, state, extensionId, instructions,
       purpose: link?.purpose ?? (input.target.kind === 'create' ? 'CREATE' : 'REVISE'),
       baseRevisionId: link?.base_revision_id ?? (input.target.kind === 'revise' ? input.target.baseRevisionId : null),
       baseGeneration: link?.base_generation ?? (input.target.kind === 'revise' ? input.target.selectionGeneration : null),
@@ -572,7 +578,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const provider = { ...native, complete: args => tracked(ctx, () => native.complete(args)) };
     const task = runAuthoringTurn({ provider, host: ctx.host, context: ctx.context, state: ctx.state,
       input: { id: input.operationId, text: input.text, expectedVersion: input.expectedVersion },
-      priorUserMessages: history, signal: ctx.controller.signal });
+      priorUserMessages: history, signal: ctx.controller.signal, instructions: ctx.instructions });
     ctx.promise = (async () => {
       let result;
       try { result = await task; await Promise.allSettled([...ctx.tracked]); }

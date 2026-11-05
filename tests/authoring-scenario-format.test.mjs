@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { openData, taskService } from '../src/data.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
@@ -252,7 +253,7 @@ test('offline authoring checks an exact suffix and repairs scenario syntax witho
   assert.equal(db.prepare('SELECT revision_id FROM task_completion_events WHERE source_task_id=?').get(source.id).revision_id, state.draft.id);
 });
 
-test('offline authoring reopens and runs a checked follow-up in each completed task’s project', async t => {
+for (const provider of ['openai', 'anthropic']) test(`${provider} offline authoring reopens and runs a checked follow-up in each completed task’s project`, async t => {
   const { db, lifecycle, project, other } = setup(t);
   const native = taskService(db);
   const foreign = native.createProject('leo', { name: 'Private project' });
@@ -264,20 +265,37 @@ test('offline authoring reopens and runs a checked follow-up in each completed t
     { id: 'second-source-project', taskId: 'task3', createdId: 'task4', projectId: other.id, title: 'Send notes' },
   ];
   const before = rows(db, nativeTables);
-  const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-project-key' });
-  const calls = [];
+  const openai = provider === 'openai';
+  const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: openai ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
+    KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v2.md', import.meta.url), 'utf8');
+  const calls = [], requestBytes = [];
+  function respond(openaiContent, anthropicContent, stopReason) {
+    const usage = { input_tokens: 10, output_tokens: 5 };
+    return Response.json(openai ? { status: 'completed', output: [openaiContent], usage }
+      : { stop_reason: stopReason, content: [anthropicContent], usage });
+  }
   const operationId = 'same-project-followup';
   let source, independent, compiled, extensionId;
   const service = createAuthoringService({ db, lifecycle, config, fetchImpl: async (url, init) => {
-    assert.equal(url, 'https://api.openai.com/v1/responses');
+    assert.equal(url, openai ? 'https://api.openai.com/v1/responses' : 'https://api.anthropic.com/v1/messages');
+    requestBytes.push(Buffer.byteLength(init.body));
+    assert.ok(requestBytes.at(-1) <= 131072);
     const body = JSON.parse(init.body), index = calls.length;
-    const output = body.input.filter(value => value.type === 'function_call_output').at(-1);
-    const result = output ? JSON.parse(output.output).result : null;
+    const instructions = openai ? body.instructions : body.system;
+    assert.ok(instructions.endsWith(guide));
+    assert.equal(instructions.split(guide).length, 2);
+    const output = openai ? body.input.filter(value => value.type === 'function_call_output').at(-1)?.output
+      : body.messages.at(-1)?.content.find(value => value.type === 'tool_result')?.content;
+    const result = output ? JSON.parse(output).result : null;
     let name, args;
     if (index === 0) {
-      assert.match(body.instructions, /supportedHooks from discover_catalog for availability and the discovered DCM as authority/);
-      assert.match(body.instructions, /capability arguments and results, types and protected arguments/);
-      assert.match(body.instructions, /two positive examples with different source projects and titles/);
+      assert.match(instructions, /supportedHooks from discover_catalog for availability/);
+      assert.match(instructions, /host-approved domain capability model/);
+      assert.match(instructions, /business parameters, protected bindings, result fields/);
+      assert.match(instructions, /two positive examples with different source projects and titles/);
+      assert.match(instructions, /clarify only genuinely unclear behavior/);
+      assert.equal(body.tools.some(tool => /approve|activate|create_task/.test(tool.name)), false);
       name = 'discover_catalog'; args = {};
     } else if (index === 1) {
       const discovery = result;
@@ -337,9 +355,8 @@ test('offline authoring reopens and runs a checked follow-up in each completed t
       name = 'offer_review'; args = { summary: 'Both completed examples created one follow-up in their own project. The unfinished and unavailable examples created nothing. Your tasks have not changed.' };
     } else if (index === 5) {
       calls.push('text');
-      return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', role: 'assistant',
-        content: [{ type: 'output_text', text: explanation }] }], usage: { input_tokens: 10, output_tokens: 5 } }),
-      { headers: { 'content-type': 'application/json' } });
+      return respond({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: explanation }] },
+        { type: 'text', text: explanation }, 'end_turn');
     } else if (index === 6) {
       assert.equal(output, undefined, 'An explicit turn starts with fresh provider context.');
       name = 'discover_catalog'; args = {};
@@ -350,9 +367,9 @@ test('offline authoring reopens and runs a checked follow-up in each completed t
       name = 'offer_review'; args = { summary: 'The same checked draft is ready to review.' };
     } else assert.fail('Unexpected provider request');
     calls.push(name);
-    return new Response(JSON.stringify({ status: 'completed', output: [
-      { type: 'function_call', call_id: `same-project-${index}`, name, arguments: JSON.stringify(args) },
-    ], usage: { input_tokens: 10, output_tokens: 5 } }), { headers: { 'content-type': 'application/json' } });
+    const callId = `same-project-${index}`;
+    return respond({ type: 'function_call', call_id: callId, name, arguments: JSON.stringify(args) },
+      { type: 'tool_use', id: callId, name, input: args }, 'tool_use');
   } });
   t.after(() => service.close());
   const started = await service.turn('maya', { conversationId: null, operationId, expectedVersion: 0, expectedDraftVersion: 0,
@@ -392,6 +409,7 @@ test('offline authoring reopens and runs a checked follow-up in each completed t
   assert.equal(reopened.id, settled.id);
   assert.deepEqual(reopened.review, settled.review);
   assert.deepEqual(calls.slice(5), ['text', 'discover_catalog', 'offer_review']);
+  t.diagnostic(`${provider} serialized bytes after discovery ${requestBytes[1]}, maximum ${Math.max(...requestBytes)}`);
   assert.deepEqual(rows(db, Object.keys(evidenceBefore)), evidenceBefore);
 
   for (const [cel, code] of [['source.projectID', 'TYPE_MISMATCH'], ['source.id', 'NOMINAL_MISMATCH']]) {
