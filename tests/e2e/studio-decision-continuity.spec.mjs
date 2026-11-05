@@ -60,6 +60,11 @@ async function closeReview(page) {
   await review(page).getByRole('button', { name: 'Hide checked examples', exact: true }).click();
   await expect(review(page)).toBeHidden();
 }
+async function expectIllustration(page, title) {
+  const saved = studio(page).getByRole('article', { name: 'Your saved change', exact: true });
+  await expect(saved.getByText('Expected unfinished follow-up', { exact: true })).toBeVisible();
+  await expect(saved.getByText(title, { exact: true })).toBeVisible();
+}
 async function holdResponse(page, url, { fail = false } = {}) {
   let entered, release, delivered;
   const started = new Promise(resolve => { entered = resolve; });
@@ -153,13 +158,20 @@ for (const resource of ['proof', 'source']) test(`closing and reopening explicit
   let hold;
   try {
     const { path, state } = await seed(page, fixture);
+    const session = await api(page, 'session');
+    expect(session.user.id).toBe(state.owner.id);
     const decisions = decisionRequests(page), reads = [];
+    const illustrationRead = { path: `/api/${path}/revisions/${state.draft.id}`, method: 'GET', ownerScoped: true };
     page.on('request', request => {
-      if (new URL(request.url()).pathname.includes('/evidence/') || new URL(request.url()).pathname.includes('/revisions/')) reads.push(request.url());
+      const pathname = new URL(request.url()).pathname;
+      if (pathname.includes('/evidence/') || pathname.includes('/revisions/')) {
+        reads.push({ path: pathname, method: request.method(), ownerScoped: request.headers()['x-session-context'] === session.contextToken });
+      }
     });
     await openItem(page, state.extension.id);
+    await expectIllustration(page, fixture.metadata.title);
     await expect(review(page)).toHaveCount(0);
-    expect(reads).toEqual([]);
+    expect(reads).toEqual([illustrationRead]);
     await composer(page).fill('Keep my unsent discussion');
     hold = await holdResponse(page, `**/api/${path}/${resource === 'proof' ? 'evidence/' + state.evidence.id : 'revisions/' + state.draft.id}`, { fail: true });
     await openReview(page); await hold.started;
@@ -177,8 +189,9 @@ for (const resource of ['proof', 'source']) test(`closing and reopening explicit
     const explicitReadCount = reads.length;
     await page.reload();
     await expect(composer(page)).toBeVisible();
+    await expectIllustration(page, fixture.metadata.title);
     await expect(review(page)).toHaveCount(0);
-    expect(reads).toHaveLength(explicitReadCount);
+    expect(reads.slice(explicitReadCount)).toEqual([illustrationRead]);
     expect(await api(page, path)).toEqual(state);
     expect(decisions).toEqual([]);
     expect(fixture.requests).toEqual([]);
@@ -191,6 +204,7 @@ for (const resource of ['proof', 'source']) test(`reading inside an explicit rev
   try {
     const { path, state } = await seed(page, fixture);
     await openItem(page, state.extension.id);
+    await expectIllustration(page, fixture.metadata.title);
     hold = await holdResponse(page, `**/api/${path}/${resource === 'proof' ? 'evidence/' + state.evidence.id : 'revisions/' + state.draft.id}`);
     await openReview(page); await hold.started;
     await review(page).getByRole('heading', { name: 'Checked examples', exact: true }).click();
