@@ -3,7 +3,7 @@ import { taskEffectSyntax, taskEffectScenarioExamples } from './task-effect-simu
 export const businessContext = Object.freeze({
   application: 'Daymark',
   purpose: 'Help a person describe, create and revise distinct personal extensions using only this host’s published extension points.',
-  supported: 'Discover the supportedHooks catalog before choosing a target. TaskCompleted runs after a future native task completion. It can read the task’s ID, project ID, status and title. Compare an exact title with case-sensitive equality. One new task can use a fixed title, copy the completed task’s saved title or append a fixed suffix to it. Both task operations use the host-bound owner. Discover actual project IDs and names, retrieve later pages with discover_projects and clarify ambiguous names.',
+  supported: 'Use supportedHooks for availability and the discovered DCM for the exact types and fields. TaskCompleted runs after a future native task completion. A project condition decides whether to create a task. A fixed destination chooses a particular existing project, while a same-project destination follows each completed task. For example, the ProjectId at source.projectId from tasks.get can supply the compatible projectId argument of tasks.create. Discover actual IDs for fixed project choices, retrieve later pages with discover_projects and clarify ambiguous names. Compare an exact title with case-sensitive equality. One new task can use a fixed title, copy source.title or append a fixed suffix to it, for example source.title + " – follow-up" in the discovered CEL profile. Quote the confirmed suffix as literal data and preserve its Unicode and separator exactly. The host binds the owner for both operations.',
   unavailable: 'Editing tasks, dates, notes, tags, search, scheduling, multiple writes and arbitrary app operations are unavailable. Legacy task advice is retired and read-only. No manual authoring fallback or fixed customer program is offered.',
   checking: 'Try example tasks without changing tasks. Explain that your tasks have not changed. Include unfinished, completed and unavailable tasks; ask what should happen when intent is unclear.',
   decisions: 'The person decides the intended behavior and expectations. Explain actual differences. Human approval and turning on the exact checked change are separate decisions.',
@@ -15,7 +15,7 @@ export const businessContext = Object.freeze({
 export function authoringExample(host) {
   return {
     label: 'Task customization syntax',
-    description: 'FORMAT ONLY. Author the actual rule and independent examples from the person’s intent, discovered existing project IDs and chosen title. Never compile placeholders or treat these examples as customer consent.',
+    description: 'FORMAT ONLY. Adapt source and independent examples to the person’s intent and the discovered DCM. Use sample project conditions and literal destinations only when the person chose them. Never compile placeholders or treat these examples as customer consent.',
     source: taskEffectSyntax(host), cases: taskEffectScenarioExamples(host), situations: [],
   };
 }
