@@ -1,6 +1,6 @@
 # Daymark · A Keir Demo
 
-Daymark is a local workspace for projects, tasks and notes. **Tasks** is where you do ordinary work. **AI Studio**, opened from **Customizations**, helps you draft and test a rule for what happens after a task completes. Native tasks work without AI setup, Java or a sibling Keir checkout. Each fictional demo user has separate data, stored in local SQLite across restarts.
+Daymark is a local task manager that demonstrates customer customizations with Keir. Use **Tasks** to manage projects, tag tasks, and search within a project. Open **Customizations** to draft and test a rule for what happens after a task completes. The task workspace runs without an AI provider or Java. Each fictional demo user has separate data, stored in SQLite across restarts.
 
 ## Run locally
 
@@ -23,7 +23,7 @@ Today, a rule can react to a new task completion and create at most one task in 
 3. Choose **Approve this change** when the checked examples match your intent. Separately choose **Turn on for my tasks**. If another customization is active, the action is **Switch to this customization**.
 4. Return to **Tasks** and complete a new matching task. Check its **Customization outcome** for the real result. Earlier completions stay as they were.
 
-Daymark uses pinned Keir artifacts and native permission checks for real reactions. Integrated release qualification is still pending. Read the [customization lifecycle](docs/read-extension-lifecycle.md) for approval, activation and outcome details, and the [test guide](tests/README.md) for verification.
+Daymark uses pinned Keir packages and native permission checks for real reactions. See the [documentation](docs/README.md) for setup, usage, and integration details, or [Contributing](CONTRIBUTING.md) for development and testing.
 
 [Keir Core](https://github.com/rore/keir-core) provides the compiler, runtimes and embedding guides.
 
