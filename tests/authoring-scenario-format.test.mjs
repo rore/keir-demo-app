@@ -90,9 +90,19 @@ test('real task scenario admission rejects malformed read-error formats without 
     assert.deepEqual(rows(db, Object.keys(before)), before);
   }
   state = await lifecycle.proposeScenarios('maya', { extensionId, ...input(state), cases: serialize(desired.cases) }, () => {});
+  const savedReviewInput = { extensionId, ...input(state), suiteDigest: state.suiteDigest };
+  assert.equal(lifecycle.currentReviewEvidence('maya', savedReviewInput), null);
   state = await lifecycle.simulate('maya', { extensionId, ...input(state) }, () => {});
   const passed = lifecycle.evidence('maya', state.evidence.id, extensionId);
   assert.equal(passed.passed, true);
+  assert.deepEqual(lifecycle.currentReviewEvidence('maya', savedReviewInput), passed);
+  assert.throws(() => lifecycle.currentReviewEvidence('leo', savedReviewInput), { status: 404 });
+  assert.equal(lifecycle.currentReviewEvidence('maya', { ...savedReviewInput, suiteDigest: 'sha256:' + '1'.repeat(64) }), null);
+  db.prepare(`INSERT INTO extension_evidence(id,owner_id,revision_id,identity,suite_identity,payload,passed)
+    SELECT 'mismatched-latest',owner_id,revision_id,identity,?,payload,passed FROM extension_evidence WHERE id=?`)
+    .run('sha256:' + '2'.repeat(64), passed.id);
+  assert.equal(lifecycle.currentReviewEvidence('maya', savedReviewInput), null);
+  db.prepare("DELETE FROM extension_evidence WHERE id='mismatched-latest'").run();
   assert.deepEqual(passed.reports.map(value => value.id), caseIds);
   assert.ok(passed.reports.every(value => value.report.status === 'PASS'));
   assert.deepEqual(rows(db, nativeTables), Object.fromEntries(nativeTables.map(table => [table, before[table]])));
@@ -101,9 +111,13 @@ test('real task scenario admission rejects malformed read-error formats without 
   independent[0].expect = structuredClone(independent[1].expect);
   const originalExpectations = serialize(independent);
   state = await lifecycle.proposeScenarios('maya', { extensionId, ...input(state), cases: originalExpectations }, () => {});
+  assert.throws(() => lifecycle.currentReviewEvidence('maya', savedReviewInput), { status: 409 });
+  const revisedReviewInput = { extensionId, ...input(state), suiteDigest: state.suiteDigest };
+  assert.equal(lifecycle.currentReviewEvidence('maya', revisedReviewInput), null);
   state = await lifecycle.simulate('maya', { extensionId, ...input(state) }, () => {});
   const mismatch = lifecycle.evidence('maya', state.evidence.id, extensionId);
   assert.equal(mismatch.passed, false);
+  assert.deepEqual(lifecycle.currentReviewEvidence('maya', revisedReviewInput), mismatch);
   assert.equal(mismatch.reports[0].report.status, 'FAIL');
   assert.deepEqual(mismatch.reports[0].expected.createdTasks, []);
   assert.equal(mismatch.reports[0].report.observed.effect, 'CONFIRMED');
@@ -238,12 +252,13 @@ test('offline authoring checks an exact suffix and repairs scenario syntax witho
   assert.equal(db.prepare('SELECT revision_id FROM task_completion_events WHERE source_task_id=?').get(source.id).revision_id, state.draft.id);
 });
 
-test('offline authoring checks and runs a follow-up in each completed task’s project', async t => {
+test('offline authoring reopens and runs a checked follow-up in each completed task’s project', async t => {
   const { db, lifecycle, project, other } = setup(t);
   const native = taskService(db);
   const foreign = native.createProject('leo', { name: 'Private project' });
   const suffix = ' – client follow-up';
   const request = `When I finish a task, create a new task in the same project as the completed task. Use its title and append "${suffix}".`;
+  const explanation = 'Each follow-up stays in the project where you completed its task.';
   const examples = [
     { id: 'first-source-project', taskId: 'task1', createdId: 'task2', projectId: project.id, title: 'Prepare review' },
     { id: 'second-source-project', taskId: 'task3', createdId: 'task4', projectId: other.id, title: 'Send notes' },
@@ -320,6 +335,19 @@ test('offline authoring checks and runs a follow-up in each completed task’s p
     } else if (index === 4) {
       assert.ok(result.summary.cases.every(row => row.status === 'PASS'));
       name = 'offer_review'; args = { summary: 'Both completed examples created one follow-up in their own project. The unfinished and unavailable examples created nothing. Your tasks have not changed.' };
+    } else if (index === 5) {
+      calls.push('text');
+      return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', role: 'assistant',
+        content: [{ type: 'output_text', text: explanation }] }], usage: { input_tokens: 10, output_tokens: 5 } }),
+      { headers: { 'content-type': 'application/json' } });
+    } else if (index === 6) {
+      assert.equal(output, undefined, 'An explicit turn starts with fresh provider context.');
+      name = 'discover_catalog'; args = {};
+    } else if (index === 7) {
+      assert.equal(result.currentProposal.source, source);
+      assert.deepEqual(result.currentProposal.cases, independent);
+      assert.equal(result.conversationContext.messages.at(-2).text, explanation);
+      name = 'offer_review'; args = { summary: 'The same checked draft is ready to review.' };
     } else assert.fail('Unexpected provider request');
     calls.push(name);
     return new Response(JSON.stringify({ status: 'completed', output: [
@@ -349,6 +377,22 @@ test('offline authoring checks and runs a follow-up in each completed task’s p
     ...examples.map(({ projectId, title }) => ({ effect: 'CONFIRMED', createdTasks: [{ projectId, title: title + suffix }] })),
     { effect: 'NONE', createdTasks: [] }, { effect: 'NONE', createdTasks: [] },
   ]);
+
+  const resume = async (current, operationId, text) => {
+    const accepted = await service.turn('maya', { conversationId: current.id, operationId, expectedVersion: current.version,
+      expectedDraftVersion: state.draftVersion, target: { kind: 'resume', extensionId }, text },
+    { sessionId: 'same-project-session', current: () => true });
+    return service.wait('maya', accepted.conversation.id);
+  };
+  const evidenceBefore = rows(db, ['extension_evidence', 'extension_revisions', 'extension_approvals', 'extension_selections']);
+  const discussed = await resume(settled, 'same-project-discuss', 'Which project gets the follow-up?');
+  assert.equal(discussed.status, 'IDLE');
+  const reopened = await resume(discussed, 'same-project-proceed', 'Please show the checked change so I can proceed.');
+  assert.equal(reopened.status, 'REVIEW_AVAILABLE', reopened.code);
+  assert.equal(reopened.id, settled.id);
+  assert.deepEqual(reopened.review, settled.review);
+  assert.deepEqual(calls.slice(5), ['text', 'discover_catalog', 'offer_review']);
+  assert.deepEqual(rows(db, Object.keys(evidenceBefore)), evidenceBefore);
 
   for (const [cel, code] of [['source.projectID', 'TYPE_MISMATCH'], ['source.id', 'NOMINAL_MISMATCH']]) {
     const invalid = JSON.parse(source);

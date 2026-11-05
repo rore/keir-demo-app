@@ -29,7 +29,7 @@ function nativeHistory(provider, body) {
   };
 }
 
-function scriptedTransport(provider, metadata, requests, semanticMismatch) {
+function scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest) {
   const { question, offerText } = metadata;
   return async (url, init) => {
     assert.equal(url, provider === 'openai' ? 'https://api.openai.com/v1/responses' : 'https://api.anthropic.com/v1/messages');
@@ -78,7 +78,13 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch) {
         assert.equal(providerText === currentText ? providerText : JSON.parse(providerText).currentUserMessage, currentText);
         if (/^(?:confirmed|yes)\b/i.test(messages.at(-1).text)) {
           name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
-        } else text = 'Your saved changes are kept. Review them when you are ready, or continue discussing the request.';
+        } else if (resumeRequest && currentText === resumeRequest) {
+          assert.equal(discovered.currentProposal.source, source);
+          assert.deepEqual(discovered.currentProposal.cases, cases);
+          assert.ok(messages.some(message => message.role === 'assistant' && message.text === offerText));
+          assert.equal(messages.at(-2).text, metadata.explanation);
+          name = 'offer_review'; args = { summary: metadata.resumedOffer };
+        } else text = metadata.explanation;
       }
     } else if (previous.name === 'compile_draft' && output.result.diagnostics) {
       assert.equal(output.result.diagnostics[0].code, 'SYNTAX_INVALID', 'The real compiler must reject the malformed candidate.');
@@ -124,7 +130,7 @@ async function unusedLoopbackPort() {
 }
 
 // Synthetic offline transport only; app, compiler, lifecycle and simulator are real.
-export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, projectName, title = 'Review completed work', staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
+export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, resumeRequest, projectName, title = 'Review completed work', staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
@@ -158,11 +164,14 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
     const question = `Should completing a task in ${project.name} create ${task.metadata.title}, while other projects create nothing?`;
     const offerText = `I checked ${task.cases.length} example tasks. A completed task in ${project.name} creates ${task.metadata.title}; other projects create nothing. Your tasks have not changed. Review the saved changes when you are ready.`;
     const metadata = Object.freeze({ ...task.metadata, provider, question, offerText, mismatchText, projectName: project.name,
-      otherProjectName: other.name, cases: Object.freeze(task.cases) });
+      otherProjectName: other.name, cases: Object.freeze(task.cases),
+      explanation: resumeRequest ? 'The matching example created the follow-up task. The example from another project produced no task.' :
+        'Your saved changes are kept. Review them when you are ready, or continue discussing the request.',
+      resumedOffer: 'The earlier check passed and the change is ready to turn on.' });
     assert.notEqual(metadata.wrongSource, metadata.source, 'The semantic mismatch variant must change compiled behavior.');
     const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
     app = await createApp({ db, origin, staticRoot: resolve(staticRoot), compiler,
-      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, metadata, requests, semanticMismatch) } });
+      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest) } });
     await app.listen({ host: '127.0.0.1', port });
     return { app, db, origin, directory, metadata, requests, close };
   } catch (error) { await close(); throw error; }

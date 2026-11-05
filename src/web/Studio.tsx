@@ -124,7 +124,7 @@ function authoringReason(code: string | null | undefined) {
   if (code === "CONFIG_CHANGED") return "Assistant settings changed. Your message is kept. Send it again when you’re ready.";
   if (code === "CONVERSATION_LIMIT") return "An earlier authoring policy stopped this request. Your saved conversations remain available.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
-  if (code === "REVIEW_NOT_READY") return "The saved examples do not yet support approval. Inspect their results or discuss the correction.";
+  if (code === "REVIEW_NOT_READY") return "The exact saved review could not be confirmed. Ask Studio to check the current changes, or keep discussing the draft.";
   return "AI authoring is unavailable for this request. Check saved state; native tasks and saved work remain available.";
 }
 type Props = {

@@ -138,6 +138,70 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
   } finally { await fixture.close(); }
 });
 
+test('offline Studio resumes review of the same checked draft after discussing it', async ({ page }) => {
+  test.setTimeout(60_000);
+  const resumeRequest = 'Please go ahead with the change we just discussed.';
+  const fixture = await startAuthoringFixture({ resumeRequest, provider: 'anthropic' });
+  try {
+    await page.goto(fixture.origin);
+    await page.getByRole('button', { name: 'Continue as Maya' }).click();
+    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+    await page.locator('#open-customizations').click();
+    const ui = studio(page);
+    await send(page, `Add ${fixture.metadata.title} after I finish a task in ${fixture.metadata.projectName}.`);
+    await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
+    await send(page, 'Yes, only for that project. Include an example from another project.');
+    await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
+
+    const session = await (await page.request.get(`${fixture.origin}/api/session`)).json();
+    const exactItem = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
+    const read = async path => {
+      const response = await page.request.get(`${fixture.origin}/api/${scopedPath(page, path, exactItem)}`, { headers: { 'x-session-context': session.contextToken } });
+      expect(response.ok(), await response.text()).toBe(true); return response.json();
+    };
+    const { current: checked, transcript } = await read('authoring');
+    expect(checked.review.eligible).toBe(true);
+    const evidencePath = scopedPath(page, `extensions/evidence/${checked.review.evidenceId}`, exactItem);
+    const proof = await read(`extensions/evidence/${checked.review.evidenceId}`);
+    expect(proof.passed).toBe(true);
+    const { selection } = await read('extensions');
+    const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
+    const mutations = [];
+    page.on('request', request => {
+      if (request.method() === 'POST' && /\/api\/extensions\/[^/]+\/(approve|activate)$/.test(new URL(request.url()).pathname)) mutations.push(request.url());
+    });
+    const callsBefore = fixture.requests.length;
+
+    await send(page, 'What happened in the matching example and the one from a different project?');
+    await expect(ui.getByText(fixture.metadata.explanation, { exact: true })).toBeVisible();
+    await send(page, resumeRequest);
+    await expect.poll(async () => {
+      const { current } = await read('authoring');
+      return current?.version === checked.version + 2 && !['RUNNING', 'CANCELLING'].includes(current.status);
+    }, { timeout: 15_000 }).toBe(true);
+    const { current: resumed, transcript: resumedTranscript } = await read('authoring');
+    expect(fixture.requests.slice(callsBefore).map(item => item.name)).toEqual(['discover_catalog', 'text', 'discover_catalog', 'offer_review']);
+    expect(resumed).toMatchObject({ status: 'REVIEW_AVAILABLE', code: null });
+    expect(resumed.id).toBe(checked.id);
+    expect(resumed.review).toEqual(checked.review);
+    expect(resumed.draft).toEqual(checked.draft);
+    expect(resumedTranscript.messages.slice(0, transcript.messages.length)).toEqual(transcript.messages);
+    expect(resumedTranscript.messages.at(-1).receipt.evidenceId).toBe(checked.review.evidenceId);
+
+    await expect(decision(page)).toHaveCount(0);
+    const evidenceResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/${evidencePath}`);
+    await expect(ui.getByText(fixture.metadata.resumedOffer, { exact: true })).toHaveCount(0);
+    await ui.getByText('The saved check is available to inspect.', { exact: true }).locator('..').getByRole('button', { name: 'View saved changes', exact: true }).click();
+    expect(await (await evidenceResponse).json()).toEqual(proof);
+    await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+    const state = await read('extensions');
+    expect(state.approved).toBe(false);
+    expect(state.selection).toEqual(selection);
+    expect(mutations).toEqual([]);
+    expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
+  } finally { await fixture.close(); }
+});
+
 for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
   test(`offline ${provider} native loop reaches real exact human review and Use (${width}px)`, async ({ page }) => {
     test.setTimeout(60_000);

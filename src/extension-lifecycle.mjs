@@ -166,6 +166,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     if (extensionId !== undefined) revision(owner, row.revision_id, extensionId);
     return row;
   }
+  const latestEvidence = row => db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(row.owner_id, row.id);
   function passing(row, proof) {
     if (taskRevision(row)) return taskEffectProofMatches(row, content(row), proof);
     try {
@@ -406,7 +407,7 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
     state(owner, extensionId) {
       const state = draft(owner, extensionId);
       const candidate = state.draft_id ? revision(owner, state.draft_id, extensionId) : null;
-      const latest = candidate && db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(owner, candidate.id);
+      const latest = candidate && latestEvidence(candidate);
       const approval = candidate?.provenance === 'customer' && db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, candidate.id);
       const approvedProof = approval && evidence(owner, approval.evidence_id, extensionId);
       const targets = api.restorePage(owner, extensionId), proofs = api.evidencePage(owner, extensionId), history = api.history(owner, undefined, extensionId);
@@ -601,6 +602,15 @@ export function createLifecycle(db, { runSimulation = runReadSimulation, runTask
         if (!db.prepare("SELECT 1 FROM extension_history WHERE owner_id=? AND revision_id=? AND operation IN ('operator','activate','rollback')").get(owner, row.id)) conflict();
         change(owner, input.generation, row, 'rollback');
       }); return api.state(owner, input.extensionId);
+    },
+    currentReviewEvidence(owner, input) {
+      const row = currentDraft(owner, input), pins = JSON.parse(row.identity);
+      if (!input.suiteDigest || pins.suiteDigest !== input.suiteDigest) return null;
+      const proof = latestEvidence(row);
+      if (!proof || proof.identity !== row.identity || proof.suite_identity !== suiteIdentity(row) || Buffer.byteLength(proof.payload) > 131072) return null;
+      const view = api.evidence(owner, proof.id, input.extensionId);
+      return view.id === proof.id && view.revisionId === row.id
+        && json(view.identity) === json({ dependencies: pins, ...versions(row), suiteDigest: proof.suite_identity }) ? view : null;
     },
     evidence(owner, id, extensionId) {
       draft(owner, extensionId);

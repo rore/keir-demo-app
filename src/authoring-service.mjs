@@ -378,13 +378,25 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         stop(cause?.status === 409 ? 'STALE_DRAFT' : cause?.status === 429 ? 'AI_BUSY' : cause?.status === 499 ? 'CANCELLED' : 'TOOL_FAILED');
       }
     });
+    const reviewFor = (current, proof) => ({ ...current, evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest, eligible: proof.passed,
+      summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases) });
     const proofFor = handle => {
       authorize();
-      if (!handle) stop('REVIEW_NOT_READY');
+      if (!handle) {
+        const current = ctx.state.handles;
+        if (!current.revisionId || !current.suiteDigest) return null;
+        try {
+          const proof = lifecycle.currentReviewEvidence(ctx.owner, { ...current, extensionId: ctx.extensionId });
+          return proof ? reviewFor(current, proof) : null;
+        } catch (cause) {
+          if (cause instanceof AppError && [404, 409, 410].includes(cause.status)
+            || cause instanceof SyntaxError || cause instanceof TypeError) return null;
+          throw cause;
+        }
+      }
       const current = mapped(), proof = lifecycle.evidence(ctx.owner, handle.evidenceId, ctx.extensionId);
       if (!same(current, handle) || proof.revisionId !== handle.revisionId || proof.identity?.suiteDigest !== handle.simulationSuiteIdentity) stop('STALE_DRAFT');
-      return { ...current, evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest, eligible: proof.passed,
-        summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases) };
+      return reviewFor(current, proof);
     };
     const currentUse = current => {
       const selection = current.selection, revision = selection.revision;

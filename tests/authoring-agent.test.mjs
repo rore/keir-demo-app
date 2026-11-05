@@ -6,6 +6,7 @@ import { AuthoringError, createAuthoringProvider } from '../src/authoring-provid
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 
 const suite = 'sha256:' + '1'.repeat(64);
+const simulationSuiteIdentity = 'sha256:' + '2'.repeat(64);
 const call = (name, args = {}, id) => ({ name, arguments: { ...(name === 'compile_draft' && { hookId: 'TaskCompleted' }), ...args }, ...(id && { id }) });
 
 test('project discovery pages are read-only tool results and task compilation cannot choose another hook', async () => {
@@ -542,7 +543,6 @@ test('cancellation between checkpoint and execution prevents callbacks and outwa
 
 test('review uses the simulation result proof and rejects a later pointer or changed derived identity', async () => {
   const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
-  const simulationSuiteIdentity = 'sha256:' + '2'.repeat(64);
   for (const changed of [{ evidenceId: 'later' }, { simulationSuiteIdentity: suite }, { suiteDigest: simulationSuiteIdentity }]) {
     const f = fixture([call('simulate_draft', { revisionId: 'ready', expectedDraftVersion: 1 }), call('offer_review', { summary: 'Review.' })], ready);
     const saved = { ...ready, evidenceId: 'first', simulationSuiteIdentity };
@@ -557,8 +557,58 @@ test('review uses the simulation result proof and rejects a later pointer or cha
     assert.deepEqual(persisted, saved); assert.deepEqual(f.state.evidenceHandle, saved);
     assert.equal(JSON.parse(f.requests[1].toolResult.output).result.evidenceId, 'first');
   }
-  const missing = fixture([call('offer_review', { summary: 'Review.' })], ready);
-  assert.equal((await missing.run()).code, 'HOST_RESULT_INVALID'); assert.deepEqual(missing.events, []);
+});
+
+test('resumed review uses exact saved evidence and preserves eligibility', async () => {
+  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
+  for (const eligible of [true, false]) {
+    const f = fixture([call('offer_review', { summary: 'The earlier check passed and the change is ready to turn on.' })], ready);
+    const summary = { statuses: [eligible ? 'PASS' : 'FAIL'] };
+    f.host.readEvidence = () => {
+      f.events.push('readEvidence');
+      return { ...ready, evidenceId: 'saved', simulationSuiteIdentity, eligible, summary };
+    };
+    assert.equal(f.state.evidenceHandle, null);
+    assert.deepEqual(await f.run(), { status: 'REVIEW_AVAILABLE', message: 'The saved check is available to inspect.',
+      review: { ...ready, evidenceId: 'saved', eligible, summary } });
+    assert.deepEqual(f.events, ['readEvidence']);
+  }
+});
+
+test('resumed review with missing saved evidence records a known rejection', async () => {
+  const f = fixture([call('offer_review', { summary: 'Review.' })], { revisionId: 'ready', draftVersion: 1, suiteDigest: suite });
+  f.host.readEvidence = () => null;
+  let rejection;
+  f.context.checkpoint = state => {
+    if (state.checkpoint.phase === 'RESULT' && state.checkpoint.kind === 'tool') rejection = structuredClone(state);
+  };
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'REVIEW_NOT_READY' });
+  assert.equal(rejection.checkpoint.outcome, 'REJECTED');
+  assert.deepEqual(JSON.parse(rejection.pending.output), { ok: false, code: 'REVIEW_NOT_READY' });
+  assert.equal(f.state.inFlight, null);
+});
+
+test('resumed review rejects mismatched or malformed saved proof', async () => {
+  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
+  const saved = { ...ready, evidenceId: 'saved', simulationSuiteIdentity, eligible: true };
+  for (const changed of [{ revisionId: 'other' }, { draftVersion: 2 }, { suiteDigest: simulationSuiteIdentity },
+    { evidenceId: '' }, { simulationSuiteIdentity: undefined }, { eligible: undefined }]) {
+    const f = fixture([call('offer_review', { summary: 'Review.' })], ready);
+    f.host.readEvidence = () => ({ ...saved, ...changed });
+    assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'HOST_RESULT_INVALID' });
+  }
+});
+
+test('resumed review rejects a draft replaced during the saved evidence read', async () => {
+  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
+  const f = fixture([call('offer_review', { summary: 'Review.' })], ready);
+  f.host.readEvidence = async () => {
+    await Promise.resolve();
+    f.setDraft({ revisionId: 'replacement', draftVersion: 2, suiteDigest: suite });
+    return { ...ready, evidenceId: 'saved', simulationSuiteIdentity, eligible: true };
+  };
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'STALE_DRAFT' });
+  assert.notEqual(JSON.parse(f.state.pending?.output ?? '{}').status, 'REVIEW_AVAILABLE');
 });
 
 test('source and suite replacement clear prior exact proof and review before their result checkpoint', async () => {

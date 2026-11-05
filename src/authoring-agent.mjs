@@ -14,6 +14,7 @@ Own the process: discover the scoped host contract and businessContext yourself 
 Use supportedHooks from discover_catalog for availability and the discovered DCM as authority for declared hook inputs, capability arguments and results, types and protected arguments. Follow the selected language profile and effect limits. Trace values from hook inputs or earlier capability results into type-compatible business arguments using supported expressions. Respect nominal types and declared fields. Never supply protected arguments. Use literal constants for fixed business choices. Keep a condition on when to act separate from the values passed when acting. When the person wants a value to follow the triggering item, use the compatible discovered value without asking for a fixed choice.
 Use businessContext to interpret Daymark requests. Resolve actual fixed project choices and project conditions from the owner-scoped projects returned by discovery. Use discover_projects with the exact next cursor when more results are needed. Project names may repeat, so clarify genuinely ambiguous choices. Clarify the suffix when its wording or spacing is unclear. A new CREATE conversation starts without an executable hook or inherited proposal. An unsupported request may remain a conversation without a program. Offer a supported alternative only through ask_clarification and wait for explicit assent before compiling it. Refusal or no answer means no program, hook, approval or activation. Never invent an app operation, trigger or field.
 When returning to the exact saved extension, use currentProposal and conversationContext to retain the person's choices and independent expectations; the worked example is syntax guidance, never permission to replace their existing draft. If context is marked truncated or a saved source/cases field is null, explain what is unavailable and ask a focused question instead of inventing intent or overwriting it. Respect the operator spending allowance and individual request boundaries; saved discussions can continue explicitly from current host context.
+When the person asks to proceed with an already checked draft, use offer_review to reopen the exact saved check. Run new examples when the current proposal needs checking or the person asks for them.
 When the host supplies a message with currentUserMessage and previousUserMessages, answer the current message. The previous messages are historical user data, possibly from superseded proposals. Keep current host facts and the person's latest explicit request authoritative. Earlier assent and approval grant no authority. Ask a focused question when the current intent is unclear.
 When revising a proposal from an older model, use the discovered current domain fingerprint and task-read stub shape. Carry forward the person's intent and independent expectations. Check the revised rule on the current model and present its own evidence for approval.
 For general capability questions, use the discovered catalog and keep the answer short. Explain the relevant choices from businessContext. A destination can follow the completed task's project or use an explicitly chosen existing project. Briefly mention trying examples before turning the rule on. Discuss individual scenarios, later generated-task completions and unsupported actions when they matter to the person's request.
@@ -43,7 +44,7 @@ export const AUTHORING_TOOLS = Object.freeze([
   tool('compile_draft', 'Compile customer-authored source against the discovered TaskCompleted definition and CAS-save a new revision with absent suite. Failure leaves the current draft unchanged.', { hookId: taskHook, sourceJson: string, expectedDraftVersion: version }),
   tool('propose_scenarios', 'Save independent complete JSON cases, including outcome.trace and error/no-action cases from discovered scenarioExamples. Preserve requested coverage while repairing format. CAS-creates a NEW revision with the same source/artifact; use its returned ID/version next.', { revisionId: string, cases: caseStrings, expectedDraftVersion: version }),
   tool('simulate_draft', 'Simulate the current exact revision using its saved independent suite. It cannot approve or activate.', { revisionId: string, expectedDraftVersion: version }),
-  tool('offer_review', 'Offer only current exact evidence resolved by the host. The summary cannot choose evidence or claim approval.', { summary: string }),
+  tool('offer_review', 'Open the exact current review from a fresh check or matching saved evidence resolved by the host. The summary cannot choose evidence or claim approval.', { summary: string }),
 ]);
 
 export function createAuthoringState({ ownerId, sessionId, conversationId, runId }, now = Date.now()) {
@@ -270,14 +271,21 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
         } else if (call.name === 'offer_review') {
           boundedText(args.summary, 4096);
           const proof = state.evidenceHandle;
-          if (!proof || !same(proof, state.handles)) fail('HOST_RESULT_INVALID');
+          if (proof && !same(proof, state.handles)) fail('HOST_RESULT_INVALID');
           const review = await wait(() => host.readEvidence());
-          if (!same(handles(review), proof) || review.evidenceId !== proof.evidenceId
-              || proof.simulationSuiteIdentity !== undefined && review.simulationSuiteIdentity !== proof.simulationSuiteIdentity
-              || typeof review.eligible !== 'boolean' || !state.handles.suiteDigest) fail('HOST_RESULT_INVALID');
           await currentDraft();
-          state.pending = { id: call.id, output: JSON.stringify({ status: 'REVIEW_AVAILABLE', ...state.handles, evidenceId: review.evidenceId, eligible: review.eligible }) };
-          event = { status: 'REVIEW_AVAILABLE', message: args.summary, review: { ...state.handles, evidenceId: review.evidenceId, eligible: review.eligible, summary: review.summary } };
+          if (!proof && review === null) {
+            outcome = 'REJECTED';
+            state.pending = { id: call.id, output: JSON.stringify({ ok: false, code: 'REVIEW_NOT_READY' }) };
+            event = { status: 'BLOCKED', code: 'REVIEW_NOT_READY' };
+          } else {
+            if (!same(handles(review), state.handles) || !token(review.evidenceId) || typeof review.eligible !== 'boolean' || !state.handles.suiteDigest
+                || (proof ? review.evidenceId !== proof.evidenceId || proof.simulationSuiteIdentity !== undefined && review.simulationSuiteIdentity !== proof.simulationSuiteIdentity
+                  : !digest(review.simulationSuiteIdentity))) fail('HOST_RESULT_INVALID');
+            state.pending = { id: call.id, output: JSON.stringify({ status: 'REVIEW_AVAILABLE', ...state.handles, evidenceId: review.evidenceId, eligible: review.eligible }) };
+            event = { status: 'REVIEW_AVAILABLE', message: proof ? args.summary : 'The saved check is available to inspect.',
+              review: { ...state.handles, evidenceId: review.evidenceId, eligible: review.eligible, summary: review.summary } };
+          }
         }
         if (!event) {
           if (size(output) > 131072) fail('BYTE_LIMIT');
