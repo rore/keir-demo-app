@@ -1,5 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { TASK_HOOK } from '../../src/extension-catalog.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
+import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const review = page => studio(page).getByRole('article', { name: 'Current decision', exact: true });
@@ -14,19 +18,31 @@ async function api(page, path, body) {
   return response.json();
 }
 const input = state => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
-async function seed(page, fixture, { approved = false, native = false } = {}) {
+async function seed(page, fixture, { approved = false, native = false, selectionBaseline = false } = {}) {
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
   if (native) {
     await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
     await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');
-    await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await page.locator('#open-customizations').click();
   }
-  let state = await api(page, 'extensions', { operationId: crypto.randomUUID(), source: fixture.metadata.source, label: 'Continuity proposal' });
+  async function checkedDraft(source, cases, name) {
+    const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name });
+    const path = 'extensions/' + extensionId;
+    let state = await api(page, path + '/compile', { hookId: TASK_HOOK, source, label: name, draftVersion: 0 });
+    state = await api(page, path + '/scenarios', { ...input(state), cases });
+    return api(page, path + '/simulate', input(state));
+  }
+  if (selectionBaseline) {
+    const existing = taskCustomizationFixture({ projectId: fixture.metadata.projectId, otherProjectId: fixture.metadata.otherProjectId, title: 'Existing customer follow-up' });
+    let active = await checkedDraft(existing.source, existing.cases, 'Existing customer change');
+    const path = 'extensions/' + active.extension.id;
+    active = await api(page, path + '/approve', { ...input(active), evidenceId: active.evidence.id });
+    await api(page, path + '/activate', { ...input(active), generation: active.selection.generation });
+  }
+  let state = await checkedDraft(fixture.metadata.source, fixture.metadata.cases, 'Continuity proposal');
   const path = 'extensions/' + state.extension.id;
-  state = await api(page, path + '/scenarios', { ...input(state), cases: fixture.metadata.cases });
-  state = await api(page, path + '/simulate', input(state));
   if (approved) state = await api(page, path + '/approve', { ...input(state), evidenceId: state.evidence.id });
   return { path, state };
 }
@@ -107,7 +123,7 @@ test('saved review stays readable before its reachable actions at short, phone a
       await openReview(page);
       const action = review(page).getByRole('button', { name: 'Approve this change', exact: true });
       await expect(action).toBeEnabled();
-      const summary = review(page).getByText(/^In these example tasks,/);
+      const summary = review(page).getByText(/^Checked examples:/);
       await summary.scrollIntoViewIfNeeded();
       await expect(summary).toBeInViewport({ ratio: 0.99 });
       const summaryBox = await summary.boundingBox(), actionBox = await action.boundingBox();
@@ -233,11 +249,11 @@ for (const operation of ['approve', 'activate']) test(`a late real ${operation} 
 for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preserves the viewed snapshot and disables its older actions`, async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
-    const { path, state } = await seed(page, fixture);
+    const { path, state } = await seed(page, fixture, { selectionBaseline: change === 'selection' });
     let latest;
     const turns = await scriptTurns(page, async () => {
       if (change === 'draft') {
-        latest = await api(page, path + '/compile', { source: fixture.metadata.source + '\n', label: 'Later saved draft', draftVersion: state.draftVersion });
+        latest = await api(page, path + '/compile', { hookId: TASK_HOOK, source: fixture.metadata.source + '\n', label: 'Later saved draft', draftVersion: state.draftVersion });
         latest = await api(page, path + '/scenarios', { ...input(latest), cases: fixture.metadata.cases });
         latest = await api(page, path + '/simulate', input(latest));
       } else if (change === 'run') latest = await api(page, path + '/simulate', input(state));
@@ -294,7 +310,7 @@ test('an earlier run stays read-only when it becomes the approved decision until
     await studio(page).getByRole('button', { name: 'Open saved sample run', exact: true }).click();
     const results = studio(page).getByRole('article', { name: 'Sample results', exact: true });
     await expect(results).toBeVisible();
-    await expect(results.locator('.rs-example')).toContainText('Pending');
+    await expect(results.locator('.rs-example')).toContainText(fixture.metadata.title);
     await results.locator('.rs-example-details > summary').click();
     await expect(results).toContainText('Evidence: ' + first.evidence.id);
     await expect(review(page)).toBeHidden();

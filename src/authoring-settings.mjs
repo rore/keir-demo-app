@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { constants, openSync, closeSync, fstatSync, readSync, writeFileSync, fsyncSync, readFileSync, renameSync, unlinkSync,
   lstatSync, realpathSync } from 'node:fs';
-import { basename, dirname, resolve, relative, isAbsolute, join } from 'node:path';
+import { basename, dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { AppError } from './data.mjs';
 import { readAuthoringConfig, readSetupConfig } from './authoring-config.mjs';
 
@@ -9,6 +9,15 @@ const LIMIT = 8192;
 const invalid = () => Object.freeze({ status: 'unavailable', code: 'AI_CONFIG_INVALID' });
 const failure = (status, code, message) => { const error = new AppError(status, message); error.code = code; return error; };
 const saveFailed = () => failure(503, 'AI_CONFIG_SAVE_FAILED', 'Settings could not be saved. The previous configuration remains in use.');
+
+export function assertAuthoringSettingsLocation(file, staticRoot) {
+  if (!file) return;
+  try {
+    if (!isAbsolute(file) || basename(file) !== 'ai-authoring.json') throw Error();
+    const path = relative(realLocation(resolve(staticRoot)), realLocation(resolve(dirname(file))));
+    if (path === '' || !isAbsolute(path) && path !== '..' && !path.startsWith('..' + sep)) throw Error();
+  } catch { throw new Error('AI settings must use a data directory outside public assets.'); }
+}
 
 function realLocation(path) {
   try { return realpathSync(path); }
@@ -18,16 +27,6 @@ function realLocation(path) {
     if (parent === path) throw error;
     return join(realLocation(parent), basename(path));
   }
-}
-
-export function assertAuthoringSettingsLocation(file, staticRoot) {
-  if (!file) return;
-  try {
-    if (!isAbsolute(file) || basename(file) !== 'ai-authoring.json') throw Error();
-    const location = realLocation(resolve(dirname(file))), root = realLocation(resolve(staticRoot));
-    const path = relative(root, location);
-    if (path === '' || !isAbsolute(path) && path !== '..' && !path.startsWith('..' + (process.platform === 'win32' ? '\\' : '/'))) throw Error();
-  } catch { throw new Error('AI settings must use a data directory outside public assets.'); }
 }
 
 function regularTarget(file) {

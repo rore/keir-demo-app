@@ -6,7 +6,35 @@ import { AuthoringError, createAuthoringProvider } from '../src/authoring-provid
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 
 const suite = 'sha256:' + '1'.repeat(64);
-const call = (name, args = {}, id) => ({ name, arguments: args, ...(id && { id }) });
+const call = (name, args = {}, id) => ({ name, arguments: { ...(name === 'compile_draft' && { hookId: 'TaskCompleted' }), ...args }, ...(id && { id }) });
+
+test('project discovery pages are read-only tool results and task compilation cannot choose another hook', async () => {
+  const f = fixture([call('discover_projects', { before: '' }), call('discover_projects', { before: 'next-page' }),
+    call('compile_draft', { hookId: 'ClassifyTask', sourceJson: '{}', expectedDraftVersion: 0 })]);
+  const cursors = [];
+  f.host.projects = before => { cursors.push(before); return { projects: [{ id: before ? 'project-b' : 'project-a', name: 'Repeated name' }], next: before ? null : 'next-page' }; };
+  const result = await f.run();
+  assert.equal(result.status, 'IDLE');
+  assert.deepEqual(cursors, ['', 'next-page']);
+  assert.deepEqual(f.events, []);
+  assert.equal(f.state.handles.revisionId, null);
+  const first = JSON.parse(f.requests[1].toolResult.output), second = JSON.parse(f.requests[2].toolResult.output);
+  assert.equal(first.result.next, 'next-page');
+  assert.equal(second.result.projects[0].id, 'project-b');
+  assert.deepEqual(JSON.parse(f.requests[3].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
+  const names = AUTHORING_TOOLS.map(tool => tool.name);
+  assert.equal(names.some(name => /approve|activate|event|create_task|write_task/.test(name)), false);
+});
+
+test('task coaching requires discovered constants and independent expectations without treating program labels as native effects', async () => {
+  const f = fixture(); await f.run();
+  const instructions = f.requests[0].instructions;
+  for (const phrase of ['discover_projects', 'Project names may repeat', 'literal constants', 'FORMAT ONLY',
+    'Only host-observed effect evidence', 'UNKNOWN never means no effect or safe retry', 'later completes that generated task',
+    'independent expected scenarios', 'Legacy advice is retired and read-only']) assert.ok(instructions.includes(phrase), phrase);
+  assert.doesNotMatch(instructions, /choose Check task advice|outside the discovered read-only contract/);
+});
+
 function fixture(steps = [], initial = {}) {
   const context = { ownerId: 'owner', sessionId: 'session', conversationId: 'conversation', runId: 'run',
     budget: { remainingMicros: 1000 }, current: () => true, checkpoint: () => {} };
@@ -65,7 +93,7 @@ test('real loop compiles, repairs, replaces scenarios, consumes returned IDs and
   assert.equal(f.state.handles.draftVersion, 2, 'simulation/review never advance version');
   assert.equal(f.context.budget.remainingMicros, 940);
   assert.deepEqual(JSON.parse(f.requests[2].toolResult.output).result.diagnostics, [{ code: 'SOURCE_INVALID', path: '/source' }]);
-  assert.deepEqual(AUTHORING_TOOLS.map(tool => tool.name), ['discover_catalog', 'ask_clarification', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+  assert.deepEqual(AUTHORING_TOOLS.map(tool => tool.name), ['discover_catalog', 'discover_projects', 'ask_clarification', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 });
 
 test('clarification pauses until real user input and retains counters and pending tool result', async () => {

@@ -2,38 +2,31 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openData, taskService, taskEffectService, revokeTaskAdmissions, transaction } from '../src/data.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { nativeEffectService, seedTaskEffectBinding, invocationFor } from './fixtures/task-effect-schema.mjs';
 
 const owner = 'maya';
-const pins = {
-  artifactDigest: `sha256:${'a'.repeat(64)}`,
-  modelRef: { domainId: 'demo.tasks', domainVersion: '2', format: 'keir-dcm/effect-3', digest: `sha256:${'b'.repeat(64)}`, descriptorRecipe: 'keir-record-descriptors/1' },
-  compiler: { id: 'fixture', version: '1' }, environment: { id: 'fixture', version: '1' },
-  consumer: { id: 'demo.task-effects', version: '1', kind: 'EVENT_REPORT' },
-  qualification: { id: 'fixture-report', revision: 1, reportDigest: `sha256:${'c'.repeat(64)}`, hostBuild: `sha256:${'d'.repeat(64)}` },
-};
-function setup(t, overrides = {}) {
+function setup(t) {
   const db = openData(':memory:'); t.after(() => db.close());
   const tasks = taskService(db), projectId = tasks.listProjects(owner)[0].id;
-  const revision = db.prepare('SELECT r.id,l.extension_id FROM extension_revisions r JOIN extension_revision_links l ON l.revision_id=r.id WHERE r.owner_id=?').get(owner);
+  const binding = seedTaskEffectBinding(db, owner), pins = binding.pins;
+  const revision = { id: binding.revisionId, extension_id: binding.extensionId };
   const selected = () => db.prepare("UPDATE extension_selections SET revision_id=?,generation=generation+1,binding_pins=? WHERE owner_id=? AND hook_id='TaskCompleted'")
     .run(revision.id, JSON.stringify(pins), owner);
   selected();
-  const flags = { read: true, write: true, qualification: true };
-  const effects = taskEffectService(db, { authorizeRead: () => flags.read, authorizeWrite: () => flags.write,
-    isQualificationCurrent: () => flags.qualification, ...overrides });
+  const effects = nativeEffectService(db);
   const complete = () => {
     const task = tasks.createTask(owner, { projectId, title: 'Source task' });
     tasks.completeTask(owner, task.id);
     return effects.status(owner, db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(task.id).event_id);
   };
   const counts = () => [db.prepare('SELECT count(*) n FROM tasks').get().n, db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n];
-  return { db, tasks, projectId, revision, selected, flags, effects, complete, counts };
+  return { db, tasks, projectId, revision, selected, pins, effects, complete, counts };
 }
 const code = (expected, action) => assert.throws(action, error => error.code === expected);
 
 test('native completion snapshots one owner/hook/key and preserves first result without replaying old tasks', t => {
   const f = setup(t), e = f.complete();
-  assert.equal(e.state, 'PENDING'); assert.equal(e.owner, owner); assert.deepEqual(e.pins, pins);
+  assert.equal(e.state, 'PENDING'); assert.equal(e.owner, owner); assert.deepEqual(e.pins, f.pins);
   assert.deepEqual(e.input, { taskId: e.sourceTaskId }); assert.notEqual(e.eventId, e.originalKey);
   const original = f.tasks.getTask(owner, e.sourceTaskId);
   assert.deepEqual(f.tasks.completeTask(owner, original.id), original);
@@ -56,7 +49,7 @@ test('event failure rolls completion back, while postcommit reaction failure lea
   f.db.exec('DROP TRIGGER fail_event');
   const completed = f.tasks.completeTask(owner, task.id);
   const eventId = f.db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(task.id).event_id;
-  f.flags.qualification = false;
+  f.db.prepare('DELETE FROM extension_approvals WHERE owner_id=? AND revision_id=?').run(owner, f.revision.id);
   code('AUTHORITY_DENIED', () => f.effects.claim(owner, eventId));
   assert.deepEqual(f.tasks.getTask(owner, task.id), completed);
   assert.notEqual(f.effects.status(owner, eventId).revokedAt, null);
@@ -66,7 +59,7 @@ test('same native key preserves canonical payload, immutable receipt and audit a
   const f = setup(t), e = f.complete(), key = f.effects.keyFor(owner, e.eventId);
   assert.equal(key.value, e.originalKey); assert.equal(Object.isFrozen(key), true);
   const claimed = f.effects.claim(owner, e.eventId);
-  assert.equal(Object.isFrozen(claimed.pins.qualification), true);
+  assert.equal(Object.isFrozen(claimed.pins.modelRef), true);
   assert.equal(f.effects.claim(owner, e.eventId), null);
   const request = { projectId: f.projectId, title: '  New task  ' }, before = f.counts();
   const result = f.effects.createTaskOnce(owner, key, request);
@@ -81,16 +74,14 @@ test('same native key preserves canonical payload, immutable receipt and audit a
   assert.equal(f.effects.finish(owner, e.eventId, outcome), true);
   assert.equal(f.effects.finish(owner, e.eventId, outcome), false);
   code('OUTCOME_IMMUTABLE', () => f.effects.finish(owner, e.eventId, { classification: 'COMPLETED' }));
-  f.flags.write = false; f.flags.qualification = false;
   transaction(f.db, () => revokeTaskAdmissions(f.db, owner, f.revision.extension_id));
   assert.deepEqual(f.effects.createTaskOnce(owner, f.effects.keyFor(owner, e.eventId), request), result);
   const observed = f.effects.reconcile(owner, e.eventId);
   assert.deepEqual(observed.receipt, result); assert.ok(observed.observedAt);
   assert.deepEqual(f.effects.status(owner, e.eventId).outcome, outcome);
   assert.deepEqual(f.counts(), before.map(n => n + 1));
-  f.flags.read = false;
-  code('AUTHORITY_DENIED', () => f.effects.status(owner, e.eventId));
-  code('AUTHORITY_DENIED', () => f.effects.createTaskOnce(owner, key, request));
+  assert.throws(() => f.effects.status('leo', e.eventId), { status: 404 });
+  code('HOST_KEY_INVALID', () => f.effects.createTaskOnce('leo', key, request));
 });
 
 test('original owner/key and STARTED are required before first write or disclosure', t => {
@@ -127,27 +118,87 @@ test('receipt insertion failure rolls native creation back and leaves no termina
   assert.deepEqual(f.counts(), before); assert.equal(f.effects.status(owner, e.eventId).receipt, null);
 });
 
-for (const field of ['write', 'qualification']) test(`current ${field} denial at native commit rolls back task/receipt but permanently records revocation`, t => {
-  let checks = 0;
-  const name = field === 'write' ? 'authorizeWrite' : 'isQualificationCurrent';
-  const f = setup(t, { [name]: context => !context.projectId || ++checks === 1 }), e = f.complete();
+for (const field of ['approval', 'revocation']) test(`current ${field} denial at native commit rolls back task/receipt but permanently records revocation`, t => {
+  const f = setup(t), e = f.complete();
   f.effects.claim(owner, e.eventId);
   const key = f.effects.keyFor(owner, e.eventId), before = f.counts();
+  f.db.exec(`CREATE TEMP TRIGGER revoke_after_receipt AFTER INSERT ON task_effect_receipts BEGIN ${field === 'approval'
+    ? 'DELETE FROM extension_approvals;'
+    : 'UPDATE task_completion_events SET revoked_at=1 WHERE original_key=NEW.original_key;'} END`);
   code('AUTHORITY_DENIED', () => f.effects.createTaskOnce(owner, key, { projectId: f.projectId, title: 'Must roll back' }));
-  assert.equal(checks, 2); assert.deepEqual(f.counts(), before);
+  assert.deepEqual(f.counts(), before);
   assert.notEqual(f.effects.status(owner, e.eventId).revokedAt, null);
-  const fresh = taskEffectService(f.db, { authorizeRead: () => true, authorizeWrite: () => true, isQualificationCurrent: () => true });
+  const fresh = nativeEffectService(f.db);
   code('AUTHORITY_DENIED', () => fresh.createTaskOnce(owner, fresh.keyFor(owner, e.eventId), { projectId: f.projectId, title: 'Still denied' }));
   assert.deepEqual(f.counts(), before);
 });
 
-test('strict synchronous Boolean authority fails closed and records observed revocation', t => {
+for (const [name, mutation] of [
+  ['calls', "json_set(payload,'$.reports[0].report.calls',json('[]'))"],
+  ['report count', "json_set(payload,'$.reports',json('[]'))"],
+  ['expectations', "json_set(payload,'$.reports[0].expected.calls',json('[]'))"],
+  ['native outcome', "json_set(payload,'$.reports[0].report.native.result.status','NO_OP')"],
+  ['consumption', "json_set(payload,'$.reports[0].report.consumption',json('{}'))"],
+  ['string mismatches', "json_set(payload,'$.reports[0].report.mismatches','')"],
+  ['object mismatches', "json_set(payload,'$.reports[0].report.mismatches',json('{\"length\":0}'))"],
+  ['suite identity', "json_set(payload,'$.identity.suiteDigest','self-matching-but-not-the-saved-suite')"],
+]) test(`captured proof ${name} mutation at native commit rolls back and durably revokes`, t => {
+  const f = setup(t), e = f.complete();
+  f.effects.claim(owner, e.eventId);
+  const before = f.counts(), proof = f.db.prepare('SELECT * FROM extension_evidence WHERE id=?').get(e.pins.approvedEvidenceId);
+  f.db.exec(`CREATE TEMP TRIGGER mutate_proof_at_commit AFTER INSERT ON task_effect_receipts BEGIN
+    UPDATE extension_evidence SET payload=${mutation}${name === 'suite identity' ? ",suite_identity='self-matching-but-not-the-saved-suite'" : ''}
+      WHERE id='${e.pins.approvedEvidenceId}'; END`);
+  code('AUTHORITY_DENIED', () => f.effects.createTaskOnce(owner, f.effects.keyFor(owner, e.eventId), { projectId: f.projectId, title: 'Must roll back with altered proof' }));
+  assert.deepEqual(f.counts(), before); assert.equal(f.effects.status(owner, e.eventId).receipt, null);
+  assert.notEqual(f.effects.status(owner, e.eventId).revokedAt, null);
+  assert.deepEqual(f.db.prepare('SELECT * FROM extension_evidence WHERE id=?').get(e.pins.approvedEvidenceId), proof, 'Savepoint rolls back the mutated proof with the task/receipt');
+  f.db.exec('DROP TRIGGER mutate_proof_at_commit');
+  code('AUTHORITY_DENIED', () => f.effects.createTaskOnce(owner, f.effects.keyFor(owner, e.eventId), { projectId: f.projectId, title: 'Still revoked after proof restoration' }));
+  assert.deepEqual(f.counts(), before);
+});
+
+test('missing, malformed or expired direct deadline fails closed and records observed revocation', t => {
   assert.throws(() => taskEffectService({}), TypeError);
-  for (const check of [() => false, () => 1, () => undefined, () => { throw Error('Denied'); }, async () => true, () => ({ then() {} })]) {
-    const f = setup(t, { isQualificationCurrent: check }), e = f.complete();
-    code('AUTHORITY_DENIED', () => f.effects.claim(owner, e.eventId));
+  const missing = setup(t), pending = missing.complete();
+  assert.throws(() => taskEffectService(missing.db, { authorizeWrite: () => true }), TypeError);
+  code('AUTHORITY_DENIED', () => taskEffectService(missing.db).claim(owner, pending.eventId));
+  assert.notEqual(missing.effects.status(owner, pending.eventId).revokedAt, null);
+  for (const nowMs of [() => 1000, () => NaN, () => -1, () => undefined, () => { throw Error('Denied'); }, async () => 0]) {
+    const f = setup(t), e = f.complete(), service = taskEffectService(f.db);
+    const invocation = invocationFor(service, owner, e.eventId); invocation.deadline.clock.nowMs = nowMs;
+    code('AUTHORITY_DENIED', () => service.claim(owner, e.eventId, invocation));
     assert.notEqual(f.effects.status(owner, e.eventId).revokedAt, null);
     assert.equal(f.effects.status(owner, e.eventId).receipt, null);
+  }
+});
+
+test('direct native context requires original key, owner and exact event/source on every call', t => {
+  const f = setup(t), event = f.complete(), service = taskEffectService(f.db), context = invocationFor(service, owner, event.eventId);
+  assert.equal(service.contextFor(owner, context).eventId, event.eventId);
+  for (const changed of [{ ...context, requestKey: { ...context.requestKey } },
+    { ...context, event: { ...context.event, id: 'other-event' } }, { ...context, event: { ...context.event, source: 'other-task' } }])
+    assert.throws(() => service.contextFor(owner, changed), error => ['HOST_KEY_INVALID', 'HOST_CONTEXT_INVALID'].includes(error.code));
+  code('HOST_KEY_INVALID', () => service.contextFor('leo', context));
+  assert.equal(f.effects.status(owner, event.eventId).state, 'PENDING');
+  assert.equal(f.effects.status(owner, event.eventId).receipt, null);
+});
+
+test('fresh native authority detects replaced captured proof and altered source, artifact or suite bytes', t => {
+  for (const mutation of [
+    "UPDATE extension_authored SET source=x'74616d7065726564'",
+    "UPDATE extension_authored SET artifact=x'7b7d'",
+    "UPDATE extension_authored SET suite='[\"tampered\"]'",
+    "UPDATE extension_evidence SET identity='{}'",
+    "UPDATE extension_evidence SET payload='{}'",
+    'UPDATE extension_evidence SET passed=0',
+    'DELETE FROM extension_approvals',
+  ]) {
+    const f = setup(t), event = f.complete(), before = f.counts();
+    f.db.exec(mutation);
+    code('AUTHORITY_DENIED', () => f.effects.claim(owner, event.eventId));
+    assert.deepEqual(f.counts(), before);
+    assert.notEqual(f.effects.status(owner, event.eventId).revokedAt, null);
   }
 });
 
@@ -165,7 +216,7 @@ test('replacement preserves old admission; explicit disable/re-enable does not r
   f.selected();
   code('AUTHORITY_DENIED', () => f.effects.createTaskOnce(owner, f.effects.keyFor(owner, e.eventId), { projectId: f.projectId, title: 'Old denied' }));
   const next = f.complete(); assert.ok(f.effects.claim(owner, next.eventId));
-  assert.deepEqual(f.effects.status(owner, e.eventId).pins, pins);
+  assert.deepEqual(f.effects.status(owner, e.eventId).pins, f.pins);
 });
 
 test('deleting an unselected replaced item revokes all its old admissions, preserves effects and prevents future binding', t => {
@@ -185,7 +236,7 @@ test('deleting an unselected replaced item revokes all its old admissions, prese
 
 test('originating owner is independent of browser user and generated task completion is a distinct occurrence', t => {
   let browserOwner = owner;
-  const f = setup(t, { authorizeWrite: context => context.owner === owner });
+  const f = setup(t);
   const e = f.complete(); browserOwner = 'leo';
   assert.equal(browserOwner, 'leo'); assert.equal(f.effects.claim(owner, e.eventId).owner, owner);
   const created = f.effects.createTaskOnce(owner, f.effects.keyFor(owner, e.eventId), { projectId: f.projectId, title: 'Generated' });

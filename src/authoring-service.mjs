@@ -1,19 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, transaction } from './data.mjs';
-import { loadHost, digest, json } from './extension-catalog.mjs';
+import { loadHost, TASK_HOOK, TASK_DEFINITION, digest, json } from './extension-catalog.mjs';
 import { readAuthoringConfig } from './authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
 import { createAuthoringState, runAuthoringTurn } from './authoring-agent.mjs';
 import { authoringExample, businessContext, evidenceSummary } from './authoring-example.mjs';
 
-export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_INVALID', 'AI_CREDENTIALS_MISSING', 'HOST_UNAVAILABLE',
+export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_INVALID', 'AI_CREDENTIALS_MISSING', 'HOST_UNAVAILABLE', 'LEGACY_CUSTOMIZATION_RETIRED',
   'SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'CONVERSATION_LIMIT', 'CONFIG_CHANGED', 'BYTE_LIMIT', 'CONTEXT_LIMIT', 'TOKEN_LIMIT', 'TIME_LIMIT', 'EXPIRED',
   'RUN_INTERRUPTED', 'CANCELLED', 'STALE_CONTEXT', 'STALE_DRAFT', 'STALE_CONVERSATION', 'AI_BUSY', 'PROVIDER_TIMEOUT',
   'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', 'PROVIDER_RESPONSE_INVALID',
   'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
 const codeFor = value => AUTHORING_CODES.includes(value) ? value : 'TOOL_FAILED';
 const safeMessage = code => ({
-  AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create advice. Saved advice still works.',
+  AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create a customization. Native tasks remain available.',
+  LEGACY_CUSTOMIZATION_RETIRED: 'This earlier customization is read-only. Its saved discussion and results are kept. Start a new customization to change task behavior.',
   AI_CONFIG_INVALID: 'The operator AI configuration needs attention.', AI_CREDENTIALS_MISSING: 'The operator AI credentials are unavailable.',
   SPEND_LIMIT: 'The operator AI allowance has been reached.', AI_BUSY: 'Another authoring request is still settling. Check its saved state.',
   PROVIDER_RATE_LIMIT: 'The AI service refused this request because of a request or account limit. Any saved proposal and examples are kept. Check the provider usage and limits before retrying manually.',
@@ -41,7 +42,7 @@ const resourcePolicy = 'continuous-ai-authoring/3';
 export function createAuthoringService({ db, lifecycle, config = readAuthoringConfig(), fetchImpl,
   checkpointFault = () => {}, providerFactory = value => createAuthoringProvider(value, { fetchImpl }) }) {
   const live = new Map(); let closing = false; let definition;
-  try { definition = loadHost(); } catch { /* AI setup failure never disables native tasks or saved advice. */ }
+  try { definition = loadHost(TASK_HOOK); } catch { /* AI setup failure never disables native tasks. */ }
   const rowFor = (owner, id) => db.prepare('SELECT * FROM authoring_conversations WHERE id=? AND owner_id=?').get(id, owner);
   const linkFor = (owner, id) => db.prepare('SELECT * FROM extension_conversation_links WHERE owner_id=? AND conversation_id=?').get(owner, id);
   const held = () => {
@@ -59,7 +60,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   // Recovery is readback only. No provider, compiler or simulation is called at startup.
   transaction(db, () => {
     for (const row of db.prepare("SELECT * FROM authoring_conversations WHERE status IN ('RUNNING','CANCELLING')").all()) {
-      const value = decode(row); value.state.status = 'BLOCKED'; value.state.lastResult = { status: 'BLOCKED', code: 'RUN_INTERRUPTED' };
+      const value = decode(row);
+      if (value.state.definitionId !== TASK_DEFINITION) continue;
+      value.state.status = 'BLOCKED'; value.state.lastResult = { status: 'BLOCKED', code: 'RUN_INTERRUPTED' };
       value.state.continuation = undefined; value.state.pending = undefined; value.state.evidenceHandle = null;
       value.view.code = 'RUN_INTERRUPTED'; value.view.review = null;
       db.prepare("UPDATE authoring_dispatches SET outcome='UNKNOWN' WHERE conversation_id=? AND owner_id=? AND outcome IS NULL").run(row.id, row.owner_id);
@@ -76,6 +79,16 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       if (cursor(parsed) !== value || parsed.scope !== scope) throw 0;
       return parsed;
     } catch { throw error(400, 'INVALID_TOOL_ARGUMENTS'); }
+  }
+  function projects(owner, before = '') {
+    const scope = encode(['projects', owner]), anchor = before === '' ? null : parseCursor(before, scope);
+    if (anchor && (Object.keys(anchor).length !== 3 || typeof anchor.createdAt !== 'string' || !token(anchor.id)
+        || !db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=? AND created_at=?').get(owner, anchor.id, anchor.createdAt))) throw error(400, 'INVALID_TOOL_ARGUMENTS');
+    const rows = db.prepare(`SELECT id,CAST(name AS BLOB) AS name,created_at FROM projects WHERE owner_id=?${anchor ? ' AND (created_at<? OR (created_at=? AND id<?))' : ''} ORDER BY created_at DESC,id DESC LIMIT 21`)
+      .all(owner, ...(anchor ? [anchor.createdAt, anchor.createdAt, anchor.id] : []));
+    const page = rows.slice(0, 20), last = page.at(-1);
+    return { projects: page.map(row => ({ id: row.id, name: Buffer.from(row.name).toString('utf8') })),
+      next: rows.length > page.length ? cursor({ scope, id: last.id, createdAt: last.created_at }) : null };
   }
   function messagePage(owner, id, before, maxBytes = 262144) {
     if (!rowFor(owner, id)) throw error(404, 'STALE_CONVERSATION');
@@ -108,10 +121,10 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const current = link ? lifecycle.state(row.owner_id, link.extension_id) : lifecycle.collection(row.owner_id);
     let review = view.review ?? null;
     if (review) review = { revisionId: review.revisionId, draftVersion: review.draftVersion, suiteDigest: review.suiteDigest,
-      evidenceId: review.evidenceId, eligible: !!link && review.eligible === true && same(review, draftHandles(current)) };
+      evidenceId: review.evidenceId, eligible: state.definitionId === TASK_DEFINITION && !!link && review.eligible === true && same(review, draftHandles(current)) };
     const result = { id: row.id, version: row.version, status: row.status, runId: row.run_id,
       operation: operation(operations.at(-1).id, operations.at(-1).runId, operations.at(-1).version), messages: [], messagesBefore: null,
-      extensionId: link?.extension_id ?? null, purpose: link?.purpose ?? null,
+      extensionId: link?.extension_id ?? null, purpose: link?.purpose ?? null, retired: state.definitionId !== TASK_DEFINITION,
       code: view.code ? codeFor(view.code) : null, review, draft: state.handles ?? { revisionId: null, draftVersion: 0, suiteDigest: null },
       selection: { revisionId: current.selection.revision?.id ?? null, generation: current.selection.generation } };
     if (bounded) {
@@ -185,6 +198,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       transaction(db, () => {
         assertLease(ctx.lease);
         const row = rowFor(ctx.owner, ctx.id), prior = row ? decode(row) : null;
+        if (state.definitionId !== TASK_DEFINITION || prior && prior.state.definitionId !== state.definitionId) stop('LEGACY_CUSTOMIZATION_RETIRED');
         if (cp.phase === 'ADMIT') {
           if (ctx.admitted || row && (row.version !== ctx.input.expectedVersion || ['RUNNING', 'CANCELLING'].includes(row.status))
               || !row && ctx.input.expectedVersion !== 0 || state.version !== ctx.input.expectedVersion + 1) stop('STALE_CONVERSATION');
@@ -273,6 +287,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       authorize(); try { return await work(); }
       catch (cause) {
         if (cause instanceof AuthoringError) throw cause;
+        if (cause?.code === 'LEGACY_CUSTOMIZATION_RETIRED') stop(cause.code);
         if (scenario && cause instanceof AppError && cause.status === 400 && Array.isArray(cause.diagnostics)
             && cause.diagnostics.length === 1 && cause.diagnostics.every(item => object(item) && Object.keys(item).length === 2
               && ['INVALID_SCENARIO', 'DUPLICATE_SCENARIO_ID'].includes(item.code) && typeof item.path === 'string' && /^\/cases\/[0-7]$/.test(item.path)))
@@ -308,10 +323,13 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         const proof = lifecycle.evidence(ctx.owner, selection.approvedEvidenceId, ctx.extensionId);
         if (proof.id !== selection.approvedEvidenceId || proof.revisionId !== revision.id) return unavailable('APPROVED_PROOF_MISMATCH');
         if (proof.passed !== true || !Array.isArray(proof.reports) || !proof.reports.length
-            || proof.reports.some(item => !object(item) || typeof item.id !== 'string' || !object(item.expected) || typeof item.expected.classification !== 'string'
+            || proof.reports.some(item => !object(item) || typeof item.id !== 'string' || !object(item.expected) || typeof (item.expected.outcome ?? item.expected).classification !== 'string'
               || !object(item.report) || item.report.status !== 'PASS' || !object(item.report.native) || typeof item.report.native.classification !== 'string'
               || !object(item.report.consumption) || typeof item.report.consumption.status !== 'string'
               || !Array.isArray(item.report.mismatches) || item.report.mismatches.length)) return unavailable('APPROVED_PROOF_UNUSABLE');
+        if (current.extension?.hookId === TASK_HOOK && proof.reports.some(item => !object(item.report.observed)
+          || !['CONFIRMED', 'NONE', 'UNKNOWN', 'NOT_OBSERVED'].includes(item.report.observed.effect)
+          || !(item.report.observed.createdTasks === null || Array.isArray(item.report.observed.createdTasks)))) return unavailable('APPROVED_PROOF_UNUSABLE');
         const source = lifecycle.source(ctx.owner, revision.id, ctx.extensionId);
         if (source.extensionId !== ctx.extensionId || source.revisionId !== revision.id || !Array.isArray(source.cases) || !source.cases.length) return unavailable('APPROVED_SOURCE_MISMATCH');
         result.checkedSummary = { scope: 'synthetic examples, not live task observations', evidenceId: proof.id,
@@ -322,8 +340,11 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     };
     return {
       readDraft: () => { authorize(); return mapped(); },
+      projects: before => { authorize(); try { return projects(ctx.owner, before); } catch (cause) {
+        if (cause.code === 'INVALID_TOOL_ARGUMENTS') stop('INVALID_TOOL_ARGUMENTS'); throw cause;
+      } },
       discover: () => {
-        authorize(); const example = authoringExample(), current = lifecycle.state(ctx.owner, ctx.extensionId);
+        authorize(); const example = authoringExample(definition), current = lifecycle.state(ctx.owner, ctx.extensionId);
         const baseId = current.draft?.id ?? ctx.baseRevisionId;
         const proposal = baseId ? lifecycle.source(ctx.owner, baseId, ctx.extensionId) : null;
         const currentProposal = proposal ? { revisionId: proposal.revisionId, source: proposal.source, cases: proposal.cases,
@@ -339,10 +360,11 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...definition.pins,
           currentDraft: draftHandles(current), currentProposal, currentUse: currentUse(current), extension: current.extension, purpose: ctx.purpose,
           supportedHooks: lifecycle.hostCatalog().hooks, conversationContext: { messages: recent, truncated },
-          businessContext, sourceExample: example.source, scenarioExample: example.cases[0], scenarioExamples: example.cases };
+          businessContext, projects: projects(ctx.owner), sourceExample: example.source, scenarioExample: example.cases[0], scenarioExamples: example.cases };
       },
-      compile: (source, version, signal) => invoke(async () => {
-        const value = await lifecycle.compile(ctx.owner, { extensionId: ctx.extensionId, source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
+      compile: (source, version, signal, hookId) => invoke(async () => {
+        if (hookId !== TASK_HOOK || ctx.state.definitionId !== TASK_DEFINITION) stop('INVALID_TOOL_ARGUMENTS');
+        const value = await lifecycle.compile(ctx.owner, { extensionId: ctx.extensionId, hookId, source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
       }),
       proposeScenarios: (revisionId, cases, version) => invoke(async () => draftHandles(await lifecycle.proposeScenarios(ctx.owner,
         { extensionId: ctx.extensionId, revisionId, cases, draftVersion: version }, authorize, { signal: ctx.controller.signal })), true),
@@ -371,6 +393,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       if (link) lifecycle.assertAvailable(owner, link.extension_id, true);
       return { duplicate: { operation: operation(priorOperation.id, priorOperation.runId, priorOperation.version), conversation: dto(row) } };
     }
+    if (row && prior.state.definitionId !== TASK_DEFINITION) throw error(410, 'LEGACY_CUSTOMIZATION_RETIRED');
     if (row && db.prepare('SELECT 1 FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(row.id, input.operationId)) throw error(409, 'STALE_CONVERSATION');
     const link = row ? linkFor(owner, row.id) : null;
     if (row && (!link || input.target.kind !== 'resume' || input.target.extensionId !== link.extension_id)) throw error(404, 'STALE_CONVERSATION');
@@ -378,6 +401,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const currentState = input.target.kind === 'create'
       ? { revisionId: null, draftVersion: 0, suiteDigest: null, selection: lifecycle.collection(owner).selection }
       : lifecycle.state(owner, extensionId);
+    if (!row && input.target.kind !== 'create' && currentState.retired !== false) throw error(410, 'LEGACY_CUSTOMIZATION_RETIRED');
     const current = draftHandles(currentState);
     if (current.draftVersion !== input.expectedDraftVersion) throw error(409, 'STALE_DRAFT');
     if (input.target.kind === 'revise') {
@@ -395,7 +419,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         || (prior.state.transport.settingsRevision ?? null) !== (config.settingsRevision ?? null))) throw error(409, 'CONFIG_CHANGED');
     const id = row?.id ?? randomUUID(), runId = randomUUID(), controller = new AbortController();
     const state = prior?.state ?? createAuthoringState({ ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId });
-    Object.assign(state, { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId, status: 'IDLE', handles: current,
+    Object.assign(state, { definitionId: TASK_DEFINITION, ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId, status: 'IDLE', handles: current,
       dispatchOrdinal: 0, inFlight: null, checkpoint: null, lastResult: null });
     // Each explicit turn starts from fresh host context; old native tool chains are never replayed.
     state.continuation = undefined; state.pending = undefined; state.callIds = []; state.inputIds = []; state.evidenceHandle = null;
@@ -473,9 +497,11 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     if (link) lifecycle.assertAvailable(owner, link.extension_id);
     if (row.run_id !== input.runId || row.version !== input.expectedVersion) throw error(409, 'STALE_CONVERSATION');
     if (['RUNNING', 'CANCELLING'].includes(row.status)) {
-      db.prepare("UPDATE authoring_conversations SET cancel_requested=1,status='CANCELLING' WHERE id=? AND owner_id=? AND run_id=? AND version=?")
-        .run(id, owner, input.runId, input.expectedVersion);
-      live.get(input.runId)?.controller.abort();
+      const running = live.get(input.runId);
+      const status = !running && decode(row).state.definitionId !== TASK_DEFINITION ? 'CANCELLED' : 'CANCELLING';
+      db.prepare('UPDATE authoring_conversations SET cancel_requested=1,status=? WHERE id=? AND owner_id=? AND run_id=? AND version=?')
+        .run(status, id, owner, input.runId, input.expectedVersion);
+      running?.controller.abort();
     }
     return read(owner, id);
   }

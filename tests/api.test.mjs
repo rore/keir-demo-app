@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openData, taskEffectService } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
+import { seedTaskEffectBinding, invocationFor } from './fixtures/task-effect-schema.mjs';
 
 const origin = 'http://127.0.0.1:32123';
 const databases = new WeakMap();
@@ -26,12 +27,9 @@ test('an admitted owner A completion keeps its exact native context after the br
   const app = await setup(t), db = databases.get(app);
   const bootstrap = await app.inject(request('GET', '/api/session'));
   const maya = await signIn(app, 'maya', bootstrap.json().contextToken);
-  const selected = db.prepare("SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
-  const pins = { artifactDigest: `sha256:${'a'.repeat(64)}`, modelRef: { format: 'keir-dcm/effect-3', digest: `sha256:${'b'.repeat(64)}` },
-    compiler: { id: 'test' }, environment: { id: 'test' }, consumer: { kind: 'EVENT_REPORT' },
-    qualification: { id: 'test-report', revision: 1, reportDigest: `sha256:${'c'.repeat(64)}`, hostBuild: `sha256:${'d'.repeat(64)}` } };
+  const { revisionId, pins } = seedTaskEffectBinding(db);
   db.prepare("UPDATE extension_selections SET revision_id=?,generation=1,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'")
-    .run(selected.revision_id, JSON.stringify(pins));
+    .run(revisionId, JSON.stringify(pins));
   const projects = await app.inject(request('GET', '/api/projects', maya)), projectId = projects.json()[0].id;
   const source = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId, title: 'Owner A source' }, headers: jsonHeaders }));
   assert.equal(source.statusCode, 201);
@@ -39,18 +37,18 @@ test('an admitted owner A completion keeps its exact native context after the br
   assert.equal(completed.statusCode, 200);
   const eventId = db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(source.json().id).event_id;
   const leo = await signIn(app, 'leo', maya);
-  const seen = [];
-  const effects = taskEffectService(db, { authorizeRead: context => context.owner === 'maya',
-    authorizeWrite: context => { seen.push(context); return context.owner === 'maya'; }, isQualificationCurrent: context => context.pins.qualification.id === 'test-report' });
-  assert.deepEqual(effects.claim('maya', eventId).pins, pins);
-  const result = effects.createTaskOnce('maya', effects.keyFor('maya', eventId), { projectId, title: 'Owner A result' });
-  assert.equal(result.effect, 'CONFIRMED'); assert.ok(seen.every(context => context.owner === 'maya' && context.sourceTaskId === source.json().id));
+  const effects = taskEffectService(db), invocation = invocationFor(effects, 'maya', eventId);
+  const captured = effects.contextFor('maya', invocation);
+  assert.equal(captured.owner, 'maya'); assert.equal(captured.sourceTaskId, source.json().id);
+  assert.deepEqual(effects.claim('maya', eventId, invocation).pins, pins);
+  const result = effects.createTaskOnce('maya', invocation.requestKey, { projectId, title: 'Owner A result' }, invocation);
+  assert.equal(result.effect, 'CONFIRMED');
   const foreignRead = await app.inject(request('GET', `/api/tasks/${result.value.id}`, leo));
   assert.equal(foreignRead.statusCode, 404);
   const switchedBack = await signIn(app, 'maya', leo);
   const ownRead = await app.inject(request('GET', `/api/tasks/${result.value.id}`, switchedBack));
   assert.equal(ownRead.statusCode, 200); assert.equal(ownRead.json().title, 'Owner A result');
-  assert.equal(effects.status('maya', eventId).originalKey, seen[0].originalKey);
+  assert.equal(effects.status('maya', eventId).originalKey, captured.originalKey);
 });
 const jsonHeaders = { origin, 'content-type': 'application/json' };
 async function signIn(app, userId, context) {

@@ -2,6 +2,10 @@ import { test, expect } from '@playwright/test';
 import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync } from 'node:fs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { TASK_HOOK } from '../../src/extension-catalog.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
+import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 async function api(page, path, body) {
@@ -17,25 +21,15 @@ async function api(page, path, body) {
 }
 const collection = page => api(page, 'extensions');
 const extPath = id => `extensions/${encodeURIComponent(id)}`;
-const saved = (page, id) => { expect(id).toBeTruthy(); return api(page, extPath(id)); };
+const saved = (page, id) => api(page, extPath(id));
 const source = (page, id, revisionId) => api(page, `${extPath(id)}/revisions/${encodeURIComponent(revisionId)}`);
+const input = state => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
 async function navigate(page, destination) {
   const main = page.getByRole('navigation', { name: 'Main navigation' });
-  const mobile = page.getByRole('combobox', { name: 'Destination', exact: true });
+  const mobile = page.getByLabel('Destination', { exact: true });
   await expect.poll(async () => await main.isVisible().catch(() => false) || await mobile.isVisible().catch(() => false)).toBe(true);
-  if (await main.isVisible().catch(() => false)) await main.getByRole('button', { name: destination, exact: true }).click();
+  if (await main.isVisible()) await main.getByRole('button', { name: destination, exact: true }).click();
   else await mobile.selectOption(destination.toLowerCase());
-}
-async function enterTaskStudio(page, origin) {
-  await page.goto(origin);
-  await page.getByRole('button', { name: 'Continue as Maya' }).click();
-  await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-  await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved native title');
-  await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
-  await expect(studio(page)).toBeVisible();
-  await navigate(page, 'Customizations');
-  await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(studio(page)).toBeVisible();
 }
 async function enterCollection(page, origin) {
   await page.goto(origin);
@@ -49,216 +43,196 @@ async function openItem(page, id) {
   await expect(studio(page)).toBeVisible();
   return studio(page);
 }
+// This setup admits no approval or executable selection; the installed compiler and simulator check the bytes.
 async function createCandidate(page, fixture, { label = 'Independent saved proposal', sourceText = fixture.metadata.source,
-      cases = fixture.metadata.cases, simulate = true } = {}) {
-  let state = await api(page, 'extensions', { operationId: crypto.randomUUID(), source: sourceText, label });
-  const id = state.extension.id;
-  if (cases) state = await api(page, `${extPath(id)}/scenarios`, { revisionId: state.draft.id, cases, draftVersion: state.draftVersion });
-  if (simulate) state = await api(page, `${extPath(id)}/simulate`, { revisionId: state.draft.id, draftVersion: state.draftVersion });
+  cases = fixture.metadata.cases, simulate = true } = {}) {
+  const { extensionId: id } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: label });
+  let state = await api(page, `${extPath(id)}/compile`, { hookId: TASK_HOOK, source: sourceText, label, draftVersion: 0 });
+  if (cases) state = await api(page, `${extPath(id)}/scenarios`, { ...input(state), cases });
+  if (simulate) state = await api(page, `${extPath(id)}/simulate`, input(state));
   return { id, state };
 }
-function createItems(items) { return items.filter(item => item.extension?.creationOperationId); }
+async function send(page, text) {
+  await studio(page).getByLabel('Message to Studio', { exact: true }).fill(text);
+  await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
+}
+async function authorCandidate(page, fixture) {
+  await send(page, `When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`);
+  await expect(studio(page).getByText(fixture.metadata.question, { exact: true })).toBeVisible();
+  await send(page, `Confirmed: use ${fixture.metadata.title} in ${fixture.metadata.projectName}, with the independent examples.`);
+  await expect(studio(page).getByText(fixture.metadata.offerText, { exact: true })).toBeVisible();
+  return new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
+}
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 683, height: 384 }]) {
-  test(`agent-led scripted example uses real checks and separate human decisions ${viewport.width}x${viewport.height}`, async ({ page }) => {
-    const fixture = await startAuthoringFixture({ unconfigured: true });
+  test(`agent-led task customization uses real checks and separate human decisions ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    const fixture = await startAuthoringFixture();
     try {
       await page.setViewportSize(viewport);
-      await enterTaskStudio(page, fixture.origin);
-      const ui = studio(page);
-      const before = await collection(page);
-      const scripted = await api(page, 'authoring/example');
-      const activeId = before.selection.revision.extensionId;
-      const activeBefore = await saved(page, activeId);
-      await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toBeVisible();
-      await expect(ui.getByRole('button', { name: 'Try on sample tasks', exact: true })).toHaveCount(0);
-      const composer = ui.getByLabel('Message to Studio');
+      await enterCollection(page, fixture.origin);
+      const baseline = taskCustomizationFixture({ projectId: fixture.metadata.projectId, otherProjectId: fixture.metadata.otherProjectId, title: 'Existing customer follow-up' });
+      const { id: activeId, state: checked } = await createCandidate(page, fixture, { label: 'Existing customer change', sourceText: baseline.source, cases: baseline.cases });
+      let activeBefore = await api(page, `${extPath(activeId)}/approve`, { ...input(checked), evidenceId: checked.evidence.id });
+      activeBefore = await api(page, `${extPath(activeId)}/activate`, { ...input(activeBefore), generation: activeBefore.selection.generation });
+      await navigate(page, 'Tasks');
+      await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+      await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved native title');
+      await page.locator('#open-customizations').click();
+      await navigate(page, 'Customizations');
+      await page.getByRole('button', { name: 'New customization', exact: true }).click();
+      const ui = studio(page), before = await collection(page);
+      const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
+      const composer = ui.getByLabel('Message to Studio', { exact: true });
       await composer.fill('Keep this unsent personal request');
-      await ui.getByRole('button', { name: 'Try a guided example · no AI', exact: true }).click();
-      await expect(ui.getByRole('article', { name: 'Scripted example', exact: true })).toContainText('Scripted example · no AI.');
+      await expect(ui.getByRole('button', { name: 'Try a guided example · no AI', exact: true })).toHaveCount(0);
+      await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
+      await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
       expect(await collection(page)).toEqual(before);
-      await expect(composer).toHaveValue('Keep this unsent personal request');
-      await expect(ui.locator('.rs-composer')).toBeHidden();
-      await ui.getByRole('button', { name: 'Return to my request', exact: true }).click();
-      await expect(composer).toBeVisible();
-      await expect(composer).toHaveValue('Keep this unsent personal request');
-      await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toBeVisible();
-      await ui.getByRole('button', { name: 'Try a guided example · no AI', exact: true }).click();
+      await page.getByRole('button', { name: 'New customization', exact: true }).click();
+      const newId = await authorCandidate(page, fixture);
+      expect(newId).not.toBe(activeId);
+      await composer.fill('Keep this unsent personal request');
       if (viewport.width === 1440) await page.route('**/api/extensions/*/evidence/*', async route => {
         const response = await route.fetch(), proof = await response.json();
-        delete proof.reports[0].report.consumption;
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(proof) });
-      }, { times: 2 });
-      await ui.getByRole('button', { name: 'Yes, keep Done for completed tasks', exact: true }).click();
+        delete proof.reports[0].report.observed;
+        await route.fulfill({ status: 200, json: proof });
+      }, { times: 1 });
       await openSavedChanges(page);
       const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
-      await expect(decision).toBeVisible();
       if (viewport.width === 1440) {
         await expect(decision).toContainText('The exact saved change and its examples could not be confirmed');
-        await expect(decision.getByRole('button', { name: 'Check saved change again', exact: true })).toBeVisible();
         await decision.getByRole('button', { name: 'Check saved change again', exact: true }).click();
       }
-      await expect(decision).toContainText('In these example tasks, unfinished tasks showed Needs attention; completed tasks showed Done. Your tasks have not changed.');
-      await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeVisible();
-      const after = await collection(page), created = createItems(after.items);
-      expect(created).toHaveLength(1);
-      const newId = created[0].extension.id;
-      expect(newId).not.toBe(activeId);
+      await expect(decision).toContainText(fixture.metadata.title);
+      await expect(decision).toContainText('These were example tasks; your real tasks have not changed.');
       const prepared = await saved(page, newId), documents = await source(page, newId, prepared.draft.id);
-      expect(prepared.draft.kind).toBe('authored');
-      expect(prepared.evidence.passed).toBe(true);
-      expect(prepared.approved).toBe(false);
+      expect(prepared.draft.kind).toBe('authored'); expect(prepared.evidence.passed).toBe(true); expect(prepared.approved).toBe(false);
       expect(prepared.selection).toEqual(before.selection);
-      expect(prepared.extension.id).toBe(newId);
-      expect(documents.source).toBe(scripted.source);
-      expect(documents.cases).toEqual(scripted.cases);
+      expect(documents.source).toBe(fixture.metadata.source); expect(documents.cases).toEqual(fixture.metadata.cases);
       expect(await saved(page, activeId)).toEqual(activeBefore);
-      expect(fixture.requests).toHaveLength(0);
-      mkdirSync('build/studio-extension-creation', { recursive: true });
-      await page.screenshot({ path: `build/studio-extension-creation/agent-led-checked-${viewport.width}x${viewport.height}.png` });
-
-      await expect(decision.locator('.rs-example:visible')).toHaveCount(1);
-      await expect(decision.getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
-      await expect(decision.getByRole('article', { name: 'Example: Unfinished task', exact: true })).toContainText('Needs attention');
-      await expect(ui.locator('.rs-preview')).toContainText('Your tasks have not changed.');
-      await ui.getByText(/^Other checked examples/).click();
-      await expect(decision.locator('.rs-example')).toHaveCount(5);
-      await expect(decision.getByRole('article', { name: 'Example: Completed task', exact: true })).toContainText('Done');
+      expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification', 'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+      const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
+      await expect(proposed.locator('.rs-example:visible')).toHaveCount(1);
+      await expect(proposed).toContainText(fixture.metadata.title);
+      await expect(decision.getByRole('region', { name: 'Checked behavior currently in use', exact: true })).toContainText('Existing customer follow-up');
+      const otherExamples = ui.getByText(/^Other checked examples/);
+      await otherExamples.click();
+      await expect(otherExamples.locator('..').locator('.rs-example')).toHaveCount(4);
+      await expect(otherExamples.locator('..').locator('.rs-example').first()).toContainText('Create no task.');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(decision.getByLabel('Saved source for approval', { exact: true })).toHaveText(documents.source);
-      expect(documents.cases).toHaveLength(5);
       for (let index = 0; index < documents.cases.length; index++)
         await expect(decision.getByLabel(`Saved example ${index + 1} for approval`, { exact: true })).toHaveText(documents.cases[index]);
-      expect(await saved(page, newId)).toEqual(prepared);
+      mkdirSync('build/studio-extension-creation', { recursive: true });
+      await page.screenshot({ path: `build/studio-extension-creation/agent-led-checked-${viewport.width}x${viewport.height}.png` });
       await decision.getByRole('button', { name: 'Approve this change', exact: true }).click();
       const approved = await saved(page, newId);
-      expect(approved.approvedEvidenceId).toBe(prepared.evidence.id);
-      expect(approved.selection).toEqual(before.selection);
-      await expect(decision.getByRole('button', { name: 'Switch to this customization', exact: true })).toBeFocused().catch(() => {});
-      const activation = decision.getByRole('button', { name: /^(Turn on for my tasks|Switch to )/ });
-      await activation.click();
+      expect(approved.approvedEvidenceId).toBe(prepared.evidence.id); expect(approved.selection).toEqual(before.selection);
+      await decision.getByRole('button', { name: 'Switch to this customization', exact: true }).click();
       await expect.poll(async () => (await saved(page, newId)).selection.revision.id).toBe(prepared.draft.id);
+      expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
       await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
-      await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
       if (!await composer.isVisible()) await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
-      await expect(composer).toBeVisible();
       await expect(composer).toHaveValue('Keep this unsent personal request');
-      await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
       await page.screenshot({ path: `build/studio-extension-creation/agent-led-on-${viewport.width}x${viewport.height}.png` });
       await ui.getByRole('button', { name: 'Back to tasks', exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved native title');
-      await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-      await expect(page.getByRole('status').filter({ hasText: 'Task advice: Needs attention' })).toBeVisible();
-      await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
-      await expect(ui.locator('.rs-chat')).toContainText('This customization is on. What would you like to change?');
-      await expect(ui.locator('.rs-chat')).not.toContainText('advice advice');
-      expect(fixture.requests).toHaveLength(0);
+      await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toHaveCount(0);
+      await page.getByRole('button', { name: 'Close task details', exact: true }).click();
+      await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
+      const outcome = page.getByRole('region', { name: 'Customization outcome', exact: true });
+      await expect(outcome.getByRole('button', { name: `Open task: ${fixture.metadata.title}`, exact: true })).toBeVisible();
+      await outcome.getByRole('button', { name: `Open task: ${fixture.metadata.title}`, exact: true }).click();
+      await expect(page.getByLabel('Task title', { exact: true })).toHaveValue(fixture.metadata.title);
+      await page.locator('#open-customizations').click();
+      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
+      await expect(ui.locator('.rs-chat')).toContainText(fixture.metadata.offerText);
+      await expect(composer).toBeVisible();
+      expect(fixture.requests).toHaveLength(8);
     } finally { await fixture.close(); }
   });
 }
 
-test('an exact review without verified situation metadata keeps generic labels despite the scripted example', async ({ page }) => {
+test('an exact review without verified situation metadata keeps generic labels', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
     await enterCollection(page, fixture.origin);
     const { id, state } = await createCandidate(page, fixture);
-    const before = await collection(page);
-    expect(state.owner.id).toBe(before.owner.id);
     await page.route(`**/api/extensions/${id}/evidence/${state.evidence.id}`, async route => {
       const response = await route.fetch(), proof = await response.json();
-      for (const item of proof.reports) { delete item.taskStatus; delete item.readFailure; delete item.report.consumption; item.label = 'untrusted-case-label'; }
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(proof) });
+      for (const item of proof.reports) { delete item.report.scenario; delete item.report.observed; item.label = 'untrusted-case-label'; }
+      await route.fulfill({ status: 200, json: proof });
     });
-    await openItem(page, id);
+    const ui = await openItem(page, id);
     await openSavedChanges(page);
-    const ui = studio(page), decision = ui.getByRole('article', { name: 'Current decision', exact: true });
-    await expect(decision).toBeVisible();
+    const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(decision).toContainText('The exact saved change and its examples could not be confirmed');
-    await expect(decision.getByRole('button', { name: 'Check saved change again', exact: true })).toBeVisible();
     expect(await saved(page, id)).toEqual(state);
     await ui.getByRole('button', { name: 'History and details', exact: true }).click();
     const tools = ui.locator('.rs-tools');
     await tools.getByText('Saved sample runs', { exact: true }).click();
     await tools.getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     await expect(ui.locator('.rs-example')).toHaveCount(1);
-    await expect(ui.locator('.rs-example').first().getByRole('heading', { name: 'Example 1', exact: true })).toBeVisible();
+    await expect(ui.getByRole('article', { name: 'Example: Earlier saved example 1', exact: true })).toBeVisible();
     await expect(ui.locator('.rs-example').first()).not.toContainText('untrusted-case-label');
-    await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-    expect((await saved(page, id)).approved).toBe(false);
-    expect(fixture.requests).toHaveLength(0);
+    await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
+    expect((await saved(page, id)).approved).toBe(false); expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });
 
-test('guided example does not replace an unrelated saved proposal on reentry', async ({ page }) => {
-  const fixture = await startAuthoringFixture({ unconfigured: true });
+test('a new assistant proposal does not replace an unrelated saved proposal on reentry', async ({ page }) => {
+  const fixture = await startAuthoringFixture();
   try {
     await enterCollection(page, fixture.origin);
-    const { id, state: before } = await createCandidate(page, fixture, { label: 'Independent pending proposal', cases: null, simulate: false });
+    const other = taskCustomizationFixture({ projectId: fixture.metadata.projectId, otherProjectId: fixture.metadata.otherProjectId, title: 'Unrelated saved task' });
+    const { id, state: before } = await createCandidate(page, fixture, { label: 'Independent proposal', sourceText: other.source, cases: null, simulate: false });
     const beforeSource = await source(page, id, before.draft.id);
     await openItem(page, id);
     await expect(studio(page).getByRole('button', { name: 'Try a guided example · no AI', exact: true })).toHaveCount(0);
-    expect(await saved(page, id)).toEqual(before);
-    expect(await source(page, id, before.draft.id)).toEqual(beforeSource);
-
+    expect(await saved(page, id)).toEqual(before); expect(await source(page, id, before.draft.id)).toEqual(beforeSource);
     await navigate(page, 'Customizations');
     await page.getByRole('button', { name: 'New customization', exact: true }).click();
-    const newStudio = studio(page);
-    await newStudio.getByRole('button', { name: 'Try a guided example · no AI', exact: true }).click();
-    await expect(newStudio.getByRole('article', { name: 'Scripted example', exact: true })).toBeVisible();
-    await newStudio.getByRole('button', { name: 'Yes, keep Done for completed tasks', exact: true }).click();
+    const newId = await authorCandidate(page, fixture);
     await openSavedChanges(page);
-    await expect(newStudio.getByRole('heading', { name: 'Your saved changes', exact: true })).toBeVisible();
-    const after = await collection(page), scriptedItems = createItems(after.items).filter(item => item.extension.id !== id
-      && item.draft?.label === 'Scripted example: task advice');
-    expect(scriptedItems).toHaveLength(1);
-    const newId = scriptedItems[0].extension.id;
     expect(newId).not.toBe(id);
-    const created = await saved(page, newId), createdSource = await source(page, newId, created.draft.id);
-    expect(created.draft.kind).toBe('authored');
-    expect(created.evidence.passed).toBe(true);
-    expect(created.approved).toBe(false);
+    const created = await saved(page, newId), documents = await source(page, newId, created.draft.id);
+    expect(created.draft.kind).toBe('authored'); expect(created.evidence.passed).toBe(true); expect(created.approved).toBe(false);
     expect(created.selection).toEqual(before.selection);
-    const sample = await api(page, 'authoring/example');
-    expect(createdSource.source).toBe(sample.source);
-    expect(createdSource.cases).toEqual(sample.cases);
-    expect(await saved(page, id)).toEqual(before);
-    expect(await source(page, id, before.draft.id)).toEqual(beforeSource);
-    expect(fixture.requests).toHaveLength(0);
+    expect(documents.source).toBe(fixture.metadata.source); expect(documents.cases).toEqual(fixture.metadata.cases);
+    expect(await saved(page, id)).toEqual(before); expect(await source(page, id, before.draft.id)).toEqual(beforeSource);
+    expect(fixture.requests).toHaveLength(8);
   } finally { await fixture.close(); }
 });
 
-test('ordinary examples explain a display-only mismatch and retain its original expectation after a draft edit', async ({ page }) => {
+test('ordinary examples retain independent task expectations and observed mismatch after a draft edit', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
     await enterCollection(page, fixture.origin);
-    const cases = fixture.metadata.cases.map(text => {
-      const value = JSON.parse(text);
-      if (value.id === 'synthetic-open') value.expect.consumption = { status: 'NOT_DISPLAYED' };
-      return JSON.stringify(value, null, 2);
-    });
-    const { id, state: prepared } = await createCandidate(page, fixture, { label: 'Independent display expectation', cases });
+    const cases = fixture.metadata.cases.map(text => JSON.parse(text));
+    cases[0].expect = structuredClone(cases[1].expect);
+    const originals = cases.map(value => JSON.stringify(value, null, 2));
+    const { id, state: prepared } = await createCandidate(page, fixture, { label: 'Independent task expectation', cases: originals });
     expect(prepared.evidence.passed).toBe(false);
     const ui = await openItem(page, id);
     await ui.getByRole('button', { name: 'History and details', exact: true }).click();
-    const details = ui.locator('.rs-tools');
-    await details.getByText('Saved sample runs', { exact: true }).click();
-    await details.getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
+    const tools = ui.locator('.rs-tools');
+    await tools.getByText('Saved sample runs', { exact: true }).click();
+    await tools.getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     const first = ui.locator('.rs-example').first();
-    await expect(first.locator('dl > div').first()).toHaveText('You wantedNo advice');
-    await expect(first.locator('dl > div').nth(1)).toHaveText('In this examplePending');
+    await expect(first.locator('dd').first()).toHaveText('Create no task.');
+    await expect(first.locator('dd').nth(1)).toContainText(fixture.metadata.title);
     await expect(first).toContainText('This example needs a correction');
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-    const changedCases = fixture.metadata.cases;
-    const edited = await api(page, `${extPath(id)}/compile`, { source: fixture.metadata.source, label: 'A different saved proposal', draftVersion: prepared.draftVersion });
-    await api(page, `${extPath(id)}/scenarios`, { revisionId: edited.draft.id, cases: changedCases, draftVersion: edited.draftVersion });
+    const edited = await api(page, `${extPath(id)}/compile`, { hookId: TASK_HOOK, source: fixture.metadata.source + '\n', label: 'A different saved proposal', draftVersion: prepared.draftVersion });
+    await api(page, `${extPath(id)}/scenarios`, { ...input(edited), cases: fixture.metadata.cases });
     await ui.getByRole('button', { name: 'History and details', exact: true }).click();
     await ui.getByRole('button', { name: 'Reload saved state', exact: true }).click();
     await ui.getByText('Open a saved sample run by ID', { exact: true }).click();
     await ui.getByLabel('Evidence ID for this person', { exact: true }).fill(prepared.evidence.id);
     await ui.getByRole('button', { name: 'Open saved sample run', exact: true }).click();
-    await expect(first.locator('dl > div').first()).toHaveText('You wantedNo advice');
-    await expect(first.locator('dl > div').nth(1)).toHaveText('In this examplePending');
-    expect((await saved(page, id)).approved).toBe(false);
-    expect(fixture.requests).toHaveLength(0);
+    await expect(first.locator('dd').first()).toHaveText('Create no task.');
+    await expect(first.locator('dd').nth(1)).toContainText(fixture.metadata.title);
+    expect((await api(page, `${extPath(id)}/evidence/${prepared.evidence.id}`)).reports[0].expected.createdTasks).toEqual([]);
+    expect((await saved(page, id)).approved).toBe(false); expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });

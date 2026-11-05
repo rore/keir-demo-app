@@ -1,6 +1,11 @@
 {
   "modelDigest": "sha256:8919c93684f13d58fe70070d0dc90aac0c5259e7d7f87358b20b932c997726b8",
   "compiler": "keir-compiler-java/0.1.0-SNAPSHOT",
+  "runtime": {
+    "archive": "vendor/legacy/keir-runtime-node-read2.tgz",
+    "integrity": "sha512-ivHYd6S8DjnrI513PZYMsshR+XxtDRs0Fqbw3TVnMHL+rSP8S0jI4cdfAP4C9UXlGVf9d81h/QORaJdyW1ebLg==",
+    "environment": { "celJava": "0.14.0", "celNode": "0.6.1", "protobufJava": "4.35.1", "protobufNode": "2.6.2" }
+  },
   "programs": {
     "maya": {
       "file": "maya.json",

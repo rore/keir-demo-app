@@ -1,12 +1,11 @@
 import { writeSync } from 'node:fs';
-import { openData, taskService, taskEffectService, transaction } from '../../src/data.mjs';
+import { openData, taskService, transaction } from '../../src/data.mjs';
+import { nativeEffectService } from './task-effect-schema.mjs';
 
 const config = JSON.parse(process.argv[2]);
 const db = openData(config.path);
 db.exec('PRAGMA busy_timeout=10000');
-const effects = taskEffectService(db, {
-  authorizeRead: () => true, authorizeWrite: () => true, isQualificationCurrent: () => true,
-});
+const effects = nativeEffectService(db);
 const report = message => writeSync(1, `${JSON.stringify(message)}\n`);
 const hold = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 

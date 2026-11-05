@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CompilerError, createCompiler } from '../src/compiler.mjs';
+import { loadHost, TASK_HOOK } from '../src/extension-catalog.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const model = readFileSync(join(root, 'extensions/task-read/dcm.json'));
@@ -68,9 +69,10 @@ async function cleaned(call) {
 test('distribution is the pinned independent compiler and notice metadata resolves', async () => {
   const info = JSON.parse(await readFile(join(vendor, 'compiler-provenance.json')));
   assert.equal(sha(await readFile(join(vendor, jarName))), info.artifact.sha256.slice(7));
-  assert.equal(info.artifact.sha256, 'sha256:9196102bfac620fa038ca6e562c5ebb12e71350042722a9dcf20d5969d84c469');
-  assert.equal(info.artifact.bytes, 8_814_077);
-  assert.equal(info.profile, 'keir-read/2');
+  assert.equal(info.artifact.sha256, 'sha256:64cd2507ed3bde34b99b14b1db16c9c0cfbf1bbd74f4cb7cd55ea213f2f60608');
+  assert.equal(info.artifact.bytes, 8_814_604);
+  assert.equal(info.profile, 'keir-effect/4');
+  assert.deepEqual(info.profiles, ['keir-read/2', 'keir-effect/3', 'keir-effect/4']);
   const notices = await readFile(join(vendor, info.dependencies.metadata), 'utf8');
   assert.equal(info.dependencies.count, 19);
   assert.equal(info.dependencies.preserved_original_notice_count, 5);
@@ -96,10 +98,11 @@ test('safe direct argv, immutable byte snapshots and minimal JVM environment', a
   assert.equal(call.options.shell, false);
   assert.equal(call.options.windowsHide, true);
   assert.equal(call.args[0], '-Xmx256m');
+  assert.equal(call.args[1], '-XX:-UsePerfData');
   assert.equal(call.args.at(-1), '--profile=keir-read/2');
-  assert.equal(sha(await readFile(call.args[4])), '9196102bfac620fa038ca6e562c5ebb12e71350042722a9dcf20d5969d84c469');
-  assert.deepEqual(await readFile(call.args[5]), Buffer.from('submitted bytes'));
-  assert.deepEqual(await readFile(call.args[6]), model);
+  assert.equal(sha(await readFile(call.args[5])), '64cd2507ed3bde34b99b14b1db16c9c0cfbf1bbd74f4cb7cd55ea213f2f60608');
+  assert.deepEqual(await readFile(call.args[6]), Buffer.from('submitted bytes'));
+  assert.deepEqual(await readFile(call.args[7]), model);
   assert.deepEqual(Object.keys(call.options.env).filter(key => call.options.env[key] !== undefined && !['PATH', 'SystemRoot', 'WINDIR', 'SystemDrive', 'TEMP', 'TMP'].includes(key)), []);
   assert.equal(call.options.env.NODE_V8_COVERAGE, undefined);
   assert.equal(call.options.env.TEMP, call.options.cwd);
@@ -315,6 +318,34 @@ test('trusted test budgets cannot widen production ceilings or use a missing mod
   await assert.rejects(createCompiler({ modelBytes: model }, { timeoutMs: 10_001 }).compile(source), unavailable);
   await assert.rejects(createCompiler({ modelBytes: model }, { killGraceMs: 251 }).compile(source), unavailable);
   await assert.rejects(createCompiler().compile(source), unavailable);
+});
+
+test('explicit trusted definition retains the same compiler slot and exact model/profile', async t => {
+  const f = fixture(t, okScript, { holdClose: true });
+  const compiler = createCompiler({}, { launch: f.launch });
+  const definition = loadHost();
+  const pending = compiler.compile(source, { definition });
+  definition.dcmBytes.fill(0);
+  definition.pins.profile = 'keir-effect/3';
+  await f.onHeldClose;
+  await assert.rejects(compiler.compile(source, { definition: loadHost(TASK_HOOK) }), isError('COMPILER_BUSY', 429));
+  assert.deepEqual(await readFile(f.calls[0].args[7]), model);
+  assert.equal(f.calls[0].args.at(-1), '--profile=keir-read/2');
+  f.calls[0].release();
+  await pending;
+  await cleaned(f.calls[0]);
+});
+
+test('untrusted definition/profile/model is rejected without launching a compiler', async t => {
+  const f = fixture(t), compiler = createCompiler({}, { launch: f.launch }), definition = loadHost();
+  for (const changed of [
+    { ...definition, definitionId: 'customer-definition' },
+    { ...definition, pins: { ...definition.pins, profile: 'keir-effect/3' } },
+    { ...definition, pins: { ...definition.pins, hook: TASK_HOOK } },
+    { ...definition, dcmBytes: Buffer.from('{}') },
+    { ...definition, pins: { ...definition.pins, consumer: { id: 'customer-consumer', version: '1', kind: 'EVENT_REPORT' } } },
+  ]) await assert.rejects(compiler.compile(source, { definition: changed }), unavailable);
+  assert.equal(f.calls.length, 0);
 });
 
 const java = process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java';

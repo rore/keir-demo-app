@@ -23,8 +23,8 @@ function scenario(providerName, { clarify = true, wrong = false } = {}) {
   let compiled = false;
   const steps = [
     ['discover_catalog', {}], ...(clarify ? [['ask_clarification', { question: 'Which classification should open tasks show?' }]] : []),
-    ['compile_draft', { sourceJson: 'invalid candidate', expectedDraftVersion: 0 }],
-    ['compile_draft', { sourceJson: source, expectedDraftVersion: 0 }],
+    ['compile_draft', { hookId: 'TaskCompleted', sourceJson: 'invalid candidate', expectedDraftVersion: 0 }],
+    ['compile_draft', { hookId: 'TaskCompleted', sourceJson: source, expectedDraftVersion: 0 }],
     ['propose_scenarios', { revisionId: 'compiledB', cases, expectedDraftVersion: 1 }],
     ['simulate_draft', { revisionId: 'reviewB', expectedDraftVersion: 2 }],
     ['offer_review', { summary: 'Review the independent synthetic case; other inputs are untested.' }],
@@ -152,22 +152,20 @@ test('project qualification fixture uses isolated durable service and remains in
   assert.equal(JSON.stringify(result).includes('synthetic-openai-key'), false);
 });
 
-test('qualification examples pass the actual permitted authored simulator independently of provider output', async () => {
+test('legacy qualification source cannot gain task-write authority through direct authoring', async () => {
   const fixture = createQualificationHost();
-  const cases = JSON.parse(fixture.inputs[0].text.split('Independent cases: ')[1]);
-  assert.equal(cases.length, 5);
-  assert.equal(cases.some(value => JSON.parse(value).id === 'host-denied'), false);
+  assert.match(fixture.inputs[0].text, /Discover.*actual existing project IDs/);
+  assert.match(fixture.inputs[0].text, /Author my project and title choices in source/);
+  assert.match(fixture.inputs[0].text, /Do not approve, activate/);
   const db = openData(':memory:');
   try {
-    // Packaging/compilation is covered separately; this checks the fixture's independent truth.
+    const tasks = db.prepare('SELECT * FROM tasks ORDER BY id').all();
     const compiler = { compile: async () => ({ artifact: readFileSync(new URL('../extensions/task-read/maya.json', import.meta.url)), diagnostics: [] }) };
     const lifecycle = createLifecycle(db, { compiler });
-    let draft = await lifecycle.createFromSource('sam', { operationId: 'qualified-source', source: readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8') }, () => {});
-    const extensionId = draft.extension.id;
-    draft = await lifecycle.proposeScenarios('sam', { extensionId, revisionId: draft.revisionId, cases, draftVersion: draft.draftVersion }, () => {});
-    draft = await lifecycle.simulate('sam', { extensionId, revisionId: draft.revisionId, draftVersion: draft.draftVersion }, () => {});
-    const proof = lifecycle.evidence('sam', draft.evidence.id, extensionId);
-    assert.equal(proof.passed, true);
-    assert.deepEqual(proof.reports.map(item => item.report.status), Array(5).fill('PASS'));
+    await assert.rejects(lifecycle.createFromSource('sam', { operationId: 'qualified-source', source: readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8') }, () => {}),
+      error => error.status === 410 && error.code === 'LEGACY_CUSTOMIZATION_RETIRED');
+    assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), tasks);
+    assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 0);
+    assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   } finally { db.close(); }
 });

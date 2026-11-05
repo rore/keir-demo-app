@@ -5,13 +5,13 @@ import { createInterface } from 'node:readline';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openData, taskService, taskEffectService } from '../src/data.mjs';
+import { openData, taskService } from '../src/data.mjs';
+import { nativeEffectService as taskEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
 
 const physical = process.env.KEIR_NATIVE_PROCESS_TESTS === '1';
 const options = { skip: !physical, timeout: 60000 };
 const owner = 'maya';
 const outcome = { status: 'UNKNOWN', reason: 'Process fixture settlement' };
-const authority = { authorizeRead: () => true, authorizeWrite: () => true, isQualificationCurrent: () => true };
 const cleanups = new WeakMap();
 
 function sandbox(t) {
@@ -78,16 +78,7 @@ function setup(t, selected = false) {
 }
 
 function binding(db) {
-  // Storage fixtures exercise trusted native admission; they do not qualify a runtime.
-  const pins = {
-    artifactDigest: `sha256:${'a'.repeat(64)}`,
-    modelRef: { domainId: 'demo.tasks', domainVersion: '2', format: 'keir-dcm/effect-3', digest: `sha256:${'b'.repeat(64)}`, descriptorRecipe: 'keir-record-descriptors/1' },
-    compiler: { id: 'fixture', version: '1' }, environment: { id: 'fixture', version: '1' },
-    consumer: { id: 'demo.task-effects', version: '1', kind: 'EVENT_REPORT' },
-    qualification: { id: 'fixture-report', revision: 1, reportDigest: `sha256:${'c'.repeat(64)}`, hostBuild: `sha256:${'d'.repeat(64)}` },
-  };
-  const revision = db.prepare('SELECT r.id, l.extension_id FROM extension_revisions r JOIN extension_revision_links l ON l.revision_id=r.id WHERE r.owner_id=? LIMIT 1').get(owner);
-  return { revisionId: revision.id, pins };
+  return seedTaskEffectBinding(db, owner);
 }
 
 function complete(fixture) {
@@ -137,7 +128,7 @@ test('separate processes claim once and create one stable receipt for the origin
     assert.equal(receipts.length, 1);
     assert.equal(receipts[0].owner_id, owner);
     assert.equal(receipts[0].created_task_id, results[0].value.id);
-    assert.equal(taskEffectService(db, authority).claim(owner, event.event_id), null);
+    assert.equal(taskEffectService(db).claim(owner, event.event_id), null);
   } finally { db.close(); }
 });
 
@@ -208,7 +199,7 @@ for (const operation of ['complete', 'claim', 'create', 'finish']) {
       if (operation !== 'complete') event = complete(fixture);
       if (operation === 'create' || operation === 'finish') {
         const db = fixture.open();
-        try { assert.ok(taskEffectService(db, authority).claim(owner, event.event_id)); }
+        try { assert.ok(taskEffectService(db).claim(owner, event.event_id)); }
         finally { db.close(); }
       }
       const child = worker(t, { ...fixture, eventId: event?.event_id, operation, boundary, outcome });
@@ -231,7 +222,7 @@ for (const operation of ['complete', 'claim', 'create', 'finish']) {
           assert.equal(saved.owner_id, owner);
           assert.equal(saved.input, event.input);
           assert.equal(saved.pins, event.pins);
-          const effects = taskEffectService(db, authority);
+          const effects = taskEffectService(db);
           if (operation === 'claim') {
             assert.equal(saved.state, committed ? 'STARTED' : 'PENDING');
             if (committed) assert.equal(effects.claim(owner, event.event_id), null);

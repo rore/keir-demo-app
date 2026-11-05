@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
 const JAR = 'keir-compiler-java-0.1.0-SNAPSHOT-cli.jar';
-const JAR_BYTES = 8_814_077;
-const JAR_HASH = '9196102bfac620fa038ca6e562c5ebb12e71350042722a9dcf20d5969d84c469';
+const JAR_BYTES = 8_814_604;
+const JAR_HASH = '64cd2507ed3bde34b99b14b1db16c9c0cfbf1bbd74f4cb7cd55ea213f2f60608';
 const IDENTITY = 'keir-compiler-java/0.1.0-SNAPSHOT';
 const PROFILE = 'keir-read/2';
 const SOURCE_LIMIT = 65_536, OUTPUT_LIMIT = 1_048_576, ERROR_LIMIT = 16_384;
@@ -98,12 +98,12 @@ function childEnvironment(directory) {
   return env;
 }
 
-function runChild(java, directory, signal, launch, timeoutMs, killGraceMs) {
+function runChild(java, directory, signal, launch, timeoutMs, killGraceMs, profile) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = launch(java, ['-Xmx256m', '-Djava.io.tmpdir=' + directory, '-Duser.home=' + directory,
-        '-jar', join(directory, 'compiler.jar'), join(directory, 'source.input'), join(directory, 'dcm.json'), '--profile=' + PROFILE],
+      child = launch(java, ['-Xmx256m', '-XX:-UsePerfData', '-Djava.io.tmpdir=' + directory, '-Duser.home=' + directory,
+        '-jar', join(directory, 'compiler.jar'), join(directory, 'source.input'), join(directory, 'dcm.json'), '--profile=' + profile],
       { cwd: directory, env: childEnvironment(directory), shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch { reject(failure('COMPILER_UNAVAILABLE')); return; }
     let closed = false, stopped, killTimer;
@@ -170,14 +170,19 @@ export function createCompiler({ modelBytes, javaExecutable } = {}, {
     && Number.isInteger(killGraceMs) && killGraceMs > 0 && killGraceMs <= 250;
   let active = false;
   return Object.freeze({
-    async compile(sourceBytes, { signal } = {}) {
+    async compile(sourceBytes, { signal, definition } = {}) {
       if (signal !== undefined && !(signal instanceof AbortSignal)) throw failure('COMPILER_FAILED');
       if (signal?.aborted) throw failure('COMPILER_CANCELLED');
       if (active) throw failure('COMPILER_BUSY');
-      if (!configured) throw failure('COMPILER_UNAVAILABLE');
+      if (!configured && definition === undefined) throw failure('COMPILER_UNAVAILABLE');
+      if (typeof java !== 'string' || !java || !Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 10_000
+          || !Number.isInteger(killGraceMs) || killGraceMs <= 0 || killGraceMs > 250) throw failure('COMPILER_UNAVAILABLE');
       if (!(sourceBytes instanceof Uint8Array)) return { artifact: null, diagnostics: Object.freeze([Object.freeze({ code: 'SYNTAX_INVALID', path: '/source', message: messages.SYNTAX_INVALID })]) };
       if (sourceBytes.byteLength > SOURCE_LIMIT) throw failure('COMPILER_LIMIT');
       const source = Buffer.from(sourceBytes);
+      let requestedDefinition;
+      try { requestedDefinition = definition === undefined ? undefined : structuredClone(definition); }
+      catch { throw failure('COMPILER_UNAVAILABLE'); }
       active = true;
       const started = performance.now();
       let directory;
@@ -186,21 +191,32 @@ export function createCompiler({ modelBytes, javaExecutable } = {}, {
         if (performance.now() - started >= timeoutMs) throw failure('COMPILER_TIMEOUT');
       }
       try {
+        let selectedModel = model, profile = PROFILE;
+        if (requestedDefinition !== undefined) {
+          try {
+            const { definitionForPins } = await import('./extension-catalog.mjs');
+            const trusted = definitionForPins(requestedDefinition.pins);
+            if (requestedDefinition.definitionId !== trusted.definitionId || !(requestedDefinition.dcmBytes instanceof Uint8Array)
+                || !Buffer.from(requestedDefinition.dcmBytes).equals(trusted.dcmBytes)) throw 0;
+            selectedModel = Buffer.from(trusted.dcmBytes); profile = trusted.pins.profile;
+          } catch { check(); throw failure('COMPILER_UNAVAILABLE'); }
+        }
         let jar;
         try {
           const metadata = JSON.parse(utf8.decode(await readBounded(join(distributionDirectory, 'compiler-provenance.json'), SOURCE_LIMIT)));
-          if (metadata.compiler !== IDENTITY || metadata.profile !== PROFILE || metadata.artifact?.file !== JAR
+          if (metadata.compiler !== IDENTITY || metadata.profile !== 'keir-effect/4'
+            || JSON.stringify(metadata.profiles) !== JSON.stringify(['keir-read/2', 'keir-effect/3', 'keir-effect/4']) || !metadata.profiles.includes(profile) || metadata.artifact?.file !== JAR
             || metadata.artifact.bytes !== JAR_BYTES || metadata.artifact.sha256 !== 'sha256:' + JAR_HASH) throw 0;
           jar = await readBounded(join(distributionDirectory, JAR), JAR_BYTES);
           if (jar.length !== JAR_BYTES || hash(jar) !== JAR_HASH) throw 0;
         } catch { check(); throw failure('COMPILER_UNAVAILABLE'); }
         check();
         directory = await mkdtemp(join(tmpdir(), 'keir-compile-'));
-        for (const [name, bytes] of [['compiler.jar', jar], ['source.input', source], ['dcm.json', model]]) {
+        for (const [name, bytes] of [['compiler.jar', jar], ['source.input', source], ['dcm.json', selectedModel]]) {
           await writeFile(join(directory, name), bytes, { flag: 'wx', mode: 0o600 });
           check();
         }
-        return await runChild(java, directory, signal, launch, timeoutMs - (performance.now() - started), killGraceMs);
+        return await runChild(java, directory, signal, launch, timeoutMs - (performance.now() - started), killGraceMs, profile);
       } catch (error) {
         if (error instanceof CompilerError) throw error;
         throw failure('COMPILER_FAILED');

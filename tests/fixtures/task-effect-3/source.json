@@ -1,0 +1,54 @@
+{
+  "language": "keir/v0",
+  "domain": {
+    "id": "demo.tasks",
+    "version": "2",
+    "fingerprint": "sha256:d6fa7ff2a689929e18da1b7b247de6be5748a40ea920913c5765c580c56668ec"
+  },
+  "entrypoint": "TaskCompleted",
+  "name": "task-customization-fixture",
+  "steps": [
+    {
+      "id": "eligibleProject",
+      "let": {
+        "literal": "project1",
+        "type": "ProjectId"
+      }
+    },
+    {
+      "id": "source",
+      "call": "tasks.get",
+      "args": {
+        "taskId": {
+          "cel": "input.taskId"
+        }
+      }
+    },
+    {
+      "id": "eligible",
+      "let": {
+        "cel": "source.status == \"COMPLETED\" && source.projectId == eligibleProject"
+      }
+    },
+    {
+      "id": "created",
+      "call": "tasks.create",
+      "when": "eligible",
+      "args": {
+        "projectId": {
+          "cel": "eligibleProject"
+        },
+        "title": {
+          "literal": "Example follow-up task"
+        }
+      }
+    }
+  ],
+  "return": {
+    "record": {
+      "status": {
+        "cel": "eligible ? \"CREATED\" : \"NO_OP\""
+      }
+    }
+  }
+}

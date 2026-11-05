@@ -80,6 +80,23 @@ export default function Customizations({ request, changed, beforeSelectionChange
     setDeletion(null);
     requestAnimationFrame(() => { if (lifetime.current === turn) document.getElementById("delete-" + id)?.focus({ preventScroll: true }); });
   }
+  async function confirmDeletion(id: string) {
+    if (!state || deletingRef.current || paging.current) return;
+    const turn = lifetime.current, ownerId = state.owner.id;
+    deletingRef.current = true; setDeleting(true); setDeletion(null); setDeleteNotice("");
+    try {
+      const saved = await callbacks.current.request<State>(`extensions/${encodeURIComponent(id)}`);
+      if (lifetime.current !== turn) return;
+      if (saved.owner.id !== ownerId || saved.extension?.id !== id) throw new Error("Customization identity mismatch");
+      setState(old => old ? { ...old, items: old.items.map(item => item.extension!.id === id ? saved : item) } : old);
+      // A retired item can belong to a different hook from the collection's current task selection.
+      setDeletion({ id, name: saved.extension.name, draftVersion: saved.draftVersion, generation: saved.selection.generation,
+        selected: saved.selection.revision?.extensionId === id, message: "", blocked: false, uncertain: false });
+      requestAnimationFrame(() => { if (lifetime.current === turn) document.getElementById("customization-delete-confirm")?.focus(); });
+    } catch {
+      if (lifetime.current === turn) setDeleteNotice("Saved state could not be checked. Refresh the collection before confirming Delete.");
+    } finally { if (lifetime.current === turn) { deletingRef.current = false; setDeleting(false); } }
+  }
   async function refreshCollection(ownerId: string, turn: number, deletedId?: string) {
     const next = await callbacks.current.request<Collection>("extensions");
     if (lifetime.current !== turn) return;
@@ -134,10 +151,10 @@ export default function Customizations({ request, changed, beforeSelectionChange
           : "Deletion could not be confirmed. It may have finished. Check deletion with the same confirmation before making another change." });
     } finally { if (lifetime.current === turn) { deletingRef.current = false; setDeleting(false); } }
   }
-  const untitledCount = state?.items.filter(item => item.extension?.name === "Untitled customization").length ?? 0;
   return <main className="customizations-main" aria-labelledby="customizations-heading">
     <h1 id="customizations-heading" tabIndex={-1}>Customizations</h1>
     <p className="page-intro">Make Daymark work your way. Start a change or return to a saved customization.</p>
+    {state?.executionAvailability?.available === false && <p role="status">{state.executionAvailability.message || "Task customizations cannot run in this installation yet. Your tasks still work."}</p>}
     {notice && <p role="status">{notice}</p>}
     {deleteNotice && <p role="status">{deleteNotice} <button className="quiet-button" onClick={() => setRetry(old => old + 1)}>Refresh collection</button></p>}
     <button id="new-customization" className="primary customization-start" onClick={() => open()}>New customization</button>
@@ -145,25 +162,22 @@ export default function Customizations({ request, changed, beforeSelectionChange
       : !state ? <p role="status">Loading your customizations…</p> : !state.items.length ? <p className="customization-empty">Your customizations will appear here.</p> : state.items.map(item => {
         const selected = state.selection.revision;
         const selectedItem = selected?.extensionId === item.extension!.id;
-        const inUse = selectedItem && state.selection.eligible;
+        const inUse = selectedItem && state.selection.eligible && !item.retired;
         const changes = !!item.draft && (!selectedItem || item.draft.id !== selected?.id);
-        const status = selectedItem ? inUse ? changes ? item.approved ? "In use · Approved changes ready to turn on" : "In use · Changes in progress" : "In use" : "Couldn’t check what’s in use"
+        const status = item.retired ? "Retired · history only" : selectedItem ? inUse ? changes ? item.approved ? "In use · Approved changes ready to turn on" : "In use · Changes in progress" : "In use" : "Couldn’t check what’s in use"
           : item.approved ? "Approved · Not in use" : item.draft ? "Saved changes · Not in use" : item.extension!.hookId ? "Not in use" : "In discussion";
         return <article key={item.extension!.id} className="customization-card" aria-label={item.extension!.name}>
           <div className="customization-copy"><h2>{item.extension!.name}</h2>
             <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{status}</span></p>
-            {item.extension!.name === "Untitled customization" && untitledCount > 1 && item.requestExcerpt && <p className="customization-request">Request: {item.requestExcerpt}</p>}
+            {item.retired && <p>This earlier customization cannot run or be resumed. Its saved source, examples and history remain available.</p>}
+            {item.extension!.name === "Untitled customization" && item.requestExcerpt && <p className="customization-request">Request: {item.requestExcerpt}</p>}
           </div>
-          <div className="customization-actions"><button id={`edit-${item.extension!.id}`} className="primary" disabled={deleting} onClick={() => open({ extensionId: item.extension!.id })}>{changes ? "Continue changes" : "Open"}<span aria-hidden="true"> →</span></button>
-            <button id={`delete-${item.extension!.id}`} className="quiet-button" disabled={deleting || !!loadingMore} onClick={() => {
-              setDeletion({ id: item.extension!.id, name: item.extension!.name, draftVersion: item.draftVersion, generation: state.selection.generation, selected: selectedItem, message: "", blocked: false, uncertain: false });
-              const turn = lifetime.current;
-              requestAnimationFrame(() => { if (lifetime.current === turn) document.getElementById("customization-delete-confirm")?.focus(); });
-            }}>Delete</button></div>
+          <div className="customization-actions"><button id={`edit-${item.extension!.id}`} className="primary" disabled={deleting} onClick={() => open({ extensionId: item.extension!.id })}>{item.retired ? "Open history" : changes ? "Continue changes" : "Open"}<span aria-hidden="true"> →</span></button>
+            <button id={`delete-${item.extension!.id}`} className="quiet-button" disabled={deleting || !!loadingMore} onClick={() => void confirmDeletion(item.extension!.id)}>Delete</button></div>
           {deletion?.id === item.extension!.id && <section className="customization-delete" aria-labelledby="customization-delete-title" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); cancelDeletion(); } }}>
             <h3 id="customization-delete-title">Delete “{deletion.name}”?</h3>
             <p>This removes the customization from your saved work. You cannot undo this here. Your tasks stay unchanged.</p>
-            {deletion.selected && <p>This customization is selected. Deleting it also turns it off.</p>}
+            {deletion.selected && <p>Deleting this customization also clears its saved selection.</p>}
             {deletion.message && <p role="alert">{deletion.message}</p>}
             <div className="customization-delete-actions"><button id="customization-delete-confirm" className="primary" disabled={deleting || deletion.blocked} onClick={() => void deleteCustomization()}>{deleting ? "Deleting…" : deletion.uncertain ? "Check deletion" : `Delete “${deletion.name}”`}</button>
               {deletion.blocked && <button className="quiet-button" disabled={deleting} onClick={() => void refreshDeletion()}>Refresh collection</button>}

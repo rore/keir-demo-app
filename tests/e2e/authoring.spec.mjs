@@ -1,10 +1,14 @@
 import { test as base, expect } from '@playwright/test';
 import { openSavedChanges } from '../fixtures/studio-review.mjs';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { start } from '../../src/server.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { TASK_HOOK } from '../../src/extension-catalog.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
+import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
 
 // The public job protocol is scripted here; this fixture does not qualify the real backend/provider loop.
 const test = base.extend({
@@ -17,7 +21,10 @@ const test = base.extend({
     let server;
     try {
       server = await start({ directory, port });
-      await use({ origin: server.origin, extensionIds: Object.fromEntries(server.db.prepare('SELECT owner_id,id FROM extensions').all().map(row => [row.owner_id, row.id])) });
+      const lifecycle = createLifecycle(server.db);
+      const extensionIds = Object.fromEntries(['maya', 'leo', 'sam'].map(owner => [owner,
+        admitTaskDraft(server.db, lifecycle, { owner, name: `${owner} test customization` }).extensionId]));
+      await use({ origin: server.origin, extensionIds });
     } finally { await server?.close(); rmSync(directory, { recursive: true, force: true }); }
   },
 });
@@ -30,7 +37,7 @@ const unavailable = { available: false, code: 'AI_NOT_CONFIGURED', provider: nul
 function conversation(extensionId, id, version, status, messages, { runId = `run-${id}`, operation, draftVersion = 0, review = null } = {}) {
   return { id, extensionId, purpose: 'REVISE', version, status, runId, operation: operation ?? { id: `operation-${id}`, runId, version },
     messages, code: null, review, draft: { revisionId: null, draftVersion, suiteDigest: null },
-    selection: { revisionId: null, generation: 1 } };
+    selection: { revisionId: null, generation: 0 } };
 }
 
 function message(id, role, text, kind = 'text') { return { id, role, text, kind }; }
@@ -92,14 +99,36 @@ function captureDraftVersion(page) {
   return () => value;
 }
 
-async function enterStudio(page, origin, user = 'Maya') {
-  await page.goto(origin);
+async function openSavedItem(page, extensionId) {
+  const mobile = page.getByLabel('Destination', { exact: true });
+  if (await mobile.isVisible()) await mobile.selectOption('customizations');
+  else await page.getByRole('navigation', { name: 'Main navigation', exact: true }).getByRole('button', { name: 'Customizations', exact: true }).click();
+  await page.locator(`#edit-${extensionId}`).click();
+  await expect(studio(page)).toBeVisible();
+}
+async function enterStudio(page, demo, user = 'Maya') {
+  await page.goto(demo.origin);
   await page.getByRole('button', { name: `Continue as ${user}` }).click();
   await page.getByRole('button', { name: user === 'Maya' ? 'Gather material references' : 'Plan the Saturday session', exact: true }).click();
-  await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+  await page.locator('#open-customizations').click();
+  await openSavedItem(page, demo.extensionIds[user.toLowerCase()]);
   await expect(studio(page)).toBeVisible();
   await expect(authoring(page)).toBeVisible();
   await expect(authoring(page)).not.toContainText('AI setup has not been confirmed');
+}
+
+async function prepareTask(page, demo) {
+  const { source, cases } = taskCustomizationFixture();
+  const { contextToken } = await (await page.request.get(`${demo.origin}/api/session`)).json();
+  const headers = { origin: demo.origin, 'x-session-context': contextToken };
+  const mutate = async (operation, data) => {
+    const response = await page.request.post(`${demo.origin}/api/extensions/${demo.extensionIds.maya}/${operation}`, { headers, data });
+    expect(response.ok(), await response.text()).toBe(true);
+    return response.json();
+  };
+  const compiled = await mutate('compile', { hookId: TASK_HOOK, source, label: 'Actual offered task customization', draftVersion: 0 });
+  const suite = await mutate('scenarios', { revisionId: compiled.draft.id, cases, draftVersion: compiled.draftVersion });
+  return { source, suite, mutate };
 }
 
 async function openDetails(page) {
@@ -108,17 +137,19 @@ async function openDetails(page) {
   await expect(ui.locator('.rs-tools')).toHaveJSProperty('open', true);
 }
 
-test('missing setup offers Configure and saved advice without a generation or manual fallback', async ({ page, demo }) => {
+test('missing setup offers Configure and saved task source without a generation or manual fallback', async ({ page, demo }) => {
   const calls = await scriptAuthoring(page, { extensionId: demo.extensionIds.maya, availability: unavailable });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const ui = studio(page), panel = authoring(page);
   await expect(panel).toContainText('Set up the assistant to create or change a customization.');
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Ask for a read-only task suggestion');
+  await ui.getByLabel('Message to Studio', { exact: true }).fill('Ask for a task customization');
   await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
   await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(1);
+  const { source } = await prepareTask(page, demo);
   await openDetails(page);
+  await ui.getByRole('button', { name: 'Reload saved state', exact: true }).click();
   await ui.getByRole('button', { name: 'Inspect saved source and examples', exact: true }).click();
-  await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toBeVisible();
+  await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toHaveText(source);
   await openDetails(page);
   await expect(ui.getByLabel('Developer qualification')).toHaveCount(0);
   await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
@@ -147,9 +178,9 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
       if (current.version === 1) {
         if (current.status === 'RUNNING') {
           firstPolls++;
-          const stable = message('progress-1', 'assistant', 'Checking the submitted advice request.');
+          const stable = message('progress-1', 'assistant', 'Checking the submitted task customization request.');
           if (firstPolls < 2) current = { ...current, messages: [...current.messages, stable] };
-          else current = conversation(demo.extensionIds.maya, current.id, 1, 'AWAITING_USER', [...current.messages, message('clarify-1', 'assistant', 'Which task should this advice cover?', 'clarification')], { runId: current.runId, operation: current.operation, draftVersion: current.draft.draftVersion });
+          else current = conversation(demo.extensionIds.maya, current.id, 1, 'AWAITING_USER', [...current.messages, message('clarify-1', 'assistant', 'Which project should this customization cover?', 'clarification')], { runId: current.runId, operation: current.operation, draftVersion: current.draft.draftVersion });
         }
       } else {
         if (current.status === 'RUNNING') {
@@ -162,16 +193,16 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
       return current;
     },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   await expect.poll(getDraftVersion).toBe(0);
   const ui = studio(page);
-  await ui.getByLabel('Message to Studio', { exact: true }).fill('Suggest read-only advice for my tasks');
+  await ui.getByLabel('Message to Studio', { exact: true }).fill('Suggest a task customization for my projects');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(ui.getByText('Which task should this advice cover?', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(ui.getByText('Which project should this customization cover?', { exact: true })).toBeVisible({ timeout: 10_000 });
   expect(Object.keys(calls.turns[0]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'operationId', 'target', 'text']);
-  expect(calls.turns[0]).toMatchObject({ conversationId: null, text: 'Suggest read-only advice for my tasks', expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'revise', extensionId: demo.extensionIds.maya, baseRevisionId: expect.any(String), selectionGeneration: 1 } });
+  expect(calls.turns[0]).toMatchObject({ conversationId: null, text: 'Suggest a task customization for my projects', expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'revise', extensionId: demo.extensionIds.maya, baseRevisionId: null, selectionGeneration: 0 } });
   expect(typeof calls.turns[0].operationId).toBe('string');
-  expect(await ui.getByText('Checking the submitted advice request.', { exact: true }).count()).toBe(1);
+  expect(await ui.getByText('Checking the submitted task customization request.', { exact: true }).count()).toBe(1);
   expect(firstPolls).toBeGreaterThanOrEqual(2);
 
   await ui.getByLabel('Message to Studio', { exact: true }).fill('Use open tasks as the first example');
@@ -208,7 +239,7 @@ for (const width of [1440, 390]) test(`lost accepted turn response is read back 
       : { availability: available, conversations: [{ id: accepted.id, version: accepted.version, status: accepted.status,
         runId: accepted.runId, creationOperationId: posted.operationId, operationId: accepted.operation.id }], current: null },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const ui = studio(page);
   await ui.getByLabel('Message to Studio', { exact: true }).fill('Tell me what task fields are available');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
@@ -247,7 +278,7 @@ for (const width of [1440, 683]) test(`Stop stays visible and remains cancelling
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(current) });
     },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const panel = authoring(page);
   await studio(page).getByLabel('Message to Studio', { exact: true }).fill('Start a bounded authoring request');
   await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
@@ -288,7 +319,7 @@ test('held status from an old owner cannot appear in the newly mounted Studio af
       return { ...oldConversation, messages: [...oldConversation.messages, message('maya-late', 'assistant', 'Late private Maya response')] };
     },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const ui = studio(page);
   await ui.getByLabel('Message to Studio', { exact: true }).fill('Private Maya request');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
@@ -296,7 +327,8 @@ test('held status from an old owner cannot appear in the newly mounted Studio af
 
   await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-  await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+  await page.locator('#open-customizations').click();
+  await openSavedItem(page, demo.extensionIds.leo);
   await expect(authoring(page)).toBeVisible();
   await expect(authoring(page)).not.toContainText('AI setup has not been confirmed');
   releaseStatus();
@@ -320,7 +352,7 @@ test('mount, reload, readback and New conversation never submit; saved messages 
     },
     onTurn: async route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: 'No turn is expected in this test' }) }),
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const panel = authoring(page);
   await expect(studio(page).getByText('This message came from saved state.', { exact: true })).toBeVisible();
   expect(calls.turns).toHaveLength(0);
@@ -337,29 +369,11 @@ test('mount, reload, readback and New conversation never submit; saved messages 
 
 for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test(`an offered review preserves its actual evidence and host eligibility (${eligible}, ${width}px)`, async ({ page, demo }) => {
   await page.setViewportSize({ width, height: width === 683 ? 384 : 1000 });
-  const source = JSON.stringify({ language: 'keir/v0', domain: { id: 'demo.tasks', version: '1',
-    fingerprint: JSON.parse(readFileSync(new URL('../../extensions/task-read/selection.json', import.meta.url))).modelDigest },
-    entrypoint: 'ClassifyTask', name: 'offered-task-advice',
-    steps: [{ id: 'readTask', call: 'tasks.get', args: { taskId: { cel: 'input.taskId' } } }],
-    return: { record: { classification: { cel: 'readTask.status == "COMPLETED" ? "PENDING" : "DONE"' } } } });
-  const example = JSON.stringify({ format: 'keir-read-simulation/1', id: 'open-task', input: { taskId: 'sample-task' },
-    stubs: [{ step: 'readTask', capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' },
-      response: { kind: 'SUCCESS', value: { id: 'sample-task', status: 'OPEN' } } }],
-    expect: { calls: [{ step: 'readTask', capability: 'tasks.get', version: '1', args: { taskId: 'sample-task' } }],
-      outcome: { classification: 'COMPLETED', result: { classification: 'DONE' } }, consumption: { status: 'DISPLAYED', code: 'DONE' } } });
   await page.goto(demo.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
   await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
   const { contextToken } = await (await page.request.get(`${demo.origin}/api/session`)).json();
-  async function lifecycle(operation, body) {
-    const response = await page.request.post(`${demo.origin}/api/extensions/${demo.extensionIds.maya}/${operation}`, {
-      headers: { origin: demo.origin, 'x-session-context': contextToken }, data: body,
-    });
-    expect(response.ok(), await response.text()).toBe(true);
-    return response.json();
-  }
-  const compiled = await lifecycle('compile', { source, label: 'Actual offered advice', draftVersion: 0 });
-  const suite = await lifecycle('scenarios', { revisionId: compiled.draft.id, cases: [example], draftVersion: compiled.draftVersion });
+  const { source, suite, mutate: lifecycle } = await prepareTask(page, demo);
   const first = await lifecycle('simulate', { revisionId: suite.draft.id, draftVersion: suite.draftVersion });
   const latest = await lifecycle('simulate', { revisionId: suite.draft.id, draftVersion: suite.draftVersion });
   expect(first.evidence.passed).toBe(true); expect(latest.evidence.passed).toBe(true);
@@ -376,19 +390,20 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
       creationOperationId: 'offered-creation', operationId: offered.operation.id }], current: presented };
   } });
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-  await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+  await page.locator('#open-customizations').click();
+  await openSavedItem(page, demo.extensionIds.maya);
   const ui = studio(page);
   await expect(ui.getByText('Inspect the exact offered run.', { exact: true })).toBeVisible();
   const heading = ui.locator('.rs-chat-note');
   await expect(heading).toContainText('Messages use your configured assistant');
   await expect(heading).not.toContainText(available.provider);
   await expect(heading).not.toContainText(available.model);
-  const offerButton = authoring(page).getByRole('button', { name: eligible ? 'View saved changes' : 'Inspect these saved examples', exact: true }).first();
+  const offerButton = authoring(page).getByRole('button', { name: eligible ? 'View saved changes' : 'View earlier examples', exact: true }).first();
   await expect(offerButton).toBeInViewport();
   await expect(offerButton).toBeEnabled();
   if (width === 683) {
-    await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
-    await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
+    await openSavedItem(page, demo.extensionIds.maya);
     await expect(offerButton).toBeInViewport();
     await expect(offerButton).toBeEnabled();
   }
@@ -402,7 +417,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   const requested = [];
   page.on('request', request => { const path = new URL(request.url()).pathname; if (/^\/api\/extensions\/[^/]+\/evidence\//.test(path)) requested.push(path.split('/').at(-1)); });
   await offerButton.click();
-  await expect(ui.getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
+  await expect(ui.getByRole('heading', { name: eligible ? 'Your saved changes' : 'Earlier examples', exact: true })).toBeVisible();
   expect(requested).toEqual([first.evidence.id]);
   expect((await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json()).approved).toBe(false);
   if (eligible) {
@@ -442,7 +457,7 @@ test('active observation pauses while hidden and keeps reading beyond 130 withou
     current.messages = [message('observed', 'assistant', `Observed ${reads}`)];
     return current;
   } });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   await expect(studio(page).getByText('Observed 0', { exact: true })).toBeVisible();
   await page.clock.runFor(500);
   expect(reads).toBe(0);
@@ -482,7 +497,7 @@ test('failed start and failed recovery block retry until readback, then reuse th
     await route.fulfill({ status: 503, json: { message: 'Readback temporarily unavailable' } }).catch(() => {});
   } });
   try {
-    await enterStudio(page, demo.origin);
+    await enterStudio(page, demo);
     const ui = studio(page), panel = authoring(page);
     await ui.getByLabel('Message to Studio', { exact: true }).fill('Original submitted request');
     await ui.getByRole('button', { name: 'Send', exact: true }).click(); await entered;
@@ -512,19 +527,14 @@ test('saved lifecycle receipts preserve the complete loaded conversation when AI
   const calls = await scriptAuthoring(page, { extensionId: demo.extensionIds.maya, onRead: async (_calls, id) => id ? saved : { availability: unavailable,
     conversations: [{ id: saved.id, version: saved.version, status: saved.status, runId: saved.runId,
       creationOperationId: 'history-creation', operationId: saved.operation.id }], current: saved } });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const ui = studio(page);
   await expect(ui.getByText(/^Saved conversation message /)).toHaveCount(42);
-  const session = await (await page.request.get(demo.origin + '/api/session')).json();
-  const headers = { 'x-session-context': session.contextToken, origin: demo.origin };
-  const state = await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers })).json();
-  const prepared = await page.request.post(demo.origin + '/api/extensions/' + demo.extensionIds.maya + '/draft', { headers, data: { templateId: state.catalog[0].id, draftVersion: state.draftVersion } });
-  expect(prepared.ok(), await prepared.text()).toBe(true);
+  const { suite: draft, mutate } = await prepareTask(page, demo);
   await openDetails(page);
   await ui.getByRole('button', { name: 'Reload saved state', exact: true }).click();
-  const draft = await prepared.json();
-  const proof = await page.request.post(demo.origin + '/api/extensions/' + demo.extensionIds.maya + '/simulate', { headers, data: { revisionId: draft.revisionId, draftVersion: draft.draftVersion } });
-  expect(proof.ok(), await proof.text()).toBe(true); expect((await proof.json()).evidence.passed).toBe(true);
+  const proof = await mutate('simulate', { revisionId: draft.revisionId, draftVersion: draft.draftVersion });
+  expect(proof.evidence.passed).toBe(true);
   await ui.getByRole('button', { name: 'Reload saved state', exact: true }).click();
   await expect(ui.getByText(/^Saved conversation message /)).toHaveCount(42);
   expect(calls.turns).toHaveLength(0);
@@ -532,7 +542,7 @@ test('saved lifecycle receipts preserve the complete loaded conversation when AI
 
 for (const code of ['SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'PROVIDER_RATE_LIMIT', 'CONTEXT_LIMIT', 'EXPIRED']) test(`saved ${code} recovery continues only explicitly in the same discussion`, async ({ page, demo }) => {
   let current = { ...conversation(demo.extensionIds.maya, 'saved-discussion', 4, 'BLOCKED', [
-    message('saved-user', 'user', 'Keep completed tasks at Done. ' + '🧭אב'.repeat(3000)),
+    message('saved-user', 'user', 'Keep my task completion changes. ' + '🧭אב'.repeat(3000)),
     message('saved-answer', 'assistant', 'The saved examples still describe your request.'),
   ]), code };
   const calls = await scriptAuthoring(page, { extensionId: demo.extensionIds.maya,
@@ -545,7 +555,7 @@ for (const code of ['SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'PROVIDER_RATE_LIMIT', 'C
       return route.fulfill({ status: 202, json: { operation: current.operation, conversation: current } });
     },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const ui = studio(page), composer = ui.getByLabel('Message to Studio', { exact: true });
   await composer.fill('Keep this unsent follow-up');
   const continuation = ui.getByRole('button', { name: code === 'PROVIDER_RATE_LIMIT' ? 'Try again from saved work' : 'Continue here from saved work', exact: true });
@@ -564,7 +574,7 @@ for (const code of ['SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'PROVIDER_RATE_LIMIT', 'C
     expectedDraftVersion: 0, target: { kind: 'resume', extensionId: demo.extensionIds.maya },
     text: 'Continue from saved work. Ask before changing any independent examples.' }]);
   await expect(composer).toHaveValue('Keep this unsent follow-up');
-  await expect(ui.locator('.rs-yours').first()).toContainText('Keep completed tasks at Done.');
+  await expect(ui.locator('.rs-yours').first()).toContainText('Keep my task completion changes.');
   await expect(continuation).toHaveCount(0);
   await page.reload();
   await expect(ui.getByText('Ready for your next choice.', { exact: true })).toBeVisible();

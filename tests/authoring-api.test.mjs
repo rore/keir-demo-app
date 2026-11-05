@@ -1,7 +1,7 @@
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises';
@@ -9,33 +9,46 @@ import { AppError, openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
-import { createLifecycle, simulationCases } from '../src/extension-lifecycle.mjs';
+import { createLifecycle as lifecycleFactory } from '../src/extension-lifecycle.mjs';
 import { createCompiler } from '../src/compiler.mjs';
-import { loadHost } from '../src/extension-catalog.mjs';
+import { TASK_HOOK } from '../src/extension-catalog.mjs';
+import { taskCustomizationFixture, compileTaskCustomization } from './fixtures/task-customization.mjs';
+import { admitTaskDraft } from './fixtures/task-authoring.mjs';
+
+const taskFixture = taskCustomizationFixture(), source = taskFixture.source;
+let artifact;
+before(async () => { artifact = (await compileTaskCustomization()).artifactBytes; });
+const compiler = { compile: async () => ({ artifact, diagnostics: [] }) };
+const taskCases = () => taskFixture.cases.map(text => ({ id: JSON.parse(text).id, bytes: Buffer.from(text) }));
+const lifecycleDatabases = new WeakMap();
+function createLifecycle(db, options) {
+  const lifecycle = lifecycleFactory(db, options); lifecycleDatabases.set(lifecycle, db); return lifecycle;
+}
+function taskDraft(db, owner = 'maya') {
+  const lifecycle = createLifecycle(db, { compiler }), operationId = 'authoring-fixture-' + owner;
+  const existing = db.prepare('SELECT id FROM extensions WHERE owner_id=? AND creation_operation_id=?').get(owner, operationId);
+  if (!existing) return admitTaskDraft(db, lifecycle, { owner, operationId });
+  const conversation = db.prepare("SELECT c.id FROM authoring_conversations c JOIN extension_conversation_links l ON l.conversation_id=c.id WHERE l.extension_id=? AND l.purpose='CREATE'").get(existing.id);
+  return { extensionId: existing.id, conversationId: conversation.id, state: lifecycle.state(owner, existing.id) };
+}
 
 function itemId(lifecycle, owner) {
-  const items = lifecycle.collection(owner).items;
-  assert.equal(items.length, 1, 'Fixture must have exactly one explicitly scoped extension.');
-  return items[0].extension.id;
+  return taskDraft(lifecycleDatabases.get(lifecycle), owner).extensionId;
 }
 
 function extensionPath(db, suffix = '', owner = 'maya') {
-  const rows = db.prepare('SELECT id FROM extensions WHERE owner_id=?').all(owner);
-  assert.equal(rows.length, 1, 'Use the fixture owner’s explicit legacy extension.');
-  return 'extensions/' + rows[0].id + (suffix ? '/' + suffix : '');
+  return 'extensions/' + taskDraft(db, owner).extensionId + (suffix ? '/' + suffix : '');
 }
 
-const source = readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8');
-const artifact = readFileSync(new URL('../extensions/task-read/maya.json', import.meta.url));
-const compiler = { compile: async () => ({ artifact, diagnostics: [] }) };
 const lease = sessionId => ({ sessionId, current: () => true });
 function input(db, operationId, overrides = {}, owner = 'maya') {
-  const rows = db.prepare('SELECT * FROM extensions WHERE owner_id=?').all(owner);
-  assert.equal(rows.length, 1, 'The fixture has one known legacy extension per owner.');
-  const extension = rows[0], selection = db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='ClassifyTask'").get(owner);
-  const target = overrides.conversationId ? { kind: 'resume', extensionId: extension.id }
+  const fixture = taskDraft(db, owner), extension = db.prepare('SELECT * FROM extensions WHERE id=?').get(fixture.extensionId);
+  const selection = db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='TaskCompleted'").get(owner);
+  const initial = extension.draft_version === 0 && db.prepare('SELECT version FROM authoring_conversations WHERE id=?').get(fixture.conversationId).version === 0;
+  const conversationId = overrides.conversationId ?? (initial ? fixture.conversationId : null);
+  const target = conversationId ? { kind: 'resume', extensionId: extension.id }
     : { kind: 'revise', extensionId: extension.id, baseRevisionId: extension.draft_revision_id ?? selection.revision_id, selectionGeneration: selection.generation };
-  return { conversationId: null, operationId, text: 'Help with task advice.', expectedVersion: 0, expectedDraftVersion: 0, target, ...overrides };
+  return { conversationId, operationId, text: 'Help with this task customization.', expectedVersion: 0, expectedDraftVersion: 0, target, ...overrides };
 }
 const configFor = (provider = 'openai', cap = '3') => readAuthoringConfig({ KEIR_AI_PROVIDER: provider,
   KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5', KEIR_AI_MAX_USD: cap,
@@ -51,7 +64,7 @@ function removeFixture(directory) {
   rmSync(directory, { recursive: true, force: true });
 }
 function assertDto(value) {
-  keys(value, ['id', 'extensionId', 'purpose', 'version', 'status', 'runId', 'operation', 'messages', 'messagesBefore', 'code', 'review', 'draft', 'selection']);
+  keys(value, ['id', 'extensionId', 'purpose', 'retired', 'version', 'status', 'runId', 'operation', 'messages', 'messagesBefore', 'code', 'review', 'draft', 'selection']);
   assert.ok(value.messagesBefore === null || typeof value.messagesBefore === 'string');
   keys(value.operation, ['id', 'runId', 'version']);
   keys(value.draft, ['revisionId', 'draftVersion', 'suiteDigest']);
@@ -73,6 +86,7 @@ function wire(provider, choose) {
     assert.equal(init.redirect, 'error');
     assert.equal(body.tools.some(tool => /approve|activate|select/.test(tool.name)), false);
     const step = await choose(body, index);
+    if (step?.name === 'compile_draft') step.arguments = { hookId: TASK_HOOK, ...step.arguments };
     const call = step?.name ? { id: 'call-' + index, ...step } : null;
     const raw = provider === 'openai'
       ? { status: 'completed', output: [{ type: 'reasoning', id: 'reason-' + index, encrypted_content: 'private-reasoning', summary: [] },
@@ -161,7 +175,7 @@ const qualifiedJava = checkedJava.status === 0 && /version "(?:2[1-9]|[3-9][0-9]
 for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs real pinned-JAR diagnostics, saves original cases and offers exact simulator evidence without approval`,
   { skip: !qualifiedJava && !process.env.CI }, async t => {
     assert.ok(qualifiedJava, 'Qualified Java 21 is required in CI.');
-    const cases = simulationCases('pending').filter(item => item.id !== 'host-denied').map(item => '\n ' + item.bytes.toString() + '\n');
+    const cases = taskCases().map(item => '\n ' + item.bytes.toString() + '\n');
     let compiledId, scenarioId, exactEvidenceId, latestEvidenceId, callApi;
     const fake = wire(provider, async (body, index) => {
       const prior = lastTool(provider, body);
@@ -193,7 +207,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
       assert.notEqual(latestEvidenceId, exactEvidenceId);
       return { name: 'offer_review', arguments: { summary: 'Review these five independent cases. Other inputs are untested.' } };
     });
-    const realCompiler = createCompiler({ modelBytes: loadHost().dcmBytes, javaExecutable: java });
+    const realCompiler = createCompiler({ javaExecutable: java });
     const { db, call, login } = await api(t, { config: configFor(provider), fetchImpl: fake.fetchImpl }, { compiler: realCompiler });
     callApi = call;
     await login(); const selection = (await call(extensionPath(db))).json().selection;
@@ -227,7 +241,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
     assert.equal(reserved(db), configFor(provider).reserveMicros * 6);
     assert.equal(rowState(db).counts.compiles, 2);
     assert.equal(dispatches(db, current.id).length, 12); assert.ok(dispatches(db, current.id).every(item => item.outcome === 'SUCCESS'));
-    const changed = await call(extensionPath(db, 'draft'), { templateId: 'attention', draftVersion: 2 });
+    const changed = await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source, draftVersion: 2 });
     assert.equal(changed.statusCode, 200);
     const historical = (await call('authoring/conversations/' + current.id)).json();
     assert.equal(historical.review.eligible, false);
@@ -277,7 +291,7 @@ test('file restart never replays interrupted work; a new explicit revision conve
   const first = await service.turn('maya', input(db, 'before-restart'), lease('old-session'));
   const saved = await service.wait('maya', first.conversation.id);
   await service.close();
-  const currentB = lifecycle.load('maya', { extensionId: itemId(lifecycle, 'maya'), templateId: 'attention', draftVersion: 0 }, () => {});
+  const currentB = await lifecycle.compile('maya', { extensionId: itemId(lifecycle, 'maya'), hookId: TASK_HOOK, source, draftVersion: 0 }, () => {});
   const state = rowState(db);
   state.status = 'RUNNING'; state.inFlight = { ordinal: 3, kind: 'provider' };
   state.dispatchOrdinal = 3; state.checkpoint = { phase: 'DISPATCH', ...state.inFlight };
@@ -365,9 +379,9 @@ test('cancel retains the run until an abort-insensitive fetch and response cance
 });
 
 test('independent wrong expectation remains byte-exact and review-ineligible without automatic repair or approval', async t => {
-  const value = JSON.parse(simulationCases('pending')[0].bytes.toString());
-  value.expect.outcome.result.classification = 'DONE';
-  value.expect.consumption.code = 'DONE';
+  const value = JSON.parse(taskCases()[0].bytes.toString());
+  value.expect.outcome.result.status = 'NO_OP';
+  value.expect.consumption.result.status = 'NO_OP';
   const original = '\n' + JSON.stringify(value, null, 2) + '\n';
   const fake = wire('openai', (body, index) => {
     const prior = lastTool('openai', body);
@@ -383,7 +397,7 @@ test('independent wrong expectation remains byte-exact and review-ineligible wit
   const result = await service.wait('maya', started.conversation.id);
   assert.equal(result.status, 'REVIEW_AVAILABLE'); assert.equal(result.review.eligible, false);
   const proof = lifecycle.evidence('maya', result.review.evidenceId, itemId(lifecycle, 'maya'));
-  assert.equal(proof.passed, false); assert.equal(proof.reports[0].report.status, 'MISMATCH');
+  assert.equal(proof.passed, false); assert.equal(proof.reports[0].report.status, 'FAIL');
   assert.deepEqual(lifecycle.source('maya', result.review.revisionId, itemId(lifecycle, 'maya')).cases, [original]);
   assert.equal(fake.requests.length, 4); assert.equal(rowState(db).counts.compiles, 1);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 2);
@@ -450,13 +464,12 @@ for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lo
   let db = openData(path), lifecycle = createLifecycle(db, { compiler }), service;
   t.after(async () => { await service?.close(); db.close(); removeFixture(directory); });
   const selectedA = lifecycle.state('maya', itemId(lifecycle, 'maya')).selection;
-  const initial = mutation === 'source' ? lifecycle.load('maya', { extensionId: itemId(lifecycle, 'maya'), templateId: 'pending', draftVersion: 0 }, () => {})
-    : await lifecycle.compile('maya', { extensionId: itemId(lifecycle, 'maya'), source, draftVersion: 0 }, () => {});
+  const initial = await lifecycle.compile('maya', { extensionId: itemId(lifecycle, 'maya'), hookId: TASK_HOOK, source, draftVersion: 0 }, () => {});
   const initialSource = lifecycle.source('maya', initial.revisionId, initial.extension.id);
   const fake = wire('openai', (body, index) => {
     if (index === 0) return mutation === 'source'
       ? { name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 1 } }
-      : { name: 'propose_scenarios', arguments: { revisionId: initial.revisionId, cases: [simulationCases('pending')[0].bytes.toString()], expectedDraftVersion: 1 } };
+      : { name: 'propose_scenarios', arguments: { revisionId: initial.revisionId, cases: [taskCases()[0].bytes.toString()], expectedDraftVersion: 1 } };
     assert.equal(body.input.length, 1, 'Explicit recovery starts a fresh native chain using current host handles.');
     return { name: 'ask_clarification', arguments: { question: 'Confirm the saved current draft.' } };
   });
@@ -499,8 +512,8 @@ for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lo
 
 for (const provider of ['openai', 'anthropic']) for (const defect of ['duplicate-key', 'missing-error-path', 'duplicate-id'])
 test(`${provider} repairs ${defect} native scenario rejection without changing original expectations or limits`, async t => {
-  const cases = simulationCases('pending').filter(item => item.id !== 'host-denied').map(item => '\n ' + item.bytes.toString() + '\n');
-  const malformed = JSON.parse(cases[2]); delete malformed.expect.outcome.error.path;
+  const cases = taskCases().map(item => '\n ' + item.bytes.toString() + '\n');
+  const malformed = cases.map(text => JSON.parse(text)).find(row => row.id === 'missing-task'); delete malformed.expect.outcome.error.path;
   const invalid = defect === 'duplicate-key' ? ['{"id":"private-hostile-instruction",' + cases[0].trim().slice(1)]
     : defect === 'missing-error-path' ? [cases[0], JSON.stringify(malformed)] : [cases[0], cases[0]];
   let compiled, saved, db, service, lifecycle;
@@ -573,8 +586,8 @@ test('only allowlisted scenario admission diagnostics are repairable; other host
 test('public scenario rejection stays HTTP400 and returns only a host-constructed case diagnostic', async t => {
   const { db, call, login } = await api(t, { config: configFor() });
   await login();
-  const compiled = (await call(extensionPath(db, 'compile'), { source, draftVersion: 0 })).json();
-  const valid = simulationCases('pending')[0].bytes.toString();
+  const compiled = (await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source, draftVersion: 0 })).json();
+  const valid = taskCases()[0].bytes.toString();
   for (const [cases, diagnostic] of [
     [['{"id":"private-hostile-instruction",' + valid.slice(1)], { code: 'INVALID_SCENARIO', path: '/cases/0' }],
     [[valid, valid], { code: 'DUPLICATE_SCENARIO_ID', path: '/cases/1' }],

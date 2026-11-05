@@ -1,16 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { openData, transaction } from '../src/data.mjs';
-import { createLifecycle, simulationCases } from '../src/extension-lifecycle.mjs';
+import { openData } from '../src/data.mjs';
+import { createLifecycle } from '../src/extension-lifecycle.mjs';
 import { createTaskRead } from '../src/task-read.mjs';
 import { createApp } from '../src/app.mjs';
-import { runReadSimulation } from '@keir/runtime-node/read-simulation';
+import { createCompiler } from '../src/compiler.mjs';
+import { digest, json } from '../src/extension-catalog.mjs';
+import { runTaskEffectSimulation } from '../src/task-effect-simulation.mjs';
+import { compileTaskCustomization } from './fixtures/task-customization.mjs';
+import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 
 const authorize = () => {};
-const artifact = readFileSync(new URL('../extensions/task-read/maya.json', import.meta.url));
-const source = readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8');
-const compiler = { compile: async () => ({ artifact, diagnostics: [] }) };
+const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const input = state => ({ extensionId: state.extension.id, expectedName: state.extension.name, draftVersion: state.draftVersion, generation: state.selection.generation });
 const handles = state => ({ extensionId: state.extension.id, revisionId: state.draft.id, draftVersion: state.draftVersion });
@@ -19,18 +20,24 @@ function setup(t, options = {}) {
   const db = openData(':memory:'); t.after(() => db.close());
   return { db, lifecycle: createLifecycle(db, { compiler, ...options }) };
 }
-function first(lifecycle, owner = 'maya') { return lifecycle.state(owner, lifecycle.collection(owner).items[0].extension.id); }
+function first(lifecycle, owner = 'maya') { return lifecycle.state(owner, lifecycle.collection(owner).items.find(item => item.retired).extension.id); }
 function add(db, lifecycle, id, owner = 'maya') {
-  return transaction(db, () => lifecycle.admit(owner, { extensionId: id, operationId: id,
-    hash: 'sha256:' + 'a'.repeat(64), name: id }, authorize));
+  return admitTaskDraft(db, lifecycle, { owner, extensionId: id, operationId: id, name: id }).state;
+}
+async function taskDraft(db, lifecycle, id, fixture) {
+  const state = add(db, lifecycle, id);
+  const loaded = await lifecycle.compile('maya', { extensionId: id, hookId: 'TaskCompleted', source: fixture.source, draftVersion: state.draftVersion }, authorize);
+  return lifecycle.proposeScenarios('maya', { ...handles(loaded), cases: fixture.cases }, authorize);
 }
 
 test('selected deletion disables once, keeps audit/native rows and rejects every saved link and restore path', async t => {
   const { db, lifecycle } = setup(t);
-  let state = first(lifecycle), previous = state.selection.revision;
-  state = lifecycle.load('maya', { extensionId: state.extension.id, templateId: 'pending', draftVersion: 0 }, authorize);
+  const fixture = await compileTaskCustomization();
+  let state = await taskDraft(db, lifecycle, 'selected-task', fixture);
   state = await lifecycle.simulate('maya', handles(state), authorize);
   state = lifecycle.approve('maya', { ...handles(state), evidenceId: state.evidence.id }, authorize);
+  state = lifecycle.activate('maya', { ...handles(state), generation: state.selection.generation }, authorize);
+  const previous = state.selection.revision;
   const tables = ['tasks', 'projects', 'extension_revisions', 'extension_revision_links', 'extension_authored', 'extension_evidence', 'extension_approvals', 'authoring_budget'];
   const before = Object.fromEntries(tables.map(table => [table, rows(db, table)]));
   const other = lifecycle.collection('leo');
@@ -39,7 +46,7 @@ test('selected deletion disables once, keeps audit/native rows and rejects every
   assert.equal(receipt.extensionId, state.extension.id); assert.ok(receipt.deletedAt >= 0);
   assert.deepEqual(lifecycle.delete('maya', input(state), authorize), receipt, 'lost response is safely repeatable with old fences');
   const after = lifecycle.collection('maya');
-  assert.deepEqual(after.items, []); assert.equal(after.selection.revision, null);
+  assert.equal(after.items.some(item => item.extension.id === state.extension.id), false); assert.equal(after.selection.revision, null);
   assert.equal(after.selection.generation, state.selection.generation + 1);
   assert.deepEqual(lifecycle.collection('leo'), other);
   for (const table of tables) assert.deepEqual(rows(db, table), before[table], table);
@@ -62,29 +69,29 @@ test('selected deletion disables once, keeps audit/native rows and rejects every
     () => lifecycle.restart('maya', { extensionId: receipt.extensionId, revisionId: previous.id, draftVersion: state.draftVersion, generation: after.selection.generation }, authorize),
   ];
   for (const work of unavailable) assert.throws(work, { status: 404 });
-  assert.deepEqual(lifecycle.history('maya').rows, [], 'normal global history excludes deleted entries without removing retained audit');
+  assert.ok(lifecycle.history('maya').rows.every(row => row.revisionId !== state.draft.id), 'normal global history excludes deleted entries without removing retained legacy audit');
 });
 
-test('unselected deletion preserves unrelated selection and held native advice; selected deletion suppresses held advice', async t => {
-  const { db, lifecycle } = setup(t), state = first(lifecycle);
+test('unselected deletion preserves Task selection while legacy advice remains retired and safely deletable', async t => {
+  const { db, lifecycle } = setup(t), legacy = first(lifecycle);
+  const fixture = await compileTaskCustomization();
+  let active = await taskDraft(db, lifecycle, 'active-task', fixture);
+  active = await lifecycle.simulate('maya', handles(active), authorize);
+  active = lifecycle.approve('maya', { ...handles(active), evidenceId: active.evidence.id }, authorize);
+  active = lifecycle.activate('maya', { ...handles(active), generation: active.selection.generation }, authorize);
   const extra = add(db, lifecycle, 'unselected');
-  const gate = deferred(), entered = deferred();
-  const read = createTaskRead({ lifecycle, clock: { nowMs: () => 0 }, getTask: async (_, id) => {
-    entered.resolve(); await gate.promise; return { id, status: 'open' };
-  } });
-  const waiting = read({ userId: 'maya', taskId: 'task', authorize: () => true }); await entered.promise;
   const before = lifecycle.collection('maya').selection;
   lifecycle.delete('maya', input(extra), authorize);
   assert.deepEqual(lifecycle.collection('maya').selection, before);
-  gate.resolve(); assert.equal((await waiting).classification, 'PENDING');
-  const nextGate = deferred(), nextEntered = deferred();
-  const heldRead = createTaskRead({ lifecycle, clock: { nowMs: () => 0 }, getTask: async (_, id) => {
-    nextEntered.resolve(); await nextGate.promise; return { id, status: 'open' };
-  } });
-  const pending = heldRead({ userId: 'maya', taskId: 'task', authorize: () => true }); await nextEntered.promise;
-  lifecycle.delete('maya', input(state), authorize); nextGate.resolve();
-  assert.equal((await pending).status, 'NOT_DISPLAYED');
-  assert.equal((await heldRead({ userId: 'maya', taskId: 'task', authorize: () => true })).status, 'NOT_DISPLAYED');
+  let reads = 0;
+  const read = createTaskRead({ lifecycle, getTask: async () => { ++reads; throw Error('Retired advice must not read native data'); } });
+  assert.equal((await read({ userId: 'maya', taskId: 'task', authorize: () => true })).status, 'NOT_DISPLAYED');
+  assert.equal(reads, 0);
+  assert.equal(legacy.retired, true);
+  assert.throws(() => lifecycle.rename('maya', { extensionId: legacy.extension.id, name: 'New', expectedName: legacy.extension.name }, authorize), { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
+  lifecycle.delete('maya', input(legacy), authorize);
+  assert.deepEqual(lifecycle.collection('maya').selection, before);
+  assert.equal(lifecycle.source('maya', active.draft.id, active.extension.id).source, fixture.source);
 });
 
 test('exact names, draft and global selection fences reject stale confirmation; denied authority rolls back deletion', t => {
@@ -96,7 +103,7 @@ test('exact names, draft and global selection fences reject stale confirmation; 
   let calls = 0;
   assert.throws(() => lifecycle.delete('maya', input(state), () => { if (++calls === 2) throw Object.assign(new Error('expired'), { status: 401 }); }), { status: 401 });
   assert.deepEqual(rows(db, 'extensions'), retained);
-  assert.equal(lifecycle.collection('maya').selection.generation, state.selection.generation);
+  assert.equal(lifecycle.state('maya', state.extension.id).selection.generation, state.selection.generation);
   const legacyName = 'Legacy\0name';
   db.prepare('UPDATE extensions SET name=? WHERE id=?').run(legacyName, state.extension.id);
   assert.throws(() => lifecycle.delete('maya', input(state), authorize), { status: 409 });
@@ -115,39 +122,51 @@ test('collection cursors still resolve when their anchor is deleted and deleted 
   assert.ok(!next.items.some(item => item.extension.id === 'item-00'));
 });
 
-test('late compile, scenario validation and simulation cannot save after deletion', async t => {
-  const gate = deferred(), entered = deferred();
-  const { db, lifecycle } = setup(t, { compiler: { compile: async () => { entered.resolve(); await gate.promise; return { artifact, diagnostics: [] }; } } });
+test('late Task compile, scenario validation and simulation cannot save after deletion', async t => {
+  const fixture = await compileTaskCustomization(), gate = deferred(), entered = deferred();
+  const { db, lifecycle } = setup(t, { compiler: { compile: async (...args) => { entered.resolve(); await gate.promise; return compiler.compile(...args); } } });
   const state = add(db, lifecycle, 'compile-target'), count = rows(db, 'extension_revisions').length;
-  const pending = lifecycle.compile('maya', { extensionId: state.extension.id, source, draftVersion: 0 }, authorize);
+  const pending = lifecycle.compile('maya', { extensionId: state.extension.id, hookId: 'TaskCompleted', source: fixture.source, draftVersion: 0 }, authorize);
   await entered.promise; lifecycle.delete('maya', input(state), authorize); gate.resolve();
   await assert.rejects(pending, { status: 404 }); assert.equal(rows(db, 'extension_revisions').length, count);
   const regular = createLifecycle(db, { compiler });
-  const authored = await regular.createFromSource('maya', { operationId: 'scenario-target', source }, authorize);
-  const scenario = regular.proposeScenarios('maya', { ...handles(authored), cases: [simulationCases('pending')[0].bytes.toString()] }, authorize);
-  regular.delete('maya', input(authored), authorize);
+  const authored = await taskDraft(db, regular, 'scenario-target', fixture);
+  let checks = 0;
+  const scenario = regular.proposeScenarios('maya', { ...handles(authored), cases: fixture.cases }, () => {
+    if (++checks === 2) regular.delete('maya', input(authored), authorize);
+  });
   await assert.rejects(scenario, { status: 404 });
   const simGate = deferred(), simEntered = deferred();
-  const held = createLifecycle(db, { runSimulation: async (...args) => { simEntered.resolve(); await simGate.promise; return runReadSimulation(...args); } });
-  let loaded = add(db, held, 'simulation-target');
-  loaded = held.load('maya', { extensionId: loaded.extension.id, templateId: 'pending', draftVersion: 0 }, authorize);
+  const held = createLifecycle(db, { compiler, runTaskSimulation: async (...args) => {
+    simEntered.resolve(); await simGate.promise; return runTaskEffectSimulation(...args);
+  } });
+  const loaded = await taskDraft(db, held, 'simulation-target', fixture);
   const evidenceCount = rows(db, 'extension_evidence').length;
   const simulation = held.simulate('maya', handles(loaded), authorize); await simEntered.promise;
   held.delete('maya', input(loaded), authorize); simGate.resolve();
   await assert.rejects(simulation, { status: 404 }); assert.equal(rows(db, 'extension_evidence').length, evidenceCount);
 });
 
-test('creation receipts return terminal deletion without recompiling; mismatched operations still conflict and new creation works', async t => {
+test('historical creation receipts return terminal deletion without recompiling; mismatches conflict and new task admission works', async t => {
+  const fixture = await compileTaskCustomization();
   let calls = 0;
-  const { lifecycle } = setup(t, { compiler: { compile: async () => { calls++; return { artifact, diagnostics: [] }; } } });
-  const request = { operationId: 'original', source };
-  const state = await lifecycle.createFromSource('sam', request, authorize); assert.equal(calls, 1);
-  lifecycle.delete('sam', input(state), authorize);
-  assert.throws(() => lifecycle.findCreation('sam', 'original'), { status: 410, code: 'CUSTOMIZATION_DELETED' });
-  await assert.rejects(lifecycle.createFromSource('sam', request, authorize), { status: 410, code: 'CUSTOMIZATION_DELETED' });
-  await assert.rejects(lifecycle.createFromSource('sam', { ...request, source: source + '\n' }, authorize), { status: 409 });
+  const { db, lifecycle } = setup(t, { compiler: { compile: async (...args) => { calls++; return compiler.compile(...args); } } });
+  const original = first(lifecycle), request = { operationId: 'original', source: 'historical saved source' };
+  // Reconstruct only the original legacy receipt metadata, never a new executable admission.
+  db.prepare('UPDATE extensions SET creation_operation_id=?,creation_hash=? WHERE id=?')
+    .run(request.operationId, digest(json({ operationId: request.operationId, source: request.source })), original.extension.id);
+  const state = await lifecycle.createFromSource('maya', request, authorize); assert.equal(calls, 0);
+  const receipt = state.creationReceipt;
+  assert.deepEqual((await lifecycle.createFromSource('maya', request, authorize)).creationReceipt, receipt);
+  lifecycle.delete('maya', input(state), authorize);
+  assert.throws(() => lifecycle.findCreation('maya', 'original'), { status: 410, code: 'CUSTOMIZATION_DELETED' });
+  await assert.rejects(lifecycle.createFromSource('maya', request, authorize), { status: 410, code: 'CUSTOMIZATION_DELETED' });
+  await assert.rejects(lifecycle.createFromSource('maya', { ...request, source: request.source + 'changed' }, authorize), { status: 409 });
+  assert.equal(calls, 0);
+  await assert.rejects(lifecycle.createFromSource('maya', { ...request, operationId: 'new-direct-source' }, authorize), { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
+  const task = add(db, lifecycle, 'new-explicit');
+  await lifecycle.compile('maya', { extensionId: task.extension.id, hookId: 'TaskCompleted', source: fixture.source, draftVersion: 0 }, authorize);
   assert.equal(calls, 1);
-  await lifecycle.createFromSource('sam', { ...request, operationId: 'new-explicit' }, authorize); assert.equal(calls, 2);
   assert.throws(() => lifecycle.findCreation('leo', 'original'), { status: 404 });
 });
 

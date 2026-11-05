@@ -1,12 +1,32 @@
 import { test as base, expect } from '@playwright/test';
 import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { createCompiler } from '../../src/compiler.mjs';
+import { digest, TASK_HOOK } from '../../src/extension-catalog.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 
-// Public UI protocol fakes only. The isolated server has no configured provider.
+// Authoring projections are fakes; saved task source and proof use the actual compiler/simulator.
+// The isolated server has no configured provider.
 const test = base.extend({
-  demo: async ({}, use) => {
+  demo: async ({ page }, use) => {
     const fixture = await startAuthoringFixture({ unconfigured: true });
-    try { await use({ ...fixture, extensionId: fixture.db.prepare('SELECT id FROM extensions WHERE owner_id=?').get('maya').id }); }
+    try {
+      const lifecycle = createLifecycle(fixture.db, { compiler: createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN }) });
+      const admit = (owner = 'maya', name = 'Completion follow-up') => admitTaskDraft(fixture.db, lifecycle, { owner, name });
+      const { extensionId } = admit(), leo = admit('leo');
+      let state = await lifecycle.compile('maya', { extensionId, hookId: TASK_HOOK, source: fixture.metadata.source, draftVersion: 0 }, () => {});
+      state = await lifecycle.proposeScenarios('maya', { extensionId, revisionId: state.draft.id, draftVersion: state.draftVersion, cases: fixture.metadata.cases }, () => {});
+      const input = { extensionId, revisionId: state.draft.id, draftVersion: state.draftVersion };
+      state = await lifecycle.simulate('maya', input, () => {});
+      expect(state.evidence.passed).toBe(true);
+      state = lifecycle.approve('maya', { ...input, evidenceId: state.evidence.id }, () => {});
+      lifecycle.activate('maya', { ...input, generation: state.selection.generation }, () => {});
+      // Each protocol case supplies its own discussion projection; host admission rows stay intact.
+      await page.route('**/api/authoring**', route => reply(route, { availability: { available: false, code: 'AI_NOT_CONFIGURED', provider: null, model: null },
+        conversations: [], current: null, next: null }));
+      await use({ ...fixture, extensionId, leoId: leo.extensionId, admit });
+    }
     finally { await fixture.close(); }
   },
 });
@@ -272,8 +292,8 @@ for (const status of [200, 503]) test(`a late earlier-page ${status} response ca
     await studio(page).getByRole('button', { name: 'Load earlier messages', exact: true }).click();
     await held;
     await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
-    const leoId = demo.db.prepare('SELECT id FROM extensions WHERE owner_id=?').get('leo').id;
-    await openItem(page, leoId);
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
+    await openItem(page, demo.leoId);
     release();
     await expect(studio(page).getByLabel('Message to Studio', { exact: true })).toHaveValue('');
     await expect(studio(page).getByText('Late owner-private earlier message', { exact: true })).toHaveCount(0);
@@ -284,7 +304,8 @@ for (const status of [200, 503]) test(`a late earlier-page ${status} response ca
 
 for (const approved of [false, true]) test(`a current context boundary owns recovery until its explicit continuation settles (${approved ? 'approved' : 'eligible'} proof)`, async ({ page, demo }, testInfo) => {
   await signIn(page, demo.origin);
-  let saved = await api(page, demo.origin, 'extensions', { operationId: crypto.randomUUID(), source: demo.metadata.source, label: 'Retained checked proposal' });
+  const admitted = demo.admit('maya', 'Retained checked proposal');
+  let saved = await api(page, demo.origin, `extensions/${admitted.extensionId}/compile`, { hookId: TASK_HOOK, source: demo.metadata.source, draftVersion: 0 });
   const extensionId = saved.extension.id;
   saved = await api(page, demo.origin, `extensions/${extensionId}/scenarios`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion, cases: demo.metadata.cases });
   saved = await api(page, demo.origin, `extensions/${extensionId}/simulate`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
@@ -372,7 +393,8 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
 
 test('reloading an accepted context continuation keeps the prior decision hidden until settlement', async ({ page, demo }, testInfo) => {
   await signIn(page, demo.origin);
-  let saved = await api(page, demo.origin, 'extensions', { operationId: crypto.randomUUID(), source: demo.metadata.source, label: 'Retained approved proposal' });
+  const admitted = demo.admit('maya', 'Retained approved proposal');
+  let saved = await api(page, demo.origin, `extensions/${admitted.extensionId}/compile`, { hookId: TASK_HOOK, source: demo.metadata.source, draftVersion: 0 });
   const extensionId = saved.extension.id;
   saved = await api(page, demo.origin, `extensions/${extensionId}/scenarios`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion, cases: demo.metadata.cases });
   saved = await api(page, demo.origin, `extensions/${extensionId}/simulate`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
@@ -508,33 +530,36 @@ test('a collection page held across an owner switch cannot replace the new owner
   await expect(page.getByText('Late owner-private customization', { exact: true })).toHaveCount(0);
 });
 
-test('a lost guided-save receipt uses its exact creation lookup even when the saved item is absent from page one', async ({ page, demo }) => {
+test('a lost legacy guided-save receipt uses its exact lookup off page one without a new save or write authority', async ({ page, demo }) => {
   await signIn(page, demo.origin);
-  let created, posts = 0;
-  const exactLookups = [];
+  const legacy = demo.db.prepare("SELECT id FROM extensions WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
+  const operationId = crypto.randomUUID(), entryId = crypto.randomUUID();
+  // Preserve an original legacy receipt; recovery must never submit a fresh retired save.
+  demo.db.prepare('UPDATE extensions SET creation_operation_id=?,creation_hash=? WHERE id=?').run(operationId, digest('Historical guided-save receipt'), legacy.id);
+  const original = await api(page, demo.origin, 'extensions/' + legacy.id);
+  const source = await api(page, demo.origin, 'extensions/' + legacy.id + '/revisions/' + original.selection.revision.id);
+  const exactLookups = [], posts = [];
   page.on('request', request => {
-    if (new URL(request.url()).pathname.startsWith('/api/extensions/creation/')) exactLookups.push(new URL(request.url()).pathname);
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/api/extensions/creation/')) exactLookups.push(path);
+    if (path.startsWith('/api/') && request.method() !== 'GET') posts.push(path);
   });
   await page.route('**/api/extensions', async route => {
-    if (!requestIsGet(route)) {
-      posts++;
-      const response = await route.fetch();
-      expect(response.ok(), await response.text()).toBe(true);
-      created = await response.json();
-      return route.abort('failed');
-    }
     const response = await route.fetch(), body = await response.json();
-    return reply(route, { ...body, items: body.items.filter(item => item.extension.id !== created?.extension.id), next: 'older-items' });
+    return reply(route, { ...body, items: body.items.filter(item => item.extension.id !== legacy.id), next: 'older-items' });
   });
+  await page.evaluate(({ operationId, entryId }) => {
+    sessionStorage.setItem('daymark-studio-work:maya:' + entryId + ':example', JSON.stringify({ operationId, personal: true }));
+  }, { operationId, entryId });
   await collection(page);
-  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await page.getByRole('button', { name: 'Check submitted example 1', exact: true }).click();
   const ui = studio(page);
-  await ui.getByRole('button', { name: 'Try a guided example · no AI', exact: true }).click();
-  await ui.getByRole('button', { name: 'Yes, keep Done for completed tasks', exact: true }).click();
-  await expect(ui.getByRole('button', { name: 'Continue checking this example', exact: true })).toBeEnabled();
-  expect(posts).toBe(1);
-  expect(exactLookups).toEqual([`/api/extensions/creation/${created.extension.creationOperationId}`]);
-  expect(new URL(page.url()).hash).toContain(`customization=${created.extension.id}`);
-  await expect(ui).toContainText('The saved example was found.');
+  await expect(ui).toContainText('The earlier saved example was found.');
+  await expect(ui.getByRole('article', { name: 'Retired customization', exact: true })).toBeVisible();
+  await expect(ui.getByRole('button', { name: /^(Approve this change|Turn on for my tasks)$/ })).toHaveCount(0);
+  expect(posts).toEqual([]); expect(exactLookups).toEqual(['/api/extensions/creation/' + operationId]);
+  expect(new URL(page.url()).hash).toContain('customization=' + legacy.id);
+  expect(await api(page, demo.origin, 'extensions/' + legacy.id)).toEqual(original);
+  expect(await api(page, demo.origin, 'extensions/' + legacy.id + '/revisions/' + original.selection.revision.id)).toEqual(source);
   expect(demo.requests).toEqual([]);
 });

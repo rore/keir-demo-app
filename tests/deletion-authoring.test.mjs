@@ -1,22 +1,63 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { setImmediate as tick } from 'node:timers/promises';
 import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
-import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { createLifecycle as lifecycleFactory } from '../src/extension-lifecycle.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
+import { TASK_HOOK, digest, json } from '../src/extension-catalog.mjs';
+import { taskCustomizationFixture } from './fixtures/task-customization.mjs';
+import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 
-const source = readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8');
-const artifact = readFileSync(new URL('../extensions/task-read/maya.json', import.meta.url));
-const compiler = { compile: async () => ({ artifact, diagnostics: [] }) };
+const source = taskCustomizationFixture().source;
+const compiler = { compile: async () => assert.fail('This deletion fixture must not compile outside the controlled cancellation case.') };
+const lifecycleDatabases = new WeakMap();
+function createLifecycle(db, options) {
+  const lifecycle = lifecycleFactory(db, options); lifecycleDatabases.set(lifecycle, db); return lifecycle;
+}
 const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra',
   KEIR_AI_MAX_USD: '100', OPENAI_API_KEY: 'synthetic-secret-key' });
 const lease = { sessionId: 'synthetic-session', current: () => true };
 const authorize = () => {};
+
+test('explicit Stop settles nonlive retired runs without rewriting saved JSON, original receipts or UNKNOWN spending', async t => {
+  const db = openData(':memory:'), lifecycle = createLifecycle(db), fixture = admitTaskDraft(db, lifecycle, { operationId: 'legacy-stop-operation' });
+  const original = { conversationId: null, operationId: 'legacy-stop-operation', text: 'Original saved request.', expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'create' } };
+  const state = { ...fixture.conversationState, continuation: { opaque: 'old-private-continuation' } }; delete state.definitionId;
+  state.usage.reservedMicros = 321;
+  const rawState = ' ' + JSON.stringify(state) + ' ', rawView = '{ "messages": [], "code": null, "review": null }';
+  db.prepare("UPDATE authoring_conversations SET state=?,view=?,status='RUNNING' WHERE id=?").run(rawState, rawView, fixture.conversationId);
+  db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run(fixture.conversationId, 'maya', original.operationId, digest(json(original)), state.runId, 0);
+  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run(fixture.conversationId, 'maya', state.runId, 1, 'provider', null, 321, 'UNKNOWN');
+  db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run(fixture.conversationId, 'maya', 1, 'original-message', '{ "id": "original-message", "role": "user", "kind": "text", "text": "Original saved request." }');
+  db.exec('UPDATE authoring_budget SET reserved_micros=321');
+  const header = () => db.prepare('SELECT * FROM authoring_conversations WHERE id=?').get(fixture.conversationId);
+  const retained = () => Object.fromEntries(['authoring_operations', 'authoring_dispatches', 'authoring_messages', 'authoring_budget']
+    .map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  const beforeHeader = header(), before = retained(); let requests = 0;
+  const service = createAuthoringService({ db, lifecycle, config, providerFactory: () => {
+    requests++; assert.fail('Retired Stop or recovery must never construct a provider.');
+  } });
+  t.after(async () => { await service.close(); db.close(); });
+  assert.deepEqual(header(), beforeHeader, 'startup remains byte-preserving');
+  const confirmation = { runId: state.runId, expectedVersion: 0 };
+  assert.throws(() => service.cancel('leo', fixture.conversationId, confirmation, lease), { status: 404 });
+  assert.throws(() => service.cancel('maya', fixture.conversationId, { ...confirmation, runId: 'wrong-run' }, lease), { code: 'STALE_CONVERSATION' });
+  assert.throws(() => service.cancel('maya', fixture.conversationId, { ...confirmation, expectedVersion: 1 }, lease), { code: 'STALE_CONVERSATION' });
+  assert.deepEqual(header(), beforeHeader);
+  const stopped = service.cancel('maya', fixture.conversationId, confirmation, lease);
+  assert.equal(stopped.status, 'CANCELLED'); assert.equal(stopped.retired, true);
+  assert.equal((await service.wait('maya', fixture.conversationId)).status, 'CANCELLED');
+  assert.deepEqual({ ...header() }, { ...beforeHeader, status: 'CANCELLED', cancel_requested: 1 });
+  assert.deepEqual(retained(), before);
+  assert.equal(service.recover('maya', original).operation.id, original.operationId);
+  assert.equal((await service.turn('maya', original, lease)).conversation.status, 'CANCELLED');
+  assert.deepEqual(retained(), before); assert.equal(requests, 0);
+});
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const done = { calls: [], text: 'Saved discussion.', usage: { inputTokens: 1, outputTokens: 1 } };
 function provider(complete = async () => done) {
@@ -24,11 +65,16 @@ function provider(complete = async () => done) {
   return { get calls() { return calls; }, providerFactory: () => ({ reserveMicros: config.reserveMicros,
     maxMicros: config.maxMicros, complete: async (...args) => { calls++; return complete(...args); } }) };
 }
-const firstItem = (lifecycle, owner = 'maya') => lifecycle.collection(owner).items[0].extension.id;
+function firstItem(lifecycle, owner = 'maya') {
+  const db = lifecycleDatabases.get(lifecycle), operationId = 'deletion-fixture-' + owner;
+  const row = db.prepare('SELECT id FROM extensions WHERE owner_id=? AND creation_operation_id=?').get(owner, operationId);
+  return row?.id ?? admitTaskDraft(db, lifecycle, { owner, operationId }).extensionId;
+}
 function request(lifecycle, extensionId, operationId, owner = 'maya') {
   const state = lifecycle.state(owner, extensionId);
-  return { conversationId: null, operationId, text: 'Help with this customization.', expectedVersion: 0,
-    expectedDraftVersion: state.draftVersion, target: { kind: 'revise', extensionId,
+  const initial = lifecycleDatabases.get(lifecycle).prepare("SELECT c.id FROM authoring_conversations c JOIN extension_conversation_links l ON l.conversation_id=c.id WHERE l.owner_id=? AND l.extension_id=? AND c.version=0").get(owner, extensionId);
+  return { conversationId: initial?.id ?? null, operationId, text: 'Help with this customization.', expectedVersion: 0,
+    expectedDraftVersion: state.draftVersion, target: initial ? { kind: 'resume', extensionId } : { kind: 'revise', extensionId,
       baseRevisionId: state.revisionId ?? state.selection.revision?.id ?? null, selectionGeneration: state.selection.generation } };
 }
 const createRequest = operationId => ({ conversationId: null, operationId, text: 'Help create a customization.',
@@ -94,9 +140,9 @@ test('deletion wins admission without dispatch; only a new explicit creation can
 
 test('admitted authoring blocks deletion through Stop and terminal-but-tracked compiler settlement', { timeout: 10000 }, async t => {
   const entered = deferred(), release = deferred();
-  const heldCompiler = { compile: async () => { entered.resolve(); await release.promise; return { artifact, diagnostics: [] }; } };
+  const heldCompiler = { compile: async () => { entered.resolve(); await release.promise; return { diagnostics: [] }; } };
   const { db, call, fake } = await api(t, { compiler: heldCompiler, release: release.resolve,
-    complete: async () => ({ calls: [{ id: 'compile', name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 0 } }],
+    complete: async () => ({ calls: [{ id: 'compile', name: 'compile_draft', arguments: { hookId: TASK_HOOK, sourceJson: source, expectedDraftVersion: 0 } }],
       text: '', usage: { inputTokens: 1, outputTokens: 1 } }) });
   const lifecycle = createLifecycle(db, { compiler }), extensionId = firstItem(lifecycle);
   const before = lifecycle.state('maya', extensionId), body = bodyFor(before);
@@ -128,11 +174,11 @@ test('admitted authoring blocks deletion through Stop and terminal-but-tracked c
 
 test('live work for another item and another owner does not block deletion', { timeout: 10000 }, async t => {
   const entered = deferred(), release = deferred(); let active = 0;
-  const { lifecycle, service } = direct(t, { release: release.resolve, complete: async () => {
+  const { db, lifecycle, service } = direct(t, { release: release.resolve, complete: async () => {
     if (++active === 2) entered.resolve(); await release.promise; return done;
   } });
   const mayaItem = firstItem(lifecycle);
-  const target = await lifecycle.createFromSource('maya', { operationId: 'unrelated-item', source }, authorize);
+  const target = admitTaskDraft(db, lifecycle, { operationId: 'unrelated-item' }).state;
   const confirmationInput = confirmation(lifecycle, target.extension.id);
   const maya = await service.turn('maya', request(lifecycle, mayaItem, 'maya-busy'), lease);
   const leo = await service.turn('leo', request(lifecycle, firstItem(lifecycle, 'leo'), 'leo-busy', 'leo'), lease);
@@ -229,7 +275,7 @@ test('deleted authoring receipts and UNKNOWN spending survive reopen without pai
 test('deleted linked discussions are filtered before paging; deleted anchors and legacy unlinked discussions remain valid', async t => {
   const { db, lifecycle, service } = direct(t);
   const deletedItem = firstItem(lifecycle);
-  const kept = await lifecycle.createFromSource('maya', { operationId: 'kept-item', source }, authorize);
+  const kept = admitTaskDraft(db, lifecycle, { operationId: 'kept-item' }).state;
   const conversations = [];
   for (let index = 0; index < 23; index++) {
     const extensionId = index % 2 ? kept.extension.id : deletedItem;

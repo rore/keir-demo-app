@@ -26,6 +26,17 @@ async function navigate(page, destination) {
   if (await select.isVisible()) await select.selectOption(destination.toLowerCase());
   else await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: destination, exact: true }).click();
 }
+async function selectProject(page, name) {
+  const select = page.getByLabel('Project', { exact: true });
+  if (await select.isVisible()) await select.selectOption({ label: name });
+  else await page.getByRole('navigation', { name: 'Projects', exact: true }).getByRole('button', { name, exact: true }).click();
+  await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
+}
+async function addTask(page, title) {
+  await page.getByLabel('New task title', { exact: true }).fill(title);
+  await page.getByRole('button', { name: /^Add task/ }).click();
+  await expect(page.getByRole('button', { name: title, exact: true })).toBeVisible();
+}
 const send = async (page, text) => {
   await studio(page).getByLabel('Message to Studio', { exact: true }).fill(text);
   await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
@@ -42,20 +53,22 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-    await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
-    await expect(page).toHaveURL(/#customization=[^&]+/);
+    await page.locator('#open-customizations').click();
     const ui = studio(page), session = await (await page.request.get(`${fixture.origin}/api/session`)).json();
-    const exactItem = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
+    let exactItem = null;
     const read = async path => {
       const response = await page.request.get(`${fixture.origin}/api/${scopedPath(page, path, exactItem)}`, { headers: { 'x-session-context': session.contextToken } });
       expect(response.ok(), await response.text()).toBe(true); return response.json();
     };
     const selection = (await read('extensions')).selection;
+    const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
     const mutations = [];
     page.on('request', request => {
       if (request.method() === 'POST' && /\/api\/extensions\/[^/]+\/(approve|activate)$/.test(new URL(request.url()).pathname)) mutations.push(request.url());
     });
-    await send(page, 'Show Pending for open tasks and Done for completed tasks, with no advice when reading fails.');
+    await send(page, `When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`);
+    await expect(page).toHaveURL(/#customization=[^&]+/);
+    exactItem = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     await expect(ui.getByText(fixture.metadata.mismatchText, { exact: true })).toBeVisible({ timeout: 20_000 });
     const failed = (await read('authoring')).current;
     expect(failed.status).toBe('REVIEW_AVAILABLE'); expect(failed.review.eligible).toBe(false);
@@ -65,15 +78,17 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     expect(wrong.source).toBe(fixture.metadata.wrongSource); expect(wrong.cases).toEqual(fixture.metadata.cases);
     const failedProof = await read(`extensions/evidence/${failed.review.evidenceId}`);
     expect(failedProof.passed).toBe(false);
-    const completed = failedProof.reports.find(item => item.id === 'synthetic-completed');
-    expect(completed.expected.code).toBe('DONE'); expect(completed.report.consumption.code).toBe('PENDING');
-    expect(completed.report.status).toBe('MISMATCH'); expect(completed.report.mismatches.length).toBeGreaterThan(0);
-    await ui.getByRole('button', { name: 'Inspect saved examples from this message', exact: true }).click();
+    const nonmatch = failedProof.reports.find(item => item.id === 'other-project');
+    expect(nonmatch.expected.createdTasks).toEqual([]);
+    expect(nonmatch.report.observed).toEqual({ effect: 'NOT_OBSERVED', createdTasks: null });
+    expect(nonmatch.report.status).toBe('FAIL'); expect(nonmatch.report.mismatches.length).toBeGreaterThan(0);
+    await ui.getByText(fixture.metadata.mismatchText, { exact: true }).locator('..').getByRole('button', { name: 'View checked examples', exact: true }).click();
     await ui.getByText('Other checked examples', { exact: true }).click();
-    await ui.getByRole('button', { name: 'What a completed task would show', exact: true }).click();
-    const mismatch = ui.locator('.rs-example').filter({ hasText: 'This example needs a correction' });
+    await ui.getByRole('button', { name: `Saved example: Completed task in “${fixture.metadata.otherProjectName}”`, exact: true }).click();
+    const mismatch = ui.locator('.rs-example:visible');
     await expect(mismatch).toHaveCount(1);
-    await expect(mismatch.locator('dd')).toHaveText(['Done', 'Pending']);
+    await expect(mismatch.locator('.rs-mismatch')).toHaveText('Task creation was not confirmed in this example');
+    await expect(mismatch.locator('dd')).toHaveText(['Create no task.', 'No task-creation result was observed.']);
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
     expect((await read('extensions')).approved).toBe(false); expect((await read('extensions')).selection).toEqual(selection);
@@ -82,7 +97,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
 
     await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
     expect(fixture.requests).toHaveLength(5);
-    await send(page, 'Correct the saved source so completed tasks show Done. Keep exactly the same independent expected examples.');
+    await send(page, 'Correct the saved source so only completed tasks in the chosen project create the named task. Keep exactly the same independent expected examples.');
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
     const repaired = (await read('authoring')).current;
     expect(repaired.id).toBe(failed.id); expect(repaired.version).toBe(failed.version + 1); expect(repaired.review.eligible).toBe(true);
@@ -111,6 +126,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByLabel('Message to Studio', { exact: true })).toBeVisible();
     await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(repaired.review.revisionId);
     expect(mutations).toHaveLength(2);
+    expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
     await openDetails(page);
     await ui.getByRole('button', { name: 'Inspect saved source and examples', exact: true }).click();
     await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toHaveText(fixture.metadata.source);
@@ -125,7 +141,8 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
 for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
   test(`offline ${provider} native loop reaches real exact human review and Use (${width}px)`, async ({ page }) => {
     test.setTimeout(60_000);
-    const fixture = await startAuthoringFixture({ provider, unconfigured: provider === 'openai' });
+    const fixture = await startAuthoringFixture({ provider, unconfigured: provider === 'openai',
+      ...(provider === 'anthropic' && { projectName: 'Delivery planning', title: 'Prepare delivery review' }) });
     try {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       await page.goto(fixture.origin);
@@ -162,13 +179,12 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await navigate(page, 'Tasks');
       await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
       await page.getByLabel('Task title', { exact: true }).fill('Unsaved native title during offline authoring');
-      await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
-      await expect(page).toHaveURL(/#customization=[^&]+/);
+      await page.locator('#open-customizations').click();
       const ui = studio(page), panel = authoring(page);
       await expect(ui.locator('.rs-chat-note')).toContainText('Messages use your configured assistant');
       expect(fixture.requests).toEqual([]);
       await expect(ui.locator('.rs-chat')).not.toContainText(provider);
-      const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
+      const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get();
       await openDetails(page);
       const connection = ui.getByRole('region', { name: 'Assistant connection details', exact: true });
       await expect(connection.getByText(`Provider: ${provider}`, { exact: true })).toBeVisible();
@@ -187,11 +203,12 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
           await route.abort('failed');
         }, { times: 1 });
       }
-      await send(page, 'Offline synthetic qualification: draft read-only Pending/Done advice using independent examples.');
+      await send(page, `When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`);
+      await expect(page).toHaveURL(/#customization=[^&]+/);
       await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
       expect(turns).toBe(1);
       expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
-      await send(page, 'Confirmed: OPEN means PENDING and COMPLETED means DONE. Use the independent synthetic cases.');
+      await send(page, `Confirmed: create ${fixture.metadata.title} only after a completion in ${fixture.metadata.projectName}. Keep the independent matching, nonmatching and unavailable-task examples.`);
       await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
       await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
       if (provider === 'openai') {
@@ -217,10 +234,15 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(conversation.messages.filter(message => message.role === 'assistant' && message.text === fixture.metadata.question)).toHaveLength(1);
       expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(8 * (provider === 'openai' ? 319488 : 77824));
       const state = await read('extensions');
-      expect(state.selection.revision.id).toBe(selectedA.revision_id);
+      const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
+      expect(state.selection.revision?.id ?? null).toBe(selectedA.revision_id);
       expect(state.selection.generation).toBe(selectedA.generation); expect(state.approved).toBe(false);
       const saved = await read(`extensions/revisions/${conversation.review.revisionId}`);
       expect(saved.source).toBe(fixture.metadata.source); expect(saved.cases).toEqual(fixture.metadata.cases);
+      const program = JSON.parse(saved.source);
+      expect(program.entrypoint).toBe('TaskCompleted');
+      expect(program.steps[0].let.literal).toBe(fixture.metadata.projectId);
+      expect(program.steps[3].args.title.literal).toBe(fixture.metadata.title);
       const evidenceRequests = [];
       page.on('request', request => {
         const path = new URL(request.url()).pathname;
@@ -229,24 +251,33 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await ui.getByLabel('Message to Studio', { exact: true }).fill('Keep this unsent refinement while reviewing');
       await openSavedChanges(page);
       await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
-      const situationLabels = ['Unfinished task', 'Completed task', 'Missing task', 'Task access denied', 'Read temporarily unavailable'];
+      const proof = await read(`extensions/evidence/${conversation.review.evidenceId}`);
+      expect(proof.reports.map(item => item.id)).toEqual(['matching-project', 'other-project', 'unfinished-task', 'missing-task', 'access-denied', 'read-unavailable']);
+      expect(proof.passed).toBe(true);
+      expect(proof.reports[0].expected.createdTasks).toEqual([{ projectId: fixture.metadata.projectId, projectName: fixture.metadata.projectName, title: fixture.metadata.title }]);
+      expect(proof.reports[0].report.observed).toEqual({ effect: 'CONFIRMED', createdTasks: proof.reports[0].expected.createdTasks });
+      expect(proof.reports[1].expected.createdTasks).toEqual([]);
+      expect(proof.reports[1].report.observed).toEqual({ effect: 'NONE', createdTasks: [] });
       await ui.getByText(/^Other checked examples/).click();
-      for (const [index, label] of situationLabels.entries()) {
-        const example = decision(page).getByRole('article', { name: `Example: ${label}`, exact: true });
+      const examples = decision(page).getByRole('article', { name: /^Example:/ });
+      await expect(examples).toHaveCount(proof.reports.length);
+      for (const [index, report] of proof.reports.entries()) {
+        const example = examples.nth(index);
         await expect(example).toBeVisible();
-        await expect(example.locator('h4')).toHaveText(label);
+        await expect(example.locator('h4')).toHaveText(report.report.scenario.task.title);
+        await expect(example.locator('dd').first()).toContainText(index === 0 ? fixture.metadata.title : 'Create no task.');
         await expect(example.locator('.rs-match')).toHaveCount(1);
         if (!index) {
           const exact = decision(page).getByLabel('Exact checked examples', { exact: true });
           await expect(exact).toBeHidden();
           await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
-          await expect(exact).toContainText('synthetic-open');
+          await expect(exact).toContainText('matching-project');
           await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
         }
       }
       expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
       await expect(ui.getByLabel('Message to Studio', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
-      await expect(decision(page)).toContainText('Your tasks have not changed.');
+      await expect(decision(page)).toContainText('These were example tasks; your real tasks have not changed.');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
       for (let index = 0; index < fixture.metadata.cases.length; index++)
@@ -258,7 +289,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
       await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
       await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
-      expect((await read('extensions')).selection.revision.id).toBe(selectedA.revision_id);
+      expect((await read('extensions')).selection.revision?.id ?? null).toBe(selectedA.revision_id);
       await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
       await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('In use');
       await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
@@ -268,14 +299,61 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
       await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
       expect((await read('extensions')).selection.generation).toBe(selectedA.generation + 1);
+      expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore, 'Checking, approval and activation make no native task changes.');
       await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved native title during offline authoring');
-      await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-      await expect(page.getByRole('status').filter({ hasText: 'Task advice: Pending' })).toBeVisible();
+      await page.getByRole('button', { name: 'Close task details', exact: true }).click();
+      await selectProject(page, fixture.metadata.projectName);
+      const sourceTitle = `Finish ${provider} customer work`;
+      await addTask(page, sourceTitle);
+      const source = fixture.db.prepare("SELECT id FROM tasks WHERE owner_id='maya' AND title=?").get(sourceTitle);
+      await page.getByRole('button', { name: `Complete ${sourceTitle}`, exact: true }).click();
+      const nativeOutcome = page.getByRole('region', { name: 'Customization outcome', exact: true });
+      await expect(nativeOutcome.getByRole('button', { name: `Open task: ${fixture.metadata.title}`, exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect.poll(async () => (await read(`tasks/${source.id}/reaction`)).state).toBe('FINISHED');
+      const first = await read(`tasks/${source.id}/reaction`);
+      expect(first.receipt).toMatchObject({ kind: 'SUCCESS', effect: 'CONFIRMED' });
+      expect(first.outcome.classification).toBe('COMPLETED');
+      const createdId = first.receipt.value.id;
+      expect(await read(`tasks/${createdId}`)).toMatchObject({ projectId: fixture.metadata.projectId, title: fixture.metadata.title, status: 'open' });
+      await nativeOutcome.getByRole('button', { name: `Open task: ${fixture.metadata.title}`, exact: true }).click();
+      await expect(page.getByLabel('Task title', { exact: true })).toHaveValue(fixture.metadata.title);
+      expect(fixture.db.prepare("SELECT count(*) n FROM tasks WHERE owner_id='maya' AND project_id=? AND title=?").get(fixture.metadata.projectId, fixture.metadata.title).n).toBe(1);
+      const admission = fixture.db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(source.id);
+      const repeated = await page.request.post(`${fixture.origin}/api/tasks/${source.id}/complete`, {
+        headers: { origin: fixture.origin, 'content-type': 'application/json', 'x-session-context': session.contextToken }, data: {} });
+      expect(repeated.ok(), await repeated.text()).toBe(true);
+      expect(await repeated.json()).toEqual(await read(`tasks/${source.id}`));
+      expect(await read(`tasks/${source.id}/reaction`)).toEqual(first);
+      expect(fixture.db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(source.id)).toEqual(admission);
+      expect(fixture.db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n).toBe(1);
+      await page.getByRole('button', { name: 'Close task details', exact: true }).click();
+      await page.getByRole('button', { name: `Complete ${fixture.metadata.title}`, exact: true }).click();
+      await expect.poll(async () => (await read(`tasks/${createdId}/reaction`)).state).toBe('FINISHED');
+      const later = await read(`tasks/${createdId}/reaction`);
+      expect(later.receipt).toMatchObject({ kind: 'SUCCESS', effect: 'CONFIRMED' });
+      expect(later.receipt.value.id).not.toBe(createdId);
+      expect(await read(`tasks/${later.receipt.value.id}`)).toMatchObject({ projectId: fixture.metadata.projectId, title: fixture.metadata.title, status: 'open' });
+      const laterAdmission = fixture.db.prepare('SELECT event_id,original_key FROM task_completion_events WHERE source_task_id=?').get(createdId);
+      expect(laterAdmission.event_id).not.toBe(admission.event_id); expect(laterAdmission.original_key).not.toBe(admission.original_key);
+      expect(fixture.db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n).toBe(2);
+      await selectProject(page, fixture.metadata.otherProjectName);
+      const nonmatchTitle = `Finish unrelated ${provider} work`;
+      await addTask(page, nonmatchTitle);
+      const nonmatch = fixture.db.prepare("SELECT id FROM tasks WHERE owner_id='maya' AND title=?").get(nonmatchTitle);
+      await page.getByRole('button', { name: `Complete ${nonmatchTitle}`, exact: true }).click();
+      await expect.poll(async () => (await read(`tasks/${nonmatch.id}/reaction`)).state).toBe('FINISHED');
+      const skipped = await read(`tasks/${nonmatch.id}/reaction`);
+      expect(skipped.receipt).toBeNull();
+      expect(skipped.outcome).toMatchObject({ classification: 'COMPLETED', result: { status: 'NO_OP' }, effects: [] });
+      await expect(nativeOutcome.getByRole('button', { name: /^Open task:/ })).toHaveCount(0);
+      expect(fixture.db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n).toBe(2);
       const callCount = fixture.requests.length;
       if (provider === 'openai') {
         await page.setViewportSize({ width: 683, height: 384 });
-        await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+        await selectProject(page, fixture.metadata.projectName);
+        await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+        await page.locator('#open-customizations').click();
         await expect(ui.getByRole('button', { name: 'History and details', exact: true })).toBeInViewport({ ratio: 1 });
         await page.screenshot({ path: resolve('build/screens', 'authoring-offer-short-reopened.png'), fullPage: true });
         expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(2);
@@ -288,9 +366,10 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       if (provider === 'openai') {
         await page.setViewportSize({ width: 1440, height: 1000 });
         await navigate(page, 'Tasks');
+        await selectProject(page, fixture.metadata.projectName);
         await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-        await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
-        const intended = 'Refine the saved advice after replacing assistant settings.';
+        await page.locator('#open-customizations').click();
+        const intended = 'Refine the saved task customization after replacing assistant settings.';
         await ui.getByLabel('Message to Studio', { exact: true }).fill(intended);
         await openDetails(page);
         await ui.getByRole('button', { name: 'Configure', exact: true }).click();
@@ -320,6 +399,22 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         expect((await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
         expect(turns).toBe(4);
       }
+      const requestsBeforeSwitch = fixture.requests.length;
+      const heldBeforeSwitch = fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
+      await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+      await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
+      const foreignSession = await (await page.request.get(`${fixture.origin}/api/session`)).json();
+      const foreignTask = await page.request.get(`${fixture.origin}/api/tasks/${createdId}`, { headers: { 'x-session-context': foreignSession.contextToken } });
+      expect(foreignTask.status()).toBe(404);
+      const foreignOutcome = await page.request.get(`${fixture.origin}/api/tasks/${source.id}/reaction`, { headers: { 'x-session-context': foreignSession.contextToken } });
+      expect(foreignOutcome.status()).toBe(404);
+      await page.getByLabel('Demo person', { exact: true }).selectOption('maya');
+      await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+      const returnedSession = await (await page.request.get(`${fixture.origin}/api/session`)).json();
+      const retained = await page.request.get(`${fixture.origin}/api/tasks/${source.id}/reaction`, { headers: { 'x-session-context': returnedSession.contextToken } });
+      expect(retained.status()).toBe(200); expect(await retained.json()).toEqual(first);
+      expect(fixture.requests).toHaveLength(requestsBeforeSwitch);
+      expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(heldBeforeSwitch);
     } finally { await fixture.close(); }
   });
 }

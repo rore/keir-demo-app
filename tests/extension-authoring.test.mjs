@@ -1,21 +1,21 @@
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
-import { loadCatalog } from '../src/extension-catalog.mjs';
-import { digest } from '../src/extension-catalog.mjs';
+import { digest, TASK_HOOK, TASK_DEFINITION } from '../src/extension-catalog.mjs';
+import { taskCustomizationFixture, compileTaskCustomization } from './fixtures/task-customization.mjs';
 
 const origin = 'http://127.0.0.1:32123';
-const source = readFileSync(new URL('../extensions/task-read/maya.yaml', import.meta.url), 'utf8');
-const artifact = loadCatalog().find(item => item.id === 'pending').artifactBytes;
+const fixture = taskCustomizationFixture(), source = fixture.source;
+let artifact;
+before(async () => { artifact = (await compileTaskCustomization()).artifactBytes; });
 const compiler = { compile: async () => ({ artifact, diagnostics: [] }) };
 const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-test-key' });
 const response = (call, text = '') => ({ calls: call ? [call] : [], text, usage: { inputTokens: 8, outputTokens: 4 } });
-const call = (name, id, arguments_ = {}) => ({ id, name, arguments: arguments_ });
+const call = (name, id, arguments_ = {}) => ({ id, name, arguments: { ...(name === 'compile_draft' && { hookId: TASK_HOOK }), ...arguments_ } });
 
-function scriptedProvider({ onCall = () => {}, question = 'Would task advice while checking a saved task help instead?' } = {}) {
+function scriptedProvider({ onCall = () => {}, question = 'Would creating a task after completion in your chosen project help instead?' } = {}) {
   const requests = [];
   const providerFactory = value => {
     let step = 0, compileRequested = false;
@@ -25,14 +25,18 @@ function scriptedProvider({ onCall = () => {}, question = 'Would task advice whi
       async complete(args) {
         requests.push(args); onCall(args);
         const n = step++;
-        if (compileRequested) return response(null, 'The supported advice is prepared as a draft for your review.');
+        if (compileRequested) return response(null, 'The supported task change is prepared as a draft for your review.');
         if (typeof args.input === 'string' && /^no\b/i.test(args.input)) return response(null, 'No changes were made.');
         if (typeof args.input === 'string' && /\byes\b|\bagree\b/i.test(args.input)) {
           compileRequested = true;
           return response(call('compile_draft', 'compile-' + requests.length, { sourceJson: source, expectedDraftVersion: 0 }));
         }
         if (n === 0) return response(call('discover_catalog', 'discover-' + requests.length));
-        if (n === 1) return response(call('ask_clarification', 'clarify-' + requests.length, { question }));
+        if (n === 1) {
+          const discovered = JSON.parse(args.toolResult.output).result;
+          assert.ok(discovered.projects.projects.some(project => project.id === fixture.metadata.projectId));
+          return response(call('ask_clarification', 'clarify-' + requests.length, { question }));
+        }
         return response(null, 'I am waiting for your choice.');
       },
     };
@@ -42,6 +46,8 @@ function scriptedProvider({ onCall = () => {}, question = 'Would task advice whi
 
 async function api(t, { provider, checkpointFault, compiler: appCompiler = compiler } = {}) {
   const db = openData(':memory:');
+  for (const [id, name] of [[fixture.metadata.projectId, 'Customer project'], [fixture.metadata.otherProjectId, 'Other project']])
+    db.prepare('INSERT INTO projects VALUES (?,?,?,?,?)').run(id, 'maya', name, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
   const app = await createApp({ db, origin, compiler: appCompiler, authoring: {
     config, providerFactory: provider?.providerFactory ?? scriptedProvider().providerFactory, checkpointFault,
   } });
@@ -82,7 +88,7 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   }) });
   const { db, call: callApi, login } = await api(t, { provider, checkpointFault: point => {
     if (point.stage === 'afterCommit' && point.phase === 'ADMIT') {
-      const row = db.prepare(`SELECT e.id,e.hook_id,e.draft_version,e.draft_revision_id,c.id conversation_id,l.purpose
+      const row = db.prepare(`SELECT e.id,e.hook_id,e.draft_version,e.draft_revision_id,c.id conversation_id,l.purpose,json_extract(c.state,'$.definitionId') definition_id
         FROM extensions e JOIN extension_conversation_links l ON l.extension_id=e.id
         JOIN authoring_conversations c ON c.id=l.conversation_id WHERE c.creation_operation_id=?`).get('create-chat');
       admitSnapshots.push({ row: row && { ...row }, budget: db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros });
@@ -113,7 +119,7 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   assert.ok(conversation.extensionId);
   assert.deepEqual(conversation.draft, { revisionId: null, draftVersion: 0, suiteDigest: null });
   assert.deepEqual(admitSnapshots[0], { row: { id: conversation.extensionId, hook_id: null, draft_version: 0,
-    draft_revision_id: null, conversation_id: conversationId, purpose: 'CREATE' }, budget: 0 });
+    draft_revision_id: null, conversation_id: conversationId, purpose: 'CREATE', definition_id: TASK_DEFINITION }, budget: 0 });
   assert.equal(providerSnapshots[0].budget, config.reserveMicros, 'the linked blank item exists before the first provider dispatch');
   assert.equal(providerSnapshots[0].linked, 1, 'the first provider call sees the committed conversation link');
   const discovery = JSON.parse(provider.requests[1].toolResult.output).result;
@@ -121,7 +127,8 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   assert.equal(discovery.currentDraft.revisionId, null);
   assert.equal(discovery.currentDraft.draftVersion, 0);
   assert.equal(discovery.currentProposal, null, 'new creation does not inherit the seeded advice');
-  assert.ok(discovery.supportedHooks.some(item => item.id === 'ClassifyTask'));
+  assert.ok(discovery.supportedHooks.some(item => item.id === TASK_HOOK));
+  assert.equal(discovery.supportedHooks.some(item => item.id === 'ClassifyTask'), false);
 
   const blank = (await callApi(`extensions/${conversation.extensionId}`)).json();
   assert.equal(blank.extension.hookId, null);
@@ -132,10 +139,10 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   assert.ok(filtered.conversations.every(item => item.extensionId === conversation.extensionId));
   assert.equal((await callApi('authoring')).json().current, null);
 
-  const compiled = await callApi(`extensions/${conversation.extensionId}/compile`, { source, draftVersion: 0 });
+  const compiled = await callApi(`extensions/${conversation.extensionId}/compile`, { hookId: TASK_HOOK, source, draftVersion: 0 });
   assert.equal(compiled.statusCode, 200);
   assert.equal(compiled.json().draftVersion, 1);
-  assert.equal(compiled.json().extension.hookId, 'ClassifyTask');
+  assert.equal(compiled.json().extension.hookId, TASK_HOOK);
   const requestCount = provider.requests.length;
   const heldBeforeReplay = db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
   const replay = await callApi('authoring/turn', request);
@@ -152,7 +159,7 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
     conversationId, expectedVersion: conversation.version, expectedDraftVersion: 1,
   }))).statusCode, 404);
 
-  const revised = await callApi('authoring/turn', start('new-revise', 'Help me revise this task advice.', {
+  const revised = await callApi('authoring/turn', start('new-revise', 'Help me revise this task customization.', {
     kind: 'revise', extensionId: conversation.extensionId, baseRevisionId: compiled.json().draft.id,
     selectionGeneration: compiled.json().selection.generation,
   }, { expectedDraftVersion: 1 }));
@@ -163,10 +170,11 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   assert.deepEqual({ ...link }, { extension_id: conversation.extensionId, purpose: 'REVISE', base_revision_id: compiled.json().draft.id,
     base_generation: compiled.json().selection.generation });
 
-  const secondItem = await callApi('extensions', { operationId: 'second-item', source, label: 'Second item' });
-  assert.equal(secondItem.statusCode, 200);
-  assert.notEqual(secondItem.json().extension.id, conversation.extensionId);
-  const mismatch = await callApi('authoring/turn', start('wrong-resume-item', 'Continue.', { kind: 'resume', extensionId: secondItem.json().extension.id }, {
+  const secondItem = await callApi('authoring/turn', start('second-item', 'Discuss another task customization.'));
+  assert.equal(secondItem.statusCode, 202);
+  await settled(callApi, secondItem.json().conversation.id);
+  assert.notEqual(secondItem.json().conversation.extensionId, conversation.extensionId);
+  const mismatch = await callApi('authoring/turn', start('wrong-resume-item', 'Continue.', { kind: 'resume', extensionId: secondItem.json().conversation.extensionId }, {
     conversationId, expectedVersion: conversation.version, expectedDraftVersion: 1,
   }));
   assert.equal(mismatch.statusCode, 404);
@@ -175,13 +183,13 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
 test('foreign targets fail and an unlinked legacy chat stays readable but cannot resume', async t => {
   const { db, call: callApi, login } = await api(t);
   await login();
-  const own = await callApi('extensions', { operationId: 'own-item', source, label: 'Owned item' });
+  const own = await callApi('extensions');
   assert.equal(own.statusCode, 200);
-  const ownId = own.json().extension.id;
+  const ownId = own.json().items[0].extension.id;
   await login('leo');
-  const foreign = await callApi('extensions', { operationId: 'foreign-item', source, label: 'Other owner item' });
+  const foreign = await callApi('extensions');
   assert.equal(foreign.statusCode, 200);
-  const foreignId = foreign.json().extension.id;
+  const foreignId = foreign.json().items[0].extension.id;
   await login('maya');
   const before = { extensions: count(db, "SELECT count(*) n FROM extensions WHERE owner_id='maya'"),
     conversations: count(db, "SELECT count(*) n FROM authoring_conversations WHERE owner_id='maya'"),
@@ -205,7 +213,7 @@ test('foreign targets fail and an unlinked legacy chat stays readable but cannot
   const resume = await callApi('authoring/turn', start('legacy-resume', 'Continue old work.', { kind: 'resume', extensionId: ownId }, {
     conversationId: 'legacy-chat', expectedVersion: 1,
   }));
-  assert.equal(resume.statusCode, 404);
+  assert.equal(resume.statusCode, 410); assert.equal(resume.json().code, 'LEGACY_CUSTOMIZATION_RETIRED');
   assert.equal((await callApi('authoring')).json().current, null);
   assert.equal((await callApi(`authoring?extensionId=${ownId}`)).json().current, null);
 });
@@ -213,7 +221,7 @@ test('foreign targets fail and an unlinked legacy chat stays readable but cannot
 test('unsupported requests wait for a decision; refusal leaves no program, assent can compile only a draft', async t => {
   let compileCalls = 0;
   const countedCompiler = { compile: async () => { compileCalls++; return { artifact, diagnostics: [] }; } };
-  const { db, call: callApi, login } = await api(t, { provider: scriptedProvider({ question: 'Only task-status advice is available. Would that help?' }),
+  const { db, call: callApi, login } = await api(t, { provider: scriptedProvider({ question: 'I can create a task after completion in your chosen project. Would that help?' }),
     compiler: countedCompiler });
   await login();
   const selectionBefore = (await callApi('extensions')).json().selection;
@@ -221,7 +229,7 @@ test('unsupported requests wait for a decision; refusal leaves no program, assen
   assert.equal(unsupported.statusCode, 202);
   const pending = await settled(callApi, unsupported.json().conversation.id);
   assert.equal(pending.status, 'AWAITING_USER');
-  assert.match(pending.messages.at(-1).text, /Only task-status advice/);
+  assert.match(pending.messages.at(-1).text, /create a task after completion/);
   let blank = (await callApi(`extensions/${pending.extensionId}`)).json();
   assert.equal(blank.revisionId, null);
   assert.equal(blank.extension.hookId, null);
@@ -240,17 +248,17 @@ test('unsupported requests wait for a decision; refusal leaves no program, assen
   assert.equal(count(db, 'SELECT count(*) n FROM extension_approvals'), 0);
   assert.deepEqual((await callApi('extensions')).json().selection, selectionBefore);
 
-  const assent = await callApi('authoring/turn', start('assent-create', 'Help me give useful task advice.'));
+  const assent = await callApi('authoring/turn', start('assent-create', 'Help me create a task after completion in my project.'));
   assert.equal(assent.statusCode, 202);
   const awaitingAssent = await settled(callApi, assent.json().conversation.id);
   assert.equal(awaitingAssent.status, 'AWAITING_USER');
-  const compiled = await callApi('authoring/turn', start('explicit-assent', 'Yes, showing advice while I check is useful.', {
+  const compiled = await callApi('authoring/turn', start('explicit-assent', 'Yes, create the task after completion in my chosen project.', {
     kind: 'resume', extensionId: awaitingAssent.extensionId,
   }, { conversationId: awaitingAssent.id, expectedVersion: awaitingAssent.version }));
   assert.equal(compiled.statusCode, 202);
   assert.equal((await settled(callApi, awaitingAssent.id)).status, 'IDLE');
   const draft = (await callApi(`extensions/${awaitingAssent.extensionId}`)).json();
-  assert.equal(draft.extension.hookId, 'ClassifyTask');
+  assert.equal(draft.extension.hookId, TASK_HOOK);
   assert.ok(draft.revisionId);
   assert.equal(draft.evidence, null);
   assert.equal(draft.approved, false);

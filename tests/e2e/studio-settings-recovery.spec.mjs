@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const changedCopy = 'The assistant settings changed, so your message wasn’t sent. Start a new conversation to continue. Your message and saved work are kept.';
@@ -34,8 +36,8 @@ async function navigate(page, destination) {
 }
 
 async function seedApprovedItem(page, fixture) {
-  let state = await api(page, 'extensions', { operationId: crypto.randomUUID(), source: fixture.metadata.source, label: 'Saved recovery example' });
-  const extensionId = state.extension.id;
+  const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Saved recovery example' });
+  let state = await api(page, `extensions/${extensionId}/compile`, { hookId: 'TaskCompleted', source: fixture.metadata.source, label: 'Saved recovery example', draftVersion: 0 });
   state = await api(page, `extensions/${extensionId}/scenarios`, {
     revisionId: state.draft.id, draftVersion: state.draftVersion, cases: fixture.metadata.cases,
   });
@@ -109,7 +111,7 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     await studio(page).getByText('Saved sample runs', { exact: true }).click();
     await studio(page).getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     await expect(studio(page).locator('.rs-preview')).toBeVisible();
-    await expect(studio(page).getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
+    await expect(studio(page).getByRole('heading', { name: `Saved example: Completed task in “${fixture.metadata.projectName}”`, exact: true })).toBeVisible();
 
     const providerCalls = [...fixture.requests];
     const budget = fixture.db.prepare('SELECT reserved_micros FROM authoring_budget WHERE id=1').get().reserved_micros;
@@ -118,7 +120,7 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     await expect(studio(page).getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
     await expect(composer).toHaveValue(rejectedMessage);
     await expect(studio(page).locator('.rs-preview')).toBeVisible();
-    await expect(studio(page).getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
+    await expect(studio(page).getByRole('heading', { name: `Saved example: Completed task in “${fixture.metadata.projectName}”`, exact: true })).toBeVisible();
     expect(calls.turns).toHaveLength(2);
     expect(calls.turns[1]).toMatchObject({ conversationId: oldConversationId, text: rejectedMessage, target: { kind: 'resume', extensionId: savedItem.extensionId } });
     expect(fixture.requests).toEqual(providerCalls);

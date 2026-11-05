@@ -3,17 +3,19 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
-import { AppError, openData } from '../src/data.mjs';
+import { AppError, openData, transaction } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
-import { loadCatalog } from '../src/extension-catalog.mjs';
+import { digest } from '../src/extension-catalog.mjs';
+import { createCompiler } from '../src/compiler.mjs';
+import { compileTaskCustomization } from './fixtures/task-customization.mjs';
+import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 
 const origin = 'http://127.0.0.1:32123';
 const authorized = () => {};
-const artifact = loadCatalog().find(item => item.id === 'attention').artifactBytes;
-const compiler = { compile: async () => ({ artifact, diagnostics: [] }) };
+const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
 const snapshot = db => Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()
   .map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all().map(row => ({ ...row }))]));
 function onlyNameChanged(before, after, id, name) {
@@ -23,12 +25,13 @@ function onlyNameChanged(before, after, id, name) {
 }
 async function api(t) {
   const db = openData(':memory:'), app = await createApp({ db, origin, compiler });
+  const { extensionId: itemId } = admitTaskDraft(db, createLifecycle(db));
   t.after(async () => { await app.close(); db.close(); });
   let auth = {};
   const call = (path, payload, headers = {}) => app.inject({ url: '/api/' + path, method: payload === undefined ? 'GET' : 'POST',
     headers: { host: '127.0.0.1:32123', origin, 'content-type': 'application/json', ...auth, ...headers },
     ...(payload === undefined ? {} : { payload }) });
-  return { db, call, async login(userId = 'maya') {
+  return { db, call, itemId, async login(userId = 'maya') {
     const bootstrap = (await call('session')).json();
     const response = await call('session', { userId }, { 'x-session-context': bootstrap.contextToken });
     assert.equal(response.statusCode, 200);
@@ -37,9 +40,9 @@ async function api(t) {
 }
 
 test('rename accepts trimmed Unicode code points and rejects malformed or unsupported input', async t => {
-  const { db, call, login } = await api(t);
+  const { db, call, login, itemId } = await api(t);
   await login();
-  let state = (await call('extensions')).json().items[0];
+  let state = (await call(`extensions/${itemId}`)).json();
   const path = `extensions/${state.extension.id}/rename`;
   const before = snapshot(db);
   for (const body of [null, [], {}, { name: 'Name' }, { expectedName: state.extension.name },
@@ -62,9 +65,9 @@ test('rename accepts trimmed Unicode code points and rejects malformed or unsupp
 });
 
 test('rename enforces owner, exact item, session, origin and compare-before-no-op fences', async t => {
-  const { db, call, login } = await api(t);
+  const { db, call, login, itemId } = await api(t);
   await login();
-  const initial = (await call('extensions')).json().items[0], id = initial.extension.id;
+  const initial = (await call(`extensions/${itemId}`)).json(), id = initial.extension.id;
   const path = `extensions/${id}/rename`, input = { name: 'Clear name', expectedName: initial.extension.name };
   const before = snapshot(db);
   assert.equal((await call(path, input, { origin: 'https://foreign.example' })).statusCode, 403);
@@ -99,9 +102,10 @@ test('rename preserves authored revisions, proof, approval, active generation an
     rmSync(directory, { recursive: true, force: true });
   });
   let lifecycle = createLifecycle(db, { compiler });
-  let state = await lifecycle.createFromSource('maya', { operationId: 'named-source', source: 'fixture source', label: 'Existing name' }, authorized);
-  const id = state.extension.id;
-  state = lifecycle.load('maya', { extensionId: id, templateId: 'attention', draftVersion: state.draftVersion }, authorized);
+  const fixture = await compileTaskCustomization();
+  const { extensionId: id } = admitTaskDraft(db, lifecycle, { operationId: 'named-source', name: 'Existing name' });
+  let state = await lifecycle.compile('maya', { extensionId: id, hookId: 'TaskCompleted', source: fixture.source, draftVersion: 0 }, authorized);
+  state = await lifecycle.proposeScenarios('maya', { extensionId: id, revisionId: state.revisionId, draftVersion: state.draftVersion, cases: fixture.cases }, authorized);
   const input = { extensionId: id, revisionId: state.revisionId, draftVersion: state.draftVersion };
   state = await lifecycle.simulate('maya', input, authorized);
   state = lifecycle.approve('maya', { ...input, evidenceId: state.evidence.id }, authorized);
@@ -121,20 +125,20 @@ test('rename preserves authored revisions, proof, approval, active generation an
   assert.equal(renamed.selection.revision.id, state.selection.revision.id);
   assert.equal(renamed.selection.generation, state.selection.generation);
   const saved = snapshot(db);
-  db.close(); db = openData(path); lifecycle = createLifecycle(db);
+  db.close(); db = openData(path); lifecycle = createLifecycle(db, {});
   assert.deepEqual(snapshot(db), saved);
   assert.deepEqual(lifecycle.state('maya', id), renamed);
 });
 
 test('rename accepts exact embedded-NUL legacy preconditions while rejecting NUL in new names', async t => {
-  const { db, call, login } = await api(t);
+  const { db, call, login, itemId } = await api(t);
   await login();
-  const state = (await call('extensions')).json().items[0], id = state.extension.id, legacy = 'Legacy\0name';
+  const state = (await call(`extensions/${itemId}`)).json(), id = state.extension.id, legacy = 'Legacy\0name';
   db.prepare('UPDATE extensions SET name=? WHERE owner_id=? AND id=?').run(legacy, 'maya', id);
   const path = `extensions/${id}/rename`, before = snapshot(db);
   const saved = (await call(`extensions/${id}`)).json();
   assert.equal(saved.extension.name, legacy, 'existing metadata is never backfilled');
-  assert.equal(saved.selection.revision.extensionName, legacy, 'selection and revision display preserve the same exact name');
+  assert.equal(saved.extension.name, legacy, 'historical metadata bytes remain exact on the task item');
   assert.equal(Buffer.from(db.prepare('SELECT CAST(name AS BLOB) name FROM extensions WHERE id=?').get(id).name).toString('utf8'), legacy);
   assert.equal((await call(path, { name: 'Clear legacy name', expectedName: 'Legacy' })).statusCode, 409);
   assert.equal((await call(path, { name: legacy, expectedName: legacy })).statusCode, 400, 'new names reject embedded NUL even as a no-op');
@@ -147,6 +151,20 @@ test('rename accepts exact embedded-NUL legacy preconditions while rejecting NUL
   onlyNameChanged(before, snapshot(db), id, 'Clear legacy name');
   assert.equal((await call(path, { name: 'Clear legacy name', expectedName: legacy })).statusCode, 409, 'stale legacy precondition conflicts before no-op');
   assert.equal((await call(path, { name: 'Clear legacy name', expectedName: 'Clear legacy name' })).statusCode, 200);
+});
+
+test('legacy names and source stay readable while rename and new direct-source creation remain retired', async t => {
+  const db = openData(':memory:'), lifecycle = createLifecycle(db);
+  t.after(() => db.close());
+  const legacy = lifecycle.state('maya', lifecycle.collection('maya').items[0].extension.id);
+  const before = snapshot(db), source = lifecycle.source('maya', legacy.selection.revision.id, legacy.extension.id);
+  assert.equal(legacy.retired, true);
+  assert.throws(() => lifecycle.rename('maya', { extensionId: legacy.extension.id, name: 'New legacy name', expectedName: legacy.extension.name }, authorized),
+    { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
+  await assert.rejects(lifecycle.createFromSource('maya', { operationId: 'retired-source', source: source.source }, authorized),
+    { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
+  assert.deepEqual(lifecycle.source('maya', legacy.selection.revision.id, legacy.extension.id), source);
+  assert.deepEqual(snapshot(db), before);
 });
 
 test('AI creation uses a neutral name without backfilling existing names or changing creation deduplication', async t => {
@@ -191,7 +209,7 @@ test('AI creation uses a neutral name without backfilling existing names or chan
 test('collection excerpts require unique original owner/item creation linkage and bound Unicode text', async t => {
   const db = openData(':memory:'), lifecycle = createLifecycle(db, { compiler });
   t.after(() => db.close());
-  const item = await lifecycle.createFromSource('maya', { operationId: 'excerpt-create', source: 'fixture', label: 'Untitled customization' }, authorized);
+  const item = transaction(db, () => lifecycle.admit('maya', { extensionId: 'excerpt-item', operationId: 'excerpt-create', hash: digest('TEST historical admission'), name: 'Untitled customization' }, authorized));
   const id = item.extension.id, original = '  Unsupported calendar request 😀 ' + '😀'.repeat(170) + '  ';
   const messages = [{ id: 'excerpt-create', role: 'user', text: original },
     { id: 'later-request', role: 'user', text: 'Later discussion must not replace the original.' }];

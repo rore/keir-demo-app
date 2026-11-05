@@ -44,8 +44,9 @@ test('populated v1 migrates once, preserving every native row with explicit oper
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
   let lifecycle = createLifecycle(db);
-  assert.equal(lifecycle.collection('maya').selection.revision.provenance, 'operator');
-  assert.equal(lifecycle.collection('leo').selection.revision.provenance, 'operator');
+  assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection.revision.provenance, 'operator');
+  assert.equal(lifecycle.state('leo', itemId(lifecycle, 'leo')).selection.revision.provenance, 'operator');
+  assert.equal(lifecycle.collection('maya').selection.revision, null, 'Historical advice confers no TaskCompleted selection.');
   assert.equal(lifecycle.collection('sam').selection.revision, null);
   const extensionId = itemId(lifecycle, 'maya');
   const target = lifecycle.state('maya', extensionId).selection.revision.id;
@@ -53,9 +54,10 @@ test('populated v1 migrates once, preserving every native row with explicit oper
   db.close(); db = openData(path); lifecycle = createLifecycle(db);
   assert.equal(lifecycle.state('maya', extensionId).selection.revision, null);
   assert.equal(lifecycle.state('maya', extensionId).selection.generation, 2);
-  lifecycle.rollback('maya', { extensionId, revisionId: target, generation: 2 }, () => {});
+  assert.throws(() => lifecycle.rollback('maya', { extensionId, revisionId: target, generation: 2 }, () => {}), { status: 410, code: 'LEGACY_CUSTOMIZATION_RETIRED' });
   db.close(); db = openData(path);
-  assert.equal(createLifecycle(db).state('maya', extensionId).selection.revision.id, target);
+  assert.equal(createLifecycle(db).state('maya', extensionId).selection.revision, null);
+  assert.equal(createLifecycle(db).source('maya', target, extensionId).revisionId, target);
   assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), original);
   db.close();
 });
@@ -63,12 +65,16 @@ test('populated v1 migrates once, preserving every native row with explicit oper
 test('populated v2 upgrades and reopens without changing native or lifecycle rows', async t => {
   const { path } = fixture(t), db = openData(path);
   const api = createLifecycle(db);
-  let state = api.load('maya', { extensionId: itemId(api, 'maya'), templateId: 'attention', draftVersion: 0 }, () => {});
-  const input = { extensionId: state.extension.id, revisionId: state.draft.id, draftVersion: state.draftVersion };
-  state = await api.simulate('maya', input, () => {});
-  api.approve('maya', { ...input, evidenceId: state.evidence.id }, () => {});
-  api.activate('maya', { ...input, generation: state.selection.generation }, () => {});
-  api.disable('leo', { extensionId: itemId(api, 'leo'), generation: api.collection('leo').selection.generation }, () => {});
+  const state = api.state('maya', itemId(api, 'maya'));
+  const revision = db.prepare('SELECT * FROM extension_revisions WHERE id=?').get(state.selection.revision.id);
+  // Historical storage subject only: preserve old evidence/approval bytes without executing retired code.
+  db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)').run('historical-proof', 'maya', revision.id, revision.identity,
+    'historical-suite', JSON.stringify({ historical: true, reports: [] }), 1);
+  db.prepare('INSERT INTO extension_approvals VALUES (?,?,?)').run('maya', revision.id, 'historical-proof');
+  db.prepare('UPDATE extensions SET draft_revision_id=?,draft_version=1 WHERE owner_id=?').run(revision.id, 'maya');
+  db.prepare("UPDATE extension_selections SET generation=2 WHERE owner_id='maya' AND hook_id='ClassifyTask'").run();
+  db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)').run('maya', revision.id, 2, 'activate');
+  api.disable('leo', { extensionId: itemId(api, 'leo'), generation: api.state('leo', itemId(api, 'leo')).selection.generation }, () => {});
   const heads = db.prepare('SELECT owner_id,draft_version,draft_revision_id FROM extensions').all();
   removeItemSchema(db);
   db.exec(`CREATE TABLE extension_states(owner_id TEXT PRIMARY KEY REFERENCES users(id), draft_version INTEGER NOT NULL CHECK(draft_version>=0),
@@ -159,7 +165,9 @@ test('reset verifies and backs up lifecycle rows before deleting them; corrupted
   assert.equal(backedUp.suite, null);
   verified.close();
   reopened = openData(path);
-  assert.equal(createLifecycle(reopened).collection('maya').selection.revision.provenance, 'operator');
+  const restored = createLifecycle(reopened);
+  assert.equal(restored.state('maya', itemId(restored, 'maya')).selection.revision.provenance, 'operator');
+  assert.equal(restored.collection('maya').selection.revision, null);
   assert.equal(reopened.prepare('SELECT count(*) n FROM tasks').get().n, 9);
   assert.equal(reopened.prepare('SELECT count(*) n FROM extension_authored').get().n, 0);
   assert.equal(reopened.prepare('PRAGMA foreign_key_check').all().length, 0); reopened.close();

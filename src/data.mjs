@@ -2,7 +2,8 @@ import { DatabaseSync, backup } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { loadCatalog } from './extension-catalog.mjs';
+import { loadCatalog, digest, json } from './extension-catalog.mjs';
+import { taskEffectProofMatches } from './task-effect-simulation.mjs';
 
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
   'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
@@ -486,7 +487,6 @@ export function revokeTaskAdmissions(db, owner, itemId) {
 
 const nativeKeys = new WeakMap();
 const effectError = (code, status = 403) => Object.assign(new AppError(status, code), { code });
-const strictAuthority = (check, context) => { try { return check(context) === true; } catch { return false; } };
 function storedJson(value, max) {
   let encoded;
   try { encoded = JSON.stringify(value); } catch { throw effectError('INPUT_INVALID', 400); }
@@ -510,36 +510,48 @@ function taskEvent(row) {
     outcome: parse(row.outcome), reconciliation: parse(row.reconciliation) });
 }
 
-// Dormant native boundary: no route or runner constructs this service.
-export function taskEffectService(db, { authorizeRead, authorizeWrite, isQualificationCurrent } = {}) {
-  if ([authorizeRead, authorizeWrite, isQualificationCurrent].some(check => typeof check !== 'function'))
-    throw new TypeError('Task effects require explicit read, write and qualification authority.');
+// Native storage owns key authenticity, current resource access and atomic task/receipt writes.
+export function taskEffectService(db) {
+  if (arguments.length !== 1 || typeof db?.prepare !== 'function') throw new TypeError('Task effects require one native database.');
+  const tasks = taskService(db);
   const event = (owner, id) => {
     const row = db.prepare('SELECT * FROM task_completion_events WHERE owner_id=? AND event_id=?').get(owner, id);
     if (!row) throw notFound();
     return row;
   };
   const receipt = row => db.prepare("SELECT * FROM task_effect_receipts WHERE owner_id=? AND capability_id='tasks.create' AND original_key=?").get(row.owner_id, row.original_key);
-  const canRead = context => { if (!strictAuthority(authorizeRead, context)) throw effectError('AUTHORITY_DENIED'); };
-  function current(row, projectId) {
-    const context = freezeContext({ ...taskEvent(row), ...(projectId === undefined ? {} : { projectId }) });
-    const pins = context.pins, hash = value => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
-    if (row.revoked_at !== null || !pins || !hash(pins.artifactDigest) || pins.modelRef?.format !== 'keir-dcm/effect-3'
-        || !hash(pins.modelRef?.digest) || !pins.compiler || !pins.environment || pins.consumer?.kind !== 'EVENT_REPORT'
-        || !pins.qualification || typeof pins.qualification.id !== 'string' || !pins.qualification.id
-        || !Number.isSafeInteger(pins.qualification.revision) || pins.qualification.revision < 1
-        || !hash(pins.qualification.reportDigest) || !hash(pins.qualification.hostBuild)
-        || context.input?.taskId !== row.source_task_id) return false;
-    if (!strictAuthority(isQualificationCurrent, context) || !strictAuthority(authorizeWrite, context)) return false;
-    // Re-read after trusted callbacks, and never use mutable current-selection equality as authority.
-    return !!db.prepare(`SELECT 1 FROM task_completion_events v JOIN tasks t ON t.id=v.source_task_id AND t.owner_id=v.owner_id
+  const canRead = context => tasks.getTask(context.owner, context.sourceTaskId);
+  function current(row, invocation) {
+    try {
+      const context = contextFor(row.owner_id, invocation), pins = context.pins;
+      const now = invocation.deadline.clock.nowMs();
+      if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(invocation.deadline.expiresAtMs)
+          || now >= invocation.deadline.expiresAtMs || context.eventId !== row.event_id || row.revoked_at !== null
+          || pins?.profile !== 'keir-effect/4' || pins.definitionId !== 'daymark.task-completed/2'
+          || pins.modelRef?.format !== 'keir-dcm/effect-4' || pins.modelRef.digest !== pins.modelDigest
+          || pins.consumer?.kind !== 'EVENT_REPORT' || Object.hasOwn(pins, 'qualification')
+          || context.input?.taskId !== row.source_task_id) return false;
+      // Re-read persisted authority; a mutable current selection cannot replace the captured admission.
+      const saved = db.prepare(`SELECT r.*,a.source,a.artifact,a.suite FROM task_completion_events v JOIN tasks t ON t.id=v.source_task_id AND t.owner_id=v.owner_id
       JOIN extension_revision_links l ON l.revision_id=v.revision_id AND l.owner_id=v.owner_id AND l.extension_id=v.item_id
       JOIN extensions e ON e.id=l.extension_id AND e.owner_id=l.owner_id
       JOIN extension_revisions r ON r.id=l.revision_id AND r.owner_id=l.owner_id
+      JOIN extension_authored a ON a.revision_id=r.id AND a.owner_id=r.owner_id
       WHERE v.event_id=? AND v.owner_id=? AND v.revoked_at IS NULL AND e.deleted_at IS NULL AND t.status='completed'
-        AND ((r.provenance='operator' AND EXISTS(SELECT 1 FROM extension_history h WHERE h.owner_id=r.owner_id AND h.revision_id=r.id AND h.operation='operator'))
-          OR (r.provenance='customer' AND EXISTS(SELECT 1 FROM extension_approvals a WHERE a.owner_id=r.owner_id AND a.revision_id=r.id)))`)
-      .get(row.event_id, row.owner_id);
+        AND e.hook_id='TaskCompleted' AND r.provenance='customer'`).get(row.event_id, row.owner_id);
+      if (!saved) return false;
+      const identity = JSON.parse(saved.identity), artifact = JSON.parse(Buffer.from(saved.artifact).toString('utf8'));
+      if (json(pins) !== json({ ...identity, approvedEvidenceId: pins.approvedEvidenceId })
+          || identity.artifactDigest !== digest(saved.artifact) || identity.rawSourceDigest !== digest(saved.source)
+          || artifact.profile !== 'keir-effect/4' || artifact.format !== 'keir-artifact/effect-4'
+          || identity.compiledSourceDigest !== artifact.sourceDigest || identity.suiteDigest !== digest(saved.suite)) return false;
+      const validProof = id => {
+        const proof = db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? AND id=?').get(row.owner_id, saved.id, id);
+        return taskEffectProofMatches(saved, saved, proof);
+      };
+      const approval = db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(row.owner_id, saved.id);
+      return !!approval && validProof(approval.evidence_id) && typeof pins.approvedEvidenceId === 'string' && validProof(pins.approvedEvidenceId);
+    } catch { return false; }
   }
   function deny(row) {
     db.prepare('UPDATE task_completion_events SET revoked_at=? WHERE event_id=? AND owner_id=? AND revoked_at IS NULL')
@@ -548,32 +560,41 @@ export function taskEffectService(db, { authorizeRead, authorizeWrite, isQualifi
   }
   function fromKey(owner, key) {
     const identity = key && typeof key === 'object' ? nativeKeys.get(key) : null;
-    if (!identity || identity.owner !== owner) throw effectError('HOST_KEY_INVALID', 400);
+    if (!identity || identity.db !== db || identity.owner !== owner) throw effectError('HOST_KEY_INVALID', 400);
     const row = event(owner, identity.eventId);
     if (row.original_key !== identity.originalKey) throw effectError('HOST_KEY_INVALID', 400);
     return row;
+  }
+  function contextFor(owner, invocation) {
+    const row = fromKey(owner, invocation?.requestKey);
+    if (invocation?.event?.id !== row.event_id || invocation?.event?.source !== row.source_task_id)
+      throw effectError('HOST_CONTEXT_INVALID', 400);
+    canRead(taskEvent(row));
+    return taskEvent(row);
   }
   const resultOf = row => row ? JSON.parse(row.result) : null;
   return {
     keyFor(owner, eventId) {
       const row = event(owner, eventId); canRead(taskEvent(row));
       const key = Object.freeze({ type: 'demo.TaskCompletionKey/1', value: row.original_key });
-      nativeKeys.set(key, { owner, eventId, originalKey: row.original_key });
+      nativeKeys.set(key, { db, owner, eventId, originalKey: row.original_key });
       return key;
     },
-    claim(owner, eventId) {
+    contextFor,
+    claim(owner, eventId, invocation) {
       const result = transaction(db, () => {
         const row = event(owner, eventId);
         if (row.state !== 'PENDING') return null;
-        if (!current(row)) return deny(row);
+        if (!current(row, invocation)) return deny(row);
         db.prepare("UPDATE task_completion_events SET state='STARTED' WHERE owner_id=? AND event_id=? AND state='PENDING'").run(owner, eventId);
-        if (!current(event(owner, eventId))) return deny(row);
-        return taskEvent(event(owner, eventId));
+        const claimed = event(owner, eventId);
+        if (claimed.state !== 'STARTED' || !current(claimed, invocation)) return deny(row);
+        return taskEvent(claimed);
       });
       if (result instanceof Error) throw result;
       return result;
     },
-    createTaskOnce(owner, key, input) {
+    createTaskOnce(owner, key, input, invocation) {
       const result = transaction(db, () => {
         const row = fromKey(owner, key);
         fields(input, ['projectId', 'title']);
@@ -588,7 +609,7 @@ export function taskEffectService(db, { authorizeRead, authorizeWrite, isQualifi
           return resultOf(prior);
         }
         if (row.state !== 'STARTED') throw effectError('EVENT_NOT_STARTED', 409);
-        if (!current(row, input.projectId)) return deny(row);
+        if (invocation?.requestKey !== key || !current(row, invocation)) return deny(row);
         // A savepoint keeps durable revocation while rolling back an uncommitted task and receipt.
         db.exec('SAVEPOINT task_effect_create');
         const project = db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=?').get(owner, input.projectId);
@@ -597,7 +618,8 @@ export function taskEffectService(db, { authorizeRead, authorizeWrite, isQualifi
           : { kind: 'BUSINESS_REJECTION', code: 'PROJECT_NOT_FOUND', effect: 'NONE' };
         db.prepare('INSERT INTO task_effect_receipts VALUES (?,?,?,?,?,?,?,?)')
           .run(owner, 'tasks.create', row.original_key, '1', payload, JSON.stringify(response), response.effect, id);
-        if (!current(event(owner, row.event_id), input.projectId)) {
+        const after = event(owner, row.event_id);
+        if (after.state !== 'STARTED' || !current(after, invocation)) {
           db.exec('ROLLBACK TO task_effect_create; RELEASE task_effect_create');
           return deny(row);
         }

@@ -5,13 +5,11 @@ import { randomBytes } from 'node:crypto';
 import { resolve, join, relative, isAbsolute, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { AppError, USERS, taskService } from './data.mjs';
-import { createTaskRead } from './task-read.mjs';
+import { createTaskDispatcher } from './task-effects.mjs';
 import { createLifecycle } from './extension-lifecycle.mjs';
-import { loadHost } from './extension-catalog.mjs';
 import { createAuthoringService, AUTHORING_CODES } from './authoring-service.mjs';
 import { authoringChoices } from './authoring-config.mjs';
 import { assertAuthoringSettingsLocation, createAuthoringSettings } from './authoring-settings.mjs';
-import { authoringExample } from './authoring-example.mjs';
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
@@ -26,14 +24,16 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   const anonymousContext = nonce();
   const service = taskService(db);
   if (compiler === undefined) {
-    try { const { createCompiler } = await import('./compiler.mjs'); compiler = createCompiler({ modelBytes: loadHost().dcmBytes, javaExecutable: process.env.KEIR_JAVA_BIN }); }
+    try { const { createCompiler } = await import('./compiler.mjs'); compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN }); }
     catch { /* Missing compiler assets never prevent native or stored advice startup. */ }
   }
   const lifecycle = createLifecycle(db, { compiler });
+  const effects = createTaskDispatcher({ db, lifecycle });
   const settings = createAuthoringSettings({ file: authoringSettingsFile, config: authoring.config });
   const ai = createAuthoringService({ db, lifecycle, ...authoring, config: settings.config });
-  app.addHook('onClose', () => ai.close());
-  const taskAdvice = createTaskRead({ getTask: service.getTask, lifecycle });
+  app.addHook('onClose', async () => { await Promise.all([ai.close(), effects.close()]); });
+  const wakeEffects = () => setImmediate(() => { void effects.wake().catch(() => {}); });
+  app.addHook('onReady', async () => { wakeEffects(); });
   await app.register(cookie);
   app.decorateRequest('scope', null);
   function current(request) { return sessions.get(request.cookies[COOKIE]); }
@@ -98,10 +98,15 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   });
   app.get('/api/projects', request => service.listProjects(authorize(request).userId));
   const lifecycleResponse = value => {
-    if (Buffer.byteLength(JSON.stringify(value)) > 262144) throw new AppError(413, 'Advice response exceeds the host limit.');
+    const execution = effects.availability();
+    if (value?.executionAvailability && execution.available === false) {
+      value.executionAvailability = execution;
+      if (value.selection) value.selection.eligible = false;
+    }
+    if (Buffer.byteLength(JSON.stringify(value)) > 262144) throw new AppError(413, 'Customization response exceeds the host limit.');
     return value;
   };
-  const noQuery = request => { if (Object.keys(request.query).length) throw new AppError(400, 'This advice request takes no query fields.'); };
+  const noQuery = request => { if (Object.keys(request.query).length) throw new AppError(400, 'This customization request takes no query fields.'); };
   const pageQuery = request => {
     if (Object.keys(request.query).some(key => key !== 'before') || request.query.before !== undefined
         && (typeof request.query.before !== 'string' || !/^[A-Za-z0-9_-]{1,2048}$/.test(request.query.before))) throw new AppError(400, 'Use a valid page cursor.');
@@ -129,7 +134,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
         || request.query.before !== undefined && !/^[A-Za-z0-9_-]{1,2048}$/.test(request.query.before)) throw new AppError(400, 'Use an exact extension identity and valid page cursor.');
     return lifecycleResponse(ai.list(authorize(request).userId, request.query.extensionId, request.query.before));
   });
-  app.get('/api/authoring/example', request => { authorize(request); noQuery(request); return lifecycleResponse(authoringExample()); });
+  app.get('/api/authoring/example', request => { authorize(request); noQuery(request); throw Object.assign(new AppError(410, 'This earlier example is retired. Start a new customization through conversation.'), { code: 'LEGACY_CUSTOMIZATION_RETIRED' }); });
   app.get('/api/authoring/conversations/:id', request => { noQuery(request); return lifecycleResponse(ai.read(authorize(request).userId, request.params.id)); });
   app.get('/api/authoring/conversations/:id/messages', request => lifecycleResponse(ai.messages(authorize(request).userId, request.params.id, pageQuery(request))));
   app.post('/api/authoring/recover', { bodyLimit: 65536 }, request => {
@@ -195,10 +200,13 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   for (const [operation, fields] of Object.entries(operations)) app.post(`/api/extensions/:extensionId/${operation}`, async (request, reply) => {
     const session = authorize(request), input = request.body;
     noQuery(request);
+    if (operation !== 'disable') lifecycle.assertWritable(session.userId, request.params.extensionId);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== fields.length
         || !fields.every(field => Object.hasOwn(input, field) && (['draftVersion', 'generation'].includes(field)
           ? Number.isSafeInteger(input[field]) && input[field] >= 0 : typeof input[field] === 'string' && /^[A-Za-z0-9-]{1,128}$/.test(input[field]))))
-      throw new AppError(400, 'Use only the supported advice fields.');
+      throw new AppError(400, 'Use only the supported customization fields.');
+    if (['activate', 'rollback'].includes(operation) && !effects.availability().available)
+      throw new AppError(503, effects.availability().message);
     const result = await withSignal(request, reply, signal => lifecycle[operation === 'draft' ? 'load' : operation](session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request), { signal }));
     authorize(request);
     return lifecycleResponse(result);
@@ -206,7 +214,8 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   for (const operation of ['compile', 'scenarios']) app.post(`/api/extensions/:extensionId/${operation}`, { bodyLimit: 1048576 }, async (request, reply) => {
     const session = authorize(request), input = request.body;
     noQuery(request);
-    const fields = operation === 'compile' ? ['source', 'draftVersion'] : ['revisionId', 'cases', 'draftVersion'];
+    lifecycle.assertWritable(session.userId, request.params.extensionId);
+    const fields = operation === 'compile' ? ['hookId', 'source', 'draftVersion'] : ['revisionId', 'cases', 'draftVersion'];
     const allowed = operation === 'compile' ? [...fields, 'label'] : fields;
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(field => !allowed.includes(field))
         || fields.some(field => !Object.hasOwn(input, field)) || !Number.isSafeInteger(input.draftVersion) || input.draftVersion < 0
@@ -223,17 +232,23 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   app.post('/api/tasks/:id/advice', async request => {
     const session = authorize(request);
     if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new AppError(400, 'Task advice takes no fields.');
-    const result = await taskAdvice({ userId: session.userId, taskId: request.params.id,
-      authorize: () => { try { return authorize(request) === session; } catch { return false; } } });
-    authorize(request);
-    return result;
+    service.getTask(session.userId, request.params.id);
+    throw Object.assign(new AppError(410, 'Task advice is retired. Open Customizations to describe a task change.'), { code: 'LEGACY_CUSTOMIZATION_RETIRED' });
+  });
+  app.get('/api/tasks/:id/reaction', request => { noQuery(request); return effects.status(authorize(request).userId, request.params.id); });
+  app.post('/api/tasks/:id/reaction/reconcile', request => {
+    noQuery(request); const session = authorize(request);
+    if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new AppError(400, 'Checking a saved outcome takes no fields.');
+    return effects.reconcile(session.userId, request.params.id);
   });
   app.post('/api/tasks', (request, reply) => { const result = service.createTask(authorize(request).userId, request.body); reply.code(201); return result; });
   app.patch('/api/tasks/:id', request => service.editTask(authorize(request).userId, request.params.id, request.body));
   app.post('/api/tasks/:id/complete', request => {
     const session = authorize(request);
     if (!request.body || Object.keys(request.body).length) throw new AppError(400, 'Completion takes no fields.');
-    return service.completeTask(session.userId, request.params.id);
+    const result = service.completeTask(session.userId, request.params.id);
+    wakeEffects();
+    return result;
   });
   await app.register(staticFiles, { root: staticRoot, index: ['index.html'], dotfiles: 'deny',
     allowedPath(path, root) {

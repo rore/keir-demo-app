@@ -1,12 +1,13 @@
 {
   "repository": "https://github.com/rore/keir-core",
-  "revision": "8e8f3c744c70dc4773ea212ed55a7b11e0b12555",
+  "revision": "95e5fd0426cb1d0ef486fd54f21e34ca6afd1f41",
+  "reviewed_producer_revision": "e39b50b4cadb3584c8d5cee73e935eac977d5978",
   "archive": "keir-runtime-node-0.0.0.tgz",
-  "integrity": "sha512-ivHYd6S8DjnrI513PZYMsshR+XxtDRs0Fqbw3TVnMHL+rSP8S0jI4cdfAP4C9UXlGVf9d81h/QORaJdyW1ebLg==",
+  "integrity": "sha512-JWj4U9+TiLgJzuVHgbgAGL9N2BPn3XVnbRTPMSS2/wKnFRb4pgQRNBijVc/E0RYKsJ+RB2mFTez2pMTIFEqHqg==",
   "files": [
     {
       "path": "README.md",
-      "sha256": "sha256:0a28d81b30e5d52f4dca2cc787903b976fd1468f96c10711c1ee1e64058fdf30"
+      "sha256": "sha256:96f99d1b5f735961457b17ae462fa17655c33692b132387028bf25c0d814984a"
     },
     {
       "path": "package.json",
@@ -14,7 +15,7 @@
     },
     {
       "path": "src/canonical.js",
-      "sha256": "sha256:aafdf7511838fc8a8c452e36d5586a2c976361016977f2b2a7a3d892f0eab2a5"
+      "sha256": "sha256:482ae8cacc1191b92b8cf0f8b3b06701144a0a1a79b24bcbe627a9254c9a4d66"
     },
     {
       "path": "src/cel.js",
@@ -22,11 +23,11 @@
     },
     {
       "path": "src/index.js",
-      "sha256": "sha256:1de941c9366a135829b3da3fd31a303baa471ac4df437abf896f84afb23dee57"
+      "sha256": "sha256:24032d8364c062810214b3d1fac7e1436f42f4ea1ee17a80ccc32b6fd5ca8d2a"
     },
     {
       "path": "src/model.js",
-      "sha256": "sha256:c7f8b81ef69c0b5294e9aefd2d0fac774f2608e24a5ff09d7bd7254b11d12ffc"
+      "sha256": "sha256:e8a3b2b0ee0741b620c37dd18fed96988a9d8766f169a93a099c3d1728ff2d06"
     },
     {
       "path": "src/read-simulation.js",
@@ -34,12 +35,18 @@
     },
     {
       "path": "src/validation.js",
-      "sha256": "sha256:ef1c399b2159195fea8252155fd950838e1248a05879f49e3aaef22dcad684ee"
+      "sha256": "sha256:3ddf6b7b11a371ddd23f5259077c26e08447045ac01a046ce6dff46ac1411dfa"
     }
   ],
   "compiler": {
-    "revision": "0e7d44c05c188631892278fc838f3d89146fe028",
-    "jarDigest": "sha256:9196102bfac620fa038ca6e562c5ebb12e71350042722a9dcf20d5969d84c469",
-    "profile": "keir-read/2"
+    "revision": "95e5fd0426cb1d0ef486fd54f21e34ca6afd1f41",
+    "jarDigest": "sha256:64cd2507ed3bde34b99b14b1db16c9c0cfbf1bbd74f4cb7cd55ea213f2f60608",
+    "profile": "keir-effect/4"
+  },
+  "environment": {
+    "celJava": "0.14.0",
+    "celNode": "0.6.1",
+    "protobufJava": "4.35.1",
+    "protobufNode": "2.6.2"
   }
 }

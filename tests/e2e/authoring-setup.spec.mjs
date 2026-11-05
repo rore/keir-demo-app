@@ -88,7 +88,7 @@ async function enterStudio(page, origin, user = 'Maya') {
   await page.getByRole('button', { name: `Continue as ${user}` }).click();
   await page.getByRole('button', { name: user === 'Maya' ? 'Gather material references' : 'Plan the Saturday session', exact: true }).click();
   await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');
-  await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+  await page.locator('#open-customizations').click();
   await expect(studio(page)).toBeVisible();
   await navigate(page, 'Customizations');
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
@@ -355,19 +355,23 @@ test('an owner switch fences a pending setup response and clears the old key fro
     release();
     await navigate(other, 'Tasks');
     await other.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-    await other.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await other.locator('#open-customizations').click();
     await expect(studio(other)).toBeVisible();
     await page.getByRole('button', { name: /^Continue as Leo/ }).click();
     await navigate(page, 'Tasks');
     await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-    await page.getByRole('button', { name: 'Manage task advice', exact: true }).click();
+    await page.locator('#open-customizations').click();
     await expect(authoring(page)).toBeVisible();
     await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('leo');
-    await expect(ui.getByRole('log', { name: 'Studio conversation', exact: true })).toContainText('Plan the Saturday session');
+    const conversation = ui.getByRole('log', { name: 'Studio conversation', exact: true });
+    await expect(conversation).toContainText('What would you like to change about your work?');
+    await expect(conversation).not.toContainText('Keep this unsaved task title');
     await expect(ui.getByLabel('API key', { exact: true })).toHaveCount(0);
     await noSecretInBrowser(page, secret);
     expect(calls.setupPosts).toHaveLength(1);
     expect(calls.turns).toHaveLength(0);
+    await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
+    await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Plan the Saturday session');
   } finally { release?.(); await other.close(); }
 });
 

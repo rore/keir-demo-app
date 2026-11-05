@@ -1,40 +1,19 @@
-# Packaged real task reads
+# Retained task-read history
 
-Open a task and choose **Check task advice**. The check reads the saved status without saving edits or changing any task. Maya initially uses `PENDING` for an open task; Leo initially uses `NEEDS_ATTENTION`. Both templates return `DONE` after completion. These differences live in two YAML programs under `extensions/task-read/`, compiled against one read/2 model and one `ClassifyTask` hook. Sam starts without configured advice. Each person can now review and select either prepared rule through the [read-only lifecycle](read-extension-lifecycle.md); filenames do not establish ownership. Native CRUD remains usable with advice off.
+The earlier `ClassifyTask` / `keir-read/2` advice path is retired from normal Daymark use. **Check task advice**, **Manage task advice** and the scripted advice offer have been removed. Existing source, artifacts, examples, approval records, history and original operation receipts remain owner-readable. No old selection or approval is converted into task-creation authority. Legacy mutation/execution routes return `410 LEGACY_CUSTOMIZATION_RETIRED`; safe Stop, disable and deletion remain available.
 
-The host selects each user's exact model, artifact and DISPLAY consumer. Requests carry only the task resource ID and an empty body. Program, owner, model or consumer fields are rejected. The adapter binds the actor from the current server session, calls the owner-qualified native task service, checks the returned resource ID, maps `open`/`completed` to the model enums and projects only `{id,status}`. Foreign and missing IDs produce the same safe unavailable response. Advice never authorizes a native operation.
+Use a fresh conversation in **Customizations** for the current `TaskCompleted` journey. It discovers an existing project, stores the chosen project/title in customer source, checks synthetic matching and nonmatching examples, then requires separate approval and activation. See the [current lifecycle](read-extension-lifecycle.md), [AI authoring](ai-authoring.md) and [task effects](task-effects.md). Integrated release qualification is pending; real effects require compatible current-contract bytes and current native host permission. Native task CRUD does not depend on that availability.
 
-Authorization is fresh at entry, capability dispatch, the native read and result consumption. Session switching revokes the captured session. Client workspace/detail/selection-epoch guards discard old responses, including closing and reopening the same task; a new or failed check clears earlier advice without replacing unsaved form text. Runtime errors, invalid pins, malformed results and missing configurations display no default classification. The host holds at most six prepared owner/template bindings and eight concurrent invocations, each with a one-second runtime deadline. This is a local demo with fictional impersonation and a bounded read-only approval/selection lifecycle.
+## Earlier contract
 
-## Standalone distribution
+The retained programs under `extensions/task-read/` read saved task status through `ClassifyTask`. The original Maya template returned `PENDING` for an open task, the Leo template returned `NEEDS_ATTENTION`, and both returned `DONE` for a completed task. These filenames identify curated material, not ownership or current execution authority. Sam originally had no selection. Those behaviors describe historical fixtures, not current task-creation promises.
 
-`package.json` consumes `vendor/keir-runtime-node-0.0.0.tgz`; the lockfile pins its SHA-512 integrity and all dependency versions. `vendor/provenance.json` records the exact public core source revision, archive integrity and SHA-256 of every package file. The experimental version `0.0.0` alone does not identify this build. The archive contains the manifest, README and six source modules, including the optional read-simulation export. The installed module has no sibling-checkout or Java dependency. Ordinary `npm ci`, build and app execution require only the documented Node/npm installation and access to locked npm dependencies.
+The old adapter bound its actor from the server session, performed an owner-qualified native read, checked the resource ID and projected only the admitted task fields. It never authorized a write. Preserving those bytes and their original pins permits honest historical inspection without recompiling them against a new model or borrowing current evidence. Missing or incompatible historical proof remains unavailable.
 
-The checked-in model and compiled artifacts have independently held SHA-256 pins in `selection.json`. Changing a source, model or package requires deliberate regeneration, renewed host selection and verification; there is no filesystem discovery or network resolver for customer artifacts. Simulation and real runs bind separate catalogs around the same compiled artifact bytes. Simulation results do not certify real authorization or persistence.
+## Package identity and developer regeneration
 
-## Regenerate intentionally
+Current package identity is held by `vendor/provenance.json`, `vendor/compiler-provenance.json`, the lockfile. See [task effects](task-effects.md) for runtime compatibility and host authority. Retained legacy package identities are historical evidence. An archive name or experimental version alone does not establish current compatibility or authority.
 
-Regeneration is developer work; the application never launches a compiler. Use an isolated checkout of the exact `revision` in `vendor/provenance.json`, with the core repository's documented project-local Java/compiler tooling. Do not change global tools. Build `compiler-java` using that repository's wrapper and isolated Maven cache. Its CLI jar SHA-256 is recorded as build evidence; jar timestamps may differ on a rebuild.
+Regeneration is deliberate developer work in isolated tooling. Use the exact documented core revision, inspect generated bytes and package entries, compare independent compilation outputs, and update reviewed pins and provenance together. The source profile and model must match the intended contract; do not compile historical read source against the effect model to make it runnable. Do not change global tools, bypass integrity checks or replace an operator installation as part of tests. Changed packages or execution-relevant bytes need compatibility and native regression checks; old customer approvals never approve a different contract.
 
-From the demo checkout, run the compiler twice, once per source, with paths appropriate to that isolated core checkout:
-
-```sh
-java -jar <compiler-cli.jar> extensions/task-read/maya.yaml extensions/task-read/dcm.json --profile=keir-read/2 > extensions/task-read/maya.json
-java -jar <compiler-cli.jar> extensions/task-read/leo.yaml extensions/task-read/dcm.json --profile=keir-read/2 > extensions/task-read/leo.json
-```
-
-Preserve stdout as raw bytes (use a byte-preserving process API on shells that transcode redirects). Compile again and compare exact bytes. Recompute the model SHA-256 over its canonical JSON and each source/artifact SHA-256; update the trusted selection only after review. JSON/YAML assets use LF in Git to preserve their pins.
-
-To refresh the runtime, run `npm pack` in the isolated core `runtime-node/` directory, placing its archive under demo `vendor/`. Inspect all archive entries and contents for unexpected files or private data, record source revision/integrity/file hashes, then install that archive locally and update the lockfile. No public registry publication is needed. Do not bypass integrity checks. A fresh standalone demo checkout must pass `npm ci`, build and tests without access to the core checkout or Java at execution.
-
-## Verification
-
-`npm test` covers installed-package integrity, actual SQLite ownership/status projection, two programs, exact-artifact simulation parity, admission/resource/result failures, denial/revocation and the native advice API alongside native CRUD regressions. Browser checks are separate:
-
-```sh
-npm run build
-npm run test:browser:install
-npm run test:e2e -- --grep "task advice"
-```
-
-The browser fixture owns temporary servers/data and project-local Chromium. It checks saved status, preserved edits, failed-advice clearing, close/reopen and user-switch responses. The separate lifecycle journeys cover Studio review/approval/selection; AI calls and extension writes remain outside scope.
+Historical read tests retain their original authority and compatibility checks where applicable. They do not qualify current native writes. See [verification](../tests/README.md) for the separation between retained-read regression, synthetic effect simulation, public-projection UI checks and actual native execution qualification.

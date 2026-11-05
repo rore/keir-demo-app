@@ -158,6 +158,11 @@ test('settings file cannot be placed inside static assets', t => {
   mkdirSync(root); mkdirSync(data);
   assert.doesNotThrow(() => assertAuthoringSettingsLocation(join(data, 'ai-authoring.json'), root));
   assert.throws(() => assertAuthoringSettingsLocation(join(root, 'ai-authoring.json'), root), /outside public assets/);
+  assert.throws(() => assertAuthoringSettingsLocation(join(root, 'not-yet-created', 'ai-authoring.json'), root), /outside public assets/);
+  assert.throws(() => assertAuthoringSettingsLocation(join(data, 'other.json'), root), /outside public assets/);
+  assert.throws(() => assertAuthoringSettingsLocation('ai-authoring.json', root), /outside public assets/);
+  assert.doesNotThrow(() => assertAuthoringSettingsLocation(join(data, 'not-yet-created', 'ai-authoring.json'), root));
+  assert.doesNotThrow(() => assertAuthoringSettingsLocation(undefined, root));
 });
 
 test('settings file cannot be placed through a static-root symlink alias', t => {

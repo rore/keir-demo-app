@@ -2,6 +2,11 @@ import { test, expect } from '@playwright/test';
 import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync } from 'node:fs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { taskService } from '../../src/data.mjs';
+import { TASK_HOOK } from '../../src/extension-catalog.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
+import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 async function openSaved(page, fixture, name) {
@@ -20,8 +25,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
   test(`optional rename keeps the full accessible name and compact navigation at ${viewport.width}x${viewport.height}`, async ({ page }) => {
     const fixture = await startAuthoringFixture({ unconfigured: true });
     const name = 'Keep unfinished work visible while all completed work stays exactly as it is today'.padEnd(80, '.').slice(0, 80);
-    fixture.db.prepare('UPDATE extensions SET name=? WHERE owner_id=?').run(name, 'maya');
-    const before = fixture.db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='ClassifyTask'").get('maya');
+    const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name });
+    const before = fixture.db.prepare('SELECT * FROM extension_selections WHERE owner_id=? ORDER BY hook_id').all('maya');
     const renameRequests = [];
     page.on('request', request => { if (request.method() === 'POST' && /\/rename$/.test(new URL(request.url()).pathname)) renameRequests.push(request); });
     try {
@@ -43,18 +48,18 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       await page.screenshot({ path: `build/studio-real-ai/rename-${viewport.width}x${viewport.height}.png` });
       await input.fill('Unsent name'); await input.dispatchEvent('compositionstart'); await input.press('Enter');
       await expect(form).toBeVisible(); expect(renameRequests).toHaveLength(0);
-      expect(fixture.db.prepare('SELECT name FROM extensions WHERE owner_id=?').get('maya').name).toBe(name);
+      expect(fixture.db.prepare('SELECT name FROM extensions WHERE id=?').get(extensionId).name).toBe(name);
       await input.dispatchEvent('compositionend');
       await input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true });
       expect(renameRequests).toHaveLength(0);
       await input.press('Escape'); await expect(rename).toBeFocused();
       await expect(heading).toHaveText(name);
-      await rename.click(); await input.fill('My task advice'); await input.press('Enter');
-      await expect(ui.getByRole('heading', { name: 'My task advice', exact: true })).toBeVisible();
+      await rename.click(); await input.fill('My task customization'); await input.press('Enter');
+      await expect(ui.getByRole('heading', { name: 'My task customization', exact: true })).toBeVisible();
       await expect(rename).toBeFocused(); await expect(form).toHaveCount(0);
       expect(renameRequests).toHaveLength(1);
-      expect(fixture.db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='ClassifyTask'").get('maya')).toEqual(before);
-      await page.reload(); await expect(ui.getByRole('heading', { name: 'My task advice', exact: true })).toBeVisible();
+      expect(fixture.db.prepare('SELECT * FROM extension_selections WHERE owner_id=? ORDER BY hook_id').all('maya')).toEqual(before);
+      await page.reload(); await expect(ui.getByRole('heading', { name: 'My task customization', exact: true })).toBeVisible();
       expect(fixture.requests).toHaveLength(0);
     } finally { await fixture.close(); }
   });
@@ -62,10 +67,14 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 
 test('a stale rename keeps typed text and refreshes the expected name before a fresh save', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
-  const item = fixture.db.prepare('SELECT id,name FROM extensions WHERE owner_id=?').get('maya');
+  const admitted = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Untitled customization' });
+  const item = fixture.db.prepare('SELECT id,name FROM extensions WHERE id=?').get(admitted.extensionId);
   try {
+    await page.setViewportSize({ width: 390, height: 844 });
     await openSaved(page, fixture, item.name);
-    const ui = studio(page); await ui.getByRole('button', { name: 'Rename', exact: true }).click();
+    const ui = studio(page), name = ui.getByRole('button', { name: 'Add name', exact: true });
+    await expect(name).toBeInViewport({ ratio: 1 });
+    await name.click();
     const form = ui.getByRole('form', { name: 'Rename customization', exact: true }), input = form.getByLabel('Name', { exact: true });
     await input.fill('My preferred name');
     fixture.db.prepare('UPDATE extensions SET name=? WHERE id=?').run('Changed in another view', item.id);
@@ -76,13 +85,15 @@ test('a stale rename keeps typed text and refreshes the expected name before a f
     await expect(ui.getByRole('heading', { name: 'Changed in another view', exact: true })).toBeVisible();
     await input.press('Enter');
     await expect(ui.getByRole('heading', { name: 'My preferred name', exact: true })).toBeVisible();
+    await expect(ui.getByRole('button', { name: 'Rename', exact: true })).toBeFocused();
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });
 
 test('switching owners discards the prior owner rename text and fences its late result', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
-  const item = fixture.db.prepare('SELECT id,name FROM extensions WHERE owner_id=?').get('maya');
+  const admitted = admitTaskDraft(fixture.db, createLifecycle(fixture.db));
+  const item = fixture.db.prepare('SELECT id,name FROM extensions WHERE id=?').get(admitted.extensionId);
   let release, started;
   const pending = new Promise(resolve => { release = resolve; }), requestStarted = new Promise(resolve => { started = resolve; });
   try {
@@ -101,9 +112,12 @@ test('switching owners discards the prior owner rename text and fences its late 
   } finally { release(); await fixture.close(); }
 });
 
-test('unfinished advice remains the primary exact example when completed cases were authored first', async ({ page }) => {
+test('matching task creation remains the primary exact example when no-op cases were authored first', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
+    const { extensionId: id, conversationId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { owner: 'sam' });
+    const project = taskService(fixture.db).listProjects('sam')[0];
+    const task = taskCustomizationFixture({ projectId: project.id, otherProjectId: 'other-project-example', title: 'Review completed work' });
     await page.goto(fixture.origin); await page.getByRole('button', { name: 'Continue as Sam' }).click();
     await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam');
     const post = (path, body) => page.evaluate(async ({ path, body }) => {
@@ -112,20 +126,24 @@ test('unfinished advice remains the primary exact example when completed cases w
       if (!response.ok) throw new Error(await response.text());
       return response.json();
     }, { path, body });
-    let saved = await post('extensions', { operationId: crypto.randomUUID(), source: fixture.metadata.source, label: 'Checked advice' });
-    const id = saved.extension.id;
-    const cases = [...fixture.metadata.cases].sort((a, b) => Number(JSON.parse(b).id === 'synthetic-completed') - Number(JSON.parse(a).id === 'synthetic-completed'));
+    let saved = await post(`extensions/${id}/compile`, { hookId: TASK_HOOK, source: task.source, draftVersion: 0, label: 'Checked task creation' });
+    const cases = [...task.cases].sort((a, b) => Number(JSON.parse(a).id === 'matching-project') - Number(JSON.parse(b).id === 'matching-project'));
     saved = await post(`extensions/${id}/scenarios`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion, cases });
     saved = await post(`extensions/${id}/simulate`, { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
     expect(saved.evidence.passed).toBe(true);
+    expect(JSON.parse(cases[0]).id).toBe('other-project');
+    const conversation = fixture.db.prepare('SELECT id,state FROM authoring_conversations WHERE id=?').get(conversationId);
+    const state = JSON.parse(conversation.state);
+    state.handles = { revisionId: saved.draft.id, draftVersion: saved.draftVersion, suiteDigest: saved.draft.suiteDigest };
+    fixture.db.prepare('UPDATE authoring_conversations SET state=? WHERE id=?').run(JSON.stringify(state), conversation.id);
     await page.goto(fixture.origin + '/#customization=' + id);
     const ui = studio(page), decision = ui.getByRole('article', { name: 'Current decision', exact: true });
     const invitation = ui.getByRole('button', { name: 'View saved changes', exact: true }).first();
     await openSavedChanges(page);
-    await expect(decision.getByRole('heading', { name: 'What an unfinished task would show', exact: true })).toBeVisible();
-    const example = decision.getByRole('article', { name: 'Example: Unfinished task', exact: true });
+    const example = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true }).getByRole('article', { name: `Example: Completed task in “${project.name}”`, exact: true });
     await expect(example).toHaveCount(1);
-    await expect(example.getByText('Pending', { exact: true })).toHaveCount(2);
+    await expect(example.locator('.rs-created-example strong')).toHaveText(task.metadata.title);
+    await expect(example.getByText('Matches what you wanted', { exact: true })).toBeVisible();
     const exact = decision.getByLabel('Exact checked examples', { exact: true });
     await expect(exact).toBeHidden();
     await decision.getByText('Exact saved change and checks', { exact: true }).click();

@@ -2,12 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
-import { loadCatalog } from '../src/extension-catalog.mjs';
-import { simulationCases } from '../src/extension-lifecycle.mjs';
+import { TASK_HOOK } from '../src/extension-catalog.mjs';
+import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { compileTaskCustomization } from './fixtures/task-customization.mjs';
+import { admitTaskDraft } from './fixtures/task-authoring.mjs';
+
+let compiledFixture;
+const fixture = () => compiledFixture ??= compileTaskCustomization();
+let actual;
 
 function extensionPath(db, suffix = '', owner = 'maya') {
-  const items = db.prepare('SELECT id FROM extensions WHERE owner_id=?').all(owner);
-  assert.equal(items.length, 1, 'The fixture has one exact legacy extension per owner.');
+  const items = db.prepare("SELECT id FROM extensions WHERE owner_id=? AND creation_operation_id='api-task-draft'").all(owner);
+  assert.equal(items.length, 1, 'The fixture has one exact new task draft per owner.');
   return 'extensions/' + items[0].id + (suffix ? '/' + suffix : '');
 }
 
@@ -21,8 +27,14 @@ async function compilerReady(ready, requests) {
   } finally { clearTimeout(timeout); }
 }
 
-function apiHarness(t, compiler = { compile: async () => ({ artifact: loadCatalog().find(item => item.id === 'attention').artifactBytes, diagnostics: [] }) }) {
+async function apiHarness(t, compiler) {
+  actual = await fixture();
+  compiler ??= { compile: async bytes => {
+    assert.equal(Buffer.from(bytes).toString(), actual.source);
+    return { artifact: actual.artifactBytes, diagnostics: [] };
+  } };
   const db = openData(':memory:'), origin = 'http://127.0.0.1:32123';
+  for (const owner of ['maya', 'leo']) admitTaskDraft(db, createLifecycle(db), { owner, operationId: 'api-task-draft' });
   const appPromise = createApp({ db, origin, compiler });
   t.after(async () => { const app = await appPromise; await app.close(); db.close(); });
   return appPromise.then(app => {
@@ -40,29 +52,26 @@ function apiHarness(t, compiler = { compile: async () => ({ artifact: loadCatalo
   });
 }
 
-const validCase = () => simulationCases('attention')[0].bytes.toString();
+const validCase = () => actual.cases[0];
 
 test('scoped lifecycle API enforces exact shapes, session, draft/selection versions and real evidence', async t => {
-  const db = openData(':memory:'), origin = 'http://127.0.0.1:32123';
-  const app = await createApp({ db, origin }); t.after(async () => { await app.close(); db.close(); });
-  let auth = {};
-  const call = (url, body, headers = {}) => app.inject({ url: '/api/' + url, method: body === undefined ? 'GET' : 'POST',
-    headers: { host: '127.0.0.1:32123', origin, 'content-type': 'application/json', ...auth, ...headers }, ...(body === undefined ? {} : { payload: body }) });
-  const bootstrap = (await call('session')).json();
-  const login = await call('session', { userId: 'maya' }, { 'x-session-context': bootstrap.contextToken });
-  auth = { cookie: login.headers['set-cookie'].split(';')[0], 'x-session-context': login.json().contextToken };
+  const { db, call, login, setAuth } = await apiHarness(t);
+  await login();
   const initial = (await call(extensionPath(db))).json();
   assert.equal((await call('extensions?owner=leo')).statusCode, 400);
   for (const bad of [{ templateId: 'attention', draftVersion: 0, owner: 'leo' }, { templateId: '../leo.json', draftVersion: 0 }, [], { templateId: 'attention', draftVersion: -1 }])
     assert.equal((await call(extensionPath(db, 'draft'), bad)).statusCode, 400);
   assert.equal((await call(extensionPath(db, 'draft'), { templateId: 'attention', draftVersion: 0 }, { origin: 'http://invalid.local' })).statusCode, 403);
-  let state = (await call(extensionPath(db, 'draft'), { templateId: 'attention', draftVersion: 0 })).json();
+  let state = (await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, draftVersion: 0 })).json();
+  state = (await call(extensionPath(db, 'scenarios'), { revisionId: state.draft.id, draftVersion: state.draftVersion, cases: actual.cases })).json();
   const input = { revisionId: state.draft.id, draftVersion: state.draftVersion };
   assert.equal((await call(extensionPath(db, 'approve'), { ...input, evidenceId: 'forged' })).statusCode, 404);
   const proofResponse = await call(extensionPath(db, 'simulate'), input);
   assert.equal(proofResponse.statusCode, 200); state = proofResponse.json();
   assert.equal(state.evidence.passed, true);
-  assert.equal((await call(extensionPath(db, `evidence/${state.evidence.id}`))).json().reports.length, 6);
+  const checked = (await call(extensionPath(db, `evidence/${state.evidence.id}`))).json();
+  assert.equal(checked.reports.length, 6);
+  assert.equal(checked.reports.find(row => row.id === 'missing-task').report.scenario.task.projectId, undefined, 'Unavailable reads remain inspectable without invented project data.');
   assert.equal((await call(extensionPath(db, 'activate'), { ...input, generation: initial.selection.generation })).statusCode, 409);
   assert.equal((await call(extensionPath(db, 'approve'), { ...input, evidenceId: state.evidence.id, passed: true })).statusCode, 400);
   state = (await call(extensionPath(db, 'approve'), { ...input, evidenceId: state.evidence.id })).json();
@@ -74,26 +83,33 @@ test('scoped lifecycle API enforces exact shapes, session, draft/selection versi
   assert.equal((await call(extensionPath(db, `evidence/${approvedId}`))).json().id, approvedId);
   state = (await call(extensionPath(db, 'approve'), { ...input, evidenceId: state.evidence.id })).json();
   assert.equal(state.approvedEvidenceId, state.evidence.id);
-  const requests = await Promise.all([call(extensionPath(db, 'activate'), { ...input, generation: 1 }), call(extensionPath(db, 'disable'), { generation: 1 })]);
-  assert.deepEqual(requests.map(response => response.statusCode).sort(), [200, 409]);
+  const native = db.prepare('SELECT * FROM tasks ORDER BY id').all();
+  const activated = await call(extensionPath(db, 'activate'), { ...input, generation: initial.selection.generation });
+  assert.equal(activated.statusCode, 200);
+  assert.equal(activated.json().selection.revision.id, input.revisionId);
+  assert.equal(activated.json().selection.approvedEvidenceId, state.approvedEvidenceId);
+  assert.equal(activated.json().selection.generation, initial.selection.generation + 1);
+  assert.deepEqual(db.prepare('SELECT * FROM tasks ORDER BY id').all(), native, 'Activation never executes or replays a task.');
+  assert.equal((await call(extensionPath(db, 'disable'), { generation: initial.selection.generation })).statusCode, 409);
   assert.equal((await call(extensionPath(db, 'history?before=-1'))).statusCode, 400);
   assert.equal((await call(extensionPath(db, 'history?owner=leo'))).statusCode, 400);
   const proofId = approvedId;
-  const prior = { ...auth }, switched = await call('session', { userId: 'leo' });
-  auth = { cookie: switched.headers['set-cookie'].split(';')[0], 'x-session-context': switched.json().contextToken };
+  await login('leo');
   assert.equal((await call(extensionPath(db, `evidence/${proofId}`))).statusCode, 404);
-  assert.equal((await call(extensionPath(db, 'rollback'), { revisionId: initial.selection.revision.id, generation: 1 })).statusCode, 404);
-  assert.equal((await call(extensionPath(db), undefined, prior)).statusCode, 401);
-  assert.equal((await call(extensionPath(db, '', 'leo'))).json().selection.generation, 1);
-  db.prepare("UPDATE extension_revisions SET identity=? WHERE owner_id='leo'").run(JSON.stringify({ invalid: 'x'.repeat(263000) }));
+  assert.equal((await call(extensionPath(db, 'rollback'), { revisionId: input.revisionId, generation: 0 })).statusCode, 404);
+  const leoCompiled = (await call(extensionPath(db, 'compile', 'leo'), { hookId: TASK_HOOK, source: actual.source, draftVersion: 0 })).json();
+  assert.equal(leoCompiled.selection.generation, 0);
+  db.prepare('UPDATE extension_revisions SET identity=? WHERE id=?').run(JSON.stringify({ invalid: 'x'.repeat(263000) }), leoCompiled.draft.id);
   assert.equal((await call(extensionPath(db, '', 'leo'))).statusCode, 413, 'Oversized state is rejected rather than silently truncated');
+  setAuth({});
+  assert.equal((await call(extensionPath(db))).statusCode, 401);
 });
 
 test('authored source and independent suites create immutable revisions; only exact passing evidence can approve or activate', async t => {
   const { db, call, login } = await apiHarness(t);
   await login();
   const selected = (await call(extensionPath(db))).json().selection;
-  const compiled = await call(extensionPath(db, 'compile'), { source: 'synthetic qualification source', label: 'Manual check', draftVersion: 0 });
+  const compiled = await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, label: 'Manual check', draftVersion: 0 });
   assert.equal(compiled.statusCode, 200);
   let state = compiled.json();
   const sourceRevision = state.draft.id;
@@ -104,7 +120,8 @@ test('authored source and independent suites create immutable revisions; only ex
   assert.equal((await call(extensionPath(db, 'simulate'), { revisionId: sourceRevision, draftVersion: 1 })).statusCode, 409);
 
   const original = JSON.parse(validCase());
-  original.expect.outcome.result.classification = 'PENDING';
+  original.expect.outcome.result.status = 'NO_OP';
+  original.expect.consumption.result.status = 'NO_OP';
   const wrong = JSON.stringify(original);
   const proposed = await call(extensionPath(db, 'scenarios'), { revisionId: sourceRevision, cases: [wrong], draftVersion: 1 });
   assert.equal(proposed.statusCode, 200);
@@ -123,7 +140,7 @@ test('authored source and independent suites create immutable revisions; only ex
   assert.equal(failed.statusCode, 200);
   assert.equal(failed.json().evidence.passed, false);
   assert.equal((await call(extensionPath(db, 'approve'), { revisionId: wrongRevision, draftVersion: 2, evidenceId: failed.json().evidence.id })).statusCode, 409);
-  assert.equal((await call(extensionPath(db))).json().selection.revision.id, selected.revision.id, 'Saving or simulating a draft does not change active advice');
+  assert.deepEqual((await call(extensionPath(db))).json().selection, selected, 'Saving or simulating a draft changes no selection');
 
   const proposals = await Promise.all([
     call(extensionPath(db, 'scenarios'), { revisionId: wrongRevision, cases: [validCase()], draftVersion: 2 }),
@@ -141,26 +158,29 @@ test('authored source and independent suites create immutable revisions; only ex
   assert.equal(state.evidence.passed, true);
   state = (await call(extensionPath(db, 'approve'), { revisionId: correctedRevision, draftVersion: 3, evidenceId: state.evidence.id })).json();
   assert.equal(state.approved, true);
-  assert.equal(state.selection.revision.id, selected.revision.id);
+  assert.deepEqual(state.selection, selected);
   const active = await call(extensionPath(db, 'activate'), { revisionId: correctedRevision, draftVersion: 3, generation: state.selection.generation });
   assert.equal(active.statusCode, 200);
   assert.equal(active.json().selection.revision.id, correctedRevision);
+  assert.equal(active.json().selection.approvedEvidenceId, state.approvedEvidenceId);
+  assert.equal(active.json().selection.eligible, true);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM task_completion_events').get().n, 0, 'Approval and activation capture no native completion.');
 });
 
 test('authored API keeps owner and artifact authority host-bound and rejects malformed scenario strings', async t => {
   const { db, call, login } = await apiHarness(t);
   await login();
-  assert.equal((await call(extensionPath(db, 'compile'), { source: 'synthetic', draftVersion: 0, owner: 'leo' })).statusCode, 400);
-  assert.equal((await call(extensionPath(db, 'compile'), { source: 'synthetic', draftVersion: 0, artifact: 'forged', pins: {}, templateId: 'attention' })).statusCode, 400);
-  assert.equal((await call(extensionPath(db, 'compile'), { source: '', draftVersion: 0 })).statusCode, 400);
-  assert.equal((await call(extensionPath(db, 'compile'), { source: 'x'.repeat(65537), draftVersion: 0 })).statusCode, 400);
-  const compiled = await call(extensionPath(db, 'compile'), { source: 'synthetic', draftVersion: 0 });
+  assert.equal((await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, draftVersion: 0, owner: 'leo' })).statusCode, 400);
+  assert.equal((await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, draftVersion: 0, artifact: 'forged', pins: {}, templateId: 'attention' })).statusCode, 400);
+  assert.equal((await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: '', draftVersion: 0 })).statusCode, 400);
+  assert.equal((await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: 'x'.repeat(65537), draftVersion: 0 })).statusCode, 400);
+  const compiled = await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, draftVersion: 0 });
   const revisionId = compiled.json().draft.id;
   assert.equal((await call(extensionPath(db, 'revisions/' + revisionId), undefined, { 'x-session-context': 'wrong' })).statusCode, 401);
   await login('leo');
   assert.equal((await call(extensionPath(db, 'revisions/' + revisionId))).statusCode, 404);
   await login('maya');
-  const duplicateKey = validCase().replace('"id":"open"', '"id":"open","id":"duplicate"');
+  const duplicateKey = validCase().replace(/"id"\s*:\s*"[^"]+"/, '$&,"id":"duplicate"');
   const badCases = ['', '{', duplicateKey, '[]'];
   for (const value of badCases) {
     const response = await call(extensionPath(db, 'scenarios'), { revisionId, cases: [value], draftVersion: 1 });
@@ -182,12 +202,12 @@ test('compile diagnostics and concurrent/stale or revoked async completions neve
   const compiler = { compile: async () => {
     if (diagnostic) return { artifact: null, diagnostics: [{ code: 'PARSE_ERROR', path: '/steps/0' }] };
     await new Promise(resolve => { releases.push(resolve); if (releases.length === expectedEntries) entered(); });
-    return { artifact: loadCatalog().find(item => item.id === 'attention').artifactBytes, diagnostics: [] };
+    return { artifact: actual.artifactBytes, diagnostics: [] };
   } };
   const { db, call, login, logout, setAuth } = await apiHarness(t, compiler);
   await login();
-  const first = call(extensionPath(db, 'compile'), { source: 'first', draftVersion: 0 });
-  const second = call(extensionPath(db, 'compile'), { source: 'second', draftVersion: 0 });
+  const first = call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, label: 'First', draftVersion: 0 });
+  const second = call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, label: 'Second', draftVersion: 0 });
   try { await compilerReady(ready, [first, second]); }
   finally { releases.splice(0).forEach(resolve => resolve()); }
   const concurrent = await Promise.all([first, second]);
@@ -196,14 +216,14 @@ test('compile diagnostics and concurrent/stale or revoked async completions neve
 
   diagnostic = true;
   const current = (await call(extensionPath(db))).json();
-  const rejected = await call(extensionPath(db, 'compile'), { source: 'invalid', draftVersion: current.draftVersion });
+  const rejected = await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, draftVersion: current.draftVersion });
   assert.equal(rejected.statusCode, 422);
   assert.deepEqual(rejected.json().diagnostics, [{ code: 'PARSE_ERROR', path: '/steps/0' }]);
   assert.equal((await call(extensionPath(db))).json().revisionId, current.revisionId);
 
   diagnostic = false;
   expectedEntries = 1; ready = new Promise(resolve => { entered = resolve; });
-  const pending = call(extensionPath(db, 'compile'), { source: 'revoked session', draftVersion: current.draftVersion });
+  const pending = call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source: actual.source, draftVersion: current.draftVersion });
   try { await compilerReady(ready, [pending]); }
   catch (error) { releases.splice(0).forEach(resolve => resolve()); throw error; }
   assert.equal((await logout()).statusCode, 200);

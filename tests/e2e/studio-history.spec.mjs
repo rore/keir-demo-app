@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 async function api(page, path, body) {
@@ -23,7 +25,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       await page.getByRole('button', { name: 'Continue as Maya' }).click();
       await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
       const example = fixture.metadata;
-      let state = await api(page, 'extensions', { operationId: crypto.randomUUID(), source: example.source, label: 'History integration' });
+      const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'History integration' });
+      let state = await api(page, `extensions/${extensionId}/compile`, { hookId: 'TaskCompleted', source: example.source, label: 'History integration', draftVersion: 0 });
       const path = `extensions/${state.extension.id}`;
       const input = () => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
       state = await api(page, path + '/scenarios', { ...input(), cases: example.cases });
@@ -32,7 +35,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       state = await api(page, path + '/activate', { ...input(), generation: state.selection.generation });
       const active = state.selection;
       const savedSource = example.source + '\n\n';
-      state = await api(page, path + '/compile', { source: savedSource, label: 'Saved before restart', draftVersion: state.draftVersion });
+      state = await api(page, path + '/compile', { hookId: 'TaskCompleted', source: savedSource, label: 'Saved before restart', draftVersion: state.draftVersion });
       if (checked) {
         state = await api(page, path + '/scenarios', { ...input(), cases: example.cases });
         state = await api(page, path + '/simulate', input());

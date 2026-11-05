@@ -5,18 +5,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
-import { openData, resetData, taskService, taskEffectService } from '../src/data.mjs';
-import { removeTaskEffectSchema } from './fixtures/task-effect-schema.mjs';
+import { openData, resetData, taskService, taskEffectService, transaction, revokeTaskAdmissions } from '../src/data.mjs';
+import { removeTaskEffectSchema, nativeEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
 
 const stores = ['task_completion_events', 'task_effect_receipts'];
-const pins = {
-  artifactDigest: `sha256:${'a'.repeat(64)}`,
-  modelRef: { format: 'keir-dcm/effect-3', digest: `sha256:${'b'.repeat(64)}` },
-  compiler: { id: 'storage-fixture', version: '1' }, environment: { id: 'storage-fixture', version: '1' },
-  consumer: { id: 'demo.task-effects', version: '1', kind: 'EVENT_REPORT' },
-  qualification: { id: 'storage-fixture', revision: 1, reportDigest: `sha256:${'c'.repeat(64)}`, hostBuild: `sha256:${'d'.repeat(64)}` },
-};
-const effects = db => taskEffectService(db, { authorizeRead: () => true, authorizeWrite: () => true, isQualificationCurrent: () => true });
+const effects = nativeEffectService;
 
 function fixture(t, close = () => {}) {
   const directory = mkdtempSync(join(tmpdir(), 'keir-effect-storage-')), path = join(directory, 'app.sqlite');
@@ -78,9 +71,8 @@ function receiptRow(event, changes = {}) {
 }
 function populatedEffects(db) {
   const native = taskService(db), project = native.listProjects('maya')[0];
-  const selected = db.prepare("SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='ClassifyTask'").get();
-  // Trusted storage setup exercises persistence only; these pins do not qualify a real runtime.
-  db.prepare("UPDATE extension_selections SET revision_id=?,generation=4,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'").run(selected.revision_id, JSON.stringify(pins));
+  const selected = seedTaskEffectBinding(db);
+  db.prepare("UPDATE extension_selections SET revision_id=?,generation=4,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'").run(selected.revisionId, JSON.stringify(selected.pins));
   const source = native.createTask('maya', { projectId: project.id, title: 'Complete this task' });
   native.completeTask('maya', source.id);
   const event = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(source.id), service = effects(db);
@@ -204,6 +196,45 @@ test('stored event identity, permanent revocation, settled outcome and receipts 
   integrity(db);
 });
 
+test('cloned databases with identical event and original key cannot authenticate each other’s native key', async t => {
+  let db, copy;
+  const { path, directory } = fixture(t, () => { db?.close(); copy?.close(); });
+  db = openData(path);
+  const { event, key, payload } = populatedEffects(db), clonePath = join(directory, 'clone.sqlite');
+  await backup(db, clonePath);
+  copy = openData(clonePath);
+  const service = taskEffectService(copy), saved = service.status('maya', event.event_id);
+  assert.equal(saved.originalKey, key.value);
+  const context = { requestKey: key, event: { id: saved.eventId, source: saved.sourceTaskId }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 } };
+  const before = snapshot(copy);
+  assert.throws(() => service.contextFor('maya', context), { code: 'HOST_KEY_INVALID' });
+  assert.throws(() => service.createTaskOnce('maya', key, payload, context), { code: 'HOST_KEY_INVALID' });
+  assert.deepEqual(snapshot(copy), before);
+  assert.deepEqual(service.createTaskOnce('maya', service.keyFor('maya', saved.eventId), payload), saved.receipt, 'Authenticated historical receipt is read-only');
+});
+
+test('failed native revocation is atomic; successful revocation survives reopen without erasing settled receipts', t => {
+  let db;
+  const { path } = fixture(t, () => db?.close()); db = openData(path);
+  const { event, service } = populatedEffects(db);
+  service.finish('maya', event.event_id, { classification: 'COMPLETED', effects: [{ state: 'CONFIRMED' }] });
+  const settled = service.status('maya', event.event_id);
+  const task = taskService(db).createTask('maya', { projectId: taskService(db).listProjects('maya')[0].id, title: 'Pending revoke' });
+  taskService(db).completeTask('maya', task.id);
+  const before = snapshot(db);
+  db.exec("CREATE TEMP TRIGGER fail_revocation BEFORE UPDATE OF revoked_at ON task_completion_events BEGIN SELECT RAISE(ABORT,'revocation blocked'); END");
+  assert.throws(() => transaction(db, () => revokeTaskAdmissions(db, 'maya', event.item_id)), /revocation blocked/);
+  assert.deepEqual(snapshot(db), before);
+  db.exec('DROP TRIGGER fail_revocation');
+  transaction(db, () => revokeTaskAdmissions(db, 'maya', event.item_id));
+  db.close(); db = openData(path);
+  const reopened = effects(db), pending = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(task.id);
+  assert.notEqual(pending.revoked_at, null); assert.equal(pending.state, 'PENDING');
+  assert.throws(() => reopened.claim('maya', pending.event_id), { code: 'AUTHORITY_DENIED' });
+  assert.deepEqual(reopened.status('maya', event.event_id), settled);
+  assert.equal(db.prepare("SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get().revision_id, null);
+});
+
 test('reset verifies both new stores, rolls failed reseeding back and clears keys only with their tasks after a verified backup', async t => {
   const { path, directory } = fixture(t); let db = openData(path);
   const { event, key, payload, createdId } = populatedEffects(db), before = snapshot(db); db.close();
@@ -229,7 +260,7 @@ test('reset verifies both new stores, rolls failed reseeding back and clears key
   assert.equal(db.prepare("SELECT count(*) n FROM extension_selections WHERE hook_id='TaskCompleted' AND revision_id IS NULL AND generation=0 AND binding_pins IS NULL").get().n, 3);
   const current = effects(db);
   assert.throws(() => current.keyFor('maya', event.event_id), error => error.status === 404);
-  assert.throws(() => current.createTaskOnce('maya', key, payload), error => error.status === 404);
+  assert.throws(() => current.createTaskOnce('maya', key, payload), error => error.code === 'HOST_KEY_INVALID');
   assert.equal(db.prepare('SELECT count(*) n FROM tasks').get().n, 9);
   integrity(db); db.close();
 });

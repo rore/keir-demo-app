@@ -17,8 +17,14 @@ function studioLink() {
   return { valid: true, target: { extensionId: params.get("customization"), conversationId: params.get("conversation") } as StudioTarget };
 }
 type Project = { id: string; name: string };
-type Advice = { status: "DISPLAYED"; classification: "DONE" | "PENDING" | "NEEDS_ATTENTION" }
-  | { status: "NOT_DISPLAYED"; message: string };
+type NativeReceipt = { kind: string; effect?: "CONFIRMED" | "NONE" | "UNKNOWN"; value?: { id: string }; code?: string };
+type Reaction = {
+  state: "NO_BINDING" | "PENDING" | "STARTED" | "FINISHED";
+  outcome?: { classification?: string; effects?: { state?: string; effect?: string }[]; [key: string]: unknown } | null;
+  receipt?: NativeReceipt | null;
+  reconciliation?: { observedAt: string; receipt?: NativeReceipt | null } | null;
+  message?: string;
+};
 type Task = {
   id: string;
   projectId: string;
@@ -277,6 +283,8 @@ function Workspace({
   const [rename, setRename] = useState(false);
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<Task | null>(null);
+  const [recentCompletion, setRecentCompletion] = useState<string | null>(null);
+  const pendingTaskOpen = useRef<{ task: Task; navigation: number } | null>(null);
   const [draft, setDraft] = useState({ title: "", notes: "" });
   const routeKey = "daymark-studio-route:" + session.user.id;
   const [entryLink] = useState(studioLink);
@@ -347,12 +355,9 @@ function Workspace({
   const returnFocus = useRef<HTMLElement | null>(null);
   const detailRef = useRef<HTMLDialogElement>(null);
   const detailInstance = useRef(0);
-  const adviceEpoch = useRef(0);
   const serverGeneration = useRef<number | null>(null);
-  const [lifecycleEpoch, setLifecycleEpoch] = useState(0);
   function beforeSelectionChange() {
-    adviceEpoch.current++;
-    setLifecycleEpoch(adviceEpoch.current);
+    serverGeneration.current = null;
   }
   function reconcileSelection(next: number) {
     if (serverGeneration.current !== next) beforeSelectionChange();
@@ -450,7 +455,9 @@ function Workspace({
   }, []);
   useEffect(() => {
     const current = ++generation.current;
+    if (pendingTaskOpen.current?.task.projectId !== projectId) pendingTaskOpen.current = null;
     setTasks([]);
+    setRecentCompletion(null);
     setDetail(null);
     setTitle("");
     setError("");
@@ -468,8 +475,21 @@ function Workspace({
       abort.signal,
     )
       .then((data) => {
-        if (current === generation.current && !lifetime.current.signal.aborted)
+        if (current === generation.current && !lifetime.current.signal.aborted) {
           setTasks(data);
+          const target = pendingTaskOpen.current;
+          if (target?.task.projectId === projectId) {
+            pendingTaskOpen.current = null;
+            if (studioEntrySerial.current === target.navigation) {
+              const actual = data.find(task => task.id === target.task.id);
+              if (actual) {
+                detailInstance.current++; setDraft({ title: actual.title, notes: actual.notes }); setDetail(actual);
+                requestAnimationFrame(() => { if (current === generation.current && studioEntrySerial.current === target.navigation && !lifetime.current.signal.aborted) returnFocus.current = document.getElementById("task-open-" + actual.id); });
+              }
+              else setNotice("The created task is no longer available in this project.");
+            }
+          }
+        }
       })
       .catch((error) => {
         if (current === generation.current) handleError(error);
@@ -491,7 +511,7 @@ function Workspace({
     if (detail && destination === "tasks") {
       detailRef.current?.showModal();
       if (resumeDetail.current) {
-        document.getElementById("manage-task-advice")?.focus();
+        document.getElementById("open-customizations")?.focus();
         resumeDetail.current = false;
       }
     }
@@ -555,18 +575,41 @@ function Workspace({
   }
   function complete(task: Task) {
     action(
-      () => request<Task>(`tasks/${task.id}/complete`, "POST", {}),
+      async () => {
+        try { return await request<Task>(`tasks/${task.id}/complete`, "POST", {}); }
+        catch (failure) {
+          if (lifetime.current.signal.aborted) throw failure;
+          const saved = await request<Task>(`tasks/${task.id}`);
+          if (saved.status === "completed") return saved;
+          throw failure;
+        }
+      },
       (saved) => {
         setTasks((old) =>
           old.map((item) => (item.id === saved.id ? saved : item)),
         );
         setNotice("A little more done.");
+        setRecentCompletion(saved.id);
       },
     );
   }
   function closeDetail() {
     detailInstance.current++;
     setDetail(null);
+  }
+  function openCreatedTask(task: Task) {
+    const navigation = ++studioEntrySerial.current;
+    currentStudioEntry.current = null;
+    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    detailInstance.current++; setDestination("tasks");
+    if (task.projectId !== projectId) { pendingTaskOpen.current = { task, navigation }; setProjectId(task.projectId); }
+    else { setDraft({ title: task.title, notes: task.notes }); setDetail(task); }
+  }
+  async function refreshCreatedTasks(created: Task) {
+    const current = generation.current;
+    if (created.projectId !== projectId) return;
+    const next = await request<Task[]>(`projects/${projectId}/tasks`);
+    if (current === generation.current && !lifetime.current.signal.aborted) setTasks(next);
   }
   const open = tasks.filter((task) => task.status === "open");
   const completed = tasks.filter((task) => task.status === "completed");
@@ -585,7 +628,8 @@ function Workspace({
         >
           {task.status === "completed" ? "✓" : ""}
         </button>
-        <button
+        <div className="task-row-content"><button
+          id={"task-open-" + task.id}
           className="task-open"
           onClick={(event) => {
             returnFocus.current = event.currentTarget;
@@ -597,6 +641,8 @@ function Workspace({
           <span>{task.title}</span>
           {task.notes && <small>{task.notes}</small>}
         </button>
+        {recentCompletion === task.id && detail?.id !== task.id && <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} />}
+        </div>
         <span className="task-chevron" aria-hidden="true">
           ↗
         </span>
@@ -853,7 +899,7 @@ function Workspace({
           target={studioTarget} ownerId={session.user.id} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId}
           targeted={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) rememberStudio({ ...next, entryId: studioTarget.entryId }); }}
           unavailable={() => { if (currentStudioEntry.current !== studioTarget.entryId || lifetime.current.signal.aborted) return; currentStudioEntry.current = null; setCustomizationNotice("That customization or conversation is unavailable. Choose a saved item or start a new one."); setDestination("customizations"); }} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
-          back={returnFromStudio} backToTasks={returnToTasks} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
+          back={returnFromStudio} backToTasks={returnToTasks} createNew={() => void openStudio("overview", { extensionId: null })} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
       </div>
       <dialog
         ref={detailRef}
@@ -877,20 +923,9 @@ function Workspace({
             busy={busy}
             error={error}
             close={closeDetail}
-            adviceEpoch={lifecycleEpoch}
-            check={async () => {
-              const instance = detailInstance.current, current = generation.current, epoch = adviceEpoch.current;
-              const fresh = () => !lifetime.current.signal.aborted && current === generation.current && instance === detailInstance.current && epoch === adviceEpoch.current;
-              try {
-                const result = await request<Advice>(`tasks/${detail.id}/advice`, "POST", {});
-                return fresh() ? result : undefined;
-              } catch (error) {
-                if (fresh()) {
-                  handleError(error);
-                  return { status: "NOT_DISPLAYED" as const, message: "Task advice is unavailable. Your task has not changed." };
-                }
-              }
-            }}
+            reactionRequest={studioRequest}
+            reactionConfirmed={refreshCreatedTasks}
+            openCreated={openCreatedTask}
             save={(title, notes) => {
               const instance = detailInstance.current;
               action(
@@ -915,6 +950,82 @@ function Workspace({
   );
 }
 
+function TaskReaction({ source, request, confirmed, openCreated }: {
+  source: Task;
+  request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
+  confirmed: (created: Task) => Promise<void>;
+  openCreated: (created: Task) => void;
+}) {
+  const [reaction, setReaction] = useState<Reaction | null>(null);
+  const [created, setCreated] = useState<Task | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
+  const mounted = useRef(false), locked = useRef(false), serial = useRef(0), reads = useRef(0);
+  const lifetime = useRef(new AbortController()), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const announced = useRef<string | null>(null);
+  const callbacks = useRef({ request, confirmed }); callbacks.current = { request, confirmed };
+  async function read(reconcile = false, automatic = false) {
+    if (!mounted.current || locked.current) return;
+    if (!automatic) reads.current = 0;
+    clearTimeout(timer.current); locked.current = true; const turn = ++serial.current;
+    setChecking(true); setError(""); setCreated(null);
+    try {
+      const next = await callbacks.current.request<Reaction>("tasks/" + encodeURIComponent(source.id) + "/reaction" + (reconcile ? "/reconcile" : ""), reconcile ? "POST" : "GET", reconcile ? {} : undefined, lifetime.current.signal);
+      if (!mounted.current || serial.current !== turn) return;
+      if (!["NO_BINDING", "PENDING", "STARTED", "FINISHED"].includes(next.state)) throw new Error("Unconfirmed reaction response");
+      setReaction(next);
+      const observation = next.reconciliation?.receipt;
+      const receipt = observation?.kind === "SUCCESS" && observation.effect === "CONFIRMED" ? observation : next.receipt;
+      if (receipt?.kind === "SUCCESS" && receipt.effect === "CONFIRMED" && typeof receipt.value?.id === "string" && receipt.value.id) {
+        const actual = await callbacks.current.request<Task>("tasks/" + encodeURIComponent(receipt.value.id), "GET", undefined, lifetime.current.signal);
+        if (!mounted.current || serial.current !== turn) return;
+        if (actual.id !== receipt.value.id || typeof actual.title !== "string" || typeof actual.projectId !== "string") throw new Error("Created task could not be resolved");
+        setCreated(actual);
+        if (announced.current !== actual.id) {
+          try { await callbacks.current.confirmed(actual); announced.current = actual.id; }
+          catch { if (mounted.current && serial.current === turn) setError("A task was added, but the project list could not be refreshed. Open the task or check the result again."); }
+        }
+      }
+      if (["PENDING", "STARTED"].includes(next.state) && ++reads.current < 12) timer.current = setTimeout(() => void read(false, true), 1000);
+    } catch {
+      if (mounted.current && serial.current === turn) setError("The customization result could not be checked. Your task stays completed. Check the result before deciding what to do next.");
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setChecking(false); } }
+  }
+  useEffect(() => {
+    mounted.current = true; void read();
+    return () => { mounted.current = false; serial.current++; clearTimeout(timer.current); lifetime.current.abort(); };
+  }, [source.id]);
+  const uncertain = reaction?.outcome?.classification === "UNCERTAIN" || reaction?.outcome?.effects?.some(effect => effect.state === "UNKNOWN" || effect.effect === "UNKNOWN")
+    || reaction?.receipt?.effect === "UNKNOWN" || reaction?.receipt?.kind === "UNKNOWN_COMMIT";
+  const observedReceipt = reaction?.reconciliation?.receipt;
+  const receipt = observedReceipt?.kind === "SUCCESS" && observedReceipt.effect === "CONFIRMED" ? observedReceipt : reaction?.receipt;
+  const confirmedReceipt = receipt?.kind === "SUCCESS" && receipt.effect === "CONFIRMED" && typeof receipt.value?.id === "string" && !!receipt.value.id;
+  const noEffect = !uncertain && (receipt?.effect === "NONE" || !!reaction?.outcome
+    && ["COMPLETED", "BUSINESS_REJECTION", "FAILED", "LIMIT_EXCEEDED"].includes(reaction.outcome.classification ?? "")
+    && Array.isArray(reaction.outcome.effects) && reaction.outcome.effects.every(effect => effect.state === "NONE" || effect.effect === "NONE"));
+  return <section className="task-reaction" aria-label="Customization outcome">
+    <p role="status">{confirmedReceipt ? created ? `Created “${created.title}”` : checking ? "A task was added. Checking its details…" : "A task was added, but it is unavailable here."
+      : noEffect ? "No task was added by this customization."
+      : uncertain ? "Could not confirm whether a task was added."
+      : reaction?.state === "NO_BINDING" ? "No customization was recorded for this completion."
+        : reaction?.state === "PENDING" ? "This customization has not started yet."
+          : !reaction && checking ? "Checking the customization result…" : "Could not confirm whether a task was added."}</p>
+    {reaction?.outcome?.classification && !["COMPLETED", "UNCERTAIN"].includes(reaction.outcome.classification) && <p>The customization did not finish successfully. Your completed task is kept.</p>}
+    {created && <button type="button" className="quiet-button" aria-label={`Open task: ${created.title}`} onClick={() => openCreated(created)}>Open task</button>}
+    {error && <p role="alert">{error}</p>}
+    <div className="task-reaction-actions"><button type="button" className="quiet-button" disabled={checking} onClick={() => void read()}>Check result</button>
+      {(uncertain || reaction?.state === "STARTED") && <button type="button" className="quiet-button" disabled={checking} onClick={() => void read(true)}>Reconcile saved observation</button>}</div>
+    {reaction && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
+      {confirmedReceipt && <p>A saved native receipt confirms that a task was created.</p>}
+      {confirmedReceipt && uncertain && <p>The original runtime outcome remains uncertain. The saved native receipt is a separate confirmation.</p>}
+      {reaction.message && <p>{reaction.message}</p>}
+      {reaction.reconciliation && <p className="muted">Native observation checked {new Date(reaction.reconciliation.observedAt).toLocaleString()}.</p>}
+      {receipt && <pre aria-label="Saved native receipt">{JSON.stringify(receipt, null, 2)}</pre>}
+      {reaction.outcome && <pre aria-label="Original runtime outcome">{JSON.stringify(reaction.outcome, null, 2)}</pre>}
+    </details>}
+  </section>;
+}
+
 function TaskDetail({
   task,
   draft,
@@ -923,8 +1034,9 @@ function TaskDetail({
   busy,
   error,
   close,
-  check,
-  adviceEpoch,
+  reactionRequest,
+  reactionConfirmed,
+  openCreated,
   save,
 }: {
   task: Task;
@@ -934,28 +1046,12 @@ function TaskDetail({
   busy: boolean;
   error: string;
   close: () => void;
-  check: () => Promise<Advice | undefined>;
-  adviceEpoch: number;
+  reactionRequest: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
+  reactionConfirmed: (created: Task) => Promise<void>;
+  openCreated: (created: Task) => void;
   save: (title: string, notes: string) => void;
 }) {
   const { title, notes } = draft;
-  const [advice, setAdvice] = useState<Advice | null>(null);
-  const [checking, setChecking] = useState(false);
-  const pendingAdvice = useRef(0);
-  const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
-  useEffect(() => { pendingAdvice.current++; setAdvice(null); setChecking(false); }, [adviceEpoch]);
-  async function checkTask() {
-    if (checking) return;
-    setChecking(true);
-    setAdvice(null);
-    const id = ++pendingAdvice.current;
-    const result = await check();
-    if (mounted.current && id === pendingAdvice.current) {
-      setAdvice(result ?? null);
-      setChecking(false);
-    }
-  }
   return (
     <>
     <form
@@ -1012,17 +1108,8 @@ function TaskDetail({
           {error}
         </div>
       )}
-      <section aria-label="Task advice">
-        <button type="button" className="quiet-button" disabled={busy || checking} onClick={checkTask}>
-          {checking ? "Checking task…" : "Check task advice"}
-        </button>
-        <button id="manage-task-advice" type="button" className="quiet-button" disabled={busy} onClick={manage}>Manage task advice</button>
-        <p className="muted">Checks the saved task status using your configured rule. Advice does not change tasks.</p>
-        {advice && <p role="status">{advice.status === "NOT_DISPLAYED" ? advice.message : {
-          DONE: "Task advice: Done", PENDING: "Task advice: Pending",
-          NEEDS_ATTENTION: "Task advice: Needs attention",
-        }[advice.classification]}</p>}
-      </section>
+      {task.status === "completed" && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} />}
+      <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customizations</button>
       <div className="detail-actions">
         <button type="button" className="quiet-button" onClick={close}>
           Cancel

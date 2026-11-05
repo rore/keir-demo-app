@@ -35,75 +35,88 @@ async function newProject(page, name, mobile = false) {
   await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible();
 }
 
-test('task advice uses saved per-user rules, preserves edits and clears failed or stale detail results', async ({ page, demo }) => {
+test('completion observations preserve edits and recover from failed or stale detail reads', async ({ page, demo }) => {
   await page.goto(demo.origin);
   await signIn(page, 'Maya');
-  await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-  await page.getByLabel('Task title', { exact: true }).fill('Unsaved title stays');
-  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Pending' })).toBeVisible();
-  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved title stays');
-  await page.route('**/api/tasks/*/advice', route => route.fulfill({ status: 200, contentType: 'application/json',
-    body: JSON.stringify({ status: 'NOT_DISPLAYED', message: 'Task advice is unavailable. Your task has not changed.' }) }));
-  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByText('Task advice: Pending', { exact: false })).toHaveCount(0);
-  await expect(page.getByRole('status').filter({ hasText: 'Task advice is unavailable' })).toBeVisible();
-  await page.unroute('**/api/tasks/*/advice');
-  let release, entered;
-  const started = new Promise(resolve => { entered = resolve; });
-  await page.route('**/api/tasks/*/advice', async route => {
-    const response = await route.fetch();
-    entered();
-    await new Promise(resolve => { release = resolve; });
-    await route.fulfill({ response });
-  });
-  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await started;
-  await expect(page.getByText('Task advice is unavailable', { exact: false })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-  release();
-  await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toBeEnabled();
-  await expect(page.getByText('Task advice: Pending', { exact: false })).toHaveCount(0);
-  await page.unroute('**/api/tasks/*/advice');
-  await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Done' })).toBeVisible();
-  await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
-  await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Task advice: Needs attention' })).toBeVisible();
-  await screenshot(page, 'task-advice');
-});
-
-test('task advice response pending across a user switch never enters the new workspace', async ({ page, demo }) => {
-  await page.goto(demo.origin);
-  await signIn(page, 'Maya');
-  await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+  const detail = page.getByRole('dialog', { name: 'Task details', exact: true });
+  const outcome = detail.getByRole('region', { name: 'Customization outcome', exact: true });
+  const noBinding = 'No customization was recorded for this completion.';
+  await expect(outcome.getByRole('status')).toHaveText(noBinding);
+  await page.getByLabel('Task title', { exact: true }).fill('Unsaved title stays');
+  await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
+  await expect(outcome.getByRole('status')).toHaveText(noBinding);
+  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved title stays');
+  await page.route('**/api/tasks/*/reaction', route => route.fulfill({ status: 503, contentType: 'application/json',
+    body: JSON.stringify({ message: 'The saved observation is temporarily unavailable.' }) }));
+  await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
+  await expect(outcome.getByRole('alert')).toContainText('The customization result could not be checked. Your task stays completed.');
+  await expect(outcome.getByRole('button', { name: /^Open task:/ })).toHaveCount(0);
+  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved title stays');
+  await page.unroute('**/api/tasks/*/reaction');
   let release, entered, delivered;
   const started = new Promise(resolve => { entered = resolve; });
   const finished = new Promise(resolve => { delivered = resolve; });
-  await page.route('**/api/tasks/*/advice', async route => {
+  await page.route('**/api/tasks/*/reaction', async route => {
+    const response = await route.fetch();
+    expect(await response.json()).toEqual({ state: 'NO_BINDING', outcome: null, receipt: null, reconciliation: null });
+    entered();
+    await new Promise(resolve => { release = resolve; });
+    try { await route.fulfill({ response }); }
+    catch (error) { if (!route.request().failure()) throw error; }
+    finally { delivered(); }
+  }, { times: 1 });
+  await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
+  await started;
+  await expect(outcome.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close task details' }).click();
+  await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+  await page.getByLabel('Task title', { exact: true }).fill('Newer unsaved title');
+  await expect(outcome.getByRole('status')).toHaveText(noBinding);
+  release(); await finished;
+  await expect(outcome.getByRole('button', { name: 'Check result', exact: true })).toBeEnabled();
+  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Newer unsaved title');
+  await expect(outcome.getByRole('alert')).toHaveCount(0);
+  await page.unroute('**/api/tasks/*/reaction');
+  await page.getByRole('button', { name: 'Close task details' }).click();
+  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+  await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Complete Plan the Saturday session', exact: true }).click();
+  await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
+  await expect(outcome.getByRole('status')).toHaveText(noBinding);
+  await expect(outcome.getByRole('button', { name: /^Open task:/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toHaveCount(0);
+  await screenshot(page, 'native-completion-outcome');
+});
+
+test('a completion observation pending across a user switch never enters the new workspace', async ({ page, demo }) => {
+  await page.goto(demo.origin);
+  await signIn(page, 'Maya');
+  await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Customization outcome', exact: true }).getByRole('status')).toHaveText('No customization was recorded for this completion.');
+  let release, entered, delivered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const finished = new Promise(resolve => { delivered = resolve; });
+  await page.route('**/api/tasks/*/reaction', async route => {
     const response = await route.fetch(); entered();
     await new Promise(resolve => { release = resolve; });
-    await route.fulfill({ response });
-    delivered();
-  });
-  await page.getByRole('button', { name: 'Check task advice', exact: true }).click();
+    try { await route.fulfill({ response }); }
+    catch (error) { if (!route.request().failure()) throw error; }
+    finally { delivered(); }
+  }, { times: 1 });
+  await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await started;
   await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
   await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
   release();
   await finished;
-  await page.unroute('**/api/tasks/*/advice');
+  await page.unroute('**/api/tasks/*/reaction');
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-  await expect(page.getByText('Task advice: Pending', { exact: false })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toBeEnabled();
+  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Plan the Saturday session');
+  await expect(page.getByRole('dialog', { name: 'Task details', exact: true }).getByRole('region', { name: 'Customization outcome', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toHaveCount(0);
 });
 
 test('three people create, rename, edit and complete tasks; all data survives real server restart', async ({ page, demo }) => {

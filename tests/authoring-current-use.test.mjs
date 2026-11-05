@@ -1,29 +1,41 @@
-import test from 'node:test';
+import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { openData } from '../src/data.mjs';
-import { createLifecycle, simulationCases, situation } from '../src/extension-lifecycle.mjs';
-import { loadCatalog } from '../src/extension-catalog.mjs';
+import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { TASK_HOOK } from '../src/extension-catalog.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
+import { taskCustomizationFixture, compileTaskCustomization } from './fixtures/task-customization.mjs';
+import { admitTaskDraft } from './fixtures/task-authoring.mjs';
+
+const activeFixture = taskCustomizationFixture({ title: 'Active customer task' }), draftFixture = taskCustomizationFixture({ title: 'Different customer task' });
+let activeArtifact, draftArtifact;
+before(async () => {
+  activeArtifact = (await compileTaskCustomization({ title: activeFixture.metadata.title })).artifactBytes;
+  draftArtifact = (await compileTaskCustomization({ title: draftFixture.metadata.title })).artifactBytes;
+});
 
 const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra',
   KEIR_AI_MAX_USD: '5', OPENAI_API_KEY: 'synthetic-test-key' });
 const lease = { sessionId: 'current-use-test', current: () => true };
-const cases = simulationCases('attention').filter(row => row.id !== 'host-denied').map(row => row.bytes.toString());
+const cases = activeFixture.cases;
 const proof = () => ({ id: 'approved-proof', revisionId: 'selected-v1', passed: true,
   reports: cases.map(text => {
     const example = JSON.parse(text), expected = example.expect.outcome;
-    return { id: example.id, label: example.id, ...situation(example),
-      expected: { classification: expected.classification, code: expected.result?.classification ?? expected.error.code },
-      report: { status: 'PASS', native: { classification: expected.classification }, consumption: example.expect.consumption, mismatches: [] },
+    const createdTasks = example.expect.calls.filter(call => call.capability === 'tasks.create').map(call => ({ projectId: call.args.projectId, title: call.args.title }));
+    return { id: example.id, label: example.id,
+      expected: { classification: expected.classification, createdTasks },
+      report: { status: 'PASS', native: expected, consumption: example.expect.consumption, mismatches: [],
+        scenario: { task: { id: example.given.input.taskId, status: 'COMPLETED', projectId: 'project1' } },
+        observed: { effect: createdTasks.length ? 'CONFIRMED' : 'NONE', createdTasks } },
       taskRecords: ['private-report-extra'], continuation: 'private-report-extra' };
   }), artifact: 'private-proof-extra' });
 
 function fixture(t) {
   const db = openData(':memory:');
-  const compiler = { compile: async bytes => ({ artifact: loadCatalog().find(row => row.id === (bytes.toString() === 'active-source' ? 'attention' : 'pending')).artifactBytes, diagnostics: [] }) };
+  const compiler = { compile: async bytes => ({ artifact: bytes.toString() === activeFixture.source ? activeArtifact : draftArtifact, diagnostics: [] }) };
   const lifecycle = createLifecycle(db, { compiler });
-  const extensionId = lifecycle.collection('maya').items[0].extension.id;
+  const extensionId = admitTaskDraft(db, lifecycle).extensionId;
   t.after(() => db.close());
   return { db, lifecycle, extensionId };
 }
@@ -65,20 +77,20 @@ const selected = (id, changes = {}) => ({ generation: 7, eligible: true, approve
 const selectedSource = id => ({ extensionId: id, revisionId: 'selected-v1', cases,
   source: 'private-selected-source', artifact: 'private-selected-artifact', pins: 'private-selected-pins', hostCases: ['private-host-case'] });
 
-test('discovery separates exact checked active v1 from checked Pending draft v2 without changing selection or proof', async t => {
+test('discovery separates exact checked active v1 from a different customer task draft v2 without changing selection or proof', async t => {
   const f = fixture(t), { lifecycle, extensionId } = f, authorize = () => {};
   const input = state => ({ extensionId, revisionId: state.draft.id, draftVersion: state.draftVersion });
   async function checked(source, template) {
     let state = lifecycle.state('maya', extensionId);
-    state = await lifecycle.compile('maya', { extensionId, draftVersion: state.draftVersion, source }, authorize);
-    state = await lifecycle.proposeScenarios('maya', { ...input(state), cases: simulationCases(template).filter(row => row.id !== 'host-denied').map(row => row.bytes.toString()) }, authorize);
+    state = await lifecycle.compile('maya', { extensionId, hookId: TASK_HOOK, draftVersion: state.draftVersion, source }, authorize);
+    state = await lifecycle.proposeScenarios('maya', { ...input(state), cases: template.cases }, authorize);
     state = await lifecycle.simulate('maya', input(state), authorize);
     return state;
   }
-  let active = await checked('active-source', 'attention');
+  let active = await checked(activeFixture.source, activeFixture);
   active = lifecycle.approve('maya', { ...input(active), evidenceId: active.evidence.id }, authorize);
   active = lifecycle.activate('maya', { ...input(active), generation: active.selection.generation }, authorize);
-  const draft = await checked('draft-source', 'pending');
+  const draft = await checked(draftFixture.source, draftFixture);
   const activeProof = lifecycle.evidence('maya', active.approvedEvidenceId, extensionId);
   const draftProof = lifecycle.evidence('maya', draft.evidence.id, extensionId);
   const { context, reads, requests } = await discover(t, f);
@@ -89,18 +101,19 @@ test('discovery separates exact checked active v1 from checked Pending draft v2 
   assert.equal(context.currentUse.checkedSummary.evidenceId, active.approvedEvidenceId);
   assert.match(context.currentUse.checkedSummary.scope, /synthetic.*not live/);
   assert.equal(context.currentUse.unavailableReason, null);
-  assert.equal(context.currentUse.checkedSummary.cases.find(row => row.taskStatus === 'OPEN').actual.consumption.code, 'NEEDS_ATTENTION');
-  assert.equal(draftProof.reports.find(row => row.taskStatus === 'OPEN').report.consumption.code, 'PENDING');
+  assert.equal(context.currentUse.checkedSummary.cases[0].actual.observed.createdTasks[0].title, activeFixture.metadata.title);
+  assert.equal(draftProof.reports[0].report.observed.createdTasks[0].title, draftFixture.metadata.title);
   assert.deepEqual(reads, [['source', 'maya', draft.draft.id, extensionId], ['source', 'maya', draft.draft.id, extensionId],
     ['evidence', 'maya', active.approvedEvidenceId, extensionId], ['source', 'maya', active.draft.id, extensionId]]);
   assert.deepEqual(lifecycle.state('maya', extensionId).selection, draft.selection);
   assert.deepEqual(lifecycle.evidence('maya', active.approvedEvidenceId, extensionId), activeProof);
   for (const phrase of ['currentUse.checkedSummary', 'businessContext.navigation', 'Never invent Compare versions, View history or a version comparison view']) assert.ok(requests[0].instructions.includes(phrase));
   assert.match(context.businessContext.navigation, /View what’s in use.*outside earlier-discussion or stale views/);
-  assert.match(context.businessContext.navigation, /Inspect these saved examples.*saved review receipt/);
+  assert.match(context.businessContext.navigation, /View earlier examples opens the exact earlier saved check/);
+  assert.match(context.businessContext.navigation, /View checked examples opens a current check that is not eligible for approval/);
   assert.match(context.businessContext.navigation, /Inspect saved source and examples.*not a comparison screen/);
   assert.match(context.businessContext.checking, /example tasks.*your tasks have not changed/);
-  assert.match(requests[0].instructions, /Call checks example tasks.*Your tasks have not changed/);
+  assert.match(requests[0].instructions, /After an example check, describe what would happen in that example and say “Your real tasks have not changed”/);
   for (const guidance of [context.businessContext.navigation, requests[0].instructions]) {
     for (const label of ['View saved changes', 'Your saved changes', 'View latest changes', 'Back to conversation',
       'Approve this change', 'Turn on for my tasks', 'Switch to this customization']) assert.ok(guidance.includes(label));
@@ -112,9 +125,10 @@ test('discovery separates exact checked active v1 from checked Pending draft v2 
   }
 });
 
-test('an explicitly approved customer catalog version retains its exact checked synthetic summary', async t => {
+test('an explicitly approved customer task version retains its exact checked synthetic summary', async t => {
   const f = fixture(t), { lifecycle, extensionId } = f, authorize = () => {};
-  let state = lifecycle.load('maya', { extensionId, templateId: 'attention', draftVersion: 0 }, authorize);
+  let state = await lifecycle.compile('maya', { extensionId, hookId: TASK_HOOK, source: activeFixture.source, draftVersion: 0 }, authorize);
+  state = await lifecycle.proposeScenarios('maya', { extensionId, revisionId: state.revisionId, draftVersion: state.draftVersion, cases }, authorize);
   const identity = () => ({ extensionId, revisionId: state.draft.id, draftVersion: state.draftVersion });
   state = await lifecycle.simulate('maya', identity(), authorize);
   state = lifecycle.approve('maya', { ...identity(), evidenceId: state.evidence.id }, authorize);
@@ -122,7 +136,7 @@ test('an explicitly approved customer catalog version retains its exact checked 
   const { context } = await discover(t, f);
   assert.equal(context.currentUse.selected.provenance, 'customer');
   assert.equal(context.currentUse.checkedSummary.evidenceId, state.approvedEvidenceId);
-  assert.equal(context.currentUse.checkedSummary.cases.length, 6);
+  assert.equal(context.currentUse.checkedSummary.cases.length, cases.length);
   assert.equal(context.currentUse.unavailableReason, null);
 });
 

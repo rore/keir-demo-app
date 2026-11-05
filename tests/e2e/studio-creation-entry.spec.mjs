@@ -2,6 +2,8 @@ import { test, expect } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const nav = page => page.getByRole('navigation', { name: 'Main navigation' });
@@ -29,10 +31,10 @@ async function api(page, path, body) {
   }, { path, body });
 }
 
-async function createActiveCustomization(page) {
-  const example = await api(page, 'authoring/example');
-  let state = await api(page, 'extensions', { operationId: crypto.randomUUID(), source: example.source, label: 'Prior synthetic customization' });
-  const extensionId = state.extension.id;
+async function createActiveCustomization(page, fixture) {
+  const example = fixture.metadata;
+  const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Prior synthetic customization' });
+  let state = await api(page, `extensions/${extensionId}/compile`, { hookId: 'TaskCompleted', source: example.source, label: 'Prior synthetic customization', draftVersion: 0 });
   state = await api(page, `extensions/${extensionId}/scenarios`, {
     revisionId: state.draft.id, cases: example.cases, draftVersion: state.draftVersion,
   });
@@ -49,7 +51,7 @@ async function createActiveCustomization(page) {
 }
 
 async function saveCandidate(page, extensionId, source, cases, label) {
-  let state = await api(page, `extensions/${extensionId}/compile`, { source, label, draftVersion: 0 });
+  let state = await api(page, `extensions/${extensionId}/compile`, { hookId: 'TaskCompleted', source, label, draftVersion: 0 });
   state = await api(page, `extensions/${extensionId}/scenarios`, {
     revisionId: state.draft.id, cases, draftVersion: state.draftVersion,
   });
@@ -82,7 +84,7 @@ test('top-level New starts a distinct customization after a real prior chat and 
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya', exact: false }).click();
     await expect(nav(page).getByRole('button', { name: 'Customizations', exact: true })).toBeVisible();
-    const prior = await createActiveCustomization(page);
+    const prior = await createActiveCustomization(page, fixture);
     const collectionBefore = await api(page, 'extensions');
     expect(collectionBefore.items.map(item => item.extension.id)).toContain(prior.extensionId);
     const priorItemBefore = collectionBefore.items.find(item => item.extension.id === prior.extensionId);
@@ -127,7 +129,7 @@ test('top-level New starts a distinct customization after a real prior chat and 
     expect(createTurn.expectedDraftVersion).toBe(0);
     await expect(newStudio.getByText(fixture.metadata.question, { exact: true })).toBeVisible({ timeout: 20_000 });
 
-    const example = await api(page, 'authoring/example');
+    const example = fixture.metadata;
     const savedB = await saveCandidate(page, accepted.conversation.extensionId, example.source, example.cases, 'Saved B candidate');
     const bStateBeforeEdit = await api(page, `extensions/${accepted.conversation.extensionId}`);
     const bSourceBeforeEdit = await api(page, `extensions/${accepted.conversation.extensionId}/revisions/${savedB.draft.id}`);

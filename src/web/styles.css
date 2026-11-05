@@ -579,6 +579,13 @@ p {
   border-bottom:1px solid var(--line);
   padding:12px 4px;
 }
+.task-row-content { flex: 1; min-width: 0; }
+.task-row-content .task-open { width: 100%; }
+.task-reaction { margin-top: 12px; padding: 12px; border-left: 3px solid var(--green); background: #f4f7f7; font-size: 14px; overflow-wrap: anywhere; }
+.task-reaction p + p { margin-top: 8px; }
+.task-reaction-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.task-reaction details { margin-top: 8px; }
+.task-reaction pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 .completion {
   width:22px;
   height:22px;

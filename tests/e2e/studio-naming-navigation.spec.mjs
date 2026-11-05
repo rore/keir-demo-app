@@ -30,7 +30,7 @@ async function navigate(page, destination) {
   await page.getByLabel('Destination', { exact: true }).selectOption(destination.toLowerCase());
 }
 
-test('duplicate neutral names show their request and returning from sample history resets collection scroll', async ({ page }) => {
+test('untitled items show their request and returning from sample history resets collection scroll', async ({ page }) => {
   test.setTimeout(60_000);
   const fixture = await startAuthoringFixture();
   try {
@@ -43,9 +43,14 @@ test('duplicate neutral names show their request and returning from sample histo
     const firstRequest = 'Keep track of the materials I still need.';
     const secondRequest = 'Show which orders are waiting for a reply.';
     const firstId = await createRequest(page, firstRequest);
+    await navigate(page, 'Customizations');
+    const cards = page.locator('.customization-card').filter({ hasText: 'Untitled customization' });
+    await expect(cards).toHaveCount(1);
+    await expect(cards.locator('.customization-request')).toHaveText('Request: ' + firstRequest);
+    await navigate(page, 'Tasks');
     const secondId = await createRequest(page, secondRequest);
     let saved = await api(page, `extensions/${secondId}/compile`, {
-      source: fixture.metadata.source, label: 'Saved sample history', draftVersion: 0,
+      hookId: 'TaskCompleted', source: fixture.metadata.source, label: 'Saved sample history', draftVersion: 0,
     });
     saved = await api(page, `extensions/${secondId}/scenarios`, {
       revisionId: saved.draft.id, draftVersion: saved.draftVersion, cases: fixture.metadata.cases,
@@ -56,7 +61,6 @@ test('duplicate neutral names show their request and returning from sample histo
     expect(saved.evidence.passed).toBe(true);
 
     await navigate(page, 'Customizations');
-    const cards = page.locator('.customization-card').filter({ hasText: 'Untitled customization' });
     await expect(cards).toHaveCount(2);
     for (const [itemId, excerpt] of [[firstId, firstRequest], [secondId, secondRequest]]) {
       const card = cards.filter({ has: page.locator(`#edit-${itemId}`) });
@@ -68,6 +72,7 @@ test('duplicate neutral names show their request and returning from sample histo
     await collection.evaluate(node => { node.scrollTop = node.scrollHeight; });
     expect(await collection.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
     await page.locator(`#edit-${secondId}`).click();
+    await expect(studio(page).getByRole('button', { name: 'Add name', exact: true })).toBeInViewport({ ratio: 1 });
     await studio(page).getByRole('button', { name: 'History and details', exact: true }).click();
     const savedRuns = studio(page).getByText('Saved sample runs', { exact: true });
     await savedRuns.click();
