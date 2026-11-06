@@ -86,7 +86,9 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(decision(page)).toBeVisible();
     const mismatch = decision(page).getByRole('article', { name: `Example: Task completed in ${fixture.metadata.otherProjectName}`, exact: true });
     await expect(mismatch).toHaveCount(1);
-    await expect(mismatch.getByText('Needs correction · Could not check', { exact: true })).toBeVisible();
+    await expect(mismatch.getByText('Could not check', { exact: true })).toBeVisible();
+    await expect(mismatch.getByText('Needs correction', { exact: true })).toBeVisible();
+    await expect(mismatch.getByText('Handled as expected', { exact: true })).toHaveCount(0);
     await expect(mismatch.getByText('The simulation did not establish a write outcome.', { exact: true })).toBeVisible();
     await expect(mismatch.getByText('No change.', { exact: true })).toBeVisible();
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);

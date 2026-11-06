@@ -65,7 +65,7 @@ async function holdReaction(page, taskId) {
   await page.route(url, async route => {
     const response = await route.fetch();
     expect(response.status()).toBe(200);
-    expect(await response.json()).toEqual({ state: 'NO_BINDING', outcome: null, receipt: null, reconciliation: null });
+    expect(await response.json()).toEqual({ state: 'NO_BINDING', outcome: null, receipt: null, reconciliation: null, workflow: true });
     entered(); await gate;
     try { await route.fulfill({ response }); }
     catch (error) { if (!route.request().failure()) throw error; }

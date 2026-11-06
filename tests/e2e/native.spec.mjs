@@ -367,7 +367,7 @@ test('completion observations preserve edits and recover from failed or stale de
   const finished = new Promise(resolve => { delivered = resolve; });
   await page.route('**/api/tasks/*/reaction', async route => {
     const response = await route.fetch();
-    expect(await response.json()).toEqual({ state: 'NO_BINDING', outcome: null, receipt: null, reconciliation: null });
+    expect(await response.json()).toEqual({ state: 'NO_BINDING', outcome: null, receipt: null, reconciliation: null, workflow: true });
     entered();
     await new Promise(resolve => { release = resolve; });
     try { await route.fulfill({ response }); }
