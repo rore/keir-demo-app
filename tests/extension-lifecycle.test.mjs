@@ -54,7 +54,7 @@ test('actual task evidence, separate approval/activation and named rollback affe
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   const first = await approved(lifecycle, 'maya', 'First title');
   const proof = lifecycle.evidence('maya', first.state.evidence.id, first.state.extension.id);
-  assert.deepEqual(proof.reports.map(item => item.id), ['matching-project', 'other-project', 'unfinished-task', 'missing-task', 'access-denied', 'read-unavailable']);
+  assert.deepEqual(proof.reports.map(item => item.id), ['matching-project', 'other-project', 'other-status', 'missing-task', 'access-denied', 'read-unavailable']);
   assert.ok(proof.reports.every(item => item.report.status === 'PASS'));
   assert.equal(proof.reports[0].report.observed.effect, 'CONFIRMED');
   assert.deepEqual(proof.reports[1].report.observed.createdTasks, []);
@@ -105,9 +105,9 @@ test('captured admission keeps exact approval authority without rereading deploy
   const { db, lifecycle } = setup(t), { state } = await approved(lifecycle);
   const active = activate(lifecycle, state), revisionId = active.draft.id, itemId = active.extension.id;
   const pins = JSON.parse(db.prepare("SELECT binding_pins FROM extension_selections WHERE owner_id='maya' AND hook_id=?").get(TASK_HOOK).binding_pins);
-  assert.equal(Object.hasOwn(pins, 'profile'), false); assert.equal(pins.definitionId, 'daymark.task-completed/3');
+  assert.equal(Object.hasOwn(pins, 'profile'), false); assert.equal(pins.definitionId, 'daymark.task-workflow/1');
   assert.equal(pins.approvedEvidenceId, state.approvedEvidenceId); assert.equal(Object.hasOwn(pins, 'qualification'), false);
-  const context = { owner: 'maya', itemId, revisionId, pins };
+  const context = { owner: 'maya', hookId: TASK_HOOK, itemId, revisionId, pins };
   const later = await lifecycle.simulate('maya', currentInput(active), authorized);
   const reapproved = lifecycle.approve('maya', { ...currentInput(later), evidenceId: later.evidence.id }, authorized);
   assert.notEqual(reapproved.approvedEvidenceId, pins.approvedEvidenceId);
@@ -119,6 +119,7 @@ test('captured admission keeps exact approval authority without rereading deploy
     assert.equal(lifecycle.admissionCurrent(context), true);
     assert.equal(lifecycle.admissionCurrent({ ...context, pins: { ...pins, approvedEvidenceId: null } }), false);
     assert.equal(lifecycle.admissionCurrent({ ...context, owner: 'leo' }), false);
+    assert.equal(lifecycle.admissionCurrent({ ...context, hookId: 'TaskCreated' }), false);
     db.prepare('UPDATE extension_evidence SET payload=? WHERE id=?').run('{}', pins.approvedEvidenceId);
     assert.equal(lifecycle.admissionCurrent(context), false);
   } finally { fs.readFileSync = read; syncBuiltinESMExports(); }
@@ -148,7 +149,7 @@ test('an unavailable runtime archive blocks execution and preserves exact saved 
   const proof = lifecycle.evidence('maya', active.approvedEvidenceId, id);
   const read = fs.readFileSync;
   fs.readFileSync = (path, ...args) => {
-    if (String(path).endsWith('/vendor/keir-runtime-node-0.1.0.tgz')) throw new Error('Runtime archive unavailable');
+    if (String(path).endsWith('/vendor/keir-runtime-node-0.2.0.tgz')) throw new Error('Runtime archive unavailable');
     return read(path, ...args);
   };
   syncBuiltinESMExports();
@@ -219,7 +220,7 @@ test('a malformed later scenario prevents any dispatch or saved evidence', async
   let simulations = 0;
   const { db, lifecycle } = setup(t, { runTaskSimulation: async () => { simulations++; assert.fail('Preflight must reject the whole suite'); } });
   const state = await load(lifecycle), input = currentInput(state), examples = fixtureFor().cases;
-  const malformed = [examples[0], examples[1].replace('"format":', '"format": "keir-scenario/1", "format":')];
+  const malformed = [examples[0], examples[1].replace('"format":', '"format": "keir-scenario/2", "format":')];
   const evidenceCount = () => db.prepare('SELECT count(*) AS count FROM extension_evidence').get().count;
   await assert.rejects(lifecycle.proposeScenarios('maya', { ...input, cases: malformed }, authorized),
     { status: 400, diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/1' }] });
@@ -351,7 +352,7 @@ test('real source compilation, independent suite edits and exact A/B approval/us
   let lifecycle = create(db);
   admitTaskDraft(db, lifecycle, { extensionId: 'maya-task-fixture' });
   const legacy = nativeTasks(db), fixture = fixtureFor(), id = itemId(lifecycle);
-  const duplicate = fixture.source.replace('"language": "keir/1"', '"language": "keir/1", "language": "keir/1"');
+  const duplicate = fixture.source.replace('"language": "keir/2"', '"language": "keir/2", "language": "keir/2"');
   await assert.rejects(lifecycle.compile('maya', { extensionId: id, hookId: TASK_HOOK, source: duplicate, draftVersion: 0 }, authorized), { status: 422 });
   assert.equal(lifecycle.state('maya', id).draftVersion, 0);
   let state = await lifecycle.compile('maya', { extensionId: id, hookId: TASK_HOOK, source: fixture.source, draftVersion: 0 }, authorized);
@@ -392,13 +393,15 @@ function readOnlyProgram(steps) {
   const source = JSON.parse(fixtureFor().source);
   source.steps = steps.length ? steps.map(id => ({ id, call: 'tasks.get', args: { taskId: { cel: 'input.taskId' } } })) : [{ id: 'constant', let: { cel: 'true' } }];
   source.return = { record: { status: { cel: steps.length ? `${steps.at(-1)}.status == "COMPLETED" ? "NO_OP" : "NO_OP"` : 'constant ? "NO_OP" : "CREATED"' } } };
-  const calls = steps.map(step => ({ step, capability: 'tasks.get', version: '2', args: { taskId: 'task1' }, protectedArgs: { actorId: 'user1' } }));
+  const calls = steps.map(step => ({ step, capability: 'tasks.get', version: '3', args: { taskId: 'task1' }, protectedArgs: { actorId: 'user1' } }));
   const trace = [{ event: 'INVOCATION_START' }, ...(steps.length ? steps.flatMap(step => [{ event: 'STEP_START', step },
     { event: 'CALL_DISPATCHED', step, capability: 'tasks.get' }, { event: 'CALL_SUCCEEDED', step, capability: 'tasks.get' }])
     : [{ event: 'STEP_START', step: 'constant' }, { event: 'VALUE_BOUND', step: 'constant' }]), { event: 'RETURNED' }, { event: 'TERMINATED' }];
   const outcome = { classification: 'COMPLETED', result: { status: 'NO_OP' }, effects: [], trace: trace.map((event, sequence) => ({ sequence, ...event })) };
-  return { source: JSON.stringify(source), row: { format: 'keir-scenario/1', id: 'normal', given: { input: { taskId: 'task1' }, fixture: 'normal' },
-    stubs: calls.map(call => ({ ...call, response: { kind: 'SUCCESS', value: { id: 'task1', projectId: 'project1', status: 'COMPLETED', title: 'Example task' } } })),
+  return { source: JSON.stringify(source), row: { format: 'keir-scenario/2', id: 'normal',
+    given: { input: { taskId: 'task1', occurredAt: '2026-03-07T12:34:56.789Z' }, fixture: 'normal' },
+    stubs: calls.map(call => ({ ...call, response: { kind: 'SUCCESS',
+      value: { id: 'task1', projectId: 'project1', status: 'COMPLETED', title: 'Example task', tags: [], priority: 'normal' } } })),
     expect: { outcome, calls, consumption: { status: 'REPORTED', classification: 'COMPLETED', result: outcome.result, effects: [] } } } };
 }
 test('actual zero-call and renamed repeated-read task programs preserve bindings, call order and intended rejection', async t => {

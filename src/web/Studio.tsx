@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import "./Studio.css";
 
-type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: { artifactDigest?: string }; provenance: "operator" | "customer" };
+type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: { artifactDigest?: string; rawSourceDigest?: string; modelRef?: { format?: string } }; provenance: "operator" | "customer" };
 type History = { id: number; generation: number; operation: string; revisionId: string | null; label?: string | null };
 export type State = {
   retired?: boolean;
+  legacySelection?: { generation: number; revision: Revision; eligible: false };
   executionAvailability?: { available: boolean; message: string | null };
   requestExcerpt?: string;
   owner: { id: string; name: string };
@@ -23,19 +24,38 @@ export type State = {
   history: History[];
   evidenceHistory: { id: string; revisionId: string }[];
 };
-export type Collection = { items: Pick<State, "extension" | "draftVersion" | "draft" | "approved" | "requestExcerpt" | "retired">[]; owner: State["owner"]; selection: State["selection"]; catalog: State["catalog"]; executionAvailability?: State["executionAvailability"]; next: string | null };
+export type Collection = { items: Pick<State, "extension" | "draftVersion" | "draft" | "approved" | "requestExcerpt" | "retired">[]; owner: State["owner"]; selection: State["selection"]; selections?: Partial<Record<string, State["selection"]>>; catalog: State["catalog"]; executionAvailability?: State["executionAvailability"]; next: string | null };
 export type StudioTarget = { extensionId: string | null; conversationId?: string | null; recoveryId?: string; history?: boolean };
 type HostCatalog = {
   hooks: { id: string; label: string; description: string; effect: string; trigger: string }[];
   model: { dcm: string; digest: string; hook: string; consumer: object; compiler: unknown };
 };
+const taskTrigger = (hookId: string | null | undefined) => hookId === "TaskCreated" ? "tasks added" : hookId === "TaskCompleted" ? "tasks completed" : null;
+const workflowStarters = [
+  { label: "Prioritize new requests", hook: "TaskCreated", capabilities: ["tasks.get", "tasks.update"],
+    text: "When a new task in Inbox is tagged client and its title is exactly ‘Quote for spring launch’, give it high priority." },
+  { label: "Arrange a review", hook: "TaskCompleted", capabilities: ["tasks.get", "tasks.create"],
+    text: "When a high-priority task tagged review is completed in Launch, create a review task in Reviews due 7 days after completion." },
+  { label: "Avoid another follow-up", hook: "TaskCompleted", capabilities: ["tasks.get", "tasks.create", "tasks.openMatch"],
+    text: "When a task in Launch is completed, create a follow-up in Reviews only if one is not already open." },
+  { label: "Add missing due dates", hook: "TaskCreated", capabilities: ["tasks.get", "tasks.update"],
+    text: "When a task is added to Onboarding without a due date, give it a due date 7 days after it was added." },
+];
+function hostFeatures(catalog: HostCatalog | null) {
+  try {
+    const model = JSON.parse(catalog?.model.dcm ?? "{}");
+    return { capabilities: Object.keys(model.capabilities ?? {}), taskFields: Object.keys(model.types?.Task?.fields ?? {}) };
+  } catch { return { capabilities: [], taskFields: [] }; }
+}
 type Outcome = { classification: string; code?: string; error?: { code: string }; consumption?: { status: "DISPLAYED" | "NOT_DISPLAYED"; code?: string } };
-type TaskPreview = { id?: string; title: string; status?: "OPEN" | "COMPLETED"; projectId?: string; projectName?: string };
-type EffectObservation = { effect: "CONFIRMED" | "NONE" | "UNKNOWN" | "NOT_OBSERVED"; createdTasks: TaskPreview[] | null };
-type SavedSource = { extensionId?: string; revisionId: string; source: string; artifact: string; pins: { artifactDigest?: string }; cases: string[]; suiteDigest: string | null };
+type TaskFields = { notes?: string; tags?: string[]; priority?: string; dueAt?: string | null };
+type TaskPreview = TaskFields & { id?: string; title: string; status?: "OPEN" | "COMPLETED"; projectId?: string; projectName?: string };
+type TaskUpdate = { id: string; addTag?: string; priority?: string; dueAt?: string };
+type EffectObservation = { effect: "CONFIRMED" | "NONE" | "UNKNOWN" | "NOT_OBSERVED"; createdTasks: TaskPreview[] | null; updatedTasks?: TaskUpdate[] | null };
+type SavedSource = { extensionId?: string; revisionId: string; source: string; artifact: string; pins: Revision["pins"]; cases: string[]; suiteDigest: string | null };
 type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"; identity: object; passed: boolean; reports: {
-  id: string; label: string; expected: { createdTasks?: TaskPreview[] | null; [key: string]: unknown }; taskStatus?: "OPEN" | "COMPLETED" | null; readFailure?: "TASK_NOT_FOUND" | "ACCESS_DENIED" | "TRANSIENT_FAILURE" | null;
-  report: { status: string; scenario?: { task: TaskPreview }; observed?: EffectObservation; native?: Outcome; calls?: { capability: string }[]; consumption?: { status: string; code?: string }; mismatches: { stage?: string; code?: string }[] };
+  id: string; label: string; expected: { createdTasks?: TaskPreview[] | null; updatedTasks?: TaskUpdate[] | null; [key: string]: unknown }; taskStatus?: "OPEN" | "COMPLETED" | null; readFailure?: "TASK_NOT_FOUND" | "ACCESS_DENIED" | "TRANSIENT_FAILURE" | null;
+  report: { status: string; scenario?: { task: TaskPreview; occurredAt?: string; hookId?: string; openMatches?: { projectId: string; title: string; matches: boolean }[] }; observed?: EffectObservation; native?: Outcome; calls?: { capability: string; args?: { projectId?: string; title?: string } }[]; consumption?: { status: string; code?: string }; mismatches: { stage?: string; code?: string }[] };
 }[] };
 type SavedReview = { owner: State["owner"]; extension: NonNullable<State["extension"]>; revision: Revision;
   draftVersion: number; evidenceId: string; suiteDigest: string | null; selection: State["selection"] };
@@ -108,7 +128,7 @@ const authoringStatus = {
 };
 function authoringReason(code: string | null | undefined) {
   if (!code) return "";
-  if (code === "LEGACY_CUSTOMIZATION_RETIRED") return "This earlier customization is retired. Its saved work is read-only; start a new customization for task creation.";
+  if (code === "LEGACY_CUSTOMIZATION_RETIRED") return "This earlier customization is retired. Its saved work is read-only. You can start a new customization.";
   if (["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(code)) return "AI authoring is not configured.";
   if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved work and review remain available.";
   if (["BUDGET_EXHAUSTED", "EXPIRED"].includes(code)) return "An earlier authoring policy stopped this saved run. Your discussion, proposal and examples are kept. You can explicitly continue here under the current settings and shared allowance.";
@@ -139,13 +159,80 @@ type Props = {
 const knownTask = (task?: TaskPreview) => !!task && typeof task.title === "string" && !!task.title.trim() && typeof task.projectId === "string" && !!task.projectId;
 const knownScenarioTask = (task?: TaskPreview) => !!task && typeof task.id === "string" && !!task.id && typeof task.title === "string" && !!task.title.trim();
 const knownTasks = (tasks?: TaskPreview[] | null) => Array.isArray(tasks) && tasks.every(knownTask);
-type RuleAction = { title: string; projectId?: string };
-async function savedRuleAction(saved: SavedSource, artifactDigest: string): Promise<RuleAction | null> {
-  if (typeof saved.artifact !== "string" || saved.pins?.artifactDigest !== artifactDigest) return null;
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(saved.artifact));
+type Condition = { field: "projectId" | "title" | "tag" | "priority" | "dueAbsent"; value?: string }
+  | { field: "noOpenMatch"; projectId: string; title: string };
+type RuleAction = { title: string; projectId?: string } | { hook: string; conditional: boolean; capability: "tasks.create" | "tasks.update";
+  fields: Record<string, unknown>; conditions?: Condition[]; elapsedDue?: boolean; titlePrefix?: string };
+async function sha256(value: string) {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
-  if ("sha256:" + digest !== artifactDigest) return null;
+  return "sha256:" + digest;
+}
+type SourceValue = { literal?: unknown; cel?: string };
+type SourceStep = { id: string; let?: SourceValue; call?: string; when?: string; args?: Record<string, SourceValue> };
+function workflowSourceFacts(text: string, hook: string, writeId: string, capability: string) {
+  const source = JSON.parse(text);
+  if (source.language !== "keir/2" || source.entrypoint !== hook || !Array.isArray(source.steps)) return null;
+  const steps: SourceStep[] = source.steps;
+  const write = steps.find(step => step.id === writeId && step.call === capability);
+  if (!write?.args) return null;
+  const prefix = steps.slice(0, steps.indexOf(write));
+  const binding = (name: string | undefined) => prefix.find(step => step.id === name);
+  const stringLiteral = (value: string) => {
+    try { const parsed = JSON.parse(value); return typeof parsed === "string" ? parsed : undefined; }
+    catch { return undefined; }
+  };
+  const exactString = (value?: SourceValue) => {
+    const constant = value?.literal ?? binding(value?.cel?.trim())?.let?.literal;
+    return typeof constant === "string" ? constant : undefined;
+  };
+  const isTaskRead = (name: string) => {
+    const read = binding(name);
+    return read?.call === "tasks.get" && !read.when && read.args?.taskId?.cel?.trim() === "input.taskId";
+  };
+  function condition(term: string): Condition | undefined {
+    const equal = /^(\w+)\.(projectId|title|priority)\s*==\s*(.+)$/.exec(term);
+    if (equal && isTaskRead(equal[1])) {
+      const value = stringLiteral(equal[3]) ?? exactString({ cel: equal[3] });
+      if (value !== undefined) return { field: equal[2] as "projectId" | "title" | "priority", value };
+    }
+    const tag = /^("(?:[^"\\]|\\.)*")\s+in\s+(\w+)\.tags$/.exec(term);
+    if (tag && isTaskRead(tag[2])) return { field: "tag", value: stringLiteral(tag[1]) };
+    const absent = /^!has\(\s*(\w+)\.dueAt\s*\)$/.exec(term);
+    if (absent && isTaskRead(absent[1])) return { field: "dueAbsent" };
+    const match = /^!(\w+)\.matches$/.exec(term);
+    const lookup = match && binding(match[1]);
+    if (lookup && lookup.call === "tasks.openMatch" && !lookup.when) {
+      const projectId = exactString(lookup.args?.projectId), title = exactString(lookup.args?.title);
+      if (projectId && title) return { field: "noOpenMatch", projectId, title };
+    }
+  }
+  const guard = binding(write.when)?.let?.cel;
+  const terms = guard?.split("&&").map(term => condition(term.trim()));
+  const conditions = terms?.every((term): term is Condition => !!term) ? terms : undefined;
+  const prefixTitle = /^("(?:[^"\\]|\\.)*")\s*\+\s*(\w+)\.title$/.exec(write.args.title?.cel?.trim() ?? "");
+  return { conditions, elapsedDue: /^input\.occurredAt\s*\+\s*duration\("604800s"\)$/.test(write.args.dueAt?.cel?.trim() ?? ""),
+    titlePrefix: prefixTitle && isTaskRead(prefixTitle[2]) ? stringLiteral(prefixTitle[1]) : undefined,
+    projectId: exactString(write.args.projectId) };
+}
+async function savedRuleAction(saved: SavedSource, artifactDigest: string, rawSourceDigest?: string): Promise<RuleAction | null> {
+  if (typeof saved.artifact !== "string" || saved.pins?.artifactDigest !== artifactDigest || await sha256(saved.artifact) !== artifactDigest) return null;
   const artifact = JSON.parse(saved.artifact);
+  if (artifact?.format === "keir-artifact/2" && taskTrigger(artifact.entrypoint) && Array.isArray(artifact.steps)) {
+    const writes = artifact.steps.filter((step: { op?: string; capability?: string }) => step?.op === "CALL"
+      && (step.capability === "tasks.create" || step.capability === "tasks.update"));
+    if (writes.length !== 1) return null;
+    const write = writes[0];
+    const fields = Object.fromEntries(Object.entries(write.args ?? {}).map(([name, value]) => [name, (value as { literal?: unknown })?.literal]));
+    let facts;
+    if (rawSourceDigest && saved.pins.rawSourceDigest === rawSourceDigest && typeof saved.source === "string" && await sha256(saved.source) === rawSourceDigest) {
+      try { facts = workflowSourceFacts(saved.source, artifact.entrypoint, write.id, write.capability); }
+      catch { /* YAML and unsupported JSON stay available in the exact details. */ }
+    }
+    if (facts?.projectId) fields.projectId = facts.projectId;
+    return { hook: artifact.entrypoint, conditional: !!write.when, capability: write.capability, fields,
+      conditions: facts?.conditions, elapsedDue: facts?.elapsedDue, titlePrefix: facts?.titlePrefix };
+  }
   if (artifact?.format !== "keir-artifact/1" || artifact.entrypoint !== "TaskCompleted" || !Array.isArray(artifact.steps)) return null;
   const creates = artifact.steps.filter((step: { op?: string; capability?: string }) => step?.op === "CALL" && step.capability === "tasks.create");
   const create = creates[0];
@@ -170,8 +257,41 @@ const observedTasks = (value?: EffectObservation, project?: ProjectLabel) => !kn
 const expectedTasks = (value: Evidence["reports"][number]["expected"], project?: ProjectLabel) => value.createdTasks === null ? "An uncertain result: a task may or may not be created." : !knownTasks(value.createdTasks) ? "The expected task result was not recorded."
   : value.createdTasks!.length ? `Create ${taskNames(value.createdTasks!, project)}.` : "Create no task.";
 const checkedUncertainty = (item: Evidence["reports"][number]) => item.expected.createdTasks === null && item.report.observed?.effect === "UNKNOWN" && item.report.observed.createdTasks === null;
-const checkedObservation = (item: Evidence["reports"][number]) => knownScenarioTask(item.report.scenario?.task) && (knownTasks(item.expected.createdTasks) && knownObservation(item.report.observed) || checkedUncertainty(item));
-const summarizeExamples = (proof: Evidence | null) => [...new Set(proof?.reports.filter(checkedObservation).map(item => observedTasks(item.report.observed).replace(/\.$/, "")) ?? [])].join("; ");
+type CheckedCase = Evidence["reports"][number];
+const workflowCase = (item: CheckedCase) => item.report.observed?.updatedTasks !== undefined || item.expected.updatedTasks !== undefined;
+const knownUpdates = (updates?: TaskUpdate[] | null) => Array.isArray(updates) && updates.every(update =>
+  !!update && typeof update.id === "string" && !!update.id && [update.priority, update.dueAt, update.addTag].some(field => typeof field === "string" && !!field));
+function checkedObservation(item: CheckedCase) {
+  if (!knownScenarioTask(item.report.scenario?.task)) return false;
+  const observed = item.report.observed, expected = item.expected;
+  if (!workflowCase(item)) return knownTasks(expected.createdTasks) && knownObservation(observed) || checkedUncertainty(item);
+  if (!(expected.createdTasks === null && expected.updatedTasks === null || knownTasks(expected.createdTasks) && knownUpdates(expected.updatedTasks))) return false;
+  if (observed?.effect === "UNKNOWN" || observed?.effect === "NOT_OBSERVED") return observed.createdTasks === null && observed.updatedTasks === null;
+  if (!observed || !["CONFIRMED", "NONE"].includes(observed.effect) || !knownTasks(observed.createdTasks) || !knownUpdates(observed.updatedTasks)) return false;
+  return observed.createdTasks!.length + observed.updatedTasks!.length === (observed.effect === "CONFIRMED" ? 1 : 0);
+}
+const summarizeExamples = (proof: Evidence | null) => [...new Set(proof?.reports.filter(checkedObservation).map(item => {
+  const observed = item.report.observed;
+  if (!workflowCase(item)) return observedTasks(observed).replace(/\.$/, "");
+  if (observed?.effect === "NONE") return "No change";
+  if (observed?.effect === "UNKNOWN") return "Change not confirmed";
+  if (observed?.effect !== "CONFIRMED") return "Could not check";
+  if (observed.createdTasks?.length) return `Created ${taskNames(observed.createdTasks)}`;
+  return observed.updatedTasks?.map(update => `Updated this task. ${updateDetails(update, item.report.scenario?.task, true)}`).join(". ") || "Could not check";
+}) ?? [])].join("; ");
+const priorityLabel = (value: string) => value[0]?.toUpperCase() + value.slice(1).toLowerCase();
+const utc = (value: string) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) ? value.replace("T", " ").replace("Z", " UTC") : value;
+function taskDetails(task: TaskFields) {
+  return [task.priority && `Priority ${priorityLabel(task.priority)}`, task.dueAt && `Due ${utc(task.dueAt)}`,
+    task.tags?.length && `Tags ${task.tags.join(", ")}`, task.notes !== undefined && `Notes “${task.notes}”`].filter(Boolean).join(" · ");
+}
+function updateDetails(update: TaskUpdate, task: TaskPreview | undefined, observed: boolean) {
+  const before = task?.id === update.id ? task : undefined;
+  const details = [update.priority && `Priority ${observed && before?.priority ? priorityLabel(before.priority) + " → " : ""}${priorityLabel(update.priority)}`,
+    update.dueAt && `Due date ${observed && before?.status ? (before.dueAt ? utc(before.dueAt) : "No due date") + " → " : ""}${utc(update.dueAt)}`,
+    update.addTag && (observed ? before?.tags?.includes(update.addTag) ? `Tag “${update.addTag}” was already present` : `Added tag “${update.addTag}”` : `Add tag “${update.addTag}”`)].filter(Boolean).join(" · ");
+  return details || "No fields recorded";
+}
 
 const continuationPrefix = "Continue my saved proposal and examples using these earlier messages. If the context is incomplete, ask before changing the examples.\n\n";
 function conversationMessage(id: string, item: Conversation["messages"][number]): Message {
@@ -360,6 +480,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [historyView, setHistoryView] = useState(historyMode.current);
   const [entry, setEntry] = useState(target.extensionId || target.conversationId ? "item" : "start");
   const [hostCatalog, setHostCatalog] = useState<HostCatalog | null>(null);
+  const [starterNotice, setStarterNotice] = useState("");
   const [catalogError, setCatalogError] = useState(false);
   const [activeView, setActiveView] = useState(false);
   const [activeSnapshot, setActiveSnapshot] = useState<{ ownerId: string; extensionId: string; revision: NonNullable<State["selection"]["revision"]>; generation: number; evidenceId: string | null } | null>(null);
@@ -484,6 +605,16 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         ?? (state?.selection.revision?.extensionId === extensionId.current ? state.selection.revision.id : null), selectionGeneration: state!.selection.generation };
   }
   const retired = state?.retired === true || conversation?.retired === true && !conversation.extensionId || retiredOperation;
+  const workflowHost = !catalogError && ["TaskCreated", "TaskCompleted"].every(id => hostCatalog?.hooks.some(hook => hook.id === id));
+  const workflowRevision = state?.draft ?? state?.selection.revision;
+  const trigger = !retired && (workflowHost || workflowRevision?.pins.modelRef?.format === "keir-dcm/2" || state?.extension?.hookId === "TaskCreated")
+    ? taskTrigger(state?.extension?.hookId) : null;
+  const { capabilities, taskFields } = hostFeatures(workflowHost ? hostCatalog : null);
+  const conditions = Object.entries({ projectId: "project", title: "exact title", tags: "tags", priority: "priority", dueAt: "due date" })
+    .filter(([field]) => capabilities.includes("tasks.get") && taskFields.includes(field)).map(([, label]) => label);
+  if (capabilities.includes("tasks.openMatch")) conditions.push("whether a matching open task exists");
+  const availableStarters = workflowStarters.filter(starter => hostCatalog?.hooks.some(hook => hook.id === starter.hook)
+    && starter.capabilities.every(capability => capabilities.includes(capability)));
   const executionUnavailable = state?.executionAvailability?.available === false;
   const offer = conversation?.review;
   const eligibleOffer = !historyView && !!state && matchingOffer(conversation, state);
@@ -546,11 +677,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const summaryRevision = summaryItem ? state?.draft?.id : undefined;
   const summarySuite = state?.draft?.suiteDigest ?? null;
   const summaryDigest = state?.draft?.pins.artifactDigest;
+  const summarySourceDigest = state?.draft?.pins.rawSourceDigest;
   const summaryKey = summaryItem && summaryRevision && summaryDigest
-    ? JSON.stringify([ownerId, summaryItem, summaryRevision, summarySuite, summaryDigest]) : "";
+    ? JSON.stringify([ownerId, summaryItem, summaryRevision, summarySuite, summaryDigest, summarySourceDigest]) : "";
   const summaryPending = !!summaryKey && ruleAction?.key !== summaryKey;
   const summarized = ruleAction?.key === summaryKey ? ruleAction.action : null;
-  const destination = projects.find(project => project.id === summarized?.projectId)?.name;
+  const legacySummary = summarized && "title" in summarized ? summarized : null;
+  const workflowSummary = summarized && "hook" in summarized && summarized.hook === state?.extension?.hookId ? summarized : null;
+  const destination = projects.find(project => project.id === legacySummary?.projectId)?.name;
   const matchingExamples = reviewEvidence?.reports.filter(item => item.report.status === "PASS" && checkedObservation(item)).length ?? 0;
   const behaviorSummary = summarizeExamples(reviewEvidence);
   const activeSelectionMatches = !!activeSnapshot && activeSnapshot.ownerId === state?.owner.id && activeSnapshot.extensionId === state.extension?.id
@@ -559,7 +693,97 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const checkedDraftSummary = canReview && reviewReady && review === reviewKey ? behaviorSummary : "";
   const checkedActiveSummary = activeProof && activeSelectionMatches && state?.selection.eligible ? summarizeExamples(activeProof) : "";
 
+  function projectName(projectId?: string) { return projects.find(project => project.id === projectId)?.name; }
+  function conditionText(fact: Condition) {
+    if (fact.field === "noOpenMatch") {
+      const name = projectName(fact.projectId);
+      return name ? `“${name}” has no open task titled exactly “${fact.title}”` : "";
+    }
+    if (fact.field === "dueAbsent") return "this task has no due date";
+    if (!fact.value) return "";
+    if (fact.field === "tag") return `this task has the tag “${fact.value}”`;
+    if (fact.field === "title") return `this task is titled exactly “${fact.value}”`;
+    if (fact.field === "priority") return `this task has ${priorityLabel(fact.value)} priority`;
+    const name = projectName(fact.value);
+    return name ? `this task is in “${name}”` : "";
+  }
+  const conditionTexts = workflowSummary?.conditions?.map(conditionText);
+  const conditionsKnown = !!conditionTexts?.length && conditionTexts.every(Boolean);
+  const onlyWhen = conditionsKnown
+    ? `${conditionTexts.length > 1 ? "All of these apply: " : ""}${new Intl.ListFormat("en").format(conditionTexts)}.`
+    : workflowSummary && !workflowSummary.conditional ? "No additional rule conditions." : "The saved conditions can’t be summarized here.";
+  const fullWorkflowSummary = workflowSummary && (!workflowSummary.conditional || conditionsKnown)
+    && Object.entries(workflowSummary.fields).every(([field, value]) => {
+      if (field === "title") return typeof value === "string" || workflowSummary.titlePrefix !== undefined;
+      if (field === "projectId") return typeof value === "string" && !!projectName(value);
+      if (field === "dueAt") return typeof value === "string" || workflowSummary.elapsedDue;
+      return ["priority", "addTag", "tagsText", "notes"].includes(field) && typeof value === "string";
+    });
+  function checkedWorkflowExample(item: CheckedCase, index: number, compact: boolean) {
+    const { scenario, observed, calls, native } = item.report;
+    const task = scenario?.task;
+    const openCheck = calls?.find(call => call.capability === "tasks.openMatch");
+    const openResult = openCheck && scenario?.openMatches?.find(match => match.title === openCheck.args?.title && match.projectId === openCheck.args?.projectId);
+    const readUnavailable = observed?.effect === "NONE" && !!native?.error && ["tasks.get", "tasks.openMatch"].includes(calls?.at(-1)?.capability ?? "");
+    const readMessage = native?.error?.code === "TASK_NOT_FOUND" ? "The task could not be found."
+      : native?.error?.code === "ACCESS_DENIED" ? "The task could not be checked because access was denied."
+      : native?.error?.code === "ADAPTER_TRANSIENT" ? "The task was temporarily unavailable." : "Could not check the triggering task.";
+    const openUnavailable = !!openCheck && !openResult;
+    const unknown = observed?.effect === "UNKNOWN";
+    const failed = ["FAIL", "MISMATCH"].includes(item.report.status);
+    const passed = item.report.status === "PASS";
+    const expected = item.expected;
+    const expectedCreate = expected.createdTasks?.[0], observedCreate = observed?.createdTasks?.[0];
+    const createdProject = (task: TaskPreview | undefined) => task?.projectName || projectName(task?.projectId);
+    const differentProject = !!expectedCreate?.projectId && !!observedCreate?.projectId && expectedCreate.projectId !== observedCreate.projectId;
+    const sameName = differentProject && createdProject(expectedCreate) === createdProject(observedCreate);
+    function effects(value: Pick<CheckedCase["expected"], "createdTasks" | "updatedTasks">, actual: boolean) {
+      const created = value.createdTasks, updated = value.updatedTasks;
+      if (created === null && updated === null) return actual ? "Change not confirmed." : "An uncertain write outcome.";
+      if (!Array.isArray(created) || !Array.isArray(updated)) return "Task changes were not recorded.";
+      if (!created.length && !updated.length) return "No change.";
+      return [...created.map(result => {
+        const project = createdProject(result), role = actual ? "different" : "expected";
+        const destination = sameName ? project ? `“${project}” (the ${role} example project)` : `the ${role} example project`
+          : project ? `“${project}”` : "an unnamed project";
+        const details = taskDetails(result);
+        return `${actual ? "Created" : "Create"} “${result.title}” in ${destination}.${details ? ` ${details}.` : ""}`;
+      }), ...updated.map(result => `${actual ? "Updated" : "Update"} this task. ${updateDetails(result, task, actual)}.`)].join(" ");
+    }
+    const title = knownScenarioTask(task) ? `“${task!.title}”` : exampleLabel(item, index);
+    const project = task?.projectName || projectName(task?.projectId);
+    const situation = readUnavailable && !openCheck ? readMessage : task?.title !== "Example task" ? title
+      : task.status === "COMPLETED" ? `Task completed${project ? ` in ${project}` : ""}`
+      : task.status === "OPEN" ? "Task is still unfinished" : title;
+    const searchProject = projectName(openCheck?.args?.projectId);
+    const unavailable = readUnavailable || openUnavailable || observed?.effect === "NOT_OBSERVED" || !observed;
+    const result = failed ? `Needs correction${unknown ? " · Change not confirmed" : unavailable ? " · Could not check" : ""}`
+      : unknown ? passed ? "Matches expected uncertainty · Change not confirmed" : "Change not confirmed"
+      : unavailable ? passed ? "Matches expected unavailable check · Could not check" : "Could not check"
+      : passed ? "Matches" : "Could not check";
+    return <article className="rs-example rs-workflow-case" key={item.id} aria-label={`Example: ${situation}`}>
+      <dl>
+        <div><dt>Situation</dt><dd>{title}{project && ` in “${project}”`}{task?.status && ` · ${task.status === "COMPLETED" ? "Completed" : "Unfinished"}`}
+          {scenario?.occurredAt && ` · Event time ${utc(scenario.occurredAt)}`}{task && taskDetails(task) && ` · ${taskDetails(task)}`}</dd></div>
+        <div><dt>Expected</dt><dd>{effects(expected, false)}</dd></div>
+        <div><dt>What happened</dt><dd>
+          {openCheck?.args?.title && <p>Open-task check: exact title “{openCheck.args.title}” {searchProject ? `in “${searchProject}”` : "in the chosen project"}. {openResult ? openResult.matches ? "A matching open task was found." : "No matching open task was found." : "Could not check for a matching open task."}</p>}
+          {readUnavailable && !openCheck && <p>{readMessage}</p>}
+          <p>{observed?.effect === "NOT_OBSERVED" || !observed ? "The simulation did not establish a write outcome."
+            : observed.effect === "NONE" && openResult?.matches ? "No task was created. A matching open task was found."
+            : observed.effect === "NONE" && native?.error && ["tasks.create", "tasks.update"].includes(calls?.at(-1)?.capability ?? "") ? "No change. The write could not be applied."
+            : effects(observed, true)}</p>
+          {differentProject && <p>The created task used a different project than expected.</p>}
+        </dd></div>
+        <div><dt>Result</dt><dd className={failed ? "rs-mismatch" : passed && !unknown && !unavailable ? "rs-match" : undefined}>{result}</dd></div>
+      </dl>
+      {compact && failed && viewingCurrentFailure && <button type="button" className="rs-link" disabled={sendDisabled || !authoring?.availability.available}
+        onClick={() => document.getElementById("studio-message")?.focus()}>Describe a correction</button>}
+    </article>;
+  }
+
   function checkedExample(item: Evidence["reports"][number], index: number, compact = false) {
+    if (workflowCase(item)) return checkedWorkflowExample(item, index, compact);
     const source = item.report.scenario?.task, observed = knownObservation(item.report.observed), expected = knownTasks(item.expected.createdTasks);
     const readFailure = observed && item.report.observed?.effect === "NONE" && Array.isArray(item.report.calls)
       && item.report.calls.at(-1)?.capability === "tasks.get" ? item.report.native?.error?.code : undefined;
@@ -790,14 +1014,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     void callbacks.current.request<SavedSource>(`${extensionPath(summaryItem)}/revisions/${encodeURIComponent(summaryRevision)}`, "GET", undefined, load.signal)
       .then(async saved => {
         if (!current() || saved.extensionId !== summaryItem || saved.revisionId !== summaryRevision || saved.suiteDigest !== summarySuite) return null;
-        return savedRuleAction(saved, summaryDigest);
+        return savedRuleAction(saved, summaryDigest, summarySourceDigest);
       }).catch(() => null).then(action => {
         if (!current()) return;
         preserveReviewReading();
         setRuleAction({ key: summaryKey, action });
       });
     return () => load.abort();
-  }, [summaryKey, summaryItem, summaryRevision, summarySuite, summaryDigest]);
+  }, [summaryKey, summaryItem, summaryRevision, summarySuite, summaryDigest, summarySourceDigest]);
   function focusInline(id: string) {
     const intent = ++focusIntent.current, reading = ++readingRevision.current;
     followConversation.current = false;
@@ -1474,6 +1698,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       return;
     }
   }
+  function chooseStarter(request: string) {
+    setStarterNotice(text.length ? "Clear your draft before choosing another starting point." : "");
+    if (!text.length) setText(request);
+    document.getElementById("studio-message")?.focus({ preventScroll: true });
+  }
   const restoreTarget = state?.restoreTargets.find(item => item.id === restore);
   const selectedDraft = !!state?.selection.eligible && state.selection.revision?.id === state.draft?.id;
   function openSetup() {
@@ -1517,7 +1746,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         ? state.draft && !selectedDraft ? "Earlier version in use" : "On for my tasks" : "Couldn’t check what’s in use"
         : state.approved ? "Approved · Still off" : state.draft ? "Draft · Not in use" : "In discussion · Not in use" : "New customization · Not saved"}</strong>
         {ownActive && state.draft && !selectedDraft && <span>{!state.evidence ? "Saved changes · Examples pending" : state.approved ? "Saved changes · Approved · Still off" : "Saved changes · Not in use"}</span>}
-        {state.selection.revision && !ownActive && <span>{state.selection.eligible ? "Another customization is in use" : "Couldn’t check the saved selection"}</span>}</div>
+        {trigger ? <span>{`For ${trigger} · `}{!trusted || state.selection.revision && !state.selection.eligible ? "Couldn’t check which rule is on"
+          : state.selection.revision ? `Currently on: ${state.selection.revision.extensionName}` : `No rule is on for ${trigger}`}</span>
+          : !workflowHost && state.selection.revision && !ownActive && <span>{state.selection.eligible ? "Another customization is in use" : "Couldn’t check the saved selection"}</span>}</div>
       <div className="rs-summary-actions">
         {decisionEvidenceId && <button id="studio-view-saved" aria-label={latestReviewAvailable && inlineOpen ? "View latest changes" : "View saved changes"}
           disabled={!reviewAllowed} onClick={() => void openReview(latestReviewAvailable && inlineOpen ? newerEvidenceId ?? decisionEvidenceId : decisionEvidenceId)}>
@@ -1547,9 +1778,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button id="studio-earlier-messages" disabled={!!busy} onClick={() => void earlierMessages()}>{earlierMessagesFailed ? "Retry earlier messages" : "Load earlier messages"}</button>
           </div>}
           {entry === "start" && <article className="rs-message rs-start">
-            <strong>Daymark assistant</strong><h2>What would you like to change about your work?</h2>
-            <p>Tell me what you want to happen. We’ll check what Daymark can support and work through useful examples together.</p>
-            {catalogError ? <p role="status">What Daymark supports could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p> : hostCatalog && <details><summary>What Daymark supports</summary>{hostCatalog.hooks.map(hook => <p key={hook.id}><strong>{hook.label}</strong> · {hook.description}</p>)}</details>}
+            <strong>Daymark assistant</strong><h2>{workflowHost ? "What would you like Daymark to do for you?" : "What would you like to change about your work?"}</h2>
+            {availableStarters.length > 0 ? <><p>Choose a starting point, then make it yours.</p><div className="rs-starters">{availableStarters.map(starter =>
+              <button key={starter.label} type="button" onClick={() => chooseStarter(starter.text)}>{starter.label}</button>)}</div><p role="status">{starterNotice}</p></>
+              : <p>Tell me what you want to happen. We’ll check what Daymark can support and work through useful examples together.</p>}
+            {catalogError ? <p role="status">What Daymark supports could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p> : hostCatalog && <details><summary>{workflowHost ? "What can I ask for?" : "What Daymark supports"}</summary>{hostCatalog.hooks.map(hook => <p key={hook.id}><strong>{hook.label}</strong> · {hook.description}</p>)}
+              {workflowHost && <><p>{[capabilities.includes("tasks.create") && "Create a task.", capabilities.includes("tasks.update") && "Update the task that triggered the rule."].filter(Boolean).join(" ")} Each rule uses one trigger.</p>
+                {conditions.length > 0 && <p>Narrow a rule by {new Intl.ListFormat("en", { type: "disjunction" }).format(conditions)}.</p>}</>}</details>}
           </article>}
           {messages.map(message => {
             const currentReceipt = !retired && !historyView && (!message.conversationId || message.conversationId === conversation?.id)
@@ -1565,7 +1800,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               {latestExplanation && <button className="rs-link" onClick={() => void openReview()}>Show example checks</button>}
             </article>;
           })}
-          {retired && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3><p>Its source, examples, discussion and history remain available. It cannot run or be resumed as a task-creating customization. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
+          {retired && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3>{state?.legacySelection && <p>Previously selected · unavailable to run</p>}<p>Its source, examples, discussion and history remain available to read. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
           {historyView && !activeAuthoring && <article className="rs-message rs-decision"><p>Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.</p>
             <button disabled={!!busy || !!pendingTurn} onClick={returnToCurrent}>Return to current changes</button></article>}
           {conversation?.review && !eligibleOffer && <article className="rs-message"><p>These saved examples do not support approval of the current changes.</p>
@@ -1588,12 +1823,24 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {pendingTurn && retryTurn && !retired && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}</div>}
           {showSavedBehavior && state?.draft && <article className="rs-sheet rs-inline-behavior" aria-labelledby="studio-saved-change">
             <h3 id="studio-saved-change" tabIndex={-1}>About this rule</h3>
-            {summarized && <p>After a task completes, this rule can request a follow-up titled “{summarized.title}”
+            {legacySummary && <p>After a task completes, this rule can request a follow-up titled “{legacySummary.title}”
               {destination && <> in “{destination}”</>}.</p>}
-            {summaryPending ? <p className="muted" role="status">Reading the saved rule…</p> : <p className="muted">A full summary isn’t available for this version. {state.evidence
+            {trigger && <dl className="rs-rule-facts">
+              <div><dt>When</dt><dd>{trigger === "tasks added" ? "A task is added." : "A task is completed."}</dd></div>
+              <div><dt>Only when</dt><dd>{onlyWhen}</dd></div>
+              <div><dt>Then</dt><dd>{workflowSummary ? <>
+                {workflowSummary.capability === "tasks.update" ? "Update this task." : <>Create a task{typeof workflowSummary.fields.title === "string" ? ` titled “${workflowSummary.fields.title}”` : workflowSummary.titlePrefix !== undefined && ` titled “${workflowSummary.titlePrefix}” followed by this task’s title`}{typeof workflowSummary.fields.projectId === "string" && projectName(workflowSummary.fields.projectId) && ` in “${projectName(workflowSummary.fields.projectId)}”`}.</>}
+                {typeof workflowSummary.fields.priority === "string" && ` Priority ${priorityLabel(workflowSummary.fields.priority)}.`}
+                {typeof workflowSummary.fields.addTag === "string" && ` Add tag “${workflowSummary.fields.addTag}”.`}
+                {typeof workflowSummary.fields.tagsText === "string" && !!workflowSummary.fields.tagsText.trim() && ` Tags: ${workflowSummary.fields.tagsText}.`}
+                {typeof workflowSummary.fields.notes === "string" && ` Notes “${workflowSummary.fields.notes}”.`}
+                {workflowSummary.elapsedDue ? ` Due 168 hours after ${trigger === "tasks added" ? "addition" : "completion"}.` : typeof workflowSummary.fields.dueAt === "string" && ` Due ${utc(workflowSummary.fields.dueAt)}.`}
+              </> : "The saved action can’t be summarized here."}</dd></div>
+            </dl>}
+            {summaryPending ? <p className="muted" role="status">Reading the saved rule…</p> : !fullWorkflowSummary && <p className="muted">A full summary isn’t available for this version. {state.evidence
               ? "See which situations were checked and what happened in the simulation."
               : "Sample checks show what happens in the cases you try."}</p>}
-            {!sendDisabled && authoring?.availability.available && <button className="rs-link" onClick={() => document.getElementById("studio-message")?.focus()}>Ask about this rule</button>}
+            {!sendDisabled && authoring?.availability.available && <button className="rs-link" onClick={() => document.getElementById("studio-message")?.focus()}>{trigger ? "Ask for a change" : "Ask about this rule"}</button>}
             {!state.evidence && !decisionEvidenceId && <p>This revision has no checked examples yet.</p>}
             {inlineAvailable && ((decisionEvidenceId || failedEvidenceId) ? <button className="rs-primary" disabled={disabled} onClick={() => void openReview()}>View simulation</button>
               : state.draft.suiteDigest || state.draft.kind === "prepared"
@@ -1604,13 +1851,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {savedReview && state && <article id="studio-review" hidden={!inlineOpen} className="rs-sheet rs-review rs-inline-review" aria-label="Current decision">
             <h3 id="studio-review-heading" tabIndex={-1}>Simulation</h3>
             <p className="rs-review-status">{viewedInUse ? "On for my tasks" : reviewLoading ? "Checking saved results…"
-              : !viewedDraft || !inlineAvailable ? "Earlier saved changes · read-only" : reviewError ? "Saved results unavailable for a decision" : viewingCurrentFailure ? "Check needs a correction"
+              : !viewedDraft || !inlineAvailable ? trigger ? "Earlier simulation · read-only" : "Earlier saved changes · read-only" : reviewError ? "Saved results unavailable for a decision" : viewingCurrentFailure ? "Check needs a correction"
               : !viewedCurrent || review !== reviewKey ? "Saved examples · read-only" : reviewedApproved ? "Approved · Still off" : "Ready for your review"}</p>
             {reviewError && <div role="alert"><p>{reviewError}</p>{(viewedCurrent || viewingCurrentFailure) && <button disabled={disabled} onClick={() => void openReview(savedReview.evidenceId)}>Check saved results again</button>}</div>}
             {!viewedCurrent && !viewingCurrentFailure && !viewedInUse && !reviewLoading && <p>Saved work or its use changed. These examples are read-only. Open the latest changes before making a decision.</p>}
             {reviewEvidence && <>
-              <p className="muted">{reviewEvidence.reports.length} sample {reviewEvidence.reports.length === 1 ? "case" : "cases"} · Example only · no real tasks changed</p>
-              {(viewedInUse || state.selection.revision && state.selection.generation === savedReview.selection.generation) && <p>{viewedInUse ? `“${savedReview.extension.name}” is now in use. New matching task completions can use this change. Turning it on does not complete or replay earlier tasks.`
+              <p className="muted">{reviewEvidence.reports.length} sample {reviewEvidence.reports.length === 1 ? "case" : "cases"} · {trigger ? "Sample tasks only · your tasks have not changed" : "Example only · no real tasks changed"}</p>
+              {(viewedInUse || state.selection.revision && state.selection.generation === savedReview.selection.generation) && <p>{viewedInUse ? trigger ? `“${savedReview.extension.name}” is on for ${trigger}. This applies to future matching events.` : `“${savedReview.extension.name}” is now in use. New matching task completions can use this change. Turning it on does not complete or replay earlier tasks.`
                 : trusted && state.selection.eligible ? state.selection.revision!.extensionId !== savedReview.extension.id
                   ? `Another customization is in use: “${state.selection.revision!.extensionName}”.`
                   : state.selection.revision!.id === savedReview.revision.id
@@ -1620,22 +1867,23 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               <section className="rs-inline-cases" aria-label="Checked proposed behavior" key={reviewEvidence.id}>
                 {reviewEvidence.reports.map((item, index) => checkedExample(item, index, true))}
               </section>
-              {matchingExamples > 0 && <p>{matchingExamples === 1 ? "One recorded example matched" : `${matchingExamples} recorded examples matched`} what you wanted.</p>}
+              {trigger ? <p>{matchingExamples} of {reviewEvidence.reports.length} recorded cases matched their saved expectations.</p>
+                : matchingExamples > 0 && <p>{matchingExamples === 1 ? "One recorded example matched" : `${matchingExamples} recorded examples matched`} what you wanted.</p>}
               <p className="rs-coverage">These results cover only the recorded examples. Other situations remain untested.</p>
               {mainExample && savedReview.selection.revision && <button className="rs-link" disabled={!!busy} onClick={() => void showEvidence(savedReview.evidenceId)}>Inspect examples and what’s in use</button>}
               {viewingCurrentFailure && <div className="rs-decision-actions"><p>Discuss the correction, then check the examples again.</p><button className="rs-primary" disabled={sendDisabled || !authoring?.availability.available}
                 onClick={() => document.getElementById("studio-message")?.focus()}>Ask for a correction</button></div>}
-              {reviewedApproved && !viewedInUse && !executionUnavailable && <p>Turn on “{savedReview.extension.name}”{savedReview.selection.revision
+              {reviewedApproved && !viewedInUse && !executionUnavailable && <p>Turn on “{savedReview.extension.name}”{trigger ? ` for ${trigger}. ` : ""}{savedReview.selection.revision
                 ? savedReview.selection.revision.extensionId !== savedReview.extension.id
-                  ? ` instead of “${savedReview.selection.revision.extensionName}”. Switching turns it off and keeps it saved.`
-                  : ". This replaces the version currently in use." : " for your tasks."}</p>}
+                  ? trigger ? `This replaces “${savedReview.selection.revision.extensionName}” for this trigger.` : ` instead of “${savedReview.selection.revision.extensionName}”. Switching turns it off and keeps it saved.`
+                  : trigger ? "This replaces the version currently in use." : ". This replaces the version currently in use." : trigger ? "" : " for your tasks."}</p>}
               {viewedInUse ? <p id="studio-use-confirmed" tabIndex={-1} role="status">This change is on. You can keep asking questions or describe your next change.</p>
                 : inlineAvailable && viewedCurrent && reviewReady && review === reviewKey && <div className="rs-decision-actions">{reviewedApproved
                   ? <button id="use-customization" className="rs-primary" disabled={reviewActionDisabled || executionUnavailable} onClick={() => {
                     if (reviewActionDisabled || executionUnavailable) return;
                     void mutate("activate", { revisionId: savedReview.revision.id, draftVersion: savedReview.draftVersion, generation: savedReview.selection.generation, evidenceId: savedReview.evidenceId },
                       `“${savedReview.extension.name}” is now in use. Your tasks have not changed.`, true);
-                  }}>{savedReview.selection.revision && savedReview.selection.revision.extensionId !== savedReview.extension.id ? "Switch to this customization" : "Turn on for my tasks"}</button>
+                  }}>{trigger ? `Turn on for ${trigger}` : savedReview.selection.revision && savedReview.selection.revision.extensionId !== savedReview.extension.id ? "Switch to this customization" : "Turn on for my tasks"}</button>
                   : <><p>Approval saves your decision. Turn on the saved change separately when you’re ready.</p><button className="rs-primary" disabled={reviewActionDisabled} onClick={() => {
                     if (reviewActionDisabled) return;
                     void mutate("approve", { revisionId: savedReview.revision.id, draftVersion: savedReview.draftVersion, evidenceId: savedReview.evidenceId },
@@ -1678,7 +1926,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
         <form hidden={retired || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Daymark assistant</label>
-          <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); }} placeholder="Ask or describe a change…"
+          <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); setStarterNotice(""); }} placeholder="Ask or describe a change…"
             onKeyDown={event => {
               if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
               event.preventDefault();

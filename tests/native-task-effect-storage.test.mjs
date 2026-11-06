@@ -67,7 +67,7 @@ test('reopen retains exact task, customization and receipt bytes', t => {
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
   const { type, notnull, dflt_value } = db.prepare("SELECT * FROM pragma_table_info('tasks') WHERE name='tags'").get();
   assert.deepEqual({ type, notnull, dflt_value }, { type: 'TEXT', notnull: 1, dflt_value: "'[]'" });
   assert.deepEqual(snapshot(db), before);
@@ -113,7 +113,8 @@ test('current schema rejects duplicate event/key, cross-owner lineage and invali
   const receiptEvent = eventRow(db); insert(db, stores[0], receiptEvent);
   const invalidReceipts = [
     [{ owner_id: 'leo' }, /FOREIGN KEY/], [{ original_key: randomUUID() }, /FOREIGN KEY/],
-    [{ capability_id: 'tasks.delete' }, /CHECK/], [{ capability_version: '2' }, /CHECK/],
+    [{ capability_id: 'tasks.delete' }, /CHECK/], [{ capability_version: '3' }, /CHECK/],
+    [{ capability_id: 'tasks.update', capability_version: '2' }, /CHECK/],
     [{ payload: Buffer.alloc(4097) }, /CHECK/], [{ payload: 'text' }, /BLOB/], [{ result: jsonBytes(4098) }, /CHECK/], [{ result: 'invalid JSON' }, /CHECK/],
     [{ effect: 'UNKNOWN' }, /CHECK/], [{ effect: 'CONFIRMED' }, /CHECK/],
     [{ effect: 'CONFIRMED', affected_task_id: foreign.id }, /FOREIGN KEY/],

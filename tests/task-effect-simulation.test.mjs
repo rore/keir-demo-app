@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { loadHost, definitionForPins, admitArtifact, hostBindings, digest, TASK_HOOK, TASK_DEFINITION } from '../src/extension-catalog.mjs';
+import { loadHost, definitionForPins, admitArtifact, hostBindings, digest, TASK_HOOK, TASK_HOOKS, TASK_DEFINITION } from '../src/extension-catalog.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { consumeTaskEffect, decodeTaskEffectScenarios, preflightTaskEffectScenarios, runTaskEffectSimulation, taskEffectSyntax, taskEffectScenarioExamples } from '../src/task-effect-simulation.mjs';
 import { taskCustomizationFixture } from './fixtures/task-customization.mjs';
@@ -10,19 +10,20 @@ const host = loadHost(TASK_HOOK);
 const examples = () => taskEffectScenarioExamples(host).map(text => JSON.parse(text));
 const invalid = { status: 'NOT_REPORTED', code: 'OUTCOME_INVALID' };
 
-test('catalog admits one exact public task definition', () => {
+test('catalog admits two exact hooks with one public workflow model', () => {
   assert.equal(host.definitionId, TASK_DEFINITION);
-  assert.equal(TASK_DEFINITION, 'daymark.task-completed/3');
+  assert.equal(TASK_DEFINITION, 'daymark.task-workflow/1');
   assert.equal(host.pins.definitionId, TASK_DEFINITION);
   assert.equal(host.pins.modelDigest, digest(host.dcmBytes));
   assert.equal(host.pins.modelRef.digest, host.pins.modelDigest);
   assert.deepEqual(definitionForPins(host.pins).dcmBytes, host.dcmBytes);
   const model = JSON.parse(host.dcmBytes);
-  assert.equal(model.format, 'keir-dcm/1');
+  assert.equal(model.format, 'keir-dcm/2');
   assert.ok(!Object.hasOwn(model, 'assurance'));
-  assert.equal(model.hostKey.type, 'demo.TaskCompletionKey/1');
-  assert.deepEqual(Object.keys(model.capabilities).sort(), ['tasks.create', 'tasks.get']);
-  assert.equal(model.capabilities['tasks.get'].version, '2');
+  assert.equal(model.hostKey.type, 'demo.TaskWorkflowKey/1');
+  assert.deepEqual(Object.keys(model.capabilities).sort(), ['tasks.create', 'tasks.get', 'tasks.openMatch', 'tasks.update']);
+  assert.equal(model.capabilities['tasks.get'].version, '3');
+  assert.deepEqual(Object.keys(model.entrypoints).sort(), [...TASK_HOOKS].sort());
   assert.equal(model.types.Task.fields.title, 'String');
   for (const capability of Object.values(model.capabilities)) assert.equal(capability.parameters.actorId.binding, 'host');
   assert.deepEqual(model.capabilities['tasks.create'].parameters.projectId, { binding: 'agent', type: 'ProjectId' });
@@ -30,6 +31,7 @@ test('catalog admits one exact public task definition', () => {
   assert.deepEqual(model.capabilities['tasks.create'].errors, ['PROJECT_NOT_FOUND', 'ACCESS_DENIED', 'KEY_PAYLOAD_MISMATCH', 'TASK_INVALID']);
   for (const changed of [{ ...host.pins, hook: 'customer-hook' }, { ...host.pins, profile: 'keir-read/2' },
     { ...host.pins, definitionId: 'daymark.task-completed/1' },
+    { ...host.pins, hook: 'TaskCreated' },
     { ...host.pins, modelRef: { ...host.pins.modelRef, domainVersion: '1' } }, { ...host.pins, adapter: 'customer-adapter' }])
     assert.throws(() => definitionForPins(changed));
   assert.throws(() => loadHost('customer-hook'));
@@ -97,12 +99,16 @@ test('scenario validation closes authority fields, formats, stub shapes, bounds 
     mutate(row => { row.given.fixture = '../native'; }),
     mutate(row => { row.given.fixture = 'no-effect-grant'; }),
     mutate(row => { row.given.input.taskId = '\ud800'; }),
+    mutate(row => { delete row.given.input.occurredAt; }),
+    mutate(row => { row.given.input.occurredAt = '2026-02-30T12:00:00.000Z'; }),
     mutate(row => { row.stubs[0].response.effect = 'CONFIRMED'; }),
     mutate(row => { delete row.stubs[0].response.value.title; }),
     mutate(row => { row.stubs[0].response.value.title = 'a'.repeat(121); }),
     mutate(row => { row.stubs[0].response.value.title = '界'.repeat(120); }),
     mutate(row => { row.stubs[0].response.value.id = 'different-task'; }),
     mutate(row => { row.stubs[0].response.value.status = true; }),
+    mutate(row => { row.stubs[0].response.value.tags = ['un-normalized Tag']; }),
+    mutate(row => { row.stubs[0].response.value.dueAt = null; }),
     mutate(row => { row.stubs[0].args.sourceTaskId = 'task1'; }),
     mutate(row => { row.stubs[0].protectedArgs.actorId = 'other-owner'; row.expect.calls[0].protectedArgs.actorId = 'other-owner'; }),
     mutate(row => { row.stubs[0].protectedArgs.extra = 'actor'; }),
@@ -164,8 +170,9 @@ test('installed runtime runs exact compiled bytes with independent match/nonmatc
   const compiled = await compiler.compile(Buffer.from(source), { definition: host });
   assert.deepEqual(compiled.diagnostics, []);
   const artifact = admitArtifact(compiled.artifact, host);
-  assert.equal(artifact.format, 'keir-artifact/1');
+  assert.equal(artifact.format, 'keir-artifact/2');
   for (const changed of [
+    { ...artifact, format: 'keir-artifact/1' },
     { ...artifact, format: 'keir-artifact/effect-4' },
     { ...artifact, profile: 'keir-effect/4' },
     { ...artifact, compiler: 'keir-compiler-java/0.0.0' },
@@ -178,8 +185,8 @@ test('installed runtime runs exact compiled bytes with independent match/nonmatc
   const base = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host, scenarios: taskEffectScenarioExamples(host) });
   assert.equal(base.status, 'PASS', JSON.stringify(base));
   assert.equal(base.reports[0].report.observed.effect, 'CONFIRMED');
-  assert.deepEqual(base.reports[0].report.observed.createdTasks, [{ projectId: 'project1', title: 'Example follow-up task' }]);
-  assert.deepEqual(base.reports[1].report.observed, { effect: 'NONE', createdTasks: [] });
+  assert.deepEqual(base.reports[0].report.observed.createdTasks, [{ id: 'task2', projectId: 'project1', title: 'Example follow-up task', tags: [] }]);
+  assert.deepEqual(base.reports[1].report.observed, { effect: 'NONE', createdTasks: [], updatedTasks: [] });
   const changed = JSON.parse(source);
   changed.steps[0].let.literal = 'project42'; changed.steps[3].args.title.literal = 'Review the new collection';
   const second = await compiler.compile(Buffer.from(JSON.stringify(changed)), { definition: host });
@@ -200,7 +207,7 @@ test('installed runtime runs exact compiled bytes with independent match/nonmatc
   assert.equal(mismatch.reports[0].report.calls[0].step, 'source');
   const leftover = structuredClone(cases[1]); leftover.stubs.push(cases[0].stubs[1]);
   assert.deepEqual((await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: [JSON.stringify(leftover)] })).reports, []);
-  assert.deepEqual(readFileSync(new URL('../extensions/task-effect/title/dcm.json', import.meta.url)), host.dcmBytes);
+  assert.deepEqual(readFileSync(new URL('../extensions/task-effect/workflow/dcm.json', import.meta.url)), host.dcmBytes);
 });
 
 test('title-aware simulation matches exactly, preserves the composed title and stops on concatenation overflow', async () => {
@@ -240,9 +247,9 @@ test('title-aware simulation matches exactly, preserves the composed title and s
   assert.equal(result.status, 'PASS', JSON.stringify(result));
   const [copied, skipped, limited] = result.reports.map(item => item.report);
   assert.deepEqual([copied, skipped, limited].map(report => report.scenario.task.title), [title, differentCase, atLimit]);
-  assert.deepEqual(copied.observed.createdTasks, [{ projectId: 'project1', title: atLimit }]);
-  assert.deepEqual(skipped.observed, { effect: 'NONE', createdTasks: [] });
-  assert.deepEqual(limited.observed, { effect: 'NONE', createdTasks: [] });
+  assert.deepEqual(copied.observed.createdTasks, [{ id: 'task2', projectId: 'project1', title: atLimit, tags: [] }]);
+  assert.deepEqual(skipped.observed, { effect: 'NONE', createdTasks: [], updatedTasks: [] });
+  assert.deepEqual(limited.observed, { effect: 'NONE', createdTasks: [], updatedTasks: [] });
   assert.equal(limited.native.classification, 'LIMIT_EXCEEDED');
   assert.deepEqual(limited.native.error, outcome.error);
   assert.deepEqual(limited.calls.map(call => call.capability), ['tasks.get']);

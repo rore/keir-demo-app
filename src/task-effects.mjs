@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
 import { AppError, taskService, taskEffectService } from './data.mjs';
-import { hostBindings, json, loadHost, digest } from './extension-catalog.mjs';
+import { hostBindings, json, loadHost, digest, TASK_HOOK, TASK_HOOKS } from './extension-catalog.mjs';
 import { consumeTaskEffect } from './task-effect-simulation.mjs';
 
 const denied = effect => ({ kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED', ...(effect ? { effect: 'NONE' } : {}) });
@@ -19,39 +19,55 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
         || !lifecycle.admissionCurrent(captured)) return null;
     return captured;
   }
-  const mode = 'real', keyType = 'demo.TaskCompletionKey/1';
-  const readTask = { version: '2', mode, keyType, invoke: async (args, protectedArgs, remainingMs, context) => {
+  const mode = 'real', keyType = 'demo.TaskWorkflowKey/1';
+  const readTask = { version: '3', mode, keyType, invoke: async (args, protectedArgs, remainingMs, context) => {
       try {
         if (remainingMs <= 0 || !current(protectedArgs.actorId, context)) return denied();
         const task = tasks.getTaskForCustomization(protectedArgs.actorId, args.taskId);
         if (!current(protectedArgs.actorId, context)) return denied();
-        return { kind: 'SUCCESS', value: { id: task.id, projectId: task.projectId, status: task.status === 'open' ? 'OPEN' : 'COMPLETED', title: task.title } };
+        return { kind: 'SUCCESS', value: { id: task.id, projectId: task.projectId, status: task.status === 'open' ? 'OPEN' : 'COMPLETED',
+          title: task.title, tags: task.tags, priority: task.priority, ...(task.dueAt === null ? {} : { dueAt: task.dueAt }) } };
       } catch (error) {
         if (['HOST_KEY_INVALID', 'HOST_CONTEXT_INVALID', 'AUTHORITY_DENIED'].includes(error.code)) return denied();
         return error.status === 404 ? { kind: 'BUSINESS_REJECTION', code: 'TASK_NOT_FOUND' } : { kind: 'TRANSIENT_FAILURE' };
       }
   } };
-  const createTask = { version: '1', mode, keyType, invoke: async (args, protectedArgs, remainingMs, context) => {
+  const openMatch = { version: '1', mode, keyType, invoke: async (args, protectedArgs, remainingMs, context) => {
+      try {
+        if (remainingMs <= 0 || !current(protectedArgs.actorId, context)) return denied();
+        const value = tasks.hasOpenTask(protectedArgs.actorId, args.projectId, args.title, context.deadline);
+        if (!current(protectedArgs.actorId, context)) return denied();
+        return { kind: 'SUCCESS', value };
+      } catch (error) {
+        if (['HOST_KEY_INVALID', 'HOST_CONTEXT_INVALID', 'AUTHORITY_DENIED'].includes(error.code)) return denied();
+        return error.status === 404 ? { kind: 'BUSINESS_REJECTION', code: 'PROJECT_NOT_FOUND' } : { kind: 'TRANSIENT_FAILURE' };
+      }
+  } };
+  const write = (version, method) => ({ version, mode, keyType, invoke: async (args, protectedArgs, remainingMs, context) => {
       try {
         if (remainingMs <= 0 || !current(protectedArgs.actorId, context)) return denied(true);
-        return effects.createTaskOnce(protectedArgs.actorId, context.requestKey, args, context);
+        return effects[method](protectedArgs.actorId, context.requestKey, args, context);
       } catch (error) {
         if (['HOST_KEY_INVALID', 'HOST_CONTEXT_INVALID', 'AUTHORITY_DENIED', 'EVENT_NOT_STARTED'].includes(error.code)) return denied(true);
         if (error.status === 400) return { kind: 'BUSINESS_REJECTION', code: 'TASK_INVALID', effect: 'NONE' };
         return { kind: 'UNKNOWN_COMMIT', effect: 'UNKNOWN' };
       }
-  } };
+  } });
   try {
-    const host = loadHost();
-    const result = bindModel(host.dcmBytes, { 'tasks.get': readTask, 'tasks.create': createTask });
-    if (result.boundModel && !result.diagnostic) binding = { host, boundModel: result.boundModel };
+    const hosts = new Map(TASK_HOOKS.map(hook => [hook, loadHost(hook)]));
+    const result = bindModel(hosts.get(TASK_HOOK).dcmBytes, {
+      'tasks.get': readTask, 'tasks.openMatch': openMatch,
+      'tasks.create': write('2', 'createTaskOnce'), 'tasks.update': write('1', 'updateTaskOnce'),
+    });
+    if (result.boundModel && !result.diagnostic) binding = { hosts, boundModel: result.boundModel };
   } catch { /* Native tasks remain available without the extension model. */ }
-  function eventForTask(owner, taskId) {
+  function eventForTask(owner, taskId, hookId) {
     tasks.getTask(owner, taskId);
-    return db.prepare("SELECT event_id FROM task_events WHERE owner_id=? AND source_task_id=? AND hook_id='TaskCompleted'").get(owner, taskId)?.event_id;
+    if (!TASK_HOOKS.includes(hookId)) throw new AppError(400, 'Choose a task trigger.');
+    return db.prepare('SELECT event_id FROM task_events WHERE owner_id=? AND source_task_id=? AND hook_id=?').get(owner, taskId, hookId)?.event_id;
   }
-  function publicStatus(owner, taskId) {
-    const eventId = eventForTask(owner, taskId);
+  function publicStatus(owner, taskId, hookId = TASK_HOOK) {
+    const eventId = eventForTask(owner, taskId, hookId);
     if (!eventId) return { state: 'NO_BINDING', outcome: null, receipt: null, reconciliation: null };
     const value = effects.status(owner, eventId);
     const visible = receipt => {
@@ -60,14 +76,24 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
       }
       return receipt;
     };
-    return { state: value.state, outcome: value.outcome, receipt: visible(value.receipt),
-      reconciliation: value.reconciliation ? { ...value.reconciliation, receipt: visible(value.reconciliation.receipt) } : null,
-      ...(value.revokedAt !== null ? { message: 'This admission is no longer allowed to run. Your completed task is kept.' }
-        : value.state === 'PENDING' ? { message: 'This reaction has not started. Its exact execution dependencies may be unavailable. Your completed task is kept.' } : {}) };
+    const receipt = visible(value.receipt), prior = value.reconciliation, priorReceipt = visible(prior?.receipt) ?? null;
+    const kept = hookId === TASK_HOOK ? 'Your completed task is kept.' : 'Your task is kept.';
+    return { state: value.state, outcome: value.outcome, receipt,
+      ...(value.input?.occurredAt ? { workflow: true } : {}),
+      ...(receipt && value.observation ? { observation: value.observation, capability: value.capability } : {}),
+      reconciliation: prior ? { observedAt: prior.observedAt, receipt: priorReceipt,
+        ...(priorReceipt && prior.observation ? { observation: prior.observation, capability: prior.capability } : {}) } : null,
+      ...(value.revokedAt !== null ? { revoked: true, message: 'This admission is no longer allowed to run. ' + kept }
+        : value.state === 'PENDING' ? { message: 'This reaction has not started. Its exact execution dependencies may be unavailable. ' + kept } : {}) };
   }
   async function firstAttempt(row) {
     if (row.revoked_at !== null || !binding) return;
-    const { host, boundModel } = binding;
+    const { hosts, boundModel } = binding, host = hosts.get(row.hook_id);
+    if (!host) return;
+    try {
+      const pins = JSON.parse(row.pins);
+      if (!pins || Object.entries(host.pins).some(([name, value]) => json(pins[name]) !== json(value))) return;
+    } catch { return; }
     let execution;
     try { execution = lifecycle.execution(row.owner_id, row.revision_id, row.item_id); } catch { /* Keep unavailable work unclaimed. */ }
     if (!execution || json(execution.host.pins) !== json(host.pins)) {
@@ -104,7 +130,7 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
       requested = false;
       let pages = 0;
       while (!closing) {
-        const rows = db.prepare("SELECT rowid AS sequence,* FROM task_events WHERE hook_id='TaskCompleted' AND state='PENDING' AND rowid>? ORDER BY rowid LIMIT 20").all(after);
+        const rows = db.prepare("SELECT rowid AS sequence,* FROM task_events WHERE state='PENDING' AND rowid>? ORDER BY rowid LIMIT 20").all(after);
         if (!rows.length) break;
         for (const row of rows) {
           after = row.sequence;
@@ -128,10 +154,10 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
       : { available: false, message: 'Task customizations are unavailable. Your tasks still work.' }; },
     dependenciesChanged() { after = 0; return wake(); },
     status: publicStatus,
-    reconcile(owner, taskId) {
-      const eventId = eventForTask(owner, taskId);
-      if (!eventId) throw new AppError(404, 'This task has no recorded completion reaction.');
-      effects.reconcile(owner, eventId); return publicStatus(owner, taskId);
+    reconcile(owner, taskId, hookId = TASK_HOOK) {
+      const eventId = eventForTask(owner, taskId, hookId);
+      if (!eventId) throw new AppError(404, 'This task has no recorded reaction for this trigger.');
+      effects.reconcile(owner, eventId); return publicStatus(owner, taskId, hookId);
     },
     async close() { closing = true; await running; preparedSlot = null; },
   });

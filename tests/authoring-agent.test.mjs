@@ -9,7 +9,7 @@ const suite = 'sha256:' + '1'.repeat(64);
 const simulationSuiteIdentity = 'sha256:' + '2'.repeat(64);
 const call = (name, args = {}, id) => ({ name, arguments: { ...(name === 'compile_draft' && { hookId: 'TaskCompleted' }), ...args }, ...(id && { id }) });
 
-test('project discovery pages are read-only tool results and task compilation cannot choose another hook', async () => {
+test('project discovery pages are read-only tool results and task compilation rejects unsupported hooks', async () => {
   const f = fixture([call('discover_projects', { before: '' }), call('discover_projects', { before: 'next-page' }),
     call('compile_draft', { hookId: 'ClassifyTask', sourceJson: '{}', expectedDraftVersion: 0 })]);
   const cursors = [];
@@ -27,12 +27,27 @@ test('project discovery pages are read-only tool results and task compilation ca
   assert.equal(names.some(name => /approve|activate|event|create_task|write_task/.test(name)), false);
 });
 
+test('the compile tool passes the exact task addition hook to the host', async () => {
+  const f = fixture([call('discover_catalog'), call('compile_draft', {
+    hookId: 'TaskCreated', sourceJson: '{"entrypoint":"TaskCreated"}', expectedDraftVersion: 0,
+  })]);
+  const compile = f.host.compile;
+  f.host.compile = (source, version, signal, hook) => {
+    assert.equal(hook, 'TaskCreated');
+    assert.equal(JSON.parse(source).entrypoint, hook);
+    return compile(source, version, signal);
+  };
+  await f.run();
+  assert.equal(f.state.handles.revisionId, 'revision1');
+});
+
 test('task coaching requires discovered constants and independent expectations without treating program labels as native effects', async () => {
   const f = fixture(); await f.run();
   const instructions = f.requests[0].instructions;
-  for (const phrase of ['discover_projects', 'Project names may repeat', 'customer-selected constant', 'FORMAT ONLY',
+  for (const phrase of ['discover_projects', 'Project names may repeat', 'selectedHook', 'FORMAT ONLY',
     'Only host-observed effect evidence', 'UNKNOWN never means no effect or safe retry', 'later completes that generated task',
-    'independent expected scenarios', 'language keir/1', 'format keir-scenario/1']) assert.ok(instructions.includes(phrase), phrase);
+    'independent expected scenarios', 'language keir/2', 'format keir-scenario/2', 'duration("604800s")',
+    'one ordinary-language question', 'never infer an existing task identity']) assert.ok(instructions.includes(phrase), phrase);
   assert.doesNotMatch(instructions, /choose Check task advice|outside the discovered read-only contract/);
 });
 

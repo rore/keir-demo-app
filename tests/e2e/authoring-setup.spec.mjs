@@ -366,7 +366,7 @@ test('an owner switch fences a pending setup response and clears the old key fro
     await expect(authoring(page)).toBeVisible();
     await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('leo');
     const conversation = ui.getByRole('log', { name: 'Studio conversation', exact: true });
-    await expect(conversation).toContainText('What would you like to change about your work?');
+    await expect(conversation).toContainText('What would you like Daymark to do for you?');
     await expect(conversation).not.toContainText('Keep this unsaved task title');
     await expect(ui.getByLabel('API key', { exact: true })).toHaveCount(0);
     await noSecretInBrowser(page, secret);

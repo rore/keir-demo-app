@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { expandCheckedExamples, openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
@@ -80,17 +80,17 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     expect(failedProof.passed).toBe(false);
     const nonmatch = failedProof.reports.find(item => item.id === 'other-project');
     expect(nonmatch.expected.createdTasks).toEqual([]);
-    expect(nonmatch.report.observed).toEqual({ effect: 'NOT_OBSERVED', createdTasks: null });
+    expect(nonmatch.report.observed).toEqual({ effect: 'NOT_OBSERVED', createdTasks: null, updatedTasks: null });
     expect(nonmatch.report.status).toBe('FAIL'); expect(nonmatch.report.mismatches.length).toBeGreaterThan(0);
     await ui.getByText(fixture.metadata.mismatchText, { exact: true }).locator('..').getByRole('button', { name: 'View checked examples', exact: true }).click();
     await expect(decision(page)).toBeVisible();
-    await expandCheckedExamples(decision(page));
     const mismatch = decision(page).getByRole('article', { name: `Example: Task completed in ${fixture.metadata.otherProjectName}`, exact: true });
     await expect(mismatch).toHaveCount(1);
-    await expect(mismatch.getByText('Could not check this example', { exact: true })).toBeVisible();
-    await expect(mismatch.locator('dd')).toHaveText(['This check couldn’t verify whether a task was created.', 'Create no task.', 'The rule and the saved example didn’t match.']);
+    await expect(mismatch.getByText('Needs correction · Could not check', { exact: true })).toBeVisible();
+    await expect(mismatch.getByText('The simulation did not establish a write outcome.', { exact: true })).toBeVisible();
+    await expect(mismatch.getByText('No change.', { exact: true })).toBeVisible();
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-    await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
+    await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
     expect((await read('extensions')).approved).toBe(false); expect((await read('extensions')).selection).toEqual(selection);
     expect(mutations).toEqual([]);
     expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
@@ -122,7 +122,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     expect((await read(`extensions/revisions/${failed.review.revisionId}`))).toEqual(wrong);
     await openSavedChanges(page);
     await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
-    await expect(decision(page).locator('.rs-compact-case:visible')).toHaveCount(passedProof.reports.length);
+    await expect(decision(page).getByRole('article', { name: /^Example:/ })).toHaveCount(passedProof.reports.length);
     await decision(page).getByText('Exact saved change and checks', { exact: true }).click();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
     for (let index = 0; index < saved.cases.length; index++)
@@ -131,7 +131,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect((await read('extensions')).selection).toEqual(selection);
-    await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
+    await ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
     await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
     await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
     await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
@@ -236,10 +236,10 @@ test('offline Studio resumes the same checked draft and preserves review when th
     expect(state.selection).toEqual(selection);
     expect(mutations).toEqual([]);
     await decision(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
-    await expect(decision(page).getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
+    await expect(decision(page).getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
     expect((await read('extensions')).selection).toEqual(selection);
     expect(mutations).toHaveLength(1);
-    await decision(page).getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
+    await decision(page).getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
     await expect.poll(async () => (await read('extensions')).selection.revision?.id).toBe(checked.review.revisionId);
     expect(mutations).toHaveLength(2);
     expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
@@ -360,23 +360,20 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await openSavedChanges(page);
       await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
       const proof = await read(`extensions/evidence/${conversation.review.evidenceId}`);
-      expect(proof.reports.map(item => item.id)).toEqual(['matching-project', 'other-project', 'unfinished-task', 'missing-task', 'access-denied', 'read-unavailable']);
+      expect(proof.reports.map(item => item.id)).toEqual(['matching-project', 'other-project', 'other-status', 'missing-task', 'access-denied', 'read-unavailable']);
       expect(proof.passed).toBe(true);
-      expect(proof.reports[0].expected.createdTasks).toEqual([{ projectId: fixture.metadata.projectId, projectName: fixture.metadata.projectName, title: fixture.metadata.title }]);
-      expect(proof.reports[0].report.observed).toEqual({ effect: 'CONFIRMED', createdTasks: proof.reports[0].expected.createdTasks });
+      expect(proof.reports[0].expected.createdTasks).toMatchObject([{ projectId: fixture.metadata.projectId, title: fixture.metadata.title, tags: [] }]);
+      expect(proof.reports[0].report.observed).toEqual({ effect: 'CONFIRMED', createdTasks: proof.reports[0].expected.createdTasks, updatedTasks: [] });
       expect(proof.reports[1].expected.createdTasks).toEqual([]);
-      expect(proof.reports[1].report.observed).toEqual({ effect: 'NONE', createdTasks: [] });
-      await expandCheckedExamples(decision(page));
+      expect(proof.reports[1].report.observed).toEqual({ effect: 'NONE', createdTasks: [], updatedTasks: [] });
       const examples = decision(page).getByRole('article', { name: /^Example:/ });
       await expect(examples).toHaveCount(proof.reports.length);
       for (const [index, report] of proof.reports.entries()) {
         const example = examples.nth(index);
         await expect(example).toBeVisible();
-        const sample = example.getByText(`Sample task: “${report.report.scenario.task.title}”`);
-        if (report.report.scenario.task.status) await expect(sample).toBeVisible();
-        else await expect(sample).toHaveCount(0);
-        await expect(example.locator('dd')).toContainText(index === 0 ? fixture.metadata.title : 'No task was created.');
-        await expect(example.getByText('Matches', { exact: true })).toBeVisible();
+        if (report.report.scenario.task.status) await expect(example).toContainText(`“${report.report.scenario.task.title}”`);
+        await expect(example).toContainText(index === 0 ? fixture.metadata.title : 'No change.');
+        await expect(example.getByText(index < 3 ? 'Matches' : 'Matches expected unavailable check · Could not check', { exact: true })).toBeVisible();
         if (!index) {
           const exact = decision(page).getByLabel('Exact checked examples', { exact: true });
           await expect(exact).toBeHidden();
@@ -387,8 +384,8 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       }
       expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
-      await expect(decision(page)).toContainText('Example only · no real tasks changed');
-      await ui.getByRole('button', { name: 'Ask about this rule', exact: true }).press('Enter');
+      await expect(decision(page)).toContainText('Sample tasks only · your tasks have not changed');
+      await ui.getByRole('button', { name: 'Ask for a change', exact: true }).press('Enter');
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeFocused();
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
@@ -401,9 +398,9 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
       await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
       await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
-      await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
+      await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
       expect((await read('extensions')).selection.revision?.id ?? null).toBe(selectedA.revision_id);
-      await ui.getByRole('button', { name: 'Turn on for my tasks', exact: true }).click();
+      await ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
       await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
       await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();

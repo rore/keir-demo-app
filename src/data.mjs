@@ -5,13 +5,14 @@ import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync
 import { resolve, join, dirname } from 'node:path';
 import { loadHost, digest, json, TASK_HOOK } from './extension-catalog.mjs';
 import { taskEffectProofMatches } from './task-effect-simulation.mjs';
+import { normalizeTaskTag, normalizeTaskTags, parseWorkflowTagsText, validOpenMatchInput, normalizeWorkflowTitle } from './task-workflow-values.mjs';
 
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
-  'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
+  'legacy_extension_selections', 'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
 const authoringHistoryTables = ['authoring_dispatches', 'authoring_messages', 'authoring_operations'];
 const taskEffectTables = ['task_effect_receipts', 'task_events'];
 const createdHook = 'TaskCreated';
-const schemaVersion = 12;
+const schemaVersion = 13;
 const addTaskFields = `
   ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high'));
   ALTER TABLE tasks ADD COLUMN due_at TEXT
@@ -227,6 +228,40 @@ const rebuildTaskWorkflow = `
     BEGIN SELECT RAISE(ABORT,'Task effect receipts are immutable'); END;
 `;
 
+const cutoverTaskWorkflow = `
+  CREATE TABLE legacy_extension_selections(
+    owner_id TEXT NOT NULL REFERENCES users(id), hook_id TEXT NOT NULL CHECK(hook_id IN ('TaskCreated','TaskCompleted')),
+    revision_id TEXT, generation INTEGER NOT NULL CHECK(generation BETWEEN 0 AND 9007199254740991),
+    binding_pins TEXT CHECK(binding_pins IS NULL OR length(CAST(binding_pins AS BLOB))<=32768),
+    PRIMARY KEY(owner_id,hook_id), FOREIGN KEY(revision_id,owner_id) REFERENCES extension_revisions(id,owner_id),
+    CHECK(revision_id IS NOT NULL OR binding_pins IS NULL)) STRICT;
+  INSERT INTO legacy_extension_selections(rowid,owner_id,hook_id,revision_id,generation,binding_pins)
+    SELECT rowid,owner_id,hook_id,revision_id,generation,binding_pins FROM extension_selections;
+  UPDATE extension_selections SET revision_id=NULL,binding_pins=NULL,generation=generation+1;
+
+  ALTER TABLE task_effect_receipts RENAME TO previous_workflow_receipts;
+  CREATE TABLE task_effect_receipts(
+    owner_id TEXT NOT NULL, capability_id TEXT NOT NULL, original_key TEXT NOT NULL,
+    capability_version TEXT NOT NULL CHECK(
+      (capability_id='tasks.create' AND capability_version IN ('1','2')) OR
+      (capability_id='tasks.update' AND capability_version='1')),
+    payload BLOB NOT NULL CHECK(length(payload)<=4096),
+    result TEXT NOT NULL CHECK(json_valid(result) AND length(CAST(result AS BLOB))<=4096),
+    effect TEXT NOT NULL CHECK(effect IN ('CONFIRMED','NONE')), affected_task_id TEXT,
+    observation TEXT CHECK(observation IS NULL OR (json_valid(observation) AND length(CAST(observation AS BLOB))<=8192)),
+    PRIMARY KEY(owner_id,original_key), FOREIGN KEY(owner_id,original_key) REFERENCES task_events(owner_id,original_key),
+    FOREIGN KEY(affected_task_id,owner_id) REFERENCES tasks(id,owner_id),
+    CHECK((effect='CONFIRMED' AND affected_task_id IS NOT NULL) OR (effect='NONE' AND affected_task_id IS NULL)),
+    CHECK(observation IS NULL OR (effect='CONFIRMED' AND (capability_id!='tasks.create' OR capability_version!='1')))) STRICT;
+  INSERT INTO task_effect_receipts(rowid,owner_id,capability_id,original_key,capability_version,payload,result,effect,affected_task_id)
+    SELECT rowid,owner_id,capability_id,original_key,capability_version,payload,result,effect,affected_task_id FROM previous_workflow_receipts;
+  DROP TABLE previous_workflow_receipts;
+  CREATE TRIGGER task_receipt_immutable BEFORE UPDATE ON task_effect_receipts
+    BEGIN SELECT RAISE(ABORT,'Task effect receipts are immutable'); END;
+  CREATE TRIGGER legacy_selection_immutable BEFORE UPDATE ON legacy_extension_selections
+    BEGIN SELECT RAISE(ABORT,'Legacy selections are immutable'); END;
+`;
+
 export const USERS = [
   { id: 'maya', name: 'Maya', description: 'A small design practice', project: 'The spring collection', tasks: ['Gather material references', 'Refine the packaging sketches', 'Send the first concept'] },
   { id: 'leo', name: 'Leo', description: 'Good things, made together', project: 'Neighbourhood workshop', tasks: ['Plan the Saturday session', 'Check the tool cupboard', 'Share the workshop notes'] },
@@ -296,7 +331,7 @@ function readBytes(path, length, position = 0) {
 }
 
 function supportedVersion(version, allowUpgrade) {
-  return version === schemaVersion || allowUpgrade && (version === 10 || version === 11);
+  return version === schemaVersion || allowUpgrade && (version === 10 || version === 11 || version === 12);
 }
 
 function inspectDataFile(path, allowUpgrade = false) {
@@ -329,7 +364,8 @@ function assertDatabase(db, allowUpgrade = false) {
     try {
       expected.exec(schema);
       if (version >= 11) expected.exec(addTaskFields);
-      if (version === schemaVersion) expected.exec(rebuildTaskWorkflow);
+      if (version >= 12) expected.exec(rebuildTaskWorkflow);
+      if (version === schemaVersion) expected.exec(cutoverTaskWorkflow);
       schemaIdentities.set(version, schemaIdentity(expected));
     }
     finally { expected.close(); }
@@ -376,7 +412,13 @@ export function openData(path, { allowUpgrade = true } = {}) {
         const version = assertDatabase(db, allowUpgrade);
         if (version === schemaVersion) return;
         if (version === 10) db.exec(addTaskFields);
-        db.exec(rebuildTaskWorkflow);
+        if (version < 12) db.exec(rebuildTaskWorkflow);
+        const pending = db.prepare("SELECT count(*) AS total,count(revoked_at) AS revoked FROM task_events WHERE state='PENDING'").get();
+        if (pending.total > pending.revoked) throw new Error(`Keir 2 cutover blocked by unresolved pending task events (${pending.total} total, ${pending.revoked} revoked). Keep the previous app until any event that cannot settle has an explicit disposition.`);
+        if (db.prepare('SELECT 1 FROM extension_selections WHERE generation=9007199254740991 LIMIT 1').get())
+          throw new Error('Keir 2 cutover blocked by a selection generation at its limit.');
+        loadHost();
+        db.exec(cutoverTaskWorkflow);
         db.exec('PRAGMA user_version=' + schemaVersion);
         assertDatabase(db);
       });
@@ -385,6 +427,7 @@ export function openData(path, { allowUpgrade = true } = {}) {
       db.exec(schema);
       db.exec(addTaskFields);
       db.exec(rebuildTaskWorkflow);
+      db.exec(cutoverTaskWorkflow);
       db.exec('INSERT INTO authoring_budget VALUES (1, 0)');
       seedRows(db);
       db.exec('PRAGMA user_version=' + schemaVersion);
@@ -448,18 +491,13 @@ const taskColumns = 'id, project_id AS projectId, title, notes, status, created_
 const taskDto = row => ({ ...row, tags: JSON.parse(row.tags) });
 
 function tag(value) {
-  if (typeof value !== 'string' || !value.isWellFormed() || /[,\p{Cc}]/u.test(value)) throw new AppError(400, 'Use text tags without commas or control characters.');
-  return text(value.trim().normalize('NFC').toLowerCase().normalize('NFC'), 'Tag', 32);
+  try { return normalizeTaskTag(value); }
+  catch (error) { throw new AppError(400, error.message); }
 }
 
 function tags(value) {
-  if (!Array.isArray(value)) throw new AppError(400, 'Tags must be a list.');
-  const distinct = new Set();
-  for (const entry of value) {
-    distinct.add(tag(entry));
-    if (distinct.size > 8) throw new AppError(400, 'Use up to eight tags.');
-  }
-  return JSON.stringify([...distinct]);
+  try { return JSON.stringify(normalizeTaskTags(value)); }
+  catch (error) { throw new AppError(400, error.message); }
 }
 
 function taskPriority(value) {
@@ -484,13 +522,12 @@ function insertTask(db, owner, projectId, title, notes, savedTags = '[]', priori
 }
 
 function captureTaskEvent(db, owner, hookId, taskId, occurredAt) {
-  // Only the existing completion contract is executable until the workflow package is verified.
   const selected = db.prepare(`SELECT s.*,l.extension_id FROM extension_selections s LEFT JOIN extension_revision_links l
     ON l.revision_id=s.revision_id AND l.owner_id=s.owner_id WHERE s.owner_id=? AND s.hook_id=?`).get(owner, hookId);
-  const bound = hookId === TASK_HOOK && selected?.revision_id;
+  const bound = selected?.revision_id;
   db.prepare(`INSERT INTO task_events(event_id,owner_id,source_task_id,hook_id,original_key,item_id,revision_id,selection_generation,input,pins,state,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), owner, taskId, hookId, randomUUID(), bound ? selected.extension_id : null,
-    bound || null, selected?.generation ?? 0, JSON.stringify({ taskId }), bound ? selected.binding_pins : null,
+    bound || null, selected?.generation ?? 0, JSON.stringify({ taskId, occurredAt }), bound ? selected.binding_pins : null,
     bound ? 'PENDING' : 'NO_BINDING', occurredAt);
 }
 
@@ -551,14 +588,12 @@ export function taskService(db) {
     getTask: task,
     getTaskForCustomization(owner, id) {
       // SQLite TEXT reads stop at embedded NUL; the model must see the saved title without truncation.
-      const row = db.prepare('SELECT id, project_id AS projectId, status, CAST(title AS BLOB) AS title FROM tasks WHERE owner_id=? AND id=?').get(owner, id);
+      const row = db.prepare('SELECT id, project_id AS projectId, status, CAST(title AS BLOB) AS title, tags, priority, due_at AS dueAt FROM tasks WHERE owner_id=? AND id=?').get(owner, id);
       if (!row) throw notFound();
-      return { ...row, title: Buffer.from(row.title).toString('utf8') };
+      return { ...row, title: Buffer.from(row.title).toString('utf8'), tags: JSON.parse(row.tags) };
     },
     hasOpenTask(owner, projectId, exactTitle, deadline) {
-      if (typeof projectId !== 'string' || !projectId || projectId.length > 128 || !projectId.isWellFormed()
-          || typeof exactTitle !== 'string' || !exactTitle.isWellFormed()
-          || !exactTitle.length || exactTitle.length > 120) throw new AppError(400, 'Choose a project and exact task title.');
+      if (!validOpenMatchInput(projectId, exactTitle)) throw new AppError(400, 'Choose a project and exact task title.');
       const checkDeadline = () => {
         const now = deadline?.clock?.nowMs?.();
         if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(deadline.expiresAtMs) || now >= deadline.expiresAtMs)
@@ -618,7 +653,7 @@ export function revokeTaskAdmissions(db, owner, itemId) {
   db.prepare("UPDATE task_events SET revoked_at=? WHERE owner_id=? AND item_id=? AND state IN ('PENDING','STARTED') AND revoked_at IS NULL")
     .run(Date.now(), owner, itemId);
   db.prepare(`UPDATE extension_selections SET revision_id=NULL,binding_pins=NULL,generation=generation+1
-    WHERE owner_id=? AND hook_id='TaskCompleted' AND revision_id IN
+    WHERE owner_id=? AND revision_id IN
       (SELECT revision_id FROM extension_revision_links WHERE owner_id=? AND extension_id=?)`).run(owner, owner, itemId);
 }
 
@@ -641,7 +676,7 @@ function freezeContext(value) {
 }
 function taskEvent(row) {
   const parse = value => { try { return JSON.parse(value); } catch { return null; } };
-  return freezeContext({ eventId: row.event_id, owner: row.owner_id, sourceTaskId: row.source_task_id, originalKey: row.original_key,
+  return freezeContext({ eventId: row.event_id, owner: row.owner_id, sourceTaskId: row.source_task_id, originalKey: row.original_key, hookId: row.hook_id,
     itemId: row.item_id, revisionId: row.revision_id, selectionGeneration: row.selection_generation,
     input: parse(row.input), pins: parse(row.pins), state: row.state, revokedAt: row.revoked_at,
     outcome: parse(row.outcome), reconciliation: parse(row.reconciliation) });
@@ -651,11 +686,13 @@ function taskEvent(row) {
 export function taskEffectService(db) {
   if (arguments.length !== 1 || typeof db?.prepare !== 'function') throw new TypeError('Task effects require one native database.');
   const tasks = taskService(db);
-  let host, hostPins;
-  try { host = loadHost(TASK_HOOK); hostPins = Object.entries(host.pins); }
-  catch { /* An unavailable definition cannot authorize native effects. */ }
+  const hosts = new Map();
+  for (const hookId of [createdHook, TASK_HOOK]) {
+    try { hosts.set(hookId, loadHost(hookId)); }
+    catch { /* An unavailable definition cannot authorize native effects. */ }
+  }
   const event = (owner, id) => {
-    const row = db.prepare("SELECT * FROM task_events WHERE owner_id=? AND event_id=? AND hook_id='TaskCompleted'").get(owner, id);
+    const row = db.prepare('SELECT * FROM task_events WHERE owner_id=? AND event_id=?').get(owner, id);
     if (!row) throw notFound();
     return row;
   };
@@ -664,32 +701,35 @@ export function taskEffectService(db) {
   function current(row, invocation) {
     try {
       const context = contextFor(row.owner_id, invocation), pins = context.pins;
+      const host = hosts.get(row.hook_id);
       const now = invocation.deadline.clock.nowMs();
       if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(invocation.deadline.expiresAtMs)
           || now >= invocation.deadline.expiresAtMs || context.eventId !== row.event_id || row.revoked_at !== null
           || !pins || Object.hasOwn(pins, 'profile') || Object.hasOwn(pins, 'qualification')
-          || context.input?.taskId !== row.source_task_id) return false;
-      if (!hostPins || hostPins.some(([name, value]) => json(pins[name]) !== json(value))) return false;
+          || context.input?.taskId !== row.source_task_id || context.input?.occurredAt !== row.created_at) return false;
+      if (!host || Object.entries(host.pins).some(([name, value]) => json(pins[name]) !== json(value))) return false;
       // Re-read persisted authority; a mutable current selection cannot replace the captured admission.
       const saved = db.prepare(`SELECT r.*,a.source,a.artifact,a.suite FROM task_events v JOIN tasks t ON t.id=v.source_task_id AND t.owner_id=v.owner_id
       JOIN extension_revision_links l ON l.revision_id=v.revision_id AND l.owner_id=v.owner_id AND l.extension_id=v.item_id
       JOIN extensions e ON e.id=l.extension_id AND e.owner_id=l.owner_id
       JOIN extension_revisions r ON r.id=l.revision_id AND r.owner_id=l.owner_id
       JOIN extension_authored a ON a.revision_id=r.id AND a.owner_id=r.owner_id
-      WHERE v.event_id=? AND v.owner_id=? AND v.revoked_at IS NULL AND e.deleted_at IS NULL AND t.status='completed'
-        AND e.hook_id='TaskCompleted' AND r.provenance='customer'`).get(row.event_id, row.owner_id);
+      WHERE v.event_id=? AND v.owner_id=? AND v.revoked_at IS NULL AND e.deleted_at IS NULL
+        AND (v.hook_id='TaskCreated' OR t.status='completed') AND e.hook_id=v.hook_id AND r.provenance='customer'`).get(row.event_id, row.owner_id);
       if (!saved) return false;
       const identity = JSON.parse(saved.identity), artifact = JSON.parse(Buffer.from(saved.artifact).toString('utf8'));
       if (json(pins) !== json({ ...identity, approvedEvidenceId: pins.approvedEvidenceId })
           || identity.artifactDigest !== digest(saved.artifact) || identity.rawSourceDigest !== digest(saved.source)
-          || artifact.format !== 'keir-artifact/1'
+          || artifact.format !== 'keir-artifact/2' || artifact.entrypoint !== row.hook_id
           || identity.compiledSourceDigest !== artifact.sourceDigest || identity.suiteDigest !== digest(saved.suite)) return false;
       const validProof = id => {
         const proof = db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? AND id=?').get(row.owner_id, saved.id, id);
         return taskEffectProofMatches(saved, saved, proof, host);
       };
       const approval = db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(row.owner_id, saved.id);
-      return !!approval && validProof(approval.evidence_id) && typeof pins.approvedEvidenceId === 'string' && validProof(pins.approvedEvidenceId);
+      if (!approval || !validProof(approval.evidence_id) || typeof pins.approvedEvidenceId !== 'string' || !validProof(pins.approvedEvidenceId)) return false;
+      const checkedAt = invocation.deadline.clock.nowMs();
+      return Number.isSafeInteger(checkedAt) && checkedAt >= 0 && checkedAt < invocation.deadline.expiresAtMs;
     } catch { return false; }
   }
   function deny(row) {
@@ -712,14 +752,94 @@ export function taskEffectService(db) {
     return taskEvent(row);
   }
   const resultOf = row => row ? JSON.parse(row.result) : null;
-  const completionReceipt = row => {
-    const prior = receipt(row);
-    return prior?.capability_id === 'tasks.create' ? resultOf(prior) : null;
-  };
+  const rejection = code => ({ kind: 'BUSINESS_REJECTION', code, effect: 'NONE' });
+  const success = id => ({ kind: 'SUCCESS', value: { id }, effect: 'CONFIRMED' });
+
+  function applyWorkflowWrite(owner, row, capability, input) {
+    try {
+      if (capability === 'tasks.create') {
+        const project = db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=?').get(owner, input.projectId);
+        if (!project) return { response: rejection('PROJECT_NOT_FOUND') };
+        const notes = text(Object.hasOwn(input, 'notes') ? input.notes : '', 'Notes', 4000, false);
+        let title, savedTags;
+        try { title = normalizeWorkflowTitle(input.title); savedTags = parseWorkflowTagsText(input.tagsText); }
+        catch (error) { throw new AppError(400, error.message); }
+        const priority = Object.hasOwn(input, 'priority') ? taskPriority(input.priority) : 'normal';
+        if (input.dueAt === null) return { response: rejection('TASK_INVALID') };
+        const dueAt = Object.hasOwn(input, 'dueAt') ? taskDueAt(input.dueAt) : null;
+        // The native insert is shared with human creation. Only the human path captures TaskCreated.
+        const id = insertTask(db, owner, input.projectId, title, notes, JSON.stringify(savedTags), priority, dueAt);
+        return { response: success(id), observation: { created: { id, projectId: input.projectId, title, notes, tags: savedTags, priority, dueAt } } };
+      }
+      const id = row.source_task_id, task = tasks.getTask(owner, id);
+      const before = { tags: task.tags, priority: task.priority, dueAt: task.dueAt };
+      if (!Object.keys(input).length || input.dueAt === null) return { response: rejection('TASK_INVALID') };
+      const after = {
+        tags: Object.hasOwn(input, 'addTag') ? JSON.parse(tags([...task.tags, input.addTag])) : task.tags,
+        priority: Object.hasOwn(input, 'priority') ? taskPriority(input.priority) : task.priority,
+        dueAt: Object.hasOwn(input, 'dueAt') ? taskDueAt(input.dueAt) : task.dueAt,
+      };
+      if (json(before) !== json(after)) db.prepare('UPDATE tasks SET tags=?,priority=?,due_at=?,updated_at=? WHERE owner_id=? AND id=?')
+        .run(JSON.stringify(after.tags), after.priority, after.dueAt, new Date().toISOString(), owner, id);
+      return { response: success(id), observation: { updated: { id, before, after } } };
+    } catch (error) {
+      if (error instanceof AppError && error.status === 404) return { response: rejection('TASK_NOT_FOUND') };
+      if (error instanceof AppError && error.status === 400) return { response: rejection('TASK_INVALID') };
+      throw error;
+    }
+  }
+
+  function writeOnce(owner, key, input, invocation, capability, version) {
+    const result = transaction(db, () => {
+      const row = fromKey(owner, key);
+      if (invocation?.requestKey !== key) throw effectError('HOST_CONTEXT_INVALID', 400);
+      contextFor(owner, invocation);
+      const legacy = version === '1' && capability === 'tasks.create';
+      if (capability === 'tasks.create') fields(input, legacy ? ['projectId', 'title'] : ['projectId', 'title', 'notes', 'tagsText', 'priority', 'dueAt']);
+      else fields(input, ['addTag', 'priority', 'dueAt']);
+      if (capability === 'tasks.create' && (typeof input.projectId !== 'string' || typeof input.title !== 'string'))
+        throw effectError('INPUT_INVALID', 400);
+      if (Object.values(input).some(value => value !== null && (typeof value !== 'string' || !value.isWellFormed()
+          || !legacy && Buffer.byteLength(value) > 256))) throw effectError('INPUT_INVALID', 400);
+      // Historical payload encoding is part of its saved identity. Keir 2 compares authored bytes before native normalization.
+      const payload = Buffer.from(legacy ? JSON.stringify({ projectId: input.projectId, title: text(input.title, 'Task title', 120) }) : json(input));
+      const prior = receipt(row);
+      if (prior) {
+        if (prior.capability_id !== capability || prior.capability_version !== version || !Buffer.from(prior.payload).equals(payload))
+          return rejection('KEY_PAYLOAD_MISMATCH');
+        if (prior.affected_task_id) tasks.getTask(owner, prior.affected_task_id);
+        return resultOf(prior);
+      }
+      if (row.state !== 'STARTED') throw effectError('EVENT_NOT_STARTED', 409);
+      if (legacy || !current(row, invocation)) return deny(row);
+
+      db.exec('SAVEPOINT task_workflow_effect');
+      const { response, observation } = applyWorkflowWrite(owner, row, capability, input);
+      db.prepare(`INSERT INTO task_effect_receipts(owner_id,capability_id,original_key,capability_version,payload,result,effect,affected_task_id,observation)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(owner, capability, row.original_key, version, payload, JSON.stringify(response), response.effect,
+        response.value?.id ?? null, observation ? JSON.stringify(observation) : null);
+      const after = event(owner, row.event_id);
+      if (after.state !== 'STARTED' || !current(after, invocation)) {
+        db.exec('ROLLBACK TO task_workflow_effect; RELEASE task_workflow_effect');
+        return deny(row);
+      }
+      db.exec('RELEASE task_workflow_effect');
+      return response;
+    });
+    if (result instanceof Error) throw result;
+    return result;
+  }
+
+  function observed(row) {
+    const stored = receipt(row);
+    return { receipt: resultOf(stored),
+      ...(stored?.observation ? { observation: JSON.parse(stored.observation), capability: stored.capability_id } : {}) };
+  }
   return {
     keyFor(owner, eventId) {
       const row = event(owner, eventId); canRead(taskEvent(row));
-      const key = Object.freeze({ type: 'demo.TaskCompletionKey/1', value: row.original_key });
+      const type = Object.hasOwn(JSON.parse(row.input), 'occurredAt') ? 'demo.TaskWorkflowKey/1' : 'demo.TaskCompletionKey/1';
+      const key = Object.freeze({ type, value: row.original_key });
       nativeKeys.set(key, { db, owner, eventId, originalKey: row.original_key });
       return key;
     },
@@ -738,42 +858,10 @@ export function taskEffectService(db) {
       return result;
     },
     createTaskOnce(owner, key, input, invocation) {
-      const result = transaction(db, () => {
-        const row = fromKey(owner, key);
-        if (invocation?.requestKey !== key) throw effectError('HOST_CONTEXT_INVALID', 400);
-        contextFor(owner, invocation);
-        fields(input, ['projectId', 'title']);
-        if (typeof input.projectId !== 'string' || !input.projectId.isWellFormed()
-            || typeof input.title !== 'string' || !input.title.isWellFormed()) throw effectError('INPUT_INVALID', 400);
-        const title = text(input.title, 'Task title', 120), payload = Buffer.from(JSON.stringify({ projectId: input.projectId, title }));
-        const prior = receipt(row);
-        if (prior) {
-          if (prior.capability_id !== 'tasks.create' || prior.capability_version !== '1' || !Buffer.from(prior.payload).equals(payload))
-            return { kind: 'BUSINESS_REJECTION', code: 'KEY_PAYLOAD_MISMATCH', effect: 'NONE' };
-          if (prior.affected_task_id) tasks.getTask(owner, prior.affected_task_id);
-          return resultOf(prior);
-        }
-        if (row.state !== 'STARTED') throw effectError('EVENT_NOT_STARTED', 409);
-        if (!current(row, invocation)) return deny(row);
-        // A savepoint keeps durable revocation while rolling back an uncommitted task and receipt.
-        db.exec('SAVEPOINT task_effect_create');
-        const project = db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=?').get(owner, input.projectId);
-        const id = project ? insertTask(db, owner, input.projectId, title, '') : null;
-        const response = id ? { kind: 'SUCCESS', value: { id }, effect: 'CONFIRMED' }
-          : { kind: 'BUSINESS_REJECTION', code: 'PROJECT_NOT_FOUND', effect: 'NONE' };
-        db.prepare(`INSERT INTO task_effect_receipts(owner_id,capability_id,original_key,capability_version,payload,result,effect,affected_task_id)
-          VALUES (?,?,?,?,?,?,?,?)`)
-          .run(owner, 'tasks.create', row.original_key, '1', payload, JSON.stringify(response), response.effect, id);
-        const after = event(owner, row.event_id);
-        if (after.state !== 'STARTED' || !current(after, invocation)) {
-          db.exec('ROLLBACK TO task_effect_create; RELEASE task_effect_create');
-          return deny(row);
-        }
-        db.exec('RELEASE task_effect_create');
-        return response;
-      });
-      if (result instanceof Error) throw result;
-      return result;
+      return writeOnce(owner, key, input, invocation, 'tasks.create', key?.type === 'demo.TaskCompletionKey/1' ? '1' : '2');
+    },
+    updateTaskOnce(owner, key, input, invocation) {
+      return writeOnce(owner, key, input, invocation, 'tasks.update', '1');
     },
     finish(owner, eventId, outcome) {
       const encoded = storedJson(outcome, 131072);
@@ -790,12 +878,12 @@ export function taskEffectService(db) {
     },
     status(owner, eventId) {
       const row = event(owner, eventId); canRead(taskEvent(row));
-      return { ...taskEvent(row), receipt: completionReceipt(row) };
+      return { ...taskEvent(row), ...observed(row) };
     },
     reconcile(owner, eventId) {
       return transaction(db, () => {
         const row = event(owner, eventId); canRead(taskEvent(row));
-        const observation = { observedAt: new Date().toISOString(), receipt: completionReceipt(row) };
+        const observation = { observedAt: new Date().toISOString(), ...observed(row) };
         db.prepare('UPDATE task_events SET reconciliation=? WHERE owner_id=? AND event_id=?').run(JSON.stringify(observation), owner, eventId);
         return observation;
       });

@@ -1,6 +1,11 @@
 import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
-import { admitArtifact, definitionForPins, digest, hostBindings, json, TASK_HOOK } from './extension-catalog.mjs';
+import { admitArtifact, definitionForPins, digest, hostBindings, json, TASK_HOOKS } from './extension-catalog.mjs';
 import { decodeKeirScenario } from './keir-scenario.mjs';
+import { normalizeTaskTag, normalizeTaskTags, parseWorkflowTagsText, validOpenMatchInput, normalizeWorkflowTitle } from './task-workflow-values.mjs';
+
+export const TASK_EFFECT_VERSIONS = Object.freeze({
+  suite: 'task-effects-authored/2', fixtureVersion: 'daymark-task-effect-fixtures/2', simulator: 'daymark-task-effect-simulation/2',
+});
 
 const own = (value, key) => Object.hasOwn(value, key);
 const bounded = (value, max = 256) => typeof value === 'string' && value.isWellFormed() && value.length > 0 && Buffer.byteLength(value) <= max;
@@ -55,20 +60,16 @@ function errorShape(error, cause = true) {
 }
 function checkedHost(host) {
   const trusted = definitionForPins(host.pins);
-  requireThat(trusted.pins.hook === TASK_HOOK && host.definitionId === trusted.definitionId
+  requireThat(TASK_HOOKS.includes(trusted.pins.hook) && host.definitionId === trusted.definitionId
     && host.dcmBytes instanceof Uint8Array && Buffer.from(host.dcmBytes).equals(trusted.dcmBytes));
   return trusted;
 }
-function validateOutcome(outcome, dcm) {
+function validateOutcome(outcome, dcm, hook) {
   closed(outcome, ['classification', 'effects', 'trace'], ['result', 'error']);
   requireThat(classifications.includes(outcome.classification));
   array(outcome.effects, 1); array(outcome.trace, 64);
   requireThat(outcome.trace.length >= 2);
-  const entry = dcm.entrypoints[TASK_HOOK];
-  if (own(outcome, 'result')) {
-    closed(outcome.result, ['status']);
-    requireThat(dcm.types[dcm.types[entry.output].fields.status].values.includes(outcome.result.status));
-  }
+  if (own(outcome, 'result')) validateValue(dcm, dcm.entrypoints[hook].output, outcome.result);
   if (own(outcome, 'error')) errorShape(outcome.error, ['FAILED', 'LIMIT_EXCEEDED'].includes(outcome.classification));
   const ledger = [], intents = new Map(), dispatches = new Set();
   for (const [index, event] of outcome.trace.entries()) {
@@ -122,31 +123,54 @@ function reported(value) {
 export function consumeTaskEffect(outcome, host) {
   try {
     const trusted = checkedHost(host), value = snapshot(outcome);
-    validateOutcome(value, JSON.parse(trusted.dcmBytes));
+    validateOutcome(value, JSON.parse(trusted.dcmBytes), trusted.pins.hook);
     return reported(value);
   } catch { return { status: 'NOT_REPORTED', code: 'OUTCOME_INVALID' }; }
 }
-function scalarRecord(value, fields) {
-  closed(value, fields);
-  for (const field of fields) requireThat(bounded(value[field]));
+function validateFields(dcm, declarations, value) {
+  const optional = name => declarations[name]?.optional === true;
+  const fields = Object.keys(declarations);
+  closed(value, fields.filter(name => !optional(name)), fields.filter(optional));
+  for (const [name, item] of Object.entries(value)) {
+    const type = declarations[name];
+    validateValue(dcm, typeof type === 'string' ? type : type.type, item);
+  }
 }
-function validateCall(call, dcm, stub = false) {
-  requireThat(own(dcm.capabilities, call.capability) && call.version === dcm.capabilities[call.capability].version);
-  scalarRecord(call.args, call.capability === 'tasks.get' ? ['taskId'] : ['projectId', 'title']);
-  scalarRecord(call.protectedArgs, ['actorId']);
+function validateValue(dcm, name, value) {
+  const type = dcm.types[name];
+  if (type?.kind === 'record') validateFields(dcm, type.fields, value);
+  else if (type?.kind === 'list') {
+    array(value, type.maxItems);
+    for (const item of value) validateValue(dcm, type.element, item);
+  } else if (type?.kind === 'enum') requireThat(type.values.includes(value));
+  else if (name === 'Boolean') requireThat(typeof value === 'boolean');
+  else if (name === 'Timestamp') {
+    requireThat(typeof value === 'string' && /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+      && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value);
+  } else if (name === 'String') requireThat(value === '' || bounded(value));
+  else requireThat(type?.kind === 'nominal' && bounded(value));
+}
+function validateCall(call, dcm, input, stub = false) {
+  requireThat(own(dcm.capabilities, call.capability));
+  const cap = dcm.capabilities[call.capability];
+  requireThat(call.version === cap.version);
+  const parameters = binding => Object.fromEntries(Object.entries(cap.parameters).filter(([, param]) => param.binding === binding));
+  validateFields(dcm, parameters('agent'), call.args);
+  validateFields(dcm, parameters('host'), call.protectedArgs);
   requireThat(call.protectedArgs.actorId === fixtureActor);
   if (!stub) return;
-  const response = call.response, write = call.capability === 'tasks.create';
+  const response = call.response, write = cap.effect === 'WRITE';
   if (response?.kind === 'SUCCESS') {
     closed(response, ['kind', 'value', ...(write ? ['effect'] : [])]);
-    const fields = Object.keys(dcm.types[dcm.capabilities[call.capability].result].fields);
-    closed(response.value, fields);
-    for (const field of fields) {
-      const value = response.value[field];
-      requireThat(bounded(value) && (field !== 'title' || value.trim() && value.length <= 120));
+    validateValue(dcm, cap.result, response.value);
+    if (call.capability === 'tasks.get') {
+      const { id, title, tags } = response.value;
+      requireThat(id === call.args.taskId && normalizeWorkflowTitle(title) === title
+        && same(tags, normalizeTaskTags(tags)));
     }
-    if (!write) requireThat(response.value.id === call.args.taskId);
-    requireThat(write ? response.effect === 'CONFIRMED' : ['OPEN', 'COMPLETED'].includes(response.value.status));
+    if (call.capability === 'tasks.create') requireThat(response.value.id !== input.taskId);
+    if (call.capability === 'tasks.update') requireThat(response.value.id === input.taskId);
+    if (write) requireThat(response.effect === 'CONFIRMED');
   } else if (response?.kind === 'BUSINESS_REJECTION') {
     closed(response, ['kind', 'code', ...(write ? ['effect'] : [])]);
     requireThat(dcm.capabilities[call.capability].errors.includes(response.code) && (!write || response.effect === 'NONE'));
@@ -177,11 +201,11 @@ function validateRows(rows, artifact, host) {
   const dcm = JSON.parse(host.dcmBytes);
   rows.forEach(({ given, stubs, expect }, index) => {
     try {
-      requireThat(fixtures.includes(given.fixture));
-      scalarRecord(given.input, ['taskId']);
-      stubs.forEach(call => validateCall(call, dcm, true));
-      expect.calls.forEach(call => validateCall(call, dcm));
-      validateOutcome(expect.outcome, dcm);
+      requireThat(rows[index].format === 'keir-scenario/2' && fixtures.includes(given.fixture));
+      validateValue(dcm, dcm.entrypoints[host.pins.hook].input, given.input);
+      stubs.forEach(call => validateCall(call, dcm, given.input, true));
+      expect.calls.forEach(call => validateCall(call, dcm, given.input));
+      validateOutcome(expect.outcome, dcm, host.pins.hook);
       requireThat(same(reported(expect.outcome), expect.consumption));
       requireThat(same(stubs.map(({ response, ...call }) => call), expect.calls));
       const targets = calls => calls.map(({ step, capability }) => ({ step, capability }));
@@ -190,6 +214,7 @@ function validateRows(rows, artifact, host) {
       requireThat(expect.outcome.trace.every(event => event.event !== 'GUARD_EVALUATED' || event.taken
         || !dispatched.some(call => call.step === event.step)));
       requireThat(expect.calls.every(call => artifact.steps.some(step => step.id === call.step && step.op === 'CALL' && step.capability === call.capability)));
+      taskEffectExpected(rows[index]);
     } catch (cause) { throw scenarioError(index, 'INVALID_SCENARIO', cause); }
   });
 }
@@ -203,16 +228,48 @@ function preflight(artifactBytes, host, scenarios) {
 export function preflightTaskEffectScenarios(artifactBytes, host, scenarios) {
   return preflight(artifactBytes, host, scenarios).rows;
 }
-function observations(calls, outcome, consumption, violations) {
-  const writes = calls.filter(call => call.capability === 'tasks.create');
-  if (consumption.status !== 'REPORTED' || violations.some(item => item.stage === 'STUB')) return { effect: 'NOT_OBSERVED', createdTasks: null };
-  if (!writes.length) return { effect: 'NONE', createdTasks: [] };
-  const state = outcome.effects[0]?.state;
-  if (state === 'CONFIRMED') return { effect: state, createdTasks: writes.map(call => ({ projectId: call.args.projectId, title: call.args.title })) };
-  return { effect: state ?? 'NOT_OBSERVED', createdTasks: state === 'NONE' ? [] : null };
+const isWrite = capability => capability === 'tasks.create' || capability === 'tasks.update';
+function taskChanges(capability, args, task) {
+  if (capability === 'tasks.create') {
+    const { title, tagsText, ...other } = args;
+    return { ...other, title: normalizeWorkflowTitle(title), tags: parseWorkflowTagsText(tagsText) };
+  }
+  requireThat(Object.keys(args).length > 0);
+  const { addTag, ...other } = args;
+  if (addTag === undefined) return other;
+  const tag = normalizeTaskTag(addTag);
+  if (task) normalizeTaskTags([...task.tags, tag]);
+  return { ...other, addTag: tag };
+}
+const unavailable = effect => ({ effect, createdTasks: null, updatedTasks: null });
+function observations(calls, responses, outcome) {
+  const receipt = outcome.effects[0];
+  if (receipt?.state === 'UNKNOWN') return unavailable('UNKNOWN');
+  if (receipt?.state !== 'CONFIRMED') return { effect: 'NONE', createdTasks: [], updatedTasks: [] };
+  const ordinal = calls.findIndex(call => call.step === receipt.step && call.capability === receipt.capability);
+  const call = calls[ordinal], response = responses[ordinal];
+  requireThat(call && response?.kind === 'SUCCESS' && response.effect === 'CONFIRMED');
+  const task = { id: response.value.id, ...taskChanges(call.capability, call.args) };
+  return { effect: 'CONFIRMED', createdTasks: call.capability === 'tasks.create' ? [task] : [],
+    updatedTasks: call.capability === 'tasks.update' ? [task] : [] };
+}
+export function taskEffectExpected(row) {
+  const { expect } = row;
+  const { createdTasks, updatedTasks } = observations(expect.calls, row.stubs.map(call => call.response), expect.outcome);
+  return { ...expect, createdTasks, updatedTasks };
+}
+function scenarioDetails(input, calls, responses, outcome) {
+  const successes = calls.map((call, ordinal) => ({ call, response: responses[ordinal] }))
+    .filter(({ call, response }) => response?.kind === 'SUCCESS'
+      && outcome.trace.some(event => event.event === 'CALL_SUCCEEDED' && event.step === call.step && event.capability === call.capability));
+  const read = successes.find(({ call }) => call.capability === 'tasks.get' && call.args.taskId === input.taskId);
+  const openMatches = successes.filter(({ call }) => call.capability === 'tasks.openMatch')
+    .map(({ call, response }) => ({ ...call.args, matches: response.value.matches }));
+  return { task: read?.response.value ?? { id: input.taskId, title: 'Example task' }, occurredAt: input.occurredAt, openMatches };
 }
 async function runCase(artifactBytes, host, row, signal) {
-  const captures = [], violations = [], fixture = row.given.fixture;
+  const captures = [], responses = [], violations = [], fixture = row.given.fixture;
+  let task;
   let used = 0, now = 0;
   const key = Object.freeze(Object.create(null));
   const event = Object.freeze({ id: 'example-event', source: fixture === 'wrong-origin' ? 'other-task' : row.given.input.taskId });
@@ -230,15 +287,24 @@ async function runCase(artifactBytes, host, row, signal) {
         if (capability === 'tasks.get') requireThat(stub.response.kind !== 'SUCCESS' || stub.response.value.id === args.taskId);
         used++;
       } catch { add('STUB', 'STUB_MISMATCH', captures.length); throw new Error('Task effect fixture mismatch'); }
+      const write = isWrite(capability);
       if (signal?.aborted || fixture === 'invocation-denied' || fixture === 'invalid-key' || event.source !== row.given.input.taskId
-          || fixture === 'write-denied' && capability === 'tasks.create') {
-        return { kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED', ...(capability === 'tasks.create' ? { effect: 'NONE' } : {}) };
+          || fixture === 'write-denied' && write) {
+        return { kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED', ...(write ? { effect: 'NONE' } : {}) };
       }
-      if (fixture === 'read-throws' && capability === 'tasks.get' || fixture === 'lost-response' && capability === 'tasks.create')
+      if (capability === 'tasks.openMatch' && !validOpenMatchInput(args.projectId, args.title)) return { kind: 'TRANSIENT_FAILURE' };
+      if (write && !(stub.response.kind === 'BUSINESS_REJECTION' && stub.response.code !== 'TASK_INVALID')) {
+        try { taskChanges(capability, args, task); }
+        catch { return { kind: 'BUSINESS_REJECTION', code: 'TASK_INVALID', effect: 'NONE' }; }
+      }
+      if (fixture === 'read-throws' && !write || fixture === 'lost-response' && write)
         throw new Error('Simulated unavailable response');
-      if (capability === 'tasks.create' && fixture === 'response-expired') now = 1000;
-      if (capability === 'tasks.create' && fixture === 'response-bad-clock') now = -1;
-      return snapshot(stub.response);
+      if (write && fixture === 'response-expired') now = 1000;
+      if (write && fixture === 'response-bad-clock') now = -1;
+      const response = snapshot(stub.response);
+      responses[captures.length - 1] = response;
+      if (capability === 'tasks.get' && args.taskId === row.given.input.taskId && response.kind === 'SUCCESS') task = response.value;
+      return response;
     },
   }]));
   const binding = bindModel(host.dcmBytes, invokers);
@@ -257,14 +323,11 @@ async function runCase(artifactBytes, host, row, signal) {
   if (!same(native, row.expect.outcome)) add('OUTCOME', 'MISMATCH');
   if (!same(calls, row.expect.calls)) add('CALLS', 'MISMATCH');
   if (!same(consumption, row.expect.consumption)) add('CONSUMPTION', 'MISMATCH');
-  const read = row.stubs.find(call => call.capability === 'tasks.get' && call.response.kind === 'SUCCESS' && call.response.value.id === row.given.input.taskId);
-  const expectedEffect = row.expect.outcome.effects[0]?.state;
-  return { id: row.id, label: row.id, expected: { ...row.expect, createdTasks: expectedEffect === 'UNKNOWN' ? null : expectedEffect === 'CONFIRMED'
-    ? row.expect.calls.filter(call => call.capability === 'tasks.create').map(call => ({ projectId: call.args.projectId, title: call.args.title })) : [] }, report: {
+  const observed = consumption.status !== 'REPORTED' || violations.some(item => item.stage === 'STUB')
+    ? unavailable('NOT_OBSERVED') : observations(calls, responses, native);
+  return { id: row.id, label: row.id, expected: taskEffectExpected(row), report: {
     status: violations.length ? 'FAIL' : 'PASS', native, consumption, calls, mismatches: violations,
-    scenario: { task: { id: row.given.input.taskId, title: read?.response.value.title ?? 'Example task',
-      ...(read ? { status: read.response.value.status, projectId: read.response.value.projectId } : {}) } },
-    observed: observations(calls, native, consumption, violations),
+    scenario: scenarioDetails(row.given.input, calls, responses, native), observed,
   } };
 }
 
@@ -276,23 +339,23 @@ export async function runTaskEffectSimulation({ artifactBytes, host, scenarios, 
     requireThat(artifactBytes instanceof Uint8Array && artifactBytes.byteLength <= 1_048_576);
     artifactBytes = Buffer.from(artifactBytes);
     ({ rows, trusted } = preflight(artifactBytes, host, scenarios));
-    identity = { ...trusted.pins, artifactDigest: digest(artifactBytes), simulator: 'daymark-task-effect-simulation/1', fixture: 'daymark-task-effect-fixtures/1' };
-  } catch { return { format: 'daymark-task-effect-simulation/1', status: 'FAIL', identity, reports, mismatches: [{ stage: 'SCENARIO', code: 'INVALID' }] }; }
+    identity = { ...trusted.pins, artifactDigest: digest(artifactBytes), simulator: TASK_EFFECT_VERSIONS.simulator, fixture: TASK_EFFECT_VERSIONS.fixtureVersion };
+  } catch { return { format: TASK_EFFECT_VERSIONS.simulator, status: 'FAIL', identity, reports, mismatches: [{ stage: 'SCENARIO', code: 'INVALID' }] }; }
   for (const row of rows) {
-    if (signal?.aborted) return { format: 'daymark-task-effect-simulation/1', status: 'FAIL', identity, reports, mismatches: [{ stage: 'EXECUTION', code: 'CANCELLED' }] };
+    if (signal?.aborted) return { format: TASK_EFFECT_VERSIONS.simulator, status: 'FAIL', identity, reports, mismatches: [{ stage: 'EXECUTION', code: 'CANCELLED' }] };
     try { reports.push(await runCase(artifactBytes, trusted, row, signal)); }
     catch { reports.push({ id: row.id, label: row.id, expected: row.expect, report: { status: 'FAIL', mismatches: [{ stage: 'SETUP', code: 'UNAVAILABLE' }] } }); }
   }
-  return { format: 'daymark-task-effect-simulation/1', status: reports.every(item => item.report.status === 'PASS') ? 'PASS' : 'FAIL', identity, reports };
+  return { format: TASK_EFFECT_VERSIONS.simulator, status: reports.every(item => item.report.status === 'PASS') ? 'PASS' : 'FAIL', identity, reports };
 }
 
 // Lifecycle and native commit guards must validate the same saved proof, including its actual reports.
 export function taskEffectProofMatches(revision, authored, proof, host) {
   try {
     const pins = JSON.parse(revision.identity);
-    if (pins.hook !== TASK_HOOK || own(pins, 'profile') || own(pins, 'qualification')
+    if (!TASK_HOOKS.includes(pins.hook) || own(pins, 'profile') || own(pins, 'qualification')
         || Object.entries(host.pins).some(([name, value]) => !same(pins[name], value))
-        || pins.fixture !== 'daymark-task-effect-fixtures/1' || revision.identity !== json(pins)
+        || pins.fixture !== TASK_EFFECT_VERSIONS.fixtureVersion || revision.identity !== json(pins)
         || pins.rawSourceDigest !== digest(authored.source) || pins.artifactDigest !== digest(authored.artifact)
         || pins.suiteDigest !== digest(authored.suite) || proof.owner_id !== revision.owner_id
         || proof.revision_id !== revision.id || proof.identity !== revision.identity || proof.passed !== 1
@@ -300,11 +363,11 @@ export function taskEffectProofMatches(revision, authored, proof, host) {
     // Native guards re-read proof rows against the deployment captured by their service.
     const texts = JSON.parse(authored.suite), scenarios = decodeTaskEffectScenarios(texts);
     const artifact = JSON.parse(Buffer.from(authored.artifact).toString('utf8'));
-    if (artifact.format !== 'keir-artifact/1' || own(artifact, 'profile') || artifact.compiler !== pins.compiler
+    if (artifact.format !== 'keir-artifact/2' || own(artifact, 'profile') || artifact.compiler !== pins.compiler
         || artifact.entrypoint !== pins.hook || !same(artifact.modelRef, pins.modelRef) || !same(artifact.environment, pins.environment)
         || !/^sha256:[0-9a-f]{64}$/.test(artifact.sourceDigest) || pins.compiledSourceDigest !== artifact.sourceDigest) return false;
     validateRows(scenarios, artifact, host);
-    const versions = { suite: 'task-effects-authored/1', fixtureVersion: 'daymark-task-effect-fixtures/1', simulator: 'daymark-task-effect-simulation/1' };
+    const versions = TASK_EFFECT_VERSIONS;
     const suiteIdentity = digest(json({ ...versions, simulator: revision.identity,
       cases: scenarios.map((scenario, index) => ({ id: scenario.id, digest: digest(texts[index]) })) }));
     const payload = JSON.parse(proof.payload);
@@ -312,14 +375,14 @@ export function taskEffectProofMatches(revision, authored, proof, host) {
       && json(payload.identity) === json({ dependencies: pins, ...versions, suiteDigest: suiteIdentity })
       && payload.reports.length === scenarios.length && payload.reports.every((item, index) => {
         const scenario = scenarios[index], expected = scenario.expect.outcome, report = item.report;
-        const createdTasks = expected.effects?.some(effect => effect.state === 'UNKNOWN') ? null
-          : expected.effects?.some(effect => effect.state === 'CONFIRMED')
-            ? scenario.expect.calls.filter(call => call.capability === 'tasks.create').map(call => ({ projectId: call.args.projectId, title: call.args.title })) : [];
+        const responses = scenario.stubs.map(call => call.response);
         return item.id === scenario.id && item.label === scenario.id
-          && json(item.expected) === json({ outcome: expected, calls: scenario.expect.calls, consumption: scenario.expect.consumption, createdTasks })
+          && same(item.expected, taskEffectExpected(scenario))
           && report.status === 'PASS' && Array.isArray(report.mismatches) && report.mismatches.length === 0
           && same(report.native, expected) && same(report.calls, scenario.expect.calls)
-          && same(report.consumption, scenario.expect.consumption);
+          && same(report.consumption, scenario.expect.consumption)
+          && same(report.observed, observations(scenario.expect.calls, responses, expected))
+          && same(report.scenario, scenarioDetails(scenario.given.input, scenario.expect.calls, responses, expected));
       });
   } catch { return false; }
 }
@@ -327,23 +390,27 @@ export function taskEffectProofMatches(revision, authored, proof, host) {
 // Format guidance only. Customer project and title must be resolved and authored separately.
 export function taskEffectSyntax(host) {
   const trusted = checkedHost(host), model = JSON.parse(trusted.dcmBytes);
-  return JSON.stringify({ language: 'keir/1', domain: { ...model.domain, fingerprint: trusted.pins.modelDigest }, entrypoint: TASK_HOOK,
-    name: 'format-only-completion-example', steps: [
+  const completion = trusted.pins.hook === 'TaskCompleted', status = completion ? 'COMPLETED' : 'OPEN';
+  return JSON.stringify({ language: 'keir/2', domain: { ...model.domain, fingerprint: trusted.pins.modelDigest }, entrypoint: trusted.pins.hook,
+    name: 'format-only-task-example', steps: [
       { id: 'eligibleProject', let: { literal: 'project1', type: 'ProjectId' } },
       { id: 'source', call: 'tasks.get', args: { taskId: { cel: 'input.taskId' } } },
-      { id: 'eligible', let: { cel: 'source.status == "COMPLETED" && source.projectId == eligibleProject' } },
+      { id: 'eligible', let: { cel: `source.status == "${status}" && source.projectId == eligibleProject` } },
       { id: 'created', call: 'tasks.create', when: 'eligible', args: { projectId: { cel: 'eligibleProject' }, title: { literal: 'Example follow-up task' } } },
     ], return: { record: { status: { cel: 'eligible ? "CREATED" : "NO_OP"' } } } }, null, 2);
 }
 export function taskEffectScenarioExamples(host) {
-  const model = JSON.parse(checkedHost(host).dcmBytes), capability = model.capabilities['tasks.get'];
+  const trusted = checkedHost(host), model = JSON.parse(trusted.dcmBytes), capability = model.capabilities['tasks.get'];
+  const status = trusted.pins.hook === 'TaskCompleted' ? 'COMPLETED' : 'OPEN';
+  const given = { input: { taskId: 'task1', occurredAt: '2026-03-07T12:34:56.789Z' }, fixture: 'normal' };
   const read = { step: 'source', capability: 'tasks.get', version: capability.version, args: { taskId: 'task1' }, protectedArgs: { actorId: fixtureActor } };
   const rows = [
-    ['matching-project', 'project1', 'COMPLETED', true],
-    ['other-project', 'project2', 'COMPLETED', false],
-    ['unfinished-task', 'project1', 'OPEN', false],
+    ['matching-project', 'project1', status, true],
+    ['other-project', 'project2', status, false],
+    ['other-status', 'project1', status === 'COMPLETED' ? 'OPEN' : 'COMPLETED', false],
   ].map(([id, projectId, status, match]) => {
-    const write = { step: 'created', capability: 'tasks.create', version: '1', args: { projectId: 'project1', title: 'Example follow-up task' }, protectedArgs: { actorId: fixtureActor } };
+    const write = { step: 'created', capability: 'tasks.create', version: model.capabilities['tasks.create'].version,
+      args: { projectId: 'project1', title: 'Example follow-up task' }, protectedArgs: { actorId: fixtureActor } };
     const events = [
       { event: 'INVOCATION_START' }, { event: 'STEP_START', step: 'eligibleProject' }, { event: 'VALUE_BOUND', step: 'eligibleProject' },
       { event: 'STEP_START', step: 'source' }, { event: 'CALL_DISPATCHED', step: 'source', capability: 'tasks.get' },
@@ -355,8 +422,8 @@ export function taskEffectScenarioExamples(host) {
     ];
     const outcome = { classification: 'COMPLETED', result: { status: match ? 'CREATED' : 'NO_OP' },
       effects: match ? [{ step: 'created', capability: 'tasks.create', state: 'CONFIRMED' }] : [], trace: events.map((event, sequence) => ({ sequence, ...event })) };
-    return { format: 'keir-scenario/1', id, given: { input: { taskId: 'task1' }, fixture: 'normal' },
-      stubs: [{ ...read, response: { kind: 'SUCCESS', value: { id: 'task1', projectId, status, title: 'Example task' } } },
+    return { format: 'keir-scenario/2', id, given,
+      stubs: [{ ...read, response: { kind: 'SUCCESS', value: { id: 'task1', projectId, status, title: 'Example task', tags: [], priority: 'normal' } } },
         ...(match ? [{ ...write, response: { kind: 'SUCCESS', value: { id: 'task2' }, effect: 'CONFIRMED' } }] : [])],
       expect: { outcome, calls: match ? [read, write] : [read], consumption: consumeTaskEffect(outcome, host) } };
   });
@@ -371,7 +438,7 @@ export function taskEffectScenarioExamples(host) {
       { sequence: 2, event: 'VALUE_BOUND', step: 'eligibleProject' }, { sequence: 3, event: 'STEP_START', step: 'source' },
       { sequence: 4, event: 'CALL_DISPATCHED', step: 'source', capability: 'tasks.get' }, { sequence: 5, event: 'TERMINATED', code },
     ] };
-    rows.push({ format: 'keir-scenario/1', id, given: { input: { taskId: 'task1' }, fixture: 'normal' },
+    rows.push({ format: 'keir-scenario/2', id, given,
       stubs: [{ ...read, response: kind === 'BUSINESS_REJECTION' ? { kind, code } : { kind } }],
       expect: { outcome, calls: [read], consumption: consumeTaskEffect(outcome, host) } });
   }

@@ -27,8 +27,8 @@ const code = (expected, action) => assert.throws(action, error => error.code ===
 test('native completion snapshots one owner/hook/key and preserves first result without replaying old tasks', t => {
   const f = setup(t), e = f.complete();
   assert.equal(e.state, 'PENDING'); assert.equal(e.owner, owner); assert.deepEqual(e.pins, f.pins);
-  assert.deepEqual(e.input, { taskId: e.sourceTaskId }); assert.notEqual(e.eventId, e.originalKey);
   const original = f.tasks.getTask(owner, e.sourceTaskId);
+  assert.deepEqual(e.input, { taskId: e.sourceTaskId, occurredAt: original.completedAt }); assert.notEqual(e.eventId, e.originalKey);
   assert.deepEqual(f.tasks.completeTask(owner, original.id), original);
   assert.equal(f.db.prepare('SELECT count(*) n FROM task_events WHERE hook_id=\'TaskCompleted\'').get().n, 1);
   const legacy = f.tasks.listTasks(owner, f.projectId).find(task => task.status === 'completed' && task.id !== original.id);
@@ -81,7 +81,7 @@ test('human creation records its own unbound trigger atomically and cannot backf
   assert.equal(completion.state, 'PENDING');
   assert.equal(completion.selection_generation, 1);
   assert.notEqual(completion.original_key, created.original_key);
-  assert.throws(() => f.effects.keyFor(owner, created.event_id), { status: 404 });
+  assert.equal(f.effects.claim(owner, created.event_id), null);
   f.tasks.completeTask(owner, task.id);
   assert.equal(events().length, 2);
 });
@@ -90,13 +90,13 @@ test('a receipt for another capability blocks reuse of the same native key befor
   const f = setup(t), event = f.complete();
   assert.ok(f.effects.claim(owner, event.eventId));
   const payload = { projectId: f.projectId, title: 'Cross-action key' };
-  f.db.prepare('INSERT INTO task_effect_receipts VALUES (?,?,?,?,?,?,?,NULL)').run(owner, 'tasks.update', event.originalKey, '1',
+  f.db.prepare('INSERT INTO task_effect_receipts(owner_id,capability_id,original_key,capability_version,payload,result,effect) VALUES (?,?,?,?,?,?,?)').run(owner, 'tasks.update', event.originalKey, '1',
     Buffer.from(JSON.stringify(payload)), '{"kind":"BUSINESS_REJECTION","code":"TASK_INVALID","effect":"NONE"}', 'NONE');
   const before = f.counts();
   assert.deepEqual(f.effects.createTaskOnce(owner, f.effects.keyFor(owner, event.eventId), payload),
     { kind: 'BUSINESS_REJECTION', code: 'KEY_PAYLOAD_MISMATCH', effect: 'NONE' });
   assert.deepEqual(f.counts(), before);
-  assert.equal(f.effects.status(owner, event.eventId).receipt, null);
+  assert.equal(f.effects.status(owner, event.eventId).receipt.code, 'TASK_INVALID');
 });
 
 test('same native key preserves canonical payload, immutable receipt and audit after finish/revocation', t => {
@@ -111,7 +111,8 @@ test('same native key preserves canonical payload, immutable receipt and audit a
   const created = f.tasks.getTask(owner, result.value.id);
   assert.equal(created.title, 'New task'); assert.equal(created.notes, ''); assert.equal(created.status, 'open');
   assert.deepEqual(f.counts(), before.map(n => n + 1));
-  assert.deepEqual(f.effects.createTaskOnce(owner, key, { ...request, title: 'New task' }), result);
+  assert.deepEqual(f.effects.createTaskOnce(owner, key, request), result);
+  assert.equal(f.effects.createTaskOnce(owner, key, { ...request, title: 'New task' }).code, 'KEY_PAYLOAD_MISMATCH');
   assert.equal(f.effects.createTaskOnce(owner, key, { ...request, title: 'Different' }).code, 'KEY_PAYLOAD_MISMATCH');
   f.tasks.editTask(owner, result.value.id, { title: 'Changed after creation', notes: 'Native edit' });
   const outcome = { classification: 'FAILED', effects: [{ effect: 'CONFIRMED' }], error: { code: 'OUTPUT_INVALID' } };
@@ -296,12 +297,13 @@ test('originating owner is independent of browser user and generated task comple
 test('keyed validation rejects malformed Unicode before canonicalization, preserving native title semantics and raw project identity', t => {
   const f = setup(t), e = f.complete(); f.effects.claim(owner, e.eventId);
   const key = f.effects.keyFor(owner, e.eventId), base = { projectId: f.projectId, title: 'Valid' }, before = f.counts();
-  for (const bad of [{ title: '\ud800' }, { title: '\udc00' }, { projectId: '\ud800' }, { title: null }, { projectId: 3 }, { title: '😀'.repeat(61) }])
+  for (const bad of [{ title: '\ud800' }, { title: '\udc00' }, { projectId: '\ud800' }, { title: null }, { projectId: 3 }, { title: '😀'.repeat(65) }])
     assert.throws(() => f.effects.createTaskOnce(owner, key, { ...base, ...bad }), { status: 400 });
   assert.deepEqual(f.counts(), before);
   const title = '😀'.repeat(60), result = f.effects.createTaskOnce(owner, key, { ...base, title: ` ${title} ` });
   assert.equal(f.tasks.getTask(owner, result.value.id).title, title);
-  assert.deepEqual(f.effects.createTaskOnce(owner, key, { ...base, title }), result);
+  assert.deepEqual(f.effects.createTaskOnce(owner, key, { ...base, title: ` ${title} ` }), result);
+  assert.equal(f.effects.createTaskOnce(owner, key, { ...base, title }).code, 'KEY_PAYLOAD_MISMATCH');
   assert.equal(f.effects.createTaskOnce(owner, key, { ...base, title, projectId: ` ${base.projectId} ` }).code, 'KEY_PAYLOAD_MISMATCH');
   const ordinary = f.tasks.createTask(owner, { ...base, title: '\ud800' });
   assert.equal(ordinary.title, '\ufffd', 'Existing ordinary CRUD behavior remains unchanged');

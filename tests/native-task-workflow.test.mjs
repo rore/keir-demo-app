@@ -1,0 +1,192 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { openData, taskService, taskEffectService } from '../src/data.mjs';
+import { createCompiler } from '../src/compiler.mjs';
+import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { loadHost, TASK_HOOKS } from '../src/extension-catalog.mjs';
+import { taskEffectScenarioExamples, taskEffectSyntax } from '../src/task-effect-simulation.mjs';
+import { createTaskDispatcher } from '../src/task-effects.mjs';
+import { admitTaskDraft } from './fixtures/task-authoring.mjs';
+import { taskWorkflowCases, taskWorkflowSource } from './fixtures/task-workflow-source.mjs';
+
+const owner = 'maya';
+const authorize = () => {};
+
+async function approveAndActivate(db, lifecycle, hookId, projectId, workflow, options) {
+  const host = loadHost(hookId);
+  const { extensionId } = admitTaskDraft(db, lifecycle, { owner, name: hookId });
+  const replaceProject = text => text.replaceAll('"project1"', JSON.stringify(projectId));
+  const source = workflow ? taskWorkflowSource(host, workflow, options).toString('utf8') : replaceProject(taskEffectSyntax(host));
+  const cases = workflow ? taskWorkflowCases(host, workflow, options) : taskEffectScenarioExamples(host).map(replaceProject);
+  const draft = await lifecycle.compile(owner, { extensionId, hookId, draftVersion: 0, source }, authorize);
+  const input = state => ({ extensionId, draftVersion: state.draftVersion, revisionId: state.draft.id });
+  const saved = await lifecycle.proposeScenarios(owner, { ...input(draft), cases }, authorize);
+  const verified = await lifecycle.simulate(owner, input(saved), authorize);
+  assert.equal(verified.evidence?.passed, true, JSON.stringify(verified.evidence));
+  const evidenceId = verified.evidence.id;
+  assert.equal(lifecycle.approve(owner, { ...input(verified), evidenceId }, authorize).selection.revision, null);
+  return lifecycle.activate(owner, { ...input(verified), generation: verified.selection.generation, evidenceId }, authorize);
+}
+
+test('both approved Keir 2 selections execute exact simulated artifacts through native dispatch', async () => {
+  const db = openData(':memory:'), tasks = taskService(db), projectId = tasks.listProjects(owner)[0].id;
+  const lifecycle = createLifecycle(db, { compiler: createCompiler() });
+  const dispatcher = createTaskDispatcher({ db, lifecycle });
+  try {
+    assert.equal(dispatcher.availability().available, true);
+    const [added, completed] = TASK_HOOKS;
+    const first = await approveAndActivate(db, lifecycle, added, projectId);
+    const second = await approveAndActivate(db, lifecycle, completed, projectId);
+    const selections = lifecycle.collection(owner).selections;
+    assert.equal(selections[added].revision.id, first.draft.id);
+    assert.equal(selections[completed].revision.id, second.draft.id);
+    assert.ok(Object.values(lifecycle.collection('leo').selections).every(value => value.revision === null));
+
+    const task = tasks.createTask(owner, { projectId, title: 'Native source task' });
+    await dispatcher.wake();
+    const creation = dispatcher.status(owner, task.id, added);
+    assert.equal(creation.outcome?.classification, 'COMPLETED', JSON.stringify(creation));
+    assert.equal(creation.capability, 'tasks.create');
+    assert.equal(creation.observation.created.projectId, projectId);
+    const createdId = creation.receipt.value.id;
+    assert.equal(db.prepare('SELECT count(*) AS n FROM task_events WHERE source_task_id=?').get(createdId).n, 0);
+    tasks.completeTask(owner, task.id);
+    await dispatcher.wake();
+    const completion = dispatcher.status(owner, task.id);
+    assert.equal(completion.outcome?.classification, 'COMPLETED', JSON.stringify(completion));
+    assert.equal(completion.receipt.effect, 'CONFIRMED');
+    assert.notEqual(completion.receipt.value.id, createdId);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 2);
+    await dispatcher.dependenciesChanged();
+    assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 2);
+  } finally {
+    await dispatcher.close();
+    db.close();
+  }
+});
+
+for (const [workflow, hookId] of [['intake', 'TaskCreated'], ['review', 'TaskCompleted'], ['follow-up', 'TaskCompleted'], ['onboarding', 'TaskCreated']]) {
+  test('approved ' + workflow + ' simulation uses the same artifact on native rows', async () => {
+    const db = openData(':memory:'), tasks = taskService(db), projectId = tasks.listProjects(owner)[0].id;
+    const lifecycle = createLifecycle(db, { compiler: createCompiler() });
+    const dispatcher = createTaskDispatcher({ db, lifecycle });
+    const destinationProjectId = tasks.createProject(owner, { name: 'Reviews' }).id;
+    const title = 'Quote for spring launch', dueAt = '2026-03-06T16:00:00.417Z';
+    const result = async task => {
+      if (hookId === 'TaskCompleted') tasks.completeTask(owner, task.id);
+      await dispatcher.wake();
+      const observed = dispatcher.status(owner, task.id, hookId);
+      assert.equal(observed.outcome?.classification, 'COMPLETED', JSON.stringify(observed));
+      return observed;
+    };
+    try {
+      await approveAndActivate(db, lifecycle, hookId, projectId, workflow, { projectId, destinationProjectId, title });
+      const task = tasks.createTask(owner, { projectId, title, tags: ['client', 'review'], ...(workflow === 'review' ? { priority: 'high' } : {}) });
+      const observed = await result(task);
+      assert.equal(observed.receipt.effect, 'CONFIRMED');
+      const occurrence = db.prepare('SELECT created_at FROM task_events WHERE source_task_id=? AND hook_id=?').get(task.id, hookId).created_at;
+      const expectedDue = new Date(Date.parse(occurrence) + 168 * 3_600_000).toISOString();
+      if (workflow === 'intake') {
+        assert.equal(observed.observation.updated.before.priority, 'normal');
+        assert.equal(tasks.getTask(owner, task.id).priority, 'high');
+        const near = tasks.createTask(owner, { projectId, title: title.toLowerCase(), tags: ['client'] });
+        assert.equal((await result(near)).receipt, null);
+        assert.equal(tasks.getTask(owner, near.id).priority, 'normal');
+      } else if (workflow === 'review') {
+        const created = tasks.getTask(owner, observed.receipt.value.id);
+        assert.equal(created.title, 'Review');
+        assert.equal(created.projectId, destinationProjectId);
+        assert.deepEqual(created.tags, ['review', 'next']);
+        assert.equal(created.dueAt, expectedDue);
+      } else if (workflow === 'follow-up') {
+        const created = tasks.getTask(owner, observed.receipt.value.id);
+        assert.equal(created.title, 'Follow-up');
+        assert.equal(created.projectId, destinationProjectId);
+        const next = tasks.createTask(owner, { projectId, title: 'Another completion' });
+        assert.equal((await result(next)).receipt, null);
+        assert.equal(tasks.listTasks(owner, destinationProjectId).length, 1);
+      } else {
+        assert.equal(tasks.getTask(owner, task.id).dueAt, expectedDue);
+        const already = tasks.createTask(owner, { projectId, title: 'Has a due time', dueAt });
+        assert.equal((await result(already)).receipt, null);
+        assert.equal(tasks.getTask(owner, already.id).dueAt, dueAt);
+      }
+    } finally {
+      await dispatcher.close();
+      db.close();
+    }
+  });
+}
+
+test('a native update applies all authored fields together and retains a rejection on tag overflow', async () => {
+  const db = openData(':memory:'), tasks = taskService(db), projectId = tasks.listProjects(owner)[0].id;
+  const lifecycle = createLifecycle(db, { compiler: createCompiler() }), effects = taskEffectService(db);
+  try {
+    await approveAndActivate(db, lifecycle, 'TaskCreated', projectId, 'intake', { projectId });
+    const context = task => {
+      const event = db.prepare("SELECT event_id FROM task_events WHERE source_task_id=? AND hook_id='TaskCreated'").get(task.id).event_id;
+      const key = effects.keyFor(owner, event);
+      const invocation = { requestKey: key, event: { id: event, source: task.id }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 } };
+      assert.ok(effects.claim(owner, event, invocation));
+      return { event, key, invocation };
+    };
+    const input = { addTag: ' Client ', priority: 'high', dueAt: '2026-03-06T16:00:00.417Z' };
+    const first = tasks.createTask(owner, { projectId, title: 'Native fields', tags: ['review'], notes: 'Keep this' });
+    const one = context(first), write = effects.updateTaskOnce(owner, one.key, input, one.invocation);
+    assert.equal(write.effect, 'CONFIRMED');
+    assert.deepEqual(effects.status(owner, one.event).observation.updated.after,
+      { tags: ['review', 'client'], priority: 'high', dueAt: input.dueAt });
+    assert.equal(tasks.getTask(owner, first.id).notes, 'Keep this');
+    assert.deepEqual(effects.updateTaskOnce(owner, one.key, { ...input }, one.invocation), write);
+    assert.equal(effects.updateTaskOnce(owner, one.key, { ...input, addTag: 'client' }, one.invocation).code, 'KEY_PAYLOAD_MISMATCH');
+
+    const overflow = tasks.createTask(owner, { projectId, title: 'Tag cap', tags: ['1','2','3','4','5','6','7','8'] });
+    const two = context(overflow);
+    const rejected = effects.updateTaskOnce(owner, two.key, input, two.invocation);
+    assert.deepEqual(rejected, { kind: 'BUSINESS_REJECTION', code: 'TASK_INVALID', effect: 'NONE' });
+    assert.deepEqual(tasks.getTask(owner, overflow.id), overflow);
+    assert.deepEqual(effects.status(owner, two.event).receipt, rejected);
+
+    const interrupted = tasks.createTask(owner, { projectId, title: 'Deadline before commit', tags: ['review'] });
+    const three = context(interrupted);
+    let now = 0;
+    three.invocation.deadline.clock.nowMs = () => now;
+    db.function('expireUpdateDeadline', () => { now = 1000; });
+    db.exec("CREATE TEMP TRIGGER expire_update AFTER INSERT ON task_effect_receipts WHEN NEW.capability_id='tasks.update' BEGIN SELECT expireUpdateDeadline(); END");
+    assert.throws(() => effects.updateTaskOnce(owner, three.key, input, three.invocation), { code: 'AUTHORITY_DENIED' });
+    assert.deepEqual(tasks.getTask(owner, interrupted.id), interrupted);
+    assert.equal(effects.status(owner, three.event).receipt, null);
+    assert.notEqual(effects.status(owner, three.event).revokedAt, null);
+    db.exec('DROP TRIGGER expire_update');
+
+    const expired = tasks.createTask(owner, { projectId, title: 'Deadline during proof check', tags: ['review'] });
+    const duringProof = context(expired);
+    now = 0;
+    duringProof.invocation.deadline.clock.nowMs = () => now;
+    const prepare = db.prepare;
+    let approvalReads = 0;
+    db.prepare = function (sql) {
+      const statement = prepare.call(this, sql);
+      if (sql === 'SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?') return {
+        get(...args) {
+          const value = statement.get(...args);
+          if (++approvalReads === 2) now = 1000;
+          return value;
+        },
+      };
+      return statement;
+    };
+    try { assert.throws(() => effects.updateTaskOnce(owner, duringProof.key, input, duringProof.invocation), { code: 'AUTHORITY_DENIED' }); }
+    finally { db.prepare = prepare; }
+    assert.equal(approvalReads, 2);
+    assert.deepEqual(tasks.getTask(owner, expired.id), expired);
+    assert.equal(effects.status(owner, duringProof.event).receipt, null);
+
+    const invalidTitle = tasks.createTask(owner, { projectId, title: 'Invalid workflow title source' });
+    const four = context(invalidTitle);
+    const count = tasks.listTasks(owner, projectId).length;
+    assert.deepEqual(effects.createTaskOnce(owner, four.key, { projectId, title: '\u0000review' }, four.invocation),
+      { kind: 'BUSINESS_REJECTION', code: 'TASK_INVALID', effect: 'NONE' });
+    assert.equal(tasks.listTasks(owner, projectId).length, count);
+  } finally { db.close(); }
+});

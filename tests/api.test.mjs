@@ -33,6 +33,8 @@ test('an admitted owner A completion keeps its exact native context after the br
   const projects = await app.inject(request('GET', '/api/projects', maya)), projectId = projects.json()[0].id;
   const source = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId, title: 'Owner A source' }, headers: jsonHeaders }));
   assert.equal(source.statusCode, 201);
+  // Let the creation route's dispatcher wake finish before recording the held completion.
+  await new Promise(resolve => setImmediate(resolve));
   // Hold dispatch until after the session switch while creating the normal native event.
   assert.equal(taskService(db).completeTask('maya', source.json().id).status, 'completed');
   const eventId = db.prepare('SELECT event_id FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.json().id).event_id;

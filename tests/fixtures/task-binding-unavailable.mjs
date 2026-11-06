@@ -33,7 +33,7 @@ try {
   const login = await request('POST', '/api/session', { token: bootstrap.json().contextToken, body: { userId: 'maya' } });
   assert.equal(login.statusCode, 200, login.body);
   const auth = { token: login.json().contextToken, cookie: login.cookies.find(value => value.name === 'keir_demo_session').value };
-  assert.deepEqual(boundVersions, ['3'], 'the actual dispatcher rejects the current model binding');
+  assert.deepEqual(boundVersions, ['4'], 'the actual dispatcher rejects the current model binding');
   for (const path of ['/api/extensions', `/api/extensions/${extensionId}`]) {
     const response = await request('GET', path, auth);
     assert.equal(response.statusCode, 200, response.body);

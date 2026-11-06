@@ -24,10 +24,10 @@ const proof = () => ({ id: 'approved-proof', revisionId: 'selected-v1', passed: 
     const example = JSON.parse(text), expected = example.expect.outcome;
     const createdTasks = example.expect.calls.filter(call => call.capability === 'tasks.create').map(call => ({ projectId: call.args.projectId, title: call.args.title }));
     return { id: example.id, label: example.id,
-      expected: { classification: expected.classification, createdTasks },
+      expected: { classification: expected.classification, createdTasks, updatedTasks: [] },
       report: { status: 'PASS', native: expected, consumption: example.expect.consumption, mismatches: [],
         scenario: { task: { id: example.given.input.taskId, status: 'COMPLETED', projectId: 'project1' } },
-        observed: { effect: createdTasks.length ? 'CONFIRMED' : 'NONE', createdTasks } },
+        observed: { effect: createdTasks.length ? 'CONFIRMED' : 'NONE', createdTasks, updatedTasks: [] } },
       taskRecords: ['private-report-extra'], continuation: 'private-report-extra' };
   }), artifact: 'private-proof-extra' });
 
@@ -44,7 +44,10 @@ async function discover(t, f, options = {}) {
   const lifecycle = { ...f.lifecycle,
     state(owner, id) {
       const state = f.lifecycle.state(owner, id);
-      if (options.selection) state.selection = options.selection(id);
+      if (options.selection) {
+        state.selection = options.selection(id);
+        state.extension = { ...state.extension, hookId: TASK_HOOK };
+      }
       return state;
     },
     evidence(...args) { reads.push(['evidence', ...args]); return options.evidence ? options.evidence(...args) : f.lifecycle.evidence(...args); },
@@ -117,7 +120,7 @@ test('discovery separates exact checked active v1 from a different customer task
   for (const guidance of [context.businessContext.navigation, requests[0].instructions]) {
     for (const label of ['View saved changes', 'About this rule', 'View simulation', 'Show example checks',
       'Hide simulation', 'View latest changes', 'Back to conversation',
-      'Approve this change', 'Turn on for my tasks', 'Switch to this customization']) assert.ok(guidance.includes(label));
+      'Approve this change', 'Turn on for tasks added', 'Turn on for tasks completed']) assert.ok(guidance.includes(label));
     assert.doesNotMatch(guidance, /beside Current decision|Show the unfinished task example/);
     assert.match(guidance, /do not open or replace.*automatically|never open or replace.*automatically/);
     assert.match(guidance, /read-only navigation|without creating or restoring changes/);
@@ -196,7 +199,8 @@ test('current-use projection bounds reports and text, omits oversized summaries 
     const f = fixture(t), row = proof(), long = (oversized ? '😀' : 'x').repeat(200);
     row.reports = Array.from({ length: 12 }, (_, index) => ({ ...structuredClone(row.reports[0]), id: 'long-' + index,
       label: long, taskStatus: long, readFailure: long, expected: { classification: long, code: long },
-      report: { status: 'PASS', native: { classification: long, code: long }, consumption: { status: long, code: long }, mismatches: [] } }));
+      report: { status: 'PASS', native: { classification: long, code: long }, consumption: { status: long, code: long },
+        observed: { effect: 'NONE', createdTasks: [], updatedTasks: [] }, mismatches: [] } }));
     const originals = row.reports.map(report => JSON.stringify({ id: report.id, expect: { consumption: { status: long, code: long } } }));
     const { context } = await discover(t, f, { selection: id => selected(id), evidence: () => row,
       source: (_owner, _revision, id) => ({ ...selectedSource(id), cases: originals }) });

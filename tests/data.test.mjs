@@ -63,7 +63,7 @@ test('services validate CRUD, bounds, ownership and completion without partial w
 test('initial seed is idempotent and all three users persist through reopen', t => {
   const dir = sandbox(), path = join(dir, 'app.sqlite');
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
   assert.deepEqual(db.prepare('SELECT owner_id,hook_id,revision_id,generation,binding_pins FROM extension_selections ORDER BY owner_id,hook_id').all()
     .map(row => Object.values(row)), ['leo', 'maya', 'sam'].flatMap(id => ['TaskCompleted', 'TaskCreated'].map(hook => [id, hook, null, 0, null])));
   assert.equal(db.prepare('SELECT count(*) n FROM extension_revisions').get().n, 0);
@@ -106,7 +106,7 @@ test('fresh schema, seed and current marker roll back together on initialization
   const exec = DatabaseSync.prototype.exec;
   DatabaseSync.prototype.exec = function (sql) {
     const result = exec.call(this, sql);
-    if (sql === 'PRAGMA user_version=12') throw new Error('initialization blocked');
+    if (sql === 'PRAGMA user_version=13') throw new Error('initialization blocked');
     return result;
   };
   try { assert.throws(() => openData(path), /initialization blocked/); }

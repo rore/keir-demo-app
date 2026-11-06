@@ -85,7 +85,7 @@ try {
   assert.equal(native.listTasks('sam', project.id).filter(task => task.title === fixture.metadata.title).length, 1);
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
 
-  assert.deepEqual(boundVersions, ['3']); assert.equal(prepares, 1); assert.equal(invocations.length, 4);
+  assert.deepEqual(boundVersions, ['4']); assert.equal(prepares, 1); assert.equal(invocations.length, 4);
   assert.ok(invocations.every(row => row.prepared === invocations[0].prepared));
   assert.deepEqual(invocations.map(row => row.invocation.bindings.actorId), ['sam', 'maya', 'sam', 'sam']);
   assert.deepEqual(invocations.map(row => row.invocation.deadline.expiresAtMs), [1000, 1100, 1200, 1300]);
@@ -93,10 +93,11 @@ try {
   assert.equal(new Set(invocations.map(row => row.invocation.event.id)).size, 4);
   assert.equal(new Set(invocations.map(row => row.invocation.deadline)).size, 4);
   for (const row of invocations) {
-    const event = db.prepare('SELECT original_key,source_task_id FROM task_events WHERE event_id=?').get(row.invocation.event.id);
+    const event = db.prepare('SELECT original_key,source_task_id,created_at FROM task_events WHERE event_id=?').get(row.invocation.event.id);
     assert.equal(row.invocation.requestKey.value, event.original_key);
     assert.equal(row.invocation.event.source, event.source_task_id);
     assert.equal(row.input.taskId, event.source_task_id);
+    assert.equal(row.input.occurredAt, event.created_at);
   }
   now = 0;
   await dispatcher.dependenciesChanged();

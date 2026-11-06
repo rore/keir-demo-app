@@ -2,30 +2,24 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { taskEffectService } from '../../src/data.mjs';
 import { digest, json, loadHost, TASK_HOOK } from '../../src/extension-catalog.mjs';
-import { taskEffectSyntax, taskEffectScenarioExamples } from '../../src/task-effect-simulation.mjs';
+import { taskEffectSyntax, taskEffectScenarioExamples, TASK_EFFECT_VERSIONS as versions } from '../../src/task-effect-simulation.mjs';
 
 // Compiled from taskEffectSyntax with the pinned CLI so storage checks can admit the exact proof without launching Java.
-const artifact = readFileSync(new URL('./current-task-effect-artifact.json', import.meta.url));
+const artifact = readFileSync(new URL('./current-task-workflow-artifact.json', import.meta.url));
+const reports = JSON.parse(readFileSync(new URL('./current-task-workflow-reports.json', import.meta.url), 'utf8'));
 export function seedTaskEffectBinding(db, owner = 'maya') {
   const extensionId = randomUUID(), revisionId = randomUUID(), evidenceId = randomUUID();
   const host = loadHost(TASK_HOOK), source = Buffer.from(taskEffectSyntax(host));
   const scenarios = taskEffectScenarioExamples(host), suite = json(scenarios), compiledSourceDigest = JSON.parse(artifact).sourceDigest;
   const identity = { ...host.pins, artifactDigest: digest(artifact), rawSourceDigest: digest(source), compiledSourceDigest,
-    suiteDigest: digest(suite), fixture: 'daymark-task-effect-fixtures/1' };
+    suiteDigest: digest(suite), fixture: versions.fixtureVersion };
   db.prepare('INSERT INTO extensions(id,owner_id,hook_id,name,created_at,draft_version) VALUES (?,?,?,?,?,0)')
     .run(extensionId, owner, 'TaskCompleted', 'Native storage fixture', Date.now());
   db.prepare('INSERT INTO extension_revisions VALUES (?,?,?,?,?)').run(revisionId, owner, 'authored', json(identity), 'customer');
   db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(revisionId, owner, extensionId);
   db.prepare('UPDATE extensions SET draft_revision_id=? WHERE id=?').run(revisionId, extensionId);
   db.prepare('INSERT INTO extension_authored VALUES (?,?,?,?,?,?)').run(revisionId, owner, 'Native storage fixture', source, artifact, suite);
-  const versions = { suite: 'task-effects-authored/1', fixtureVersion: 'daymark-task-effect-fixtures/1', simulator: 'daymark-task-effect-simulation/1' };
   const suiteIdentity = digest(json({ ...versions, simulator: json(identity), cases: scenarios.map(text => ({ id: JSON.parse(text).id, digest: digest(text) })) }));
-  const reports = scenarios.map(text => {
-    const scenario = JSON.parse(text), outcome = scenario.expect.outcome;
-    return { id: scenario.id, label: scenario.id, expected: { ...scenario.expect,
-      createdTasks: outcome.effects.length ? scenario.expect.calls.filter(call => call.capability === 'tasks.create').map(call => ({ projectId: call.args.projectId, title: call.args.title })) : [] },
-    report: { status: 'PASS', mismatches: [], native: outcome, calls: scenario.expect.calls, consumption: scenario.expect.consumption } };
-  });
   const payload = json({ identity: { dependencies: identity, ...versions, suiteDigest: suiteIdentity }, reports });
   db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,1)').run(evidenceId, owner, revisionId, json(identity), suiteIdentity, payload);
   db.prepare('INSERT INTO extension_approvals VALUES (?,?,?)').run(owner, revisionId, evidenceId);

@@ -373,7 +373,7 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
     const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(decision).toBeVisible();
     await expect(recovery).toHaveCount(0);
-    await expect(decision.getByRole('button', { name: approved ? 'Switch to this customization' : 'Approve this change', exact: true })).toBeEnabled();
+    await expect(decision.getByRole('button', { name: approved ? 'Turn on for tasks completed' : 'Approve this change', exact: true })).toBeEnabled();
     if (approved) await page.screenshot({ path: testInfo.outputPath('context-limit-settled-decision.png'), fullPage: true });
     await expect(composer).toHaveValue('Keep this independent unsent correction');
     expect(recoveries).toEqual(approved ? [turns[0]] : []);
@@ -423,7 +423,7 @@ test('reloading an accepted context continuation keeps the prior decision hidden
   await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
   await expect(ui.locator('.rs-working')).toContainText('Working on your request');
   await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
-  await expect(ui.getByRole('button', { name: 'Switch to this customization', exact: true })).toHaveCount(0);
+  await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
   await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
   await expect(ui.getByText('Approved · Still off', { exact: true })).toBeVisible();
   // Compiled UI with a synthetic accepted run; reload reads status without repeating the paid request.
@@ -433,7 +433,7 @@ test('reloading an accepted context continuation keeps the prior decision hidden
   await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
   await openSavedChanges(page);
   const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
-  await expect(decision.getByRole('button', { name: 'Switch to this customization', exact: true })).toBeEnabled();
+  await expect(decision.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
   await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
   expect(turns).toHaveLength(1);
   expect(mutations).toEqual([]);

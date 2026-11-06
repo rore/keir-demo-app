@@ -139,7 +139,7 @@ test('one current binding reuses its prepared handle with fresh event, owner, ke
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.deepEqual(JSON.parse(result.stdout), { boundVersions: ['3'], prepares: 1, invocations: 4,
+  assert.deepEqual(JSON.parse(result.stdout), { boundVersions: ['4'], prepares: 1, invocations: 4,
     outcomes: ['CONFIRMED', 'NO_OP', 'REVOKED', 'EXPIRED'] });
 });
 

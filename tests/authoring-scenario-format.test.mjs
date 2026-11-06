@@ -4,14 +4,14 @@ import { readFileSync } from 'node:fs';
 import { openData, taskService } from '../src/data.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
-import { loadHost, TASK_HOOK } from '../src/extension-catalog.mjs';
+import { loadHost, TASK_HOOK, TASK_HOOKS } from '../src/extension-catalog.mjs';
 import { authoringExample } from '../src/authoring-example.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { createTaskDispatcher } from '../src/task-effects.mjs';
 import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 
-const caseIds = ['matching-project', 'other-project', 'unfinished-task', 'missing-task', 'access-denied', 'read-unavailable'];
+const caseIds = ['matching-project', 'other-project', 'other-status', 'missing-task', 'access-denied', 'read-unavailable'];
 const title = 'Prepare customer review';
 const serialize = cases => cases.map(value => JSON.stringify(value));
 const input = state => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
@@ -156,13 +156,14 @@ test('offline authoring checks an exact suffix and repairs scenario syntax witho
     } else if (index === 1) {
       assert.equal(result.ok, true);
       const discovery = result.result;
-      assert.equal(discovery.dcm.capabilities['tasks.get'].version, '2');
+      assert.equal(discovery.dcm.capabilities['tasks.get'].version, '3');
       assert.equal(discovery.dcm.types.Task.fields.title, 'String');
       assert.match(discovery.businessContext.supported, /append a fixed suffix/);
       assert.match(discovery.businessContext.supported, /source\.title \+ " – follow-up"/);
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));
-      desired = customerExamples(discovery.sourceExample, discovery.scenarioExamples, project.id, other.id);
+      const { sourceExample, scenarioExamples } = discovery.examplesByHook[TASK_HOOK];
+      desired = customerExamples(sourceExample, scenarioExamples, project.id, other.id);
       const program = JSON.parse(desired.source), createStep = program.steps.findIndex(step => step.call === 'tasks.create');
       program.steps[createStep].args.title = { cel: 'source.title + ' + JSON.stringify(suffix) };
       desired.source = JSON.stringify(program);
@@ -211,7 +212,7 @@ test('offline authoring checks an exact suffix and repairs scenario syntax witho
       assert.ok(cases.every(value => value.status === 'PASS'));
       assert.equal(cases[0].actual.observed.createdTasks[0].title, expectedTitle);
       assert.equal(cases.at(-1).actual.native.classification, 'LIMIT_EXCEEDED');
-      assert.deepEqual(cases.at(-1).actual.observed, { effect: 'NONE', createdTasks: [] });
+      assert.deepEqual(cases.at(-1).actual.observed, { effect: 'NONE', createdTasks: [], updatedTasks: [] });
       name = 'offer_review'; args = { summary: 'The examples confirmed the exact follow-up title and no creation when a title exceeds the size limit. Your tasks have not changed.' };
     } else assert.fail('The local protocol script must not add a paid request or discard a case.');
     calls.push(name);
@@ -270,7 +271,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const openai = provider === 'openai';
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: openai ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
-  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v3.md', import.meta.url), 'utf8');
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v4.md', import.meta.url), 'utf8');
   const calls = [], requestBytes = [];
   function respond(openaiContent, anthropicContent, stopReason) {
     const usage = { input_tokens: 10, output_tokens: 5 };
@@ -293,18 +294,19 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
     let name, args;
     if (index === 0) {
       assert.match(instructions, /supportedHooks from discover_catalog for availability/);
-      assert.match(instructions, /host-approved domain capability model/);
-      assert.match(instructions, /parameter and result types, declared errors/);
-      assert.match(instructions, /two positive examples with different source projects and titles/);
+      assert.match(instructions, /exact approved model, event entrypoint and compiler configuration/);
+      assert.match(instructions, /protected parameters, result type, declared errors/);
+      assert.match(instructions, /two positives with different source projects and titles/);
       assert.match(instructions, /clarify only genuinely unclear behavior/);
       assert.equal(body.tools.some(tool => /approve|activate|create_task/.test(tool.name)), false);
       name = 'discover_catalog'; args = {};
     } else if (index === 1) {
       const discovery = result;
-      assert.deepEqual(discovery.supportedHooks.map(hook => hook.id), [TASK_HOOK]);
-      assert.equal(discovery.hook, TASK_HOOK);
-      assert.equal(JSON.parse(discovery.sourceExample).language, 'keir/1');
-      assert.equal(JSON.parse(discovery.scenarioExample).format, 'keir-scenario/1');
+      assert.deepEqual(discovery.supportedHooks.map(hook => hook.id), TASK_HOOKS);
+      assert.equal(discovery.selectedHook, null);
+      const { sourceExample, scenarioExample, scenarioExamples } = discovery.examplesByHook[TASK_HOOK];
+      assert.equal(JSON.parse(sourceExample).language, 'keir/2');
+      assert.equal(JSON.parse(scenarioExample).format, 'keir-scenario/2');
       assert.equal(discovery.conversationContext.messages.at(-1).text, request);
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));
@@ -319,18 +321,18 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       assert.match(discovery.businessContext.supported, /same.project/);
       assert.match(discovery.businessContext.supported, /source\.projectId/);
 
-      const program = JSON.parse(discovery.sourceExample);
+      const program = JSON.parse(sourceExample);
       program.steps.shift();
       program.steps[1].let.cel = 'source.status == "COMPLETED"';
       program.steps[2].args = { projectId: { cel: 'source.projectId' }, title: { cel: 'source.title + ' + JSON.stringify(suffix) } };
       source = JSON.stringify(program);
-      const [matching, , unfinished, , , unavailable] = discovery.scenarioExamples.map(JSON.parse);
+      const [matching, , unfinished, , , unavailable] = scenarioExamples.map(JSON.parse);
       const positives = examples.map(({ id, taskId, createdId, projectId, title }) => {
         const row = structuredClone(matching);
         row.id = id;
         row.given.input.taskId = taskId;
         row.stubs[0].args.taskId = taskId;
-        row.stubs[0].response.value = { id: taskId, projectId, title, status: 'COMPLETED' };
+        Object.assign(row.stubs[0].response.value, { id: taskId, projectId, title, status: 'COMPLETED' });
         row.stubs[1].args = { projectId, title: title + suffix };
         row.stubs[1].response.value.id = createdId;
         row.expect.calls[0].args.taskId = taskId;
@@ -346,7 +348,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       unavailable.expect.outcome.error.path = '/steps/0';
       unavailable.expect.consumption.error.path = '/steps/0';
       independent = serialize(cases);
-      name = 'compile_draft'; args = { hookId: discovery.hook, sourceJson: source, expectedDraftVersion: discovery.currentDraft.draftVersion };
+      name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: source, expectedDraftVersion: discovery.currentDraft.draftVersion };
     } else if (index === 2) {
       compiled = result;
       extensionId = db.prepare('SELECT extension_id FROM extension_conversation_links WHERE conversation_id=(SELECT id FROM authoring_conversations WHERE creation_operation_id=?)').get(operationId).extension_id;
@@ -390,7 +392,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const proof = lifecycle.evidence('maya', settled.review.evidenceId, extensionId);
   assert.equal(proof.revisionId, state.draft.id);
   assert.equal(proof.identity.dependencies.artifactDigest, saved.pins.artifactDigest);
-  assert.deepEqual(proof.reports.map(row => row.id), [...examples.map(row => row.id), 'unfinished-task', 'read-unavailable']);
+  assert.deepEqual(proof.reports.map(row => row.id), [...examples.map(row => row.id), 'other-status', 'read-unavailable']);
   assert.deepEqual(proof.reports.map(({ report: { observed } }) => ({
     effect: observed.effect, createdTasks: observed.createdTasks.map(({ projectId, title }) => ({ projectId, title })),
   })), [

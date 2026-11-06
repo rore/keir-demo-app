@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { expandCheckedExamples, openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync } from 'node:fs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
@@ -105,7 +105,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         await decision.getByRole('button', { name: 'Check saved results again', exact: true }).click();
       }
       await expect(decision).toContainText(fixture.metadata.title);
-      await expect(decision).toContainText('Example only · no real tasks changed');
+      await expect(decision).toContainText('Sample tasks only · your tasks have not changed');
       const prepared = await saved(page, newId), documents = await source(page, newId, prepared.draft.id);
       expect(prepared.draft.kind).toBe('authored'); expect(prepared.evidence.passed).toBe(true); expect(prepared.approved).toBe(false);
       expect(prepared.selection).toEqual(before.selection);
@@ -113,14 +113,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(await saved(page, activeId)).toEqual(activeBefore);
       expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification', 'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
       const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
-      await expect(proposed.locator('.rs-compact-case:visible')).toHaveCount(documents.cases.length);
+      await expect(proposed.getByRole('article', { name: /^Example:/ })).toHaveCount(documents.cases.length);
       await expect(proposed).toContainText(fixture.metadata.title);
       await decision.getByRole('button', { name: 'Inspect examples and what’s in use', exact: true }).click();
       const comparison = ui.getByRole('article', { name: 'Sample results', exact: true });
       await expect(comparison.getByRole('region', { name: 'Checked behavior currently in use', exact: true })).toContainText('Existing customer follow-up');
       await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
-      await expandCheckedExamples(decision);
-      await expect(proposed.locator('.rs-compact-case').nth(1)).toContainText('No task was created.');
+      await expect(decision.getByRole('article', { name: /^Example:/ }).first()).toBeVisible();
+      await expect(proposed.getByRole('article', { name: /^Example:/ }).nth(1)).toContainText('No change.');
       await ui.getByText('Exact saved change and checks', { exact: true }).click();
       await expect(decision.getByLabel('Saved source for approval', { exact: true })).toHaveText(documents.source);
       for (let index = 0; index < documents.cases.length; index++)
@@ -130,7 +130,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await decision.getByRole('button', { name: 'Approve this change', exact: true }).click();
       const approved = await saved(page, newId);
       expect(approved.approvedEvidenceId).toBe(prepared.evidence.id); expect(approved.selection).toEqual(before.selection);
-      await decision.getByRole('button', { name: 'Switch to this customization', exact: true }).click();
+      await decision.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
       await expect.poll(async () => (await saved(page, newId)).selection.revision.id).toBe(prepared.draft.id);
       expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
       await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
@@ -231,9 +231,9 @@ test('ordinary examples retain independent task expectations and observed mismat
     await tools.getByText('Saved sample runs', { exact: true }).click();
     await tools.getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     const first = ui.locator('.rs-example').first();
-    await expect(first.locator('dd').first()).toHaveText('Create no task.');
-    await expect(first.locator('dd').nth(1)).toContainText(fixture.metadata.title);
-    await expect(first).toContainText('This example needs a correction');
+    await expect(first.locator('dd').nth(1)).toHaveText('No change.');
+    await expect(first.locator('dd').nth(2)).toContainText(fixture.metadata.title);
+    await expect(first).toContainText('Needs correction');
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     const edited = await api(page, `${extPath(id)}/compile`, { hookId: TASK_HOOK, source: fixture.metadata.source + '\n', label: 'A different saved proposal', draftVersion: prepared.draftVersion });
     await api(page, `${extPath(id)}/scenarios`, { ...input(edited), cases: fixture.metadata.cases });
@@ -242,8 +242,8 @@ test('ordinary examples retain independent task expectations and observed mismat
     await ui.getByText('Open a saved sample run by ID', { exact: true }).click();
     await ui.getByLabel('Evidence ID for this person', { exact: true }).fill(prepared.evidence.id);
     await ui.getByRole('button', { name: 'Open saved sample run', exact: true }).click();
-    await expect(first.locator('dd').first()).toHaveText('Create no task.');
-    await expect(first.locator('dd').nth(1)).toContainText(fixture.metadata.title);
+    await expect(first.locator('dd').nth(1)).toHaveText('No change.');
+    await expect(first.locator('dd').nth(2)).toContainText(fixture.metadata.title);
     expect((await api(page, `${extPath(id)}/evidence/${prepared.evidence.id}`)).reports[0].expected.createdTasks).toEqual([]);
     expect((await saved(page, id)).approved).toBe(false); expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }

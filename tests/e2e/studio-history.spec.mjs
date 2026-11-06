@@ -63,7 +63,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
         await expect(confirmation.getByRole('button', { name: 'Start from this version', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-        await expect(ui.getByRole('button', { name: /^(Turn on for my tasks|Switch to this customization)$/ })).toHaveCount(0);
+        await expect(ui.getByRole('button', { name: /^(Turn on for tasks completed)$/ })).toHaveCount(0);
         await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeHidden();
         return confirmation;
       };
@@ -93,7 +93,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       expect(await ui.getByLabel('Saved source for inspection', { exact: true }).textContent()).toBe(savedSource);
       await expect(ui.getByLabel('Compiled artifact for inspection', { exact: true })).toBeVisible();
       await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-      await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toHaveCount(0);
+      await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
       const history = await api(page, path + '/history');
       expect(history.rows.find(row => row.operation === 'draft-superseded').revisionId).toBe(displaced.draft.id);
       expect(await api(page, path)).toEqual(fresh);

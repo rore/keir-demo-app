@@ -1,20 +1,20 @@
 {
   "schema": "keir-demo-compiler-distribution/1",
-  "compiler": "keir-compiler-java/0.1.0",
-  "status": "verified-release",
-  "release": "v0.1.0",
+  "compiler": "keir-compiler-java/0.2.0",
+  "status": "verified-candidate",
+  "release": "v0.2.0",
   "artifact": {
-    "file": "keir-compiler-java-0.1.0-cli.jar",
-    "sha256": "sha256:06330d6dedaf172236f0921de8b85d92d47b77bc6c5d0c937ba3d94393cc934b",
-    "bytes": 8812623
+    "file": "keir-compiler-java-0.2.0-cli.jar",
+    "sha256": "sha256:a53551e45c94f1c5a63325e821a47e9742cf9a588720269077f96f0e9b37b7b0",
+    "bytes": 8818933
   },
   "distribution": {
-    "file": "keir-compiler-cli-0.1.0.zip",
-    "sha256": "sha256:1b6f83635c6850a77159c1649cf7922597d326b2d3573f11d7cc178e5de54260"
+    "file": "keir-compiler-cli-0.2.0.zip",
+    "sha256": "sha256:5aa1bd71ef10493de21e700053005c119a5835aaeb85c71ba5c00ce7fc175b05"
   },
   "source": {
     "repository": "https://github.com/rore/keir-core",
-    "revision": "e5e2eb7f4bc4cc6ccd2817511793605eef88a384"
+    "revision": "43f28600d8db460db6f22b48c2d4c2c0de9c52b7"
   },
   "java": {
     "bytecode_minimum": 21,

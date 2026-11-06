@@ -33,7 +33,7 @@ function authoringStorage(db) {
 }
 
 test('task authoring admits immutable definition authority before failed compile and retains it through reload and continuation', async t => {
-  assert.equal(TASK_DEFINITION, 'daymark.task-completed/3');
+  assert.equal(TASK_DEFINITION, 'daymark.task-workflow/1');
   const db = openData(':memory:'), lease = { sessionId: 'task-definition-test', current: () => true };
   const definitionConfig = { ...config, maxMicros: 5_000_000 };
   let service, attempts = 0, requests = 0;
@@ -235,13 +235,15 @@ test('agent discovery sends static supported context and worked source/scenario 
   assert.match(requests[0].instructions, /never claim a name was saved or invent a naming tool/);
   const receipt = JSON.parse(requests[1].input.find(item => item.type === 'function_call_output').output).result;
   assert.deepEqual(receipt.businessContext, businessContext);
-  assert.ok(receipt.sourceExample.includes('TaskCompleted'));
-  assert.ok(JSON.parse(receipt.scenarioExample).expect);
-  assert.deepEqual(receipt.scenarioExamples, authoringExample(loadHost(TASK_HOOK)).cases);
-  assert.deepEqual(receipt.scenarioExamples.map(text => JSON.parse(text).id),
-    ['matching-project', 'other-project', 'unfinished-task', 'missing-task', 'access-denied', 'read-unavailable']);
+  assert.equal(receipt.selectedHook, null);
+  const { sourceExample, scenarioExample, scenarioExamples } = receipt.examplesByHook[TASK_HOOK];
+  assert.ok(sourceExample.includes('TaskCompleted'));
+  assert.ok(JSON.parse(scenarioExample).expect);
+  assert.deepEqual(scenarioExamples, authoringExample(loadHost(TASK_HOOK)).cases);
+  assert.deepEqual(scenarioExamples.map(text => JSON.parse(text).id),
+    ['matching-project', 'other-project', 'other-status', 'missing-task', 'access-denied', 'read-unavailable']);
   assert.ok(Buffer.byteLength(JSON.stringify(receipt)) < 131072);
-  for (const text of receipt.scenarioExamples) {
+  for (const text of scenarioExamples) {
     const row = JSON.parse(text);
     assert.deepEqual(Object.keys(row.stubs[0].args), ['taskId']);
     assert.equal(row.expect.consumption.status, 'REPORTED');
@@ -368,7 +370,8 @@ test('actual compiled task source retains independent expectations, exact proof 
   assert.equal(mismatchProof.passed, false); assert.equal(mismatch.status, 'FAIL');
   assert.equal(mismatchProof.reports[0].expected.outcome.result.status, 'NO_OP');
   assert.equal(mismatchProof.reports[0].report.native.result.status, 'CREATED');
-  assert.deepEqual(mismatch.actual.observed, { effect: 'CONFIRMED', createdTasks: [{ projectId: example.metadata.projectId, projectName: 'Example project', title: example.metadata.title }] });
+  assert.deepEqual(mismatch.actual.observed, { effect: 'CONFIRMED', createdTasks: [{ id: 'task2', projectId: example.metadata.projectId,
+    projectName: 'Example project', title: example.metadata.title, tags: [] }], updatedTasks: [] });
   await assert.rejects(Promise.resolve().then(() => lifecycle.approve('maya', { extensionId, ...input(state), evidenceId: state.evidence.id }, () => true)), { status: 409 });
   state = await lifecycle.proposeScenarios('maya', { extensionId, ...input(state), cases: example.cases }, () => true);
   assert.deepEqual(lifecycle.source('maya', state.draft.id, extensionId).cases, example.cases);

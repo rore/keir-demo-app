@@ -425,7 +425,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     const savedSource = ui.getByLabel('Saved source for approval', { exact: true });
     await expect(savedSource).toBeVisible(); expect(await savedSource.textContent()).toBe(source);
     await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
-    await expect(ui.getByRole('button', { name: 'Turn on for my tasks', exact: true })).toBeEnabled();
+    await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
     const state = await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json();
     expect(state.approvedEvidenceId).toBe(first.evidence.id);
     expect(state.evidence.id).toBe(latest.evidence.id); expect(state.selection).toEqual(latest.selection);

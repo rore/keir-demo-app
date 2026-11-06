@@ -11,12 +11,13 @@ import { CompilerError, createCompiler } from '../src/compiler.mjs';
 import { loadHost, TASK_HOOK } from '../src/extension-catalog.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const model = readFileSync(join(root, 'extensions/task-effect/title/dcm.json'));
+const model = readFileSync(join(root, 'extensions/task-effect/workflow/dcm.json'));
 const vendor = join(root, 'vendor');
-const jarName = 'keir-compiler-java-0.1.0-cli.jar';
+const jarName = 'keir-compiler-java-0.2.0-cli.jar';
+const jarDigest = 'a53551e45c94f1c5a63325e821a47e9742cf9a588720269077f96f0e9b37b7b0';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const source = Buffer.from(JSON.stringify({
-  language: 'keir/1', domain: { id: 'demo.tasks', version: '3', fingerprint: 'sha256:' + sha(model) },
+  language: 'keir/2', domain: { id: 'demo.tasks', version: '4', fingerprint: 'sha256:' + sha(model) },
   entrypoint: TASK_HOOK, name: 'daymark-title-probe',
   steps: [
     { id: 'eligibleProject', let: { literal: 'project1', type: 'ProjectId' } },
@@ -80,10 +81,11 @@ async function cleaned(call) {
 test('distribution is the pinned independent compiler and notice metadata resolves', async () => {
   const info = JSON.parse(await readFile(join(vendor, 'compiler-provenance.json')));
   assert.equal(sha(await readFile(join(vendor, jarName))), info.artifact.sha256.slice(7));
-  assert.equal(info.artifact.sha256, 'sha256:06330d6dedaf172236f0921de8b85d92d47b77bc6c5d0c937ba3d94393cc934b');
-  assert.equal(info.artifact.bytes, 8_812_623);
-  assert.equal(info.compiler, 'keir-compiler-java/0.1.0');
-  assert.equal(info.distribution.sha256, 'sha256:1b6f83635c6850a77159c1649cf7922597d326b2d3573f11d7cc178e5de54260');
+  assert.equal(info.artifact.file, jarName);
+  assert.equal(info.artifact.sha256, 'sha256:' + jarDigest);
+  assert.equal(info.artifact.bytes, 8_818_933);
+  assert.equal(info.compiler, 'keir-compiler-java/0.2.0');
+  assert.equal(info.distribution.sha256, 'sha256:5aa1bd71ef10493de21e700053005c119a5835aaeb85c71ba5c00ce7fc175b05');
   const notices = await readFile(join(vendor, info.notices), 'utf8');
   assert.equal((notices.match(/ sha256:[a-f0-9]{64}/g) ?? []).length, 19);
   assert.match(await readFile(join(vendor, 'compiler-notices/LICENSE'), 'utf8'), /Apache License/);
@@ -109,7 +111,7 @@ test('safe direct argv, immutable byte snapshots and minimal JVM environment', a
   assert.equal(call.args[0], '-Xmx256m');
   assert.equal(call.args[1], '-XX:-UsePerfData');
   assert.equal(call.args.length, 8);
-  assert.equal(sha(await readFile(call.args[5])), '06330d6dedaf172236f0921de8b85d92d47b77bc6c5d0c937ba3d94393cc934b');
+  assert.equal(sha(await readFile(call.args[5])), jarDigest);
   assert.deepEqual(await readFile(call.args[6]), Buffer.from('submitted bytes'));
   assert.deepEqual(await readFile(call.args[7]), model);
   assert.deepEqual(Object.keys(call.options.env).filter(key => call.options.env[key] !== undefined && !['PATH', 'SystemRoot', 'WINDIR', 'SystemDrive', 'TEMP', 'TMP'].includes(key)), []);
@@ -351,6 +353,7 @@ test('untrusted definition/profile/model is rejected without launching a compile
     { ...definition, definitionId: 'customer-definition' },
     { ...definition, pins: { ...definition.pins, profile: 'keir-effect/3' } },
     { ...definition, pins: { ...definition.pins, hook: 'TaskRead' } },
+    { ...definition, pins: { ...definition.pins, modelRef: { ...definition.pins.modelRef, format: 'keir-dcm/1' } } },
     { ...definition, dcmBytes: Buffer.from('{}') },
     { ...definition, pins: { ...definition.pins, consumer: { id: 'customer-consumer', version: '1', kind: 'EVENT_REPORT' } } },
   ]) await assert.rejects(compiler.compile(source, { definition: changed }), unavailable);
@@ -369,10 +372,10 @@ test('actual pinned compiler works from a standalone directory and preserves raw
   const imported = await import(pathToFileURL(join(directory, 'src/compiler.mjs')));
   const compiler = imported.createCompiler({ modelBytes: model, javaExecutable: java });
   const first = await compiler.compile(source);
-  assert.equal(sha(first.artifact), '5278abc74558579d59cc51222ad434240172e642ab244798c9fc1eb85c1384a3');
+  assert.equal(sha(first.artifact), 'fe2516a772473ded446b93768a04e11b00a50351c6e8a5fa78f2dcf129c98a36');
   const artifact = JSON.parse(first.artifact);
-  assert.equal(artifact.format, 'keir-artifact/1');
-  assert.equal(artifact.compiler, 'keir-compiler-java/0.1.0');
+  assert.equal(artifact.format, 'keir-artifact/2');
+  assert.equal(artifact.compiler, 'keir-compiler-java/0.2.0');
   assert.equal(Object.hasOwn(artifact, 'profile'), false);
   assert.deepEqual(first.diagnostics, []);
   const changed = Buffer.concat([source, Buffer.from('\n  \n')]);
@@ -382,13 +385,15 @@ test('actual pinned compiler works from a standalone directory and preserves raw
   const invalid = await compiler.compile(Buffer.from('{'));
   assert.equal(invalid.artifact, null);
   assert.equal(invalid.diagnostics[0].code, 'SYNTAX_INVALID');
-  const oldSource = await compiler.compile(Buffer.from(JSON.stringify({ ...JSON.parse(source), language: 'keir/v0' })));
-  assert.equal(oldSource.artifact, null);
-  assert.equal(oldSource.diagnostics[0].code, 'PROFILE_UNSUPPORTED');
-  const oldModel = Buffer.from(JSON.stringify({ ...JSON.parse(model), format: 'keir-dcm/effect-4' }));
+  for (const language of ['keir/1', 'keir/v0']) {
+    const oldSource = await compiler.compile(Buffer.from(JSON.stringify({ ...JSON.parse(source), language })));
+    assert.equal(oldSource.artifact, null);
+    assert.equal(oldSource.diagnostics[0].code, 'PROFILE_UNSUPPORTED');
+  }
+  const oldModel = await readFile(join(root, 'extensions/task-effect/title/dcm.json'));
   const rejectedModel = await imported.createCompiler({ modelBytes: oldModel, javaExecutable: java }).compile(source);
   assert.equal(rejectedModel.artifact, null);
   assert.equal(rejectedModel.diagnostics[0].path, '/dcm/format');
-  const excessiveDiagnostic = Buffer.from(JSON.stringify({ language: 'keir/1', ['x'.repeat(20_000)]: false }));
+  const excessiveDiagnostic = Buffer.from(JSON.stringify({ language: 'keir/2', ['x'.repeat(20_000)]: false }));
   await assert.rejects(compiler.compile(excessiveDiagnostic), error => error.code === 'COMPILER_LIMIT' && error.status === 413);
 });

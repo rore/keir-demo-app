@@ -6,6 +6,7 @@ import { resolve, join, relative, isAbsolute, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { AppError, USERS, taskService } from './data.mjs';
 import { createTaskDispatcher } from './task-effects.mjs';
+import { TASK_HOOK, TASK_HOOKS } from './extension-catalog.mjs';
 import { createLifecycle } from './extension-lifecycle.mjs';
 import { createAuthoringService, AUTHORING_CODES } from './authoring-service.mjs';
 import { authoringChoices } from './authoring-config.mjs';
@@ -227,13 +228,21 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   app.get('/api/projects/:id/tasks', request => service.listTasks(authorize(request).userId, request.params.id));
   app.get('/api/projects/:id/tasks/search', request => service.searchTasks(authorize(request).userId, request.params.id, request.query));
   app.get('/api/tasks/:id', request => service.getTask(authorize(request).userId, request.params.id));
-  app.get('/api/tasks/:id/reaction', request => { noQuery(request); return effects.status(authorize(request).userId, request.params.id); });
+  const reactionHook = request => {
+    const hook = request.query.trigger ?? TASK_HOOK;
+    if (Object.keys(request.query).some(key => key !== 'trigger') || !TASK_HOOKS.includes(hook)) throw new AppError(400, 'Choose a task trigger.');
+    return hook;
+  };
+  app.get('/api/tasks/:id/reaction', request => effects.status(authorize(request).userId, request.params.id, reactionHook(request)));
   app.post('/api/tasks/:id/reaction/reconcile', request => {
-    noQuery(request); const session = authorize(request);
+    const session = authorize(request), hook = reactionHook(request);
     if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new AppError(400, 'Checking a saved outcome takes no fields.');
-    return effects.reconcile(session.userId, request.params.id);
+    return effects.reconcile(session.userId, request.params.id, hook);
   });
-  app.post('/api/tasks', (request, reply) => { const result = service.createTask(authorize(request).userId, request.body); reply.code(201); return result; });
+  app.post('/api/tasks', (request, reply) => {
+    const result = service.createTask(authorize(request).userId, request.body);
+    wakeEffects(); reply.code(201); return result;
+  });
   app.patch('/api/tasks/:id', request => service.editTask(authorize(request).userId, request.params.id, request.body));
   app.post('/api/tasks/:id/complete', request => {
     const session = authorize(request);

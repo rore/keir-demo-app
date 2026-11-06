@@ -130,8 +130,8 @@ test('a checked title rule copies the exact saved title, skips a different title
   const fixture = setup(t), { db, native, lifecycle, projectId } = fixture;
   const host = loadHost(TASK_HOOK), model = JSON.parse(host.dcmBytes);
   assert.equal(host.definitionId, TASK_DEFINITION);
-  assert.equal(host.definitionId, 'daymark.task-completed/3');
-  assert.equal(model.capabilities['tasks.get'].version, '2');
+  assert.equal(host.definitionId, 'daymark.task-workflow/1');
+  assert.equal(model.capabilities['tasks.get'].version, '3');
   const prefix = '界'.repeat(84) + '\0ab';
   const title = prefix + 'X', otherTitle = prefix + 'x', overflowTitle = '界'.repeat(100);
   assert.equal(Buffer.byteLength(title), 256);
@@ -280,10 +280,10 @@ test('a checked suffix rule preserves Unicode and reaches the byte limit before 
   assert.equal(rejected.outcome.classification, 'BUSINESS_REJECTION');
   assert.deepEqual(rejected.outcome.error, { code: 'TASK_INVALID', path: '/steps/3' });
   assert.deepEqual(rejected.outcome.effects, [{ step: 'created', capability: 'tasks.create', state: 'NONE' }]);
-  assert.equal(rejected.receipt, null);
+  assert.deepEqual(rejected.receipt, { kind: 'BUSINESS_REJECTION', code: 'TASK_INVALID', effect: 'NONE' });
   const events = db.prepare('SELECT revision_id,pins FROM task_events WHERE hook_id=\'TaskCompleted\' AND owner_id=?').all(owner);
   assert.equal(events.length, 4);
   assert.ok(events.every(row => row.revision_id === input.revisionId && JSON.parse(row.pins).artifactDigest === artifactDigest));
-  assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 2);
   assert.equal(native.listTasks(owner, projectId).length, before + 1);
 });

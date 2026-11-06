@@ -8,7 +8,7 @@ import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const review = page => studio(page).getByRole('article', { name: 'Current decision', exact: true });
 const composer = page => studio(page).getByLabel('Message to Daymark assistant', { exact: true });
-const activate = page => review(page).getByRole('button', { name: /^(Turn on for my tasks|Switch to this customization)$/ });
+const activate = page => review(page).getByRole('button', { name: /^(Turn on for tasks completed)$/ });
 async function api(page, path, body) {
   const origin = new URL(page.url()).origin;
   const session = await (await page.request.get(origin + '/api/session')).json();
@@ -63,7 +63,7 @@ async function closeReview(page) {
 async function expectIllustration(page, title) {
   const saved = studio(page).getByRole('article', { name: 'About this rule', exact: true });
   await expect(saved).toContainText('About this rule');
-  await expect(saved).toContainText(`can request a follow-up titled “${title}”`);
+  await expect(saved).toContainText(`Create a task titled “${title}”`);
 }
 async function holdResponse(page, url, { fail = false } = {}) {
   let entered, release, delivered;
@@ -338,7 +338,7 @@ test('an earlier run stays read-only when it becomes the approved decision until
     await expect(results).toContainText('Evidence: ' + first.evidence.id);
     await expect(review(page)).toBeHidden();
     await expect(results.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-    await expect(results.getByRole('button', { name: /^(Turn on for my tasks|Switch to this customization)$/ })).toHaveCount(0);
+    await expect(results.getByRole('button', { name: /^(Turn on for tasks completed)$/ })).toHaveCount(0);
     await openReview(page);
     await expect(activate(page)).toBeEnabled();
     await review(page).getByText('Exact saved change and checks', { exact: true }).click();

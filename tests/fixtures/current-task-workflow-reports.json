@@ -1,0 +1,1208 @@
+[
+  {
+    "id": "matching-project",
+    "label": "matching-project",
+    "expected": {
+      "outcome": {
+        "classification": "COMPLETED",
+        "result": {
+          "status": "CREATED"
+        },
+        "effects": [
+          {
+            "step": "created",
+            "capability": "tasks.create",
+            "state": "CONFIRMED"
+          }
+        ],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "CALL_SUCCEEDED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 6,
+            "event": "STEP_START",
+            "step": "eligible"
+          },
+          {
+            "sequence": 7,
+            "event": "VALUE_BOUND",
+            "step": "eligible"
+          },
+          {
+            "sequence": 8,
+            "event": "STEP_START",
+            "step": "created"
+          },
+          {
+            "sequence": 9,
+            "event": "GUARD_EVALUATED",
+            "step": "created",
+            "taken": true
+          },
+          {
+            "sequence": 10,
+            "event": "EFFECT_INTENT",
+            "step": "created",
+            "capability": "tasks.create"
+          },
+          {
+            "sequence": 11,
+            "event": "CALL_DISPATCHED",
+            "step": "created",
+            "capability": "tasks.create"
+          },
+          {
+            "sequence": 12,
+            "event": "EFFECT_RECORDED",
+            "step": "created",
+            "capability": "tasks.create",
+            "state": "CONFIRMED"
+          },
+          {
+            "sequence": 13,
+            "event": "CALL_SUCCEEDED",
+            "step": "created",
+            "capability": "tasks.create"
+          },
+          {
+            "sequence": 14,
+            "event": "RETURNED"
+          },
+          {
+            "sequence": 15,
+            "event": "TERMINATED"
+          }
+        ]
+      },
+      "calls": [
+        {
+          "step": "source",
+          "capability": "tasks.get",
+          "version": "3",
+          "args": {
+            "taskId": "task1"
+          },
+          "protectedArgs": {
+            "actorId": "user1"
+          }
+        },
+        {
+          "step": "created",
+          "capability": "tasks.create",
+          "version": "2",
+          "args": {
+            "projectId": "project1",
+            "title": "Example follow-up task"
+          },
+          "protectedArgs": {
+            "actorId": "user1"
+          }
+        }
+      ],
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "COMPLETED",
+        "result": {
+          "status": "CREATED"
+        },
+        "effects": [
+          {
+            "capability": "tasks.create",
+            "state": "CONFIRMED",
+            "step": "created"
+          }
+        ]
+      },
+      "createdTasks": [
+        {
+          "id": "task2",
+          "projectId": "project1",
+          "title": "Example follow-up task",
+          "tags": []
+        }
+      ],
+      "updatedTasks": []
+    },
+    "report": {
+      "status": "PASS",
+      "native": {
+        "classification": "COMPLETED",
+        "result": {
+          "status": "CREATED"
+        },
+        "effects": [
+          {
+            "step": "created",
+            "capability": "tasks.create",
+            "state": "CONFIRMED"
+          }
+        ],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "CALL_SUCCEEDED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 6,
+            "event": "STEP_START",
+            "step": "eligible"
+          },
+          {
+            "sequence": 7,
+            "event": "VALUE_BOUND",
+            "step": "eligible"
+          },
+          {
+            "sequence": 8,
+            "event": "STEP_START",
+            "step": "created"
+          },
+          {
+            "sequence": 9,
+            "event": "GUARD_EVALUATED",
+            "step": "created",
+            "taken": true
+          },
+          {
+            "sequence": 10,
+            "event": "EFFECT_INTENT",
+            "step": "created",
+            "capability": "tasks.create"
+          },
+          {
+            "sequence": 11,
+            "event": "CALL_DISPATCHED",
+            "step": "created",
+            "capability": "tasks.create"
+          },
+          {
+            "sequence": 12,
+            "event": "EFFECT_RECORDED",
+            "step": "created",
+            "capability": "tasks.create",
+            "state": "CONFIRMED"
+          },
+          {
+            "sequence": 13,
+            "event": "CALL_SUCCEEDED",
+            "step": "created",
+            "capability": "tasks.create"
+          },
+          {
+            "sequence": 14,
+            "event": "RETURNED"
+          },
+          {
+            "sequence": 15,
+            "event": "TERMINATED"
+          }
+        ]
+      },
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "COMPLETED",
+        "result": {
+          "status": "CREATED"
+        },
+        "effects": [
+          {
+            "capability": "tasks.create",
+            "state": "CONFIRMED",
+            "step": "created"
+          }
+        ]
+      },
+      "calls": [
+        {
+          "step": "source",
+          "args": {
+            "taskId": "task1"
+          },
+          "capability": "tasks.get",
+          "protectedArgs": {
+            "actorId": "user1"
+          },
+          "version": "3"
+        },
+        {
+          "step": "created",
+          "args": {
+            "projectId": "project1",
+            "title": "Example follow-up task"
+          },
+          "capability": "tasks.create",
+          "protectedArgs": {
+            "actorId": "user1"
+          },
+          "version": "2"
+        }
+      ],
+      "mismatches": [],
+      "scenario": {
+        "task": {
+          "id": "task1",
+          "priority": "normal",
+          "projectId": "project1",
+          "status": "COMPLETED",
+          "tags": [],
+          "title": "Example task"
+        },
+        "occurredAt": "2026-03-07T12:34:56.789Z",
+        "openMatches": []
+      },
+      "observed": {
+        "effect": "CONFIRMED",
+        "createdTasks": [
+          {
+            "id": "task2",
+            "projectId": "project1",
+            "title": "Example follow-up task",
+            "tags": []
+          }
+        ],
+        "updatedTasks": []
+      }
+    }
+  },
+  {
+    "id": "other-project",
+    "label": "other-project",
+    "expected": {
+      "outcome": {
+        "classification": "COMPLETED",
+        "result": {
+          "status": "NO_OP"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "CALL_SUCCEEDED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 6,
+            "event": "STEP_START",
+            "step": "eligible"
+          },
+          {
+            "sequence": 7,
+            "event": "VALUE_BOUND",
+            "step": "eligible"
+          },
+          {
+            "sequence": 8,
+            "event": "STEP_START",
+            "step": "created"
+          },
+          {
+            "sequence": 9,
+            "event": "GUARD_EVALUATED",
+            "step": "created",
+            "taken": false
+          },
+          {
+            "sequence": 10,
+            "event": "STEP_SKIPPED",
+            "step": "created"
+          },
+          {
+            "sequence": 11,
+            "event": "RETURNED"
+          },
+          {
+            "sequence": 12,
+            "event": "TERMINATED"
+          }
+        ]
+      },
+      "calls": [
+        {
+          "step": "source",
+          "capability": "tasks.get",
+          "version": "3",
+          "args": {
+            "taskId": "task1"
+          },
+          "protectedArgs": {
+            "actorId": "user1"
+          }
+        }
+      ],
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "COMPLETED",
+        "result": {
+          "status": "NO_OP"
+        },
+        "effects": []
+      },
+      "createdTasks": [],
+      "updatedTasks": []
+    },
+    "report": {
+      "status": "PASS",
+      "native": {
+        "classification": "COMPLETED",
+        "result": {
+          "status": "NO_OP"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "CALL_SUCCEEDED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 6,
+            "event": "STEP_START",
+            "step": "eligible"
+          },
+          {
+            "sequence": 7,
+            "event": "VALUE_BOUND",
+            "step": "eligible"
+          },
+          {
+            "sequence": 8,
+            "event": "STEP_START",
+            "step": "created"
+          },
+          {
+            "sequence": 9,
+            "event": "GUARD_EVALUATED",
+            "step": "created",
+            "taken": false
+          },
+          {
+            "sequence": 10,
+            "event": "STEP_SKIPPED",
+            "step": "created"
+          },
+          {
+            "sequence": 11,
+            "event": "RETURNED"
+          },
+          {
+            "sequence": 12,
+            "event": "TERMINATED"
+          }
+        ]
+      },
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "COMPLETED",
+        "result": {
+          "status": "NO_OP"
+        },
+        "effects": []
+      },
+      "calls": [
+        {
+          "step": "source",
+          "args": {
+            "taskId": "task1"
+          },
+          "capability": "tasks.get",
+          "protectedArgs": {
+            "actorId": "user1"
+          },
+          "version": "3"
+        }
+      ],
+      "mismatches": [],
+      "scenario": {
+        "task": {
+          "id": "task1",
+          "priority": "normal",
+          "projectId": "project2",
+          "status": "COMPLETED",
+          "tags": [],
+          "title": "Example task"
+        },
+        "occurredAt": "2026-03-07T12:34:56.789Z",
+        "openMatches": []
+      },
+      "observed": {
+        "effect": "NONE",
+        "createdTasks": [],
+        "updatedTasks": []
+      }
+    }
+  },
+  {
+    "id": "other-status",
+    "label": "other-status",
+    "expected": {
+      "outcome": {
+        "classification": "COMPLETED",
+        "result": {
+          "status": "NO_OP"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "CALL_SUCCEEDED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 6,
+            "event": "STEP_START",
+            "step": "eligible"
+          },
+          {
+            "sequence": 7,
+            "event": "VALUE_BOUND",
+            "step": "eligible"
+          },
+          {
+            "sequence": 8,
+            "event": "STEP_START",
+            "step": "created"
+          },
+          {
+            "sequence": 9,
+            "event": "GUARD_EVALUATED",
+            "step": "created",
+            "taken": false
+          },
+          {
+            "sequence": 10,
+            "event": "STEP_SKIPPED",
+            "step": "created"
+          },
+          {
+            "sequence": 11,
+            "event": "RETURNED"
+          },
+          {
+            "sequence": 12,
+            "event": "TERMINATED"
+          }
+        ]
+      },
+      "calls": [
+        {
+          "step": "source",
+          "capability": "tasks.get",
+          "version": "3",
+          "args": {
+            "taskId": "task1"
+          },
+          "protectedArgs": {
+            "actorId": "user1"
+          }
+        }
+      ],
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "COMPLETED",
+        "result": {
+          "status": "NO_OP"
+        },
+        "effects": []
+      },
+      "createdTasks": [],
+      "updatedTasks": []
+    },
+    "report": {
+      "status": "PASS",
+      "native": {
+        "classification": "COMPLETED",
+        "result": {
+          "status": "NO_OP"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "CALL_SUCCEEDED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 6,
+            "event": "STEP_START",
+            "step": "eligible"
+          },
+          {
+            "sequence": 7,
+            "event": "VALUE_BOUND",
+            "step": "eligible"
+          },
+          {
+            "sequence": 8,
+            "event": "STEP_START",
+            "step": "created"
+          },
+          {
+            "sequence": 9,
+            "event": "GUARD_EVALUATED",
+            "step": "created",
+            "taken": false
+          },
+          {
+            "sequence": 10,
+            "event": "STEP_SKIPPED",
+            "step": "created"
+          },
+          {
+            "sequence": 11,
+            "event": "RETURNED"
+          },
+          {
+            "sequence": 12,
+            "event": "TERMINATED"
+          }
+        ]
+      },
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "COMPLETED",
+        "result": {
+          "status": "NO_OP"
+        },
+        "effects": []
+      },
+      "calls": [
+        {
+          "step": "source",
+          "args": {
+            "taskId": "task1"
+          },
+          "capability": "tasks.get",
+          "protectedArgs": {
+            "actorId": "user1"
+          },
+          "version": "3"
+        }
+      ],
+      "mismatches": [],
+      "scenario": {
+        "task": {
+          "id": "task1",
+          "priority": "normal",
+          "projectId": "project1",
+          "status": "OPEN",
+          "tags": [],
+          "title": "Example task"
+        },
+        "occurredAt": "2026-03-07T12:34:56.789Z",
+        "openMatches": []
+      },
+      "observed": {
+        "effect": "NONE",
+        "createdTasks": [],
+        "updatedTasks": []
+      }
+    }
+  },
+  {
+    "id": "missing-task",
+    "label": "missing-task",
+    "expected": {
+      "outcome": {
+        "classification": "BUSINESS_REJECTION",
+        "error": {
+          "code": "TASK_NOT_FOUND",
+          "path": "/steps/1"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "TERMINATED",
+            "code": "TASK_NOT_FOUND"
+          }
+        ]
+      },
+      "calls": [
+        {
+          "step": "source",
+          "capability": "tasks.get",
+          "version": "3",
+          "args": {
+            "taskId": "task1"
+          },
+          "protectedArgs": {
+            "actorId": "user1"
+          }
+        }
+      ],
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "BUSINESS_REJECTION",
+        "error": {
+          "code": "TASK_NOT_FOUND",
+          "path": "/steps/1"
+        },
+        "effects": []
+      },
+      "createdTasks": [],
+      "updatedTasks": []
+    },
+    "report": {
+      "status": "PASS",
+      "native": {
+        "classification": "BUSINESS_REJECTION",
+        "error": {
+          "code": "TASK_NOT_FOUND",
+          "path": "/steps/1"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "TERMINATED",
+            "code": "TASK_NOT_FOUND"
+          }
+        ]
+      },
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "BUSINESS_REJECTION",
+        "error": {
+          "code": "TASK_NOT_FOUND",
+          "path": "/steps/1"
+        },
+        "effects": []
+      },
+      "calls": [
+        {
+          "step": "source",
+          "args": {
+            "taskId": "task1"
+          },
+          "capability": "tasks.get",
+          "protectedArgs": {
+            "actorId": "user1"
+          },
+          "version": "3"
+        }
+      ],
+      "mismatches": [],
+      "scenario": {
+        "task": {
+          "id": "task1",
+          "title": "Example task"
+        },
+        "occurredAt": "2026-03-07T12:34:56.789Z",
+        "openMatches": []
+      },
+      "observed": {
+        "effect": "NONE",
+        "createdTasks": [],
+        "updatedTasks": []
+      }
+    }
+  },
+  {
+    "id": "access-denied",
+    "label": "access-denied",
+    "expected": {
+      "outcome": {
+        "classification": "BUSINESS_REJECTION",
+        "error": {
+          "code": "ACCESS_DENIED",
+          "path": "/steps/1"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "TERMINATED",
+            "code": "ACCESS_DENIED"
+          }
+        ]
+      },
+      "calls": [
+        {
+          "step": "source",
+          "capability": "tasks.get",
+          "version": "3",
+          "args": {
+            "taskId": "task1"
+          },
+          "protectedArgs": {
+            "actorId": "user1"
+          }
+        }
+      ],
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "BUSINESS_REJECTION",
+        "error": {
+          "code": "ACCESS_DENIED",
+          "path": "/steps/1"
+        },
+        "effects": []
+      },
+      "createdTasks": [],
+      "updatedTasks": []
+    },
+    "report": {
+      "status": "PASS",
+      "native": {
+        "classification": "BUSINESS_REJECTION",
+        "error": {
+          "code": "ACCESS_DENIED",
+          "path": "/steps/1"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "TERMINATED",
+            "code": "ACCESS_DENIED"
+          }
+        ]
+      },
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "BUSINESS_REJECTION",
+        "error": {
+          "code": "ACCESS_DENIED",
+          "path": "/steps/1"
+        },
+        "effects": []
+      },
+      "calls": [
+        {
+          "step": "source",
+          "args": {
+            "taskId": "task1"
+          },
+          "capability": "tasks.get",
+          "protectedArgs": {
+            "actorId": "user1"
+          },
+          "version": "3"
+        }
+      ],
+      "mismatches": [],
+      "scenario": {
+        "task": {
+          "id": "task1",
+          "title": "Example task"
+        },
+        "occurredAt": "2026-03-07T12:34:56.789Z",
+        "openMatches": []
+      },
+      "observed": {
+        "effect": "NONE",
+        "createdTasks": [],
+        "updatedTasks": []
+      }
+    }
+  },
+  {
+    "id": "read-unavailable",
+    "label": "read-unavailable",
+    "expected": {
+      "outcome": {
+        "classification": "FAILED",
+        "error": {
+          "code": "ADAPTER_TRANSIENT",
+          "path": "/steps/1"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "TERMINATED",
+            "code": "ADAPTER_TRANSIENT"
+          }
+        ]
+      },
+      "calls": [
+        {
+          "step": "source",
+          "capability": "tasks.get",
+          "version": "3",
+          "args": {
+            "taskId": "task1"
+          },
+          "protectedArgs": {
+            "actorId": "user1"
+          }
+        }
+      ],
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "FAILED",
+        "error": {
+          "code": "ADAPTER_TRANSIENT",
+          "path": "/steps/1"
+        },
+        "effects": []
+      },
+      "createdTasks": [],
+      "updatedTasks": []
+    },
+    "report": {
+      "status": "PASS",
+      "native": {
+        "classification": "FAILED",
+        "error": {
+          "code": "ADAPTER_TRANSIENT",
+          "path": "/steps/1"
+        },
+        "effects": [],
+        "trace": [
+          {
+            "sequence": 0,
+            "event": "INVOCATION_START"
+          },
+          {
+            "sequence": 1,
+            "event": "STEP_START",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 2,
+            "event": "VALUE_BOUND",
+            "step": "eligibleProject"
+          },
+          {
+            "sequence": 3,
+            "event": "STEP_START",
+            "step": "source"
+          },
+          {
+            "sequence": 4,
+            "event": "CALL_DISPATCHED",
+            "step": "source",
+            "capability": "tasks.get"
+          },
+          {
+            "sequence": 5,
+            "event": "TERMINATED",
+            "code": "ADAPTER_TRANSIENT"
+          }
+        ]
+      },
+      "consumption": {
+        "status": "REPORTED",
+        "classification": "FAILED",
+        "error": {
+          "code": "ADAPTER_TRANSIENT",
+          "path": "/steps/1"
+        },
+        "effects": []
+      },
+      "calls": [
+        {
+          "step": "source",
+          "args": {
+            "taskId": "task1"
+          },
+          "capability": "tasks.get",
+          "protectedArgs": {
+            "actorId": "user1"
+          },
+          "version": "3"
+        }
+      ],
+      "mismatches": [],
+      "scenario": {
+        "task": {
+          "id": "task1",
+          "title": "Example task"
+        },
+        "occurredAt": "2026-03-07T12:34:56.789Z",
+        "openMatches": []
+      },
+      "observed": {
+        "effect": "NONE",
+        "createdTasks": [],
+        "updatedTasks": []
+      }
+    }
+  }
+]

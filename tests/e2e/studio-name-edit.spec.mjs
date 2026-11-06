@@ -142,12 +142,12 @@ test('saved behavior illustrates task creation and checked examples keep authore
     await openSavedChanges(page);
     await expect(ui.getByRole('article', { name: 'About this rule', exact: true })).toContainText(task.metadata.title);
     const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
-    const rows = proposed.locator('.rs-compact-case:visible');
+    const rows = proposed.getByRole('article', { name: /^Example:/ });
     await expect(rows).toHaveCount(cases.length);
-    await expect(rows.first()).toContainText('No task was created.');
+    await expect(rows.first()).toContainText('No change.');
     const example = proposed.getByRole('article', { name: `Example: Task completed in ${project.name}`, exact: true });
     await expect(example).toHaveCount(1);
-    await expect(example.locator('dd')).toContainText(task.metadata.title);
+    await expect(example.locator('dd').nth(2)).toContainText(task.metadata.title);
     await expect(example.getByText('Matches', { exact: true })).toBeVisible();
     const exact = decision.getByLabel('Exact checked examples', { exact: true });
     await expect(exact).toBeHidden();

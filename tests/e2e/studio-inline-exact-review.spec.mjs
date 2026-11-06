@@ -9,10 +9,10 @@ const studio = page => page.getByRole('region', { name: 'Customization Studio', 
 const review = page => studio(page).getByRole('article', { name: 'Current decision', exact: true });
 const behavior = page => studio(page).getByRole('article', { name: 'About this rule', exact: true });
 const composer = page => studio(page).getByLabel('Message to Daymark assistant', { exact: true });
-const turnOn = page => review(page).getByRole('button', { name: 'Turn on for my tasks', exact: true });
+const turnOn = page => review(page).getByRole('button', { name: 'Turn on for tasks completed', exact: true });
 const reviewLink = page => studio(page).getByRole('button', { name: /^(View saved changes|View latest changes)$/ }).first();
 const decisions = page => review(page).getByRole('button', {
-  name: /^(Approve this change|Turn on for my tasks|Switch to this customization)$/, disabled: false,
+  name: /^(Approve this change|Turn on for tasks completed)$/, disabled: false,
 });
 const draftInput = state => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
 
@@ -60,7 +60,7 @@ async function expectProof(page, id) {
 
 async function expectIllustration(page, expectedTitle) {
   await expect(behavior(page)).toContainText('About this rule');
-  await expect(behavior(page)).toContainText(`can request a follow-up titled “${expectedTitle}”`);
+  await expect(behavior(page)).toContainText(`Create a task titled “${expectedTitle}”`);
   await expect(behavior(page)).toContainText('A full summary isn’t available for this version.');
   await expect(behavior(page)).not.toContainText('Completed example task');
 }
@@ -116,8 +116,8 @@ test('a competing approval cannot substitute its proof during turn-on', async ({
 
     await openItem(page, extensionId);
     await expectIllustration(page, metadata.title);
-    await expect(behavior(page)).toContainText('After a task completes');
-    await expect(behavior(page)).not.toContainText('Studio QA');
+    await expect(behavior(page)).toContainText('A task is completed.');
+    await expect(behavior(page)).toContainText('in “Studio QA”');
     await expect(review(page)).toBeHidden();
     await composer(page).fill('Keep my unsent next change');
     await reviewLink(page).click();
@@ -276,7 +276,8 @@ test('a confirmed project mismatch distinguishes the expected and actual project
       expect(expected.projectId).toBe(metadata.projectId);
       delete expected.projectName;
       delete observed.projectName;
-      observed.projectId = metadata.otherProjectId;
+      expected.projectId = 'unknown-expected-project';
+      observed.projectId = 'unknown-observed-project';
       example.report.status = 'FAIL';
       proof.passed = false;
       await route.fulfill({ response, json: proof });

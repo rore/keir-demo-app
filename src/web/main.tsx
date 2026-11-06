@@ -19,13 +19,17 @@ function studioLink() {
 }
 type Project = { id: string; name: string };
 type NativeReceipt = { kind: string; effect?: "CONFIRMED" | "NONE" | "UNKNOWN"; value?: { id: string }; code?: string };
+type NativeChange = Pick<Task, "tags" | "priority" | "dueAt">;
+type ReactionObservation = { capability?: "tasks.create" | "tasks.update"; observation?: { updated?: { id: string; before: NativeChange; after: NativeChange } } };
 type Reaction = {
   state: "NO_BINDING" | "PENDING" | "STARTED" | "FINISHED";
-  outcome?: { classification?: string; effects?: { state?: string; effect?: string }[]; [key: string]: unknown } | null;
+  workflow?: boolean;
+  revoked?: boolean;
+  outcome?: { classification?: string; effects?: { state?: string; effect?: string }[]; error?: { code?: string }; [key: string]: unknown } | null;
   receipt?: NativeReceipt | null;
-  reconciliation?: { observedAt: string; receipt?: NativeReceipt | null } | null;
+  reconciliation?: ({ observedAt: string; receipt?: NativeReceipt | null } & ReactionObservation) | null;
   message?: string;
-};
+} & ReactionObservation;
 type Task = {
   id: string;
   projectId: string;
@@ -1123,11 +1127,12 @@ function Workspace({
   );
 }
 
-function TaskReaction({ source, request, confirmed, openCreated }: {
+function TaskReaction({ source, request, confirmed, openCreated, creation = false }: {
   source: Task;
   request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
   confirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
+  creation?: boolean;
 }) {
   const [reaction, setReaction] = useState<Reaction | null>(null);
   const [created, setCreated] = useState<Task | null>(null);
@@ -1143,25 +1148,29 @@ function TaskReaction({ source, request, confirmed, openCreated }: {
     clearTimeout(timer.current); locked.current = true; const turn = ++serial.current;
     setChecking(true); setError(""); setCreated(null);
     try {
-      const next = await callbacks.current.request<Reaction>("tasks/" + encodeURIComponent(source.id) + "/reaction" + (reconcile ? "/reconcile" : ""), reconcile ? "POST" : "GET", reconcile ? {} : undefined, lifetime.current.signal);
+      const next = await callbacks.current.request<Reaction>("tasks/" + encodeURIComponent(source.id) + "/reaction" + (reconcile ? "/reconcile" : "")
+        + (creation ? "?trigger=TaskCreated" : ""), reconcile ? "POST" : "GET", reconcile ? {} : undefined, lifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
       if (!["NO_BINDING", "PENDING", "STARTED", "FINISHED"].includes(next.state)) throw new Error("Unconfirmed reaction response");
       setReaction(next);
       const observation = next.reconciliation?.receipt;
       const receipt = observation?.kind === "SUCCESS" && observation.effect === "CONFIRMED" ? observation : next.receipt;
+      const isUpdate = (next.reconciliation?.capability ?? next.capability) === "tasks.update";
       if (receipt?.kind === "SUCCESS" && receipt.effect === "CONFIRMED" && typeof receipt.value?.id === "string" && receipt.value.id) {
         const actual = await callbacks.current.request<Task>("tasks/" + encodeURIComponent(receipt.value.id), "GET", undefined, lifetime.current.signal);
         if (!mounted.current || serial.current !== turn) return;
-        if (actual.id !== receipt.value.id || typeof actual.title !== "string" || typeof actual.projectId !== "string") throw new Error("Created task could not be resolved");
-        setCreated(actual);
+        if (actual.id !== receipt.value.id || typeof actual.title !== "string" || typeof actual.projectId !== "string") throw new Error("Affected task could not be resolved");
+        if (!isUpdate) setCreated(actual);
         if (announced.current !== actual.id) {
           try { await callbacks.current.confirmed(actual); announced.current = actual.id; }
-          catch { if (mounted.current && serial.current === turn) setError("A task was added, but the project list could not be refreshed. Open the task or check the result again."); }
+          catch { if (mounted.current && serial.current === turn) setError("The customization was confirmed, but the project list could not be refreshed. Check the result again."); }
         }
       }
-      if (["PENDING", "STARTED"].includes(next.state) && ++reads.current < 12) timer.current = setTimeout(() => void read(false, true), 1000);
+      if (!next.revoked && ["PENDING", "STARTED"].includes(next.state) && ++reads.current < 12) timer.current = setTimeout(() => void read(false, true), 1000);
     } catch {
-      if (mounted.current && serial.current === turn) setError("The customization result could not be checked. Your task stays completed. Check the result before deciding what to do next.");
+      if (mounted.current && serial.current === turn) setError(creation
+        ? "The customization result could not be checked. Your task is kept."
+        : "The customization result could not be checked. Your task stays completed. Check the result before deciding what to do next.");
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setChecking(false); } }
   }
   useEffect(() => {
@@ -1173,23 +1182,37 @@ function TaskReaction({ source, request, confirmed, openCreated }: {
   const observedReceipt = reaction?.reconciliation?.receipt;
   const receipt = observedReceipt?.kind === "SUCCESS" && observedReceipt.effect === "CONFIRMED" ? observedReceipt : reaction?.receipt;
   const confirmedReceipt = receipt?.kind === "SUCCESS" && receipt.effect === "CONFIRMED" && typeof receipt.value?.id === "string" && !!receipt.value.id;
+  const update = (reaction?.reconciliation?.observation ?? reaction?.observation)?.updated;
+  const unchanged = update && JSON.stringify(update.before) === JSON.stringify(update.after);
+  const unreadable = !uncertain && !reaction?.outcome?.effects?.length
+    && ["ADAPTER_TRANSIENT", "TASK_NOT_FOUND", "PROJECT_NOT_FOUND", "ACCESS_DENIED"].includes(reaction?.outcome?.error?.code ?? "");
   const noEffect = !uncertain && (receipt?.effect === "NONE" || !!reaction?.outcome
     && ["COMPLETED", "BUSINESS_REJECTION", "FAILED", "LIMIT_EXCEEDED"].includes(reaction.outcome.classification ?? "")
     && Array.isArray(reaction.outcome.effects) && reaction.outcome.effects.every(effect => effect.state === "NONE" || effect.effect === "NONE"));
-  return <section className="task-reaction" aria-label="Customization outcome">
-    <p role="status">{confirmedReceipt ? created ? `Created “${created.title}”` : checking ? "A task was added. Checking its details…" : "A task was added, but it is unavailable here."
-      : noEffect ? "No task was added by this customization."
-      : uncertain ? "Could not confirm whether a task was added."
+  if (creation && (!reaction || reaction.state === "NO_BINDING")) return null;
+  return <section className="task-reaction" aria-label={creation ? "Task creation customization outcome" : "Customization outcome"}>
+    <p role="status">{confirmedReceipt ? update ? unchanged ? "The update made no change." : "This task was updated."
+      : created ? `Created “${created.title}”` : checking ? "A task was added. Checking its details…" : "A task was added, but it is unavailable here."
+      : unreadable ? "Could not check the rule’s conditions."
+      : noEffect ? reaction?.workflow ? "This customization made no change." : "No task was added by this customization."
+      : uncertain ? reaction?.workflow || creation ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."
+      : reaction?.revoked ? "This customization is no longer allowed to run."
       : reaction?.state === "NO_BINDING" ? "No customization was recorded for this completion."
         : reaction?.state === "PENDING" ? "This customization has not started yet."
-          : !reaction && checking ? "Checking the customization result…" : "Could not confirm whether a task was added."}</p>
-    {reaction?.outcome?.classification && !["COMPLETED", "UNCERTAIN"].includes(reaction.outcome.classification) && <p>The customization did not finish successfully. Your completed task is kept.</p>}
+          : !reaction && checking ? "Checking the customization result…" : reaction?.workflow
+            ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."}</p>
+    {reaction?.outcome?.classification && !["COMPLETED", "UNCERTAIN"].includes(reaction.outcome.classification) && <p>{creation ? "The customization did not finish successfully. Your task is kept." : "The customization did not finish successfully. Your completed task is kept."}</p>}
     {created && <button type="button" className="quiet-button" aria-label={`Open task: ${created.title}`} onClick={() => openCreated(created)}>Open task</button>}
     {error && <p role="alert">{error}</p>}
     <div className="task-reaction-actions"><button type="button" className="quiet-button" disabled={checking} onClick={() => void read()}>Check result</button>
       {(uncertain || reaction?.state === "STARTED") && <button type="button" className="quiet-button" disabled={checking} onClick={() => void read(true)}>Reconcile saved observation</button>}</div>
     {reaction && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
-      {confirmedReceipt && <p>A saved native receipt confirms that a task was created.</p>}
+      {confirmedReceipt && <p>{update ? "A saved native receipt confirms the update." : "A saved native receipt confirms that a task was created."}</p>}
+      {update && !unchanged && <dl>
+        {update.before.priority !== update.after.priority && <><dt>Priority</dt><dd>{update.before.priority} → {update.after.priority}</dd></>}
+        {update.before.tags.join(", ") !== update.after.tags.join(", ") && <><dt>Tags</dt><dd>{update.after.tags.join(", ")}</dd></>}
+        {update.before.dueAt !== update.after.dueAt && <><dt>Due time</dt><dd>{update.after.dueAt ?? "None"}{update.after.dueAt && " (UTC)"}</dd></>}
+      </dl>}
       {confirmedReceipt && uncertain && <p>The original runtime outcome remains uncertain. The saved native receipt is a separate confirmation.</p>}
       {reaction.message && <p>{reaction.message}</p>}
       {reaction.reconciliation && <p className="muted">Native observation checked {new Date(reaction.reconciliation.observedAt).toLocaleString()}.</p>}
@@ -1328,6 +1351,7 @@ function TaskDetail({
         </div>
       )}
       {task.status === "completed" && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} />}
+      <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation />
       <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>
       <div className="detail-actions">
         <button type="button" className="quiet-button" onClick={close}>

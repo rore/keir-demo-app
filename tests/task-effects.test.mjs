@@ -114,17 +114,19 @@ test('native CRUD remains usable with unavailable dependencies and status cannot
 });
 
 test('old contract PENDING stays held before discovery and STARTED, revocation and settled bytes never replay', async t => {
-  const f = fixture(t), oldPins = { ...f.pins, profile: 'keir-effect/3', definitionId: 'daymark.task-completed/1',
-    modelRef: { ...f.pins.modelRef, format: 'keir-dcm/effect-3' } };
+  const f = fixture(t), oldPins = { ...f.pins, definitionId: 'daymark.task-completed/3',
+    modelRef: { ...f.pins.modelRef, format: 'keir-dcm/1', descriptorRecipe: 'keir-record-descriptors/1' } };
   f.db.prepare("UPDATE extension_selections SET binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'").run(JSON.stringify(oldPins));
   const pending = f.complete(), started = f.complete(), revoked = f.complete(), finished = f.complete();
   f.db.prepare("UPDATE task_events SET state='STARTED' WHERE event_id IN (?,?)").run(started.eventId, finished.eventId);
   f.effects.finish('maya', finished.eventId, { classification: 'UNCERTAIN', effects: [] });
   f.db.prepare('UPDATE task_events SET revoked_at=1 WHERE event_id=?').run(revoked.eventId);
   const before = f.db.prepare('SELECT * FROM task_events ORDER BY rowid').all();
-  const dispatcher = createTaskDispatcher({ db: f.db, lifecycle: { execution() { assert.fail('Old profile must be held before discovery or claim'); } } });
+  let discoveries = 0;
+  const dispatcher = createTaskDispatcher({ db: f.db, lifecycle: { execution() { discoveries++; return null; } } });
   t.after(() => dispatcher.close());
   await dispatcher.wake(); await dispatcher.dependenciesChanged();
+  assert.equal(discoveries, 0, 'Old model pins are refused before execution discovery');
   assert.deepEqual(f.db.prepare('SELECT * FROM task_events ORDER BY rowid').all(), before);
   assert.equal(f.effects.status('maya', pending.eventId).state, 'PENDING');
   assert.equal(f.effects.status('maya', started.eventId).state, 'STARTED');

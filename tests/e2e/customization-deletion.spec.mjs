@@ -83,7 +83,7 @@ test('a task customization is authored, checked, approved, used and deleted thro
     const approved = await api(page, 'extensions/' + id); expect(approved.approved).toBe(true); expect(approved.evidence.passed).toBe(true);
     const proof = await api(page, `extensions/${id}/evidence/${approved.evidence.id}`);
     expect(proof.reports).toHaveLength(6); expect(proof.reports.every(item => item.report.status === 'PASS')).toBe(true);
-    await ui.getByRole('button', { name: /^(Turn on for my tasks|Switch to this customization)$/ }).click();
+    await ui.getByRole('button', { name: /^(Turn on for tasks completed)$/ }).click();
     await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
     await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
     const active = await api(page, 'extensions/' + id); expect(active.selection.revision.id).toBe(approved.draft.id);

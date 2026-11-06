@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Collection, State, StudioTarget } from "./Studio";
 import { pendingRequests } from "./Studio";
 
@@ -38,6 +38,7 @@ export default function Customizations({ request, changed, beforeSelectionChange
     return () => { current = false; ++lifetime.current; };
   }, [retry]);
   useEffect(() => { if (state && focusAction) document.getElementById(focusAction)?.focus({ preventScroll: true }); }, [state?.owner.id, focusAction]);
+  useLayoutEffect(() => { if (deletion?.id) document.getElementById("customization-delete-confirm")?.focus(); }, [deletion?.id]);
   async function loadMore() {
     const cursor = state?.next;
     if (!cursor || !state || paging.current || deletingRef.current) return;
@@ -77,7 +78,6 @@ export default function Customizations({ request, changed, beforeSelectionChange
       setState(old => old ? { ...old, items: old.items.map(item => item.extension!.id === id ? saved : item) } : old);
       setDeletion({ id, name: saved.extension.name, draftVersion: saved.draftVersion, generation: saved.selection.generation,
         selected: saved.selection.revision?.extensionId === id, message: "", blocked: false, uncertain: false });
-      requestAnimationFrame(() => { if (lifetime.current === turn) document.getElementById("customization-delete-confirm")?.focus(); });
     } catch {
       if (lifetime.current === turn) setDeleteNotice("Saved state could not be checked. Refresh the collection before confirming Delete.");
     } finally { if (lifetime.current === turn) { deletingRef.current = false; setDeleting(false); } }
@@ -145,9 +145,10 @@ export default function Customizations({ request, changed, beforeSelectionChange
     <button id="new-customization" className="primary customization-start" onClick={() => open()}>New customization</button>
     {error ? <div className="error" role="alert">Customizations could not be checked. <button onClick={() => setRetry(old => old + 1)}>Try again</button></div>
       : !state ? <p role="status">Loading your customizations…</p> : !state.items.length ? <p className="customization-empty">Your customizations will appear here.</p> : state.items.map(item => {
-        const selected = state.selection.revision;
+        const selection = state.selections ? state.selections[item.extension!.hookId ?? ""] : state.selection;
+        const selected = selection?.revision;
         const selectedItem = selected?.extensionId === item.extension!.id;
-        const inUse = selectedItem && state.selection.eligible && !item.retired;
+        const inUse = selectedItem && selection?.eligible && !item.retired;
         const changes = !!item.draft && (!selectedItem || item.draft.id !== selected?.id);
         const status = item.retired ? "Retired · history only" : selectedItem ? inUse ? changes ? item.approved ? "In use · Approved changes ready to turn on" : "In use · Changes in progress" : "In use" : "Couldn’t check what’s in use"
           : item.approved ? "Approved · Not in use" : item.draft ? "Saved changes · Not in use" : item.extension!.hookId ? "Not in use" : "In discussion";

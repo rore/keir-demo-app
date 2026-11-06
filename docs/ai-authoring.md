@@ -1,6 +1,6 @@
 # Optional AI authoring
 
-Studio helps you describe a customization and check examples before deciding whether to use it. Live AI needs a configured provider and can incur charges. Native tasks and saved history work without AI setup. The `TaskCompleted` contract supports creating at most one task after a matching new completion. Real execution requires a compatible approved revision, activation and current native host permission. See [task effects](task-effects.md).
+Studio helps you describe a customization and check examples before deciding whether to use it. Live AI needs a configured provider and can incur charges. Native tasks and saved history work without AI setup. A workflow can create one task or update the triggering task after a matching creation or completion. Real execution requires a compatible approved revision, activation and current native host permission. See [task effects](task-effects.md).
 
 Compiling new customizations requires Java 21 and the independently pinned Keir compiler. App startup needs only the documented Node runtime. The app does not install or upgrade Java, and a working compiler does not qualify native effects.
 
@@ -27,7 +27,7 @@ Changing the provider, model, key or allowance requires fresh authoring context 
 
 The model can suggest source and help prepare examples. It cannot approve, activate, complete a native task or grant native authority. Treat model-written examples as proposals; agree on wanted behavior independently of observed results.
 
-The assistant asks about missing business choices and uses the owner's project catalog to resolve named projects. It compiles the proposed rule and checks it without changing native tasks. Source can use `tasks.get` and `tasks.create` under `TaskCompleted`. Daymark supplies session-bound authority. If the assistant cannot express the requested behavior, it asks before drafting an alternative.
+The assistant asks about missing business choices and uses the owner's project catalog to resolve named projects. It compiles the proposed rule and checks it without changing native tasks. Source can use `tasks.get`, `tasks.openMatch`, `tasks.create`, and `tasks.update` under either task trigger. Daymark supplies session-bound authority. If the assistant cannot express the requested behavior, it asks before drafting an alternative.
 
 ### How Daymark runs the assistant
 
