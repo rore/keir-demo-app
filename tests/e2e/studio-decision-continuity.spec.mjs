@@ -138,7 +138,7 @@ test('saved review stays readable before its reachable actions at short, phone a
         return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
       })).toBe(true);
       await page.screenshot({ path: testInfo.outputPath(`review-summary-${viewport.width}x${viewport.height}.png`) });
-      await action.scrollIntoViewIfNeeded();
+      await action.evaluate(button => button.scrollIntoView({ block: 'center' }));
       await expect(action).toBeInViewport({ ratio: 0.99 });
       expect(await action.evaluate(element => {
         const box = element.getBoundingClientRect();
