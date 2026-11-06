@@ -373,7 +373,8 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await expect(example).toBeVisible();
         if (report.report.scenario.task.status) await expect(example).toContainText(`“${report.report.scenario.task.title}”`);
         await expect(example).toContainText(index === 0 ? fixture.metadata.title : 'No change.');
-        await expect(example.getByText(index < 3 ? 'Matches' : 'Matches expected unavailable check · Could not check', { exact: true })).toBeVisible();
+        await expect(example.getByText(index < 3 ? 'Matches' : 'Could not check', { exact: true })).toBeVisible();
+        if (index >= 3) await expect(example.getByText('Handled as expected', { exact: true })).toBeVisible();
         if (!index) {
           const exact = decision(page).getByLabel('Exact checked examples', { exact: true });
           await expect(exact).toBeHidden();

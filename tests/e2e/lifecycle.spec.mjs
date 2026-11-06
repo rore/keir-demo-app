@@ -105,7 +105,8 @@ async function prepare(page, label = 'Customer follow-up') {
   await expect(alternatives).toHaveCount(fixture.cases.length - 1);
   for (let index = 0; index < fixture.cases.length - 1; index++) {
     await alternatives.nth(index).click();
-    await expect(proposed.getByText(index < 2 ? 'Matches' : 'Matches expected unavailable check · Could not check', { exact: true })).toHaveCount(1);
+    await expect(proposed.getByText(index < 2 ? 'Matches' : 'Could not check', { exact: true })).toHaveCount(1);
+    if (index >= 2) await expect(proposed.getByText('Handled as expected', { exact: true })).toBeVisible();
   }
   await closeDetails(page);
   await openSavedChanges(page);

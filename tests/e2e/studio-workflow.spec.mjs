@@ -115,7 +115,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
   } finally { await fixture.close(); }
 });
 
-test('workflow review keeps native outcomes and the two decisions distinct', async ({ page }) => {
+test('workflow review keeps native outcomes and the two decisions distinct', async ({ page }, testInfo) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   const actions = [];
   try {
@@ -126,7 +126,7 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     const { user: owner } = await (await page.request.get(fixture.origin + '/api/session')).json();
     const extension = { id: 'new-rule', name: 'Intake priority', hookId: 'TaskCreated' };
     const artifact = JSON.stringify({ format: 'keir-artifact/2', entrypoint: extension.hookId,
-      steps: [{ op: 'CALL', capability: 'tasks.update', when: 'eligible', args: { priority: { literal: 'high' } } }] });
+      steps: [{ id: 'set-priority', op: 'CALL', capability: 'tasks.update', when: 'eligible', args: { priority: { literal: 'high' } } }] });
     const pins = { artifactDigest: `sha256:${createHash('sha256').update(artifact).digest('hex')}` };
     const draft = { id: 'intake-revision', label: extension.name, kind: 'authored', suiteDigest: 'suite', pins, provenance: 'customer' };
     const prior = { ...draft, id: 'prior-intake-revision', extensionId: 'prior-intake', extensionName: 'Existing intake rule' };
@@ -136,7 +136,7 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     let state = { owner, extension, draft, draftVersion: 2, selection: picked(prior, 7), evidence, approved: false, approvedEvidenceId: null,
       catalog: [], restoreTargets: [], history: [], evidenceHistory: [] };
     const baseTask = { id: 'example', title: 'Quote for spring launch', status: 'OPEN', priority: 'normal', projectId: fixture.metadata.projectId };
-    const read = { capability: 'tasks.get' }, update = { capability: 'tasks.update' };
+    const read = { capability: 'tasks.get' }, update = { capability: 'tasks.update', step: 'set-priority' };
     const dueAt = '2026-03-07T16:00:00.417Z';
     const unchanged = { id: baseTask.id, priority: 'high', dueAt, addTag: 'client' };
     const cases = [
@@ -145,7 +145,7 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
       ['unknown-before', { id: baseTask.id, title: 'Before snapshot unavailable' }, 'CONFIRMED', [unchanged], [update]],
       ['untouched', { ...baseTask, title: 'Quote for autumn launch' }, 'NONE', [], [read]],
       ['read-failed', { id: baseTask.id, title: 'Example task' }, 'NONE', [], [read], { code: 'ACCESS_DENIED' }],
-      ['uncertain', baseTask, 'UNKNOWN', null, [read, update]],
+      ['uncertain', { ...baseTask, title: 'Priority change unconfirmed' }, 'UNKNOWN', null, [read, update]],
     ].map(([id, task, effect, updatedTasks, calls, error]) => {
       const changes = { createdTasks: effect === 'UNKNOWN' ? null : [], updatedTasks };
       return { id, expected: changes, report: { status: 'PASS', scenario: { task }, native: { error }, calls, observed: { effect, ...changes } } };
@@ -200,11 +200,17 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await expect(results.nth(0)).toContainText(/exact title “Follow-up”.*\. A matching open task was found\./);
     await expect(results.nth(1)).toContainText(/exact title “Other follow-up”.*No matching open task was found\./);
     await expect(results.nth(2)).toContainText(/exact title “Follow-up”.*Could not check for a matching open task\./);
-    await expect(lookups).toContainText('Matches expected unavailable check · Could not check');
+    await expect(lookups.getByText('Could not check', { exact: true })).toBeVisible();
+    await expect(lookups.getByText('Handled as expected', { exact: true })).toBeVisible();
     await expect(lookups).not.toContainText('because an open task matched');
     await expect(review.getByRole('article', { name: /autumn launch/ })).toContainText('No change.');
     await expect(review.getByText('The task could not be checked because access was denied.')).toBeVisible();
-    await expect(review.getByText('Matches expected uncertainty · Change not confirmed')).toBeVisible();
+    const uncertain = review.getByRole('article', { name: /Priority change unconfirmed/ });
+    await expect(uncertain.getByText('Change not confirmed', { exact: true })).toBeVisible();
+    await expect(uncertain.getByText('Handled as expected', { exact: true })).toBeVisible();
+    await expect(uncertain).toContainText('We could not confirm whether the priority changed.');
+    await lookups.screenshot({ path: testInfo.outputPath('unavailable-workflow-row.png') });
+    await uncertain.screenshot({ path: testInfo.outputPath('uncertain-workflow-row.png') });
     const use = review.getByRole('button', { name: 'Turn on for tasks added', exact: true });
     await expect(use).toHaveCount(0);
     await review.getByRole('button', { name: 'Approve this change', exact: true }).click();

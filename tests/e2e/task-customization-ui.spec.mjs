@@ -151,9 +151,10 @@ test('an independently expected UNKNOWN stays reviewable without claiming a task
   await enter(page, demo); await publicStudio(page, { unknownEffect: true });
   await studio(page).locator('#studio-view-saved').click();
   const proposed = studio(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
-  await expect(proposed).toContainText('An uncertain write outcome.');
-  await expect(proposed).toContainText('Change not confirmed.');
-  await expect(proposed).toContainText('Matches expected uncertainty · Change not confirmed');
+  await expect(proposed).toContainText('The change may or may not happen.');
+  await expect(proposed).toContainText('We could not confirm whether the change happened.');
+  await expect(proposed.getByText('Change not confirmed', { exact: true })).toBeVisible();
+  await expect(proposed.getByText('Handled as expected', { exact: true })).toBeVisible();
   await expect(proposed.locator('.rs-created-example')).toHaveCount(0);
   await expect(proposed).not.toContainText('No change.');
   await expect(studio(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();

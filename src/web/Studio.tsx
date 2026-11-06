@@ -765,6 +765,12 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const passed = item.report.status === "PASS";
     const expected = item.expected;
     const currentRule = compact && reviewEvidence?.revisionId === summaryRevision ? workflowSummary : null;
+    const uncertainWrite = unknown && currentRule?.capability === "tasks.update" && currentRule.step
+      && calls?.at(-1)?.capability === currentRule.capability && calls?.at(-1)?.step === currentRule.step;
+    const uncertainFields = uncertainWrite ? Object.keys(currentRule.fields).filter(field => field !== "taskId") : [];
+    const uncertainField = uncertainFields.length === 1 ? ({ priority: "priority", dueAt: "due date", addTag: "tags" } as Record<string, string>)[uncertainFields[0]] : undefined;
+    const uncertainMessage = uncertainField ? `We could not confirm whether the ${uncertainField} changed.`
+      : "We could not confirm whether the change happened.";
     const guardSkippedWrite = currentRule && native?.classification === "COMPLETED" && observed?.effect === "NONE"
       && native.trace?.some(event => event.event === "GUARD_EVALUATED" && event.step === currentRule.step && event.taken === false);
     const taskRead = calls?.find(call => call.capability === "tasks.get" && call.args?.taskId === task?.id
@@ -789,7 +795,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const sameName = differentProject && createdProject(expectedCreate) === createdProject(observedCreate);
     function effects(value: Pick<CheckedCase["expected"], "createdTasks" | "updatedTasks">, actual: boolean) {
       const created = value.createdTasks, updated = value.updatedTasks;
-      if (created === null && updated === null) return actual ? "Change not confirmed." : "An uncertain write outcome.";
+      if (created === null && updated === null) return actual ? uncertainMessage : "The change may or may not happen.";
       if (!Array.isArray(created) || !Array.isArray(updated)) return "Task changes were not recorded.";
       if (!created.length && !updated.length) return "No change.";
       return [...created.map(result => {
@@ -809,10 +815,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const unavailable = readUnavailable || openUnavailable || observed?.effect === "NOT_OBSERVED" || !observed;
     const dueInOutput = [expected.createdTasks, expected.updatedTasks, observed?.createdTasks, observed?.updatedTasks]
       .some(tasks => tasks?.some(entry => !!entry.dueAt));
-    const result = failed ? `Needs correction${unknown ? " · Change not confirmed" : unavailable ? " · Could not check" : ""}`
-      : unknown ? passed ? "Matches expected uncertainty · Change not confirmed" : "Change not confirmed"
-      : unavailable ? passed ? "Matches expected unavailable check · Could not check" : "Could not check"
-      : passed ? "Matches" : "Could not check";
+    const result = unknown ? "Change not confirmed" : unavailable ? "Could not check"
+      : failed ? "Needs correction" : passed ? "Matches" : "Could not check";
+    const handledAsExpected = (unknown || unavailable) && passed && checkedObservation(item)
+      && (!unknown || expected.createdTasks === null && expected.updatedTasks === null);
     return <article className="rs-example rs-workflow-case" key={item.id} aria-label={`Example: ${situation}`}>
       <dl>
         <div><dt>Situation</dt><dd>{title}{project && ` in “${project}”`}{task?.status && ` · ${task.status === "COMPLETED" ? "Completed" : "Unfinished"}`}
@@ -826,7 +832,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             : noChangeReason ? `No change. ${noChangeReason}` : effects(observed, true)}</p>}
           {differentProject && <p>The created task used a different project than expected.</p>}
         </dd></div>
-        <div><dt>Result</dt><dd className={failed ? "rs-mismatch" : passed && !unknown && !unavailable ? "rs-match" : undefined}>{result}</dd></div>
+        <div><dt>Result</dt><dd>
+          <p className={failed && result === "Needs correction" ? "rs-mismatch" : result === "Matches" ? "rs-match" : undefined}>{result}</p>
+          {failed && result !== "Needs correction" && <p className="rs-mismatch">Needs correction</p>}
+          {handledAsExpected && <p>Handled as expected</p>}
+        </dd></div>
       </dl>
       {compact && failed && viewingCurrentFailure && <button type="button" className="rs-link" disabled={sendDisabled || !authoring?.availability.available}
         onClick={() => document.getElementById("studio-message")?.focus()}>Describe a correction</button>}
