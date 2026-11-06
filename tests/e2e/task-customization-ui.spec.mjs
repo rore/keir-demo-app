@@ -168,6 +168,36 @@ test('a source-authored CREATED label does not become a native task link', async
   await expect(result.getByRole('button', { name: /Open task:/ })).toHaveCount(0);
 });
 
+test('a failed first task creation result read keeps a read-only retry available', async ({ page, demo }) => {
+  await enter(page, demo);
+  const { created } = await nativeData(page);
+  await page.reload();
+  const writes = [];
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.startsWith('/api/')) writes.push(request.url()); });
+  let reads = 0;
+  const retry = Promise.withResolvers();
+  await page.route(url => url.pathname === '/api/tasks/' + created.id + '/reaction' && url.searchParams.get('trigger') === 'TaskCreated', async route => {
+    reads++;
+    if (reads === 1) return route.fulfill({ status: 503, json: { message: 'Result temporarily unavailable.' } });
+    await retry.promise;
+    return route.fulfill({ json: { state: 'FINISHED', workflow: true, receipt: null,
+      outcome: { classification: 'COMPLETED', result: { status: 'NO_OP' }, effects: [] } } });
+  });
+  await page.getByRole('button', { name: created.title, exact: true }).click();
+  const result = page.getByRole('region', { name: 'Task creation customization outcome', exact: true });
+  await expect(result.getByRole('alert')).toContainText('The customization result could not be checked.');
+  const check = result.getByRole('button', { name: 'Check result', exact: true });
+  try {
+    await check.click();
+    await expect(check).toBeDisabled();
+    await expect(check).toBeFocused();
+  } finally { retry.resolve(); }
+  await expect(result.getByRole('status')).toHaveText('This customization made no change.');
+  await expect(result.getByRole('alert')).toHaveCount(0);
+  expect(reads).toBe(2);
+  expect(writes).toEqual([]);
+});
+
 test('reconciliation can reveal an owned task without replacing the original UNKNOWN result', async ({ page, demo }) => {
   await enter(page, demo); const { source, created } = await nativeData(page);
   const original = { classification: 'UNCERTAIN', effects: [{ state: 'UNKNOWN' }] };

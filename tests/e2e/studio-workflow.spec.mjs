@@ -4,7 +4,7 @@ import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { loadHost } from '../../src/extension-catalog.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
-import { taskWorkflowSource } from '../fixtures/task-workflow-source.mjs';
+import { taskWorkflowCases, taskWorkflowSource } from '../fixtures/task-workflow-source.mjs';
 
 test('workflow starters are capability gated and preserve the mounted composer at 320px', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
@@ -52,7 +52,7 @@ test('workflow starters are capability gated and preserve the mounted composer a
   } finally { await fixture.close(); }
 });
 
-test('Studio reads the four admitted rules from pinned source and falls back after a changed readback', async ({ page }) => {
+test('Studio reads the four admitted rules from pinned source and falls back after a changed readback', async ({ page }, testInfo) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
     await page.goto(fixture.origin);
@@ -64,28 +64,50 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
     const rule = studio.getByRole('article', { name: 'About this rule', exact: true });
     const { projectId, otherProjectId: destinationProjectId, projectName, otherProjectName } = fixture.metadata;
     const rows = [
-      ['intake', 'TaskCreated', [`All of these apply: this task is in “${projectName}”`, 'titled exactly “Quote for spring launch”', 'tag “client”', 'Priority High.']],
-      ['review', 'TaskCompleted', ['this task has High priority', 'tag “review”', `in “${otherProjectName}”`, 'Due 168 hours after completion.']],
-      ['follow-up', 'TaskCompleted', [`“${otherProjectName}” has no open task titled exactly “Follow-up”`]],
-      ['onboarding', 'TaskCreated', ['this task has no due date', 'Due 168 hours after addition.']],
+      ['intake', 'TaskCreated', 1440, [`All of these apply: this task is in “${projectName}”`, 'titled exactly “Quote for spring launch”', 'tag “client”', 'Priority High.'], 'No change. This task’s title isn’t exactly “Quote for spring launch”.'],
+      ['review', 'TaskCompleted', 1440, ['this task has High priority', 'tag “review”', `Create a task titled “Review” in “${otherProjectName}”`, 'Tags review, next.', 'Due 168 hours after completion.'], 'No change. The rule requires High priority.'],
+      ['follow-up', 'TaskCompleted', 390, [`“${otherProjectName}” has no open task titled exactly “Follow-up”`], 'No task was created because an open task matched.'],
+      ['onboarding', 'TaskCreated', 320, ['this task has no due date', 'Due 168 hours after addition.'], 'No change. This task already has a due date.'],
     ];
-    for (const [workflow, hookId, facts] of rows) {
+    for (const [workflow, hookId, width, facts, noChangeReason] of rows) {
+      await page.setViewportSize({ width, height: 844 });
       const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: workflow });
-      const source = taskWorkflowSource(loadHost(hookId), workflow, { projectId, destinationProjectId }).toString();
-      const response = await page.request.post(`${fixture.origin}/api/extensions/${extensionId}/compile`, {
-        headers: { origin: fixture.origin, 'X-Session-Context': contextToken }, data: { hookId, source, draftVersion: 0 },
-      });
-      expect(response.ok(), await response.text()).toBe(true);
-      const { draft } = await response.json();
+      const host = loadHost(hookId), options = { projectId, destinationProjectId };
+      const source = taskWorkflowSource(host, workflow, options).toString();
+      const write = async (action, data) => {
+        const response = await page.request.post(`${fixture.origin}/api/extensions/${extensionId}/${action}`, {
+          headers: { origin: fixture.origin, 'X-Session-Context': contextToken }, data,
+        });
+        expect(response.ok(), await response.text()).toBe(true);
+        return response.json();
+      };
+      const { draft, draftVersion } = await write('compile', { hookId, source, draftVersion: 0 });
+      const saved = await write('scenarios', { revisionId: draft.id, draftVersion, cases: taskWorkflowCases(host, workflow, options) });
+      const checked = await write('simulate', { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
+      expect(checked.evidence.passed).toBe(true);
       await page.goto(`${fixture.origin}/#customization=${extensionId}`);
       for (const fact of facts) await expect(rule).toContainText(fact);
       await expect(rule).not.toContainText('A full summary isn’t available');
+      await rule.getByRole('button', { name: 'View simulation', exact: true }).click();
+      const review = studio.getByRole('article', { name: 'Current decision' });
+      if (noChangeReason) await expect(review).toContainText(noChangeReason);
+      if (workflow === 'follow-up') {
+        await expect(review).not.toContainText('A matching open task was found.');
+        await expect(review).toContainText('Could not check for a matching open task.');
+      }
+      if (workflow === 'onboarding') await expect(review).toContainText('Event 2026-03-07 16:00:00.417 UTC');
+      expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      if (noChangeReason) {
+        await review.getByText(noChangeReason).scrollIntoViewIfNeeded();
+        await page.screenshot({ path: testInfo.outputPath(`${workflow}-${width}.png`) });
+      }
       if (workflow === 'onboarding') {
-        await page.route(`**/api/extensions/${extensionId}/revisions/${draft.id}`, async route => {
+        await page.route(`**/api/extensions/${extensionId}/revisions/${checked.draft.id}`, async route => {
           const exact = await route.fetch(), saved = await exact.json();
           await route.fulfill({ response: exact, json: { ...saved, source: saved.source.replace('604800s', '60s') } });
         });
         await page.reload();
+        await expect(rule).toContainText('A full summary isn’t available for this version.');
         await expect(rule).toContainText('The saved conditions can’t be summarized here.');
         await expect(rule).not.toContainText('168 hours');
       }
@@ -115,8 +137,12 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
       catalog: [], restoreTargets: [], history: [], evidenceHistory: [] };
     const baseTask = { id: 'example', title: 'Quote for spring launch', status: 'OPEN', priority: 'normal', projectId: fixture.metadata.projectId };
     const read = { capability: 'tasks.get' }, update = { capability: 'tasks.update' };
+    const dueAt = '2026-03-07T16:00:00.417Z';
+    const unchanged = { id: baseTask.id, priority: 'high', dueAt, addTag: 'client' };
     const cases = [
       ['updated', baseTask, 'CONFIRMED', [{ id: baseTask.id, priority: 'high' }], [read, update]],
+      ['unchanged-write', { ...baseTask, title: 'Already current', priority: 'high', tags: ['client'], dueAt }, 'CONFIRMED', [unchanged], [read, update]],
+      ['unknown-before', { id: baseTask.id, title: 'Before snapshot unavailable' }, 'CONFIRMED', [unchanged], [update]],
       ['untouched', { ...baseTask, title: 'Quote for autumn launch' }, 'NONE', [], [read]],
       ['read-failed', { id: baseTask.id, title: 'Example task' }, 'NONE', [], [read], { code: 'ACCESS_DENIED' }],
       ['uncertain', baseTask, 'UNKNOWN', null, [read, update]],
@@ -124,6 +150,14 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
       const changes = { createdTasks: effect === 'UNKNOWN' ? null : [], updatedTasks };
       return { id, expected: changes, report: { status: 'PASS', scenario: { task }, native: { error }, calls, observed: { effect, ...changes } } };
     });
+    const check = (step, title) => ({ step, capability: 'tasks.openMatch', args: { title, projectId: fixture.metadata.projectId } });
+    const checks = [check('first', 'Follow-up'), check('second', 'Other follow-up'), check('third', 'Follow-up')];
+    const noWrite = { createdTasks: [], updatedTasks: [] };
+    cases.push({ id: 'three-checks', expected: noWrite, report: { status: 'PASS', calls: checks,
+      native: { error: { code: 'ADAPTER_TRANSIENT' }, trace: checks.slice(0, 2).map(({ step, capability }) => ({ event: 'CALL_SUCCEEDED', step, capability })) },
+      scenario: { task: { ...baseTask, title: 'Three lookup results' }, openMatches: [
+        { ...checks[0].args, matches: true }, { ...checks[1].args, matches: false },
+      ] }, observed: { effect: 'NONE', ...noWrite } } });
     await page.route('**/api/extensions', route => route.fulfill({ json: { owner, items: [state, { ...state, draft: completion,
       extension: { id: completion.extensionId, name: completion.extensionName, hookId: 'TaskCompleted' } }], selection: picked(completion, 10),
       selections: { TaskCreated: state.selection, TaskCompleted: picked(completion, 10) }, catalog: [], next: null } }));
@@ -154,6 +188,20 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
     const review = studio.getByRole('article', { name: 'Current decision' });
     await expect(review.getByText('Updated this task. Priority Normal → High.')).toBeVisible();
+    const idempotent = review.getByRole('article', { name: /Already current/ });
+    await expect(idempotent).toContainText('Update confirmed. The task fields stayed the same.');
+    await expect(idempotent).not.toContainText('→');
+    const unknownBefore = review.getByRole('article', { name: /Before snapshot unavailable/ });
+    await expect(unknownBefore.getByText('Update confirmed.', { exact: true })).toBeVisible();
+    await expect(unknownBefore).not.toContainText('→');
+    const lookups = review.getByRole('article', { name: /Three lookup results/ });
+    const results = lookups.locator('p').filter({ hasText: /^Open-task check/ });
+    await expect(results).toHaveCount(3);
+    await expect(results.nth(0)).toContainText(/exact title “Follow-up”.*\. A matching open task was found\./);
+    await expect(results.nth(1)).toContainText(/exact title “Other follow-up”.*No matching open task was found\./);
+    await expect(results.nth(2)).toContainText(/exact title “Follow-up”.*Could not check for a matching open task\./);
+    await expect(lookups).toContainText('Matches expected unavailable check · Could not check');
+    await expect(lookups).not.toContainText('because an open task matched');
     await expect(review.getByRole('article', { name: /autumn launch/ })).toContainText('No change.');
     await expect(review.getByText('The task could not be checked because access was denied.')).toBeVisible();
     await expect(review.getByText('Matches expected uncertainty · Change not confirmed')).toBeVisible();

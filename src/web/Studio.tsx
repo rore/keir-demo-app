@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { normalizeWorkflowTitle, parseWorkflowTagsText } from "../task-workflow-values.mjs";
 import "./Studio.css";
 
 type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: { artifactDigest?: string; rawSourceDigest?: string; modelRef?: { format?: string } }; provenance: "operator" | "customer" };
@@ -47,7 +48,7 @@ function hostFeatures(catalog: HostCatalog | null) {
     return { capabilities: Object.keys(model.capabilities ?? {}), taskFields: Object.keys(model.types?.Task?.fields ?? {}) };
   } catch { return { capabilities: [], taskFields: [] }; }
 }
-type Outcome = { classification: string; code?: string; error?: { code: string }; consumption?: { status: "DISPLAYED" | "NOT_DISPLAYED"; code?: string } };
+type Outcome = { classification: string; code?: string; error?: { code: string }; trace?: { event: string; step?: string; capability?: string; taken?: boolean }[]; consumption?: { status: "DISPLAYED" | "NOT_DISPLAYED"; code?: string } };
 type TaskFields = { notes?: string; tags?: string[]; priority?: string; dueAt?: string | null };
 type TaskPreview = TaskFields & { id?: string; title: string; status?: "OPEN" | "COMPLETED"; projectId?: string; projectName?: string };
 type TaskUpdate = { id: string; addTag?: string; priority?: string; dueAt?: string };
@@ -55,7 +56,7 @@ type EffectObservation = { effect: "CONFIRMED" | "NONE" | "UNKNOWN" | "NOT_OBSER
 type SavedSource = { extensionId?: string; revisionId: string; source: string; artifact: string; pins: Revision["pins"]; cases: string[]; suiteDigest: string | null };
 type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"; identity: object; passed: boolean; reports: {
   id: string; label: string; expected: { createdTasks?: TaskPreview[] | null; updatedTasks?: TaskUpdate[] | null; [key: string]: unknown }; taskStatus?: "OPEN" | "COMPLETED" | null; readFailure?: "TASK_NOT_FOUND" | "ACCESS_DENIED" | "TRANSIENT_FAILURE" | null;
-  report: { status: string; scenario?: { task: TaskPreview; occurredAt?: string; hookId?: string; openMatches?: { projectId: string; title: string; matches: boolean }[] }; observed?: EffectObservation; native?: Outcome; calls?: { capability: string; args?: { projectId?: string; title?: string } }[]; consumption?: { status: string; code?: string }; mismatches: { stage?: string; code?: string }[] };
+  report: { status: string; scenario?: { task: TaskPreview; occurredAt?: string; hookId?: string; openMatches?: { projectId: string; title: string; matches: boolean }[] }; observed?: EffectObservation; native?: Outcome; calls?: { step?: string; capability: string; args?: { projectId?: string; title?: string; taskId?: string } }[]; consumption?: { status: string; code?: string }; mismatches: { stage?: string; code?: string }[] };
 }[] };
 type SavedReview = { owner: State["owner"]; extension: NonNullable<State["extension"]>; revision: Revision;
   draftVersion: number; evidenceId: string; suiteDigest: string | null; selection: State["selection"] };
@@ -159,10 +160,10 @@ type Props = {
 const knownTask = (task?: TaskPreview) => !!task && typeof task.title === "string" && !!task.title.trim() && typeof task.projectId === "string" && !!task.projectId;
 const knownScenarioTask = (task?: TaskPreview) => !!task && typeof task.id === "string" && !!task.id && typeof task.title === "string" && !!task.title.trim();
 const knownTasks = (tasks?: TaskPreview[] | null) => Array.isArray(tasks) && tasks.every(knownTask);
-type Condition = { field: "projectId" | "title" | "tag" | "priority" | "dueAbsent"; value?: string }
-  | { field: "noOpenMatch"; projectId: string; title: string };
+type Condition = ({ field: "projectId" | "title" | "tag" | "priority" | "dueAbsent"; value?: string }
+  | { field: "noOpenMatch"; projectId: string; title: string }) & { step: string };
 type RuleAction = { title: string; projectId?: string } | { hook: string; conditional: boolean; capability: "tasks.create" | "tasks.update";
-  fields: Record<string, unknown>; conditions?: Condition[]; elapsedDue?: boolean; titlePrefix?: string };
+  fields: Record<string, unknown>; step: string; conditions?: Condition[]; elapsedDue?: boolean; titlePrefix?: string };
 async function sha256(value: string) {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -194,17 +195,17 @@ function workflowSourceFacts(text: string, hook: string, writeId: string, capabi
     const equal = /^(\w+)\.(projectId|title|priority)\s*==\s*(.+)$/.exec(term);
     if (equal && isTaskRead(equal[1])) {
       const value = stringLiteral(equal[3]) ?? exactString({ cel: equal[3] });
-      if (value !== undefined) return { field: equal[2] as "projectId" | "title" | "priority", value };
+      if (value !== undefined) return { field: equal[2] as "projectId" | "title" | "priority", value, step: equal[1] };
     }
     const tag = /^("(?:[^"\\]|\\.)*")\s+in\s+(\w+)\.tags$/.exec(term);
-    if (tag && isTaskRead(tag[2])) return { field: "tag", value: stringLiteral(tag[1]) };
+    if (tag && isTaskRead(tag[2])) return { field: "tag", value: stringLiteral(tag[1]), step: tag[2] };
     const absent = /^!has\(\s*(\w+)\.dueAt\s*\)$/.exec(term);
-    if (absent && isTaskRead(absent[1])) return { field: "dueAbsent" };
+    if (absent && isTaskRead(absent[1])) return { field: "dueAbsent", step: absent[1] };
     const match = /^!(\w+)\.matches$/.exec(term);
     const lookup = match && binding(match[1]);
     if (lookup && lookup.call === "tasks.openMatch" && !lookup.when) {
       const projectId = exactString(lookup.args?.projectId), title = exactString(lookup.args?.title);
-      if (projectId && title) return { field: "noOpenMatch", projectId, title };
+      if (projectId && title) return { field: "noOpenMatch", projectId, title, step: lookup.id };
     }
   }
   const guard = binding(write.when)?.let?.cel;
@@ -224,13 +225,23 @@ async function savedRuleAction(saved: SavedSource, artifactDigest: string, rawSo
     if (writes.length !== 1) return null;
     const write = writes[0];
     const fields = Object.fromEntries(Object.entries(write.args ?? {}).map(([name, value]) => [name, (value as { literal?: unknown })?.literal]));
+    if (write.capability === "tasks.create") {
+      if (typeof fields.title === "string") {
+        try { fields.title = normalizeWorkflowTitle(fields.title); }
+        catch { fields.title = undefined; }
+      }
+      if (typeof fields.tagsText === "string") {
+        try { fields.tags = parseWorkflowTagsText(fields.tagsText); delete fields.tagsText; }
+        catch { fields.tagsText = undefined; }
+      }
+    }
     let facts;
     if (rawSourceDigest && saved.pins.rawSourceDigest === rawSourceDigest && typeof saved.source === "string" && await sha256(saved.source) === rawSourceDigest) {
       try { facts = workflowSourceFacts(saved.source, artifact.entrypoint, write.id, write.capability); }
       catch { /* YAML and unsupported JSON stay available in the exact details. */ }
     }
     if (facts?.projectId) fields.projectId = facts.projectId;
-    return { hook: artifact.entrypoint, conditional: !!write.when, capability: write.capability, fields,
+    return { hook: artifact.entrypoint, conditional: !!write.when, capability: write.capability, fields, step: write.id,
       conditions: facts?.conditions, elapsedDue: facts?.elapsedDue, titlePrefix: facts?.titlePrefix };
   }
   if (artifact?.format !== "keir-artifact/1" || artifact.entrypoint !== "TaskCompleted" || !Array.isArray(artifact.steps)) return null;
@@ -277,7 +288,7 @@ const summarizeExamples = (proof: Evidence | null) => [...new Set(proof?.reports
   if (observed?.effect === "UNKNOWN") return "Change not confirmed";
   if (observed?.effect !== "CONFIRMED") return "Could not check";
   if (observed.createdTasks?.length) return `Created ${taskNames(observed.createdTasks)}`;
-  return observed.updatedTasks?.map(update => `Updated this task. ${updateDetails(update, item.report.scenario?.task, true)}`).join(". ") || "Could not check";
+  return observed.updatedTasks?.map(update => confirmedUpdate(update, item.report.scenario?.task).replace(/\.$/, "")).join(". ") || "Could not check";
 }) ?? [])].join("; ");
 const priorityLabel = (value: string) => value[0]?.toUpperCase() + value.slice(1).toLowerCase();
 const utc = (value: string) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) ? value.replace("T", " ").replace("Z", " UTC") : value;
@@ -285,12 +296,25 @@ function taskDetails(task: TaskFields) {
   return [task.priority && `Priority ${priorityLabel(task.priority)}`, task.dueAt && `Due ${utc(task.dueAt)}`,
     task.tags?.length && `Tags ${task.tags.join(", ")}`, task.notes !== undefined && `Notes “${task.notes}”`].filter(Boolean).join(" · ");
 }
-function updateDetails(update: TaskUpdate, task: TaskPreview | undefined, observed: boolean) {
-  const before = task?.id === update.id ? task : undefined;
-  const details = [update.priority && `Priority ${observed && before?.priority ? priorityLabel(before.priority) + " → " : ""}${priorityLabel(update.priority)}`,
-    update.dueAt && `Due date ${observed && before?.status ? (before.dueAt ? utc(before.dueAt) : "No due date") + " → " : ""}${utc(update.dueAt)}`,
-    update.addTag && (observed ? before?.tags?.includes(update.addTag) ? `Tag “${update.addTag}” was already present` : `Added tag “${update.addTag}”` : `Add tag “${update.addTag}”`)].filter(Boolean).join(" · ");
-  return details || "No fields recorded";
+function expectedUpdate(update: TaskUpdate) {
+  const fields = [update.priority && `Priority ${priorityLabel(update.priority)}`, update.dueAt && `Due date ${utc(update.dueAt)}`,
+    update.addTag && `Add tag “${update.addTag}”`].filter(Boolean).join(" · ");
+  return `Update this task.${fields ? ` ${fields}.` : ""}`;
+}
+function confirmedUpdate(update: TaskUpdate, before?: TaskPreview) {
+  if (before?.id !== update.id || !before.status) return "Update confirmed.";
+  const changes = [];
+  let unknown = false;
+  if (update.priority !== undefined) {
+    if (!before.priority) unknown = true;
+    else if (before.priority !== update.priority) changes.push(`Priority ${priorityLabel(before.priority)} → ${priorityLabel(update.priority)}`);
+  }
+  if (update.dueAt !== undefined && before.dueAt !== update.dueAt) changes.push(`Due date ${before.dueAt ? utc(before.dueAt) : "No due date"} → ${utc(update.dueAt)}`);
+  if (update.addTag !== undefined) {
+    if (!Array.isArray(before.tags)) unknown = true;
+    else if (!before.tags.includes(update.addTag)) changes.push(`Added tag “${update.addTag}”`);
+  }
+  return changes.length ? `Updated this task. ${changes.join(" · ")}.` : unknown ? "Update confirmed." : "Update confirmed. The task fields stayed the same.";
 }
 
 const continuationPrefix = "Continue my saved proposal and examples using these earlier messages. If the context is incomplete, ask before changing the examples.\n\n";
@@ -717,22 +741,48 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (field === "title") return typeof value === "string" || workflowSummary.titlePrefix !== undefined;
       if (field === "projectId") return typeof value === "string" && !!projectName(value);
       if (field === "dueAt") return typeof value === "string" || workflowSummary.elapsedDue;
-      return ["priority", "addTag", "tagsText", "notes"].includes(field) && typeof value === "string";
+      if (field === "tags") return Array.isArray(value);
+      return ["priority", "addTag", "notes"].includes(field) && typeof value === "string";
     });
   function checkedWorkflowExample(item: CheckedCase, index: number, compact: boolean) {
     const { scenario, observed, calls, native } = item.report;
     const task = scenario?.task;
-    const openCheck = calls?.find(call => call.capability === "tasks.openMatch");
-    const openResult = openCheck && scenario?.openMatches?.find(match => match.title === openCheck.args?.title && match.projectId === openCheck.args?.projectId);
+    const successfulCalls = native?.trace?.filter(event => event.event === "CALL_SUCCEEDED") ?? [];
+    const successfulLookups = new Set(successfulCalls.filter(event => event.capability === "tasks.openMatch").map(event => event.step));
+    let matchIndex = 0;
+    const openChecks = calls?.filter(call => call.capability === "tasks.openMatch").map(call => {
+      const saved = call.step && successfulLookups.has(call.step) ? scenario?.openMatches?.[matchIndex++] : undefined;
+      const matches = saved && saved.title === call.args?.title && saved.projectId === call.args?.projectId ? saved.matches : undefined;
+      return { step: call.step, title: call.args?.title, projectId: call.args?.projectId, project: projectName(call.args?.projectId), matches };
+    }) ?? [];
     const readUnavailable = observed?.effect === "NONE" && !!native?.error && ["tasks.get", "tasks.openMatch"].includes(calls?.at(-1)?.capability ?? "");
     const readMessage = native?.error?.code === "TASK_NOT_FOUND" ? "The task could not be found."
       : native?.error?.code === "ACCESS_DENIED" ? "The task could not be checked because access was denied."
       : native?.error?.code === "ADAPTER_TRANSIENT" ? "The task was temporarily unavailable." : "Could not check the triggering task.";
-    const openUnavailable = !!openCheck && !openResult;
+    const openUnavailable = openChecks.some(check => check.matches === undefined);
     const unknown = observed?.effect === "UNKNOWN";
     const failed = ["FAIL", "MISMATCH"].includes(item.report.status);
     const passed = item.report.status === "PASS";
     const expected = item.expected;
+    const currentRule = compact && reviewEvidence?.revisionId === summaryRevision ? workflowSummary : null;
+    const guardSkippedWrite = currentRule && native?.classification === "COMPLETED" && observed?.effect === "NONE"
+      && native.trace?.some(event => event.event === "GUARD_EVALUATED" && event.step === currentRule.step && event.taken === false);
+    const taskRead = calls?.find(call => call.capability === "tasks.get" && call.args?.taskId === task?.id
+      && successfulCalls.some(event => event.capability === call.capability && event.step === call.step));
+    const blockingLookup = guardSkippedWrite ? openChecks.find(check => check.matches === true && currentRule.conditions?.some(fact =>
+      fact.field === "noOpenMatch" && fact.step === check.step && fact.projectId === check.projectId && fact.title === check.title)) : undefined;
+    let noChangeReason;
+    if (guardSkippedWrite && taskRead?.step && task?.status) {
+      const taskFacts = currentRule.conditions?.filter(fact => fact.step === taskRead.step) ?? [];
+      for (const fact of taskFacts) {
+        if (fact.field === "dueAbsent" && task.dueAt) { noChangeReason = "This task already has a due date."; break; }
+        if (fact.field === "title" && fact.value && task.title !== fact.value) { noChangeReason = `This task’s title isn’t exactly “${fact.value}”.`; break; }
+        if (fact.field === "priority" && fact.value && task.priority && task.priority !== fact.value) { noChangeReason = `The rule requires ${priorityLabel(fact.value)} priority.`; break; }
+        if (fact.field === "tag" && fact.value && Array.isArray(task.tags) && !task.tags.includes(fact.value)) { noChangeReason = `This task doesn’t have the tag “${fact.value}”.`; break; }
+        const requiredProject = fact.field === "projectId" && task.projectId && task.projectId !== fact.value && projectName(fact.value);
+        if (requiredProject) { noChangeReason = `This task isn’t in “${requiredProject}”.`; break; }
+      }
+    }
     const expectedCreate = expected.createdTasks?.[0], observedCreate = observed?.createdTasks?.[0];
     const createdProject = (task: TaskPreview | undefined) => task?.projectName || projectName(task?.projectId);
     const differentProject = !!expectedCreate?.projectId && !!observedCreate?.projectId && expectedCreate.projectId !== observedCreate.projectId;
@@ -748,15 +798,17 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           : project ? `“${project}”` : "an unnamed project";
         const details = taskDetails(result);
         return `${actual ? "Created" : "Create"} “${result.title}” in ${destination}.${details ? ` ${details}.` : ""}`;
-      }), ...updated.map(result => `${actual ? "Updated" : "Update"} this task. ${updateDetails(result, task, actual)}.`)].join(" ");
+      }), ...updated.map(result => actual ? confirmedUpdate(result, task) : expectedUpdate(result))].join(" ");
     }
     const title = knownScenarioTask(task) ? `“${task!.title}”` : exampleLabel(item, index);
     const project = task?.projectName || projectName(task?.projectId);
-    const situation = readUnavailable && !openCheck ? readMessage : task?.title !== "Example task" ? title
+    const taskReadUnavailable = readUnavailable && calls?.at(-1)?.capability === "tasks.get";
+    const situation = taskReadUnavailable ? readMessage : task?.title !== "Example task" ? title
       : task.status === "COMPLETED" ? `Task completed${project ? ` in ${project}` : ""}`
       : task.status === "OPEN" ? "Task is still unfinished" : title;
-    const searchProject = projectName(openCheck?.args?.projectId);
     const unavailable = readUnavailable || openUnavailable || observed?.effect === "NOT_OBSERVED" || !observed;
+    const dueInOutput = [expected.createdTasks, expected.updatedTasks, observed?.createdTasks, observed?.updatedTasks]
+      .some(tasks => tasks?.some(entry => !!entry.dueAt));
     const result = failed ? `Needs correction${unknown ? " · Change not confirmed" : unavailable ? " · Could not check" : ""}`
       : unknown ? passed ? "Matches expected uncertainty · Change not confirmed" : "Change not confirmed"
       : unavailable ? passed ? "Matches expected unavailable check · Could not check" : "Could not check"
@@ -764,15 +816,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     return <article className="rs-example rs-workflow-case" key={item.id} aria-label={`Example: ${situation}`}>
       <dl>
         <div><dt>Situation</dt><dd>{title}{project && ` in “${project}”`}{task?.status && ` · ${task.status === "COMPLETED" ? "Completed" : "Unfinished"}`}
-          {scenario?.occurredAt && ` · Event time ${utc(scenario.occurredAt)}`}{task && taskDetails(task) && ` · ${taskDetails(task)}`}</dd></div>
+          {dueInOutput && scenario?.occurredAt && ` · Event ${utc(scenario.occurredAt)}`}{task && taskDetails(task) && ` · ${taskDetails(task)}`}</dd></div>
         <div><dt>Expected</dt><dd>{effects(expected, false)}</dd></div>
         <div><dt>What happened</dt><dd>
-          {openCheck?.args?.title && <p>Open-task check: exact title “{openCheck.args.title}” {searchProject ? `in “${searchProject}”` : "in the chosen project"}. {openResult ? openResult.matches ? "A matching open task was found." : "No matching open task was found." : "Could not check for a matching open task."}</p>}
-          {readUnavailable && !openCheck && <p>{readMessage}</p>}
-          <p>{observed?.effect === "NOT_OBSERVED" || !observed ? "The simulation did not establish a write outcome."
-            : observed.effect === "NONE" && openResult?.matches ? "No task was created. A matching open task was found."
+          {openChecks.map((check, index) => <p key={index}>Open-task check{check.title ? ` for the exact title “${check.title}”` : ""} {check.project ? `in “${check.project}”` : "in the chosen project"}. {check === blockingLookup ? `${currentRule?.capability === "tasks.create" ? "No task was created" : "No change"} because an open task matched.` : check.matches === true ? "A matching open task was found." : check.matches === false ? "No matching open task was found." : "Could not check for a matching open task."}</p>)}
+          {taskReadUnavailable && <p>{readMessage}</p>}
+          {!blockingLookup && <p>{observed?.effect === "NOT_OBSERVED" || !observed ? "The simulation did not establish a write outcome."
             : observed.effect === "NONE" && native?.error && ["tasks.create", "tasks.update"].includes(calls?.at(-1)?.capability ?? "") ? "No change. The write could not be applied."
-            : effects(observed, true)}</p>
+            : noChangeReason ? `No change. ${noChangeReason}` : effects(observed, true)}</p>}
           {differentProject && <p>The created task used a different project than expected.</p>}
         </dd></div>
         <div><dt>Result</dt><dd className={failed ? "rs-mismatch" : passed && !unknown && !unavailable ? "rs-match" : undefined}>{result}</dd></div>
@@ -1832,7 +1883,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
                 {workflowSummary.capability === "tasks.update" ? "Update this task." : <>Create a task{typeof workflowSummary.fields.title === "string" ? ` titled “${workflowSummary.fields.title}”` : workflowSummary.titlePrefix !== undefined && ` titled “${workflowSummary.titlePrefix}” followed by this task’s title`}{typeof workflowSummary.fields.projectId === "string" && projectName(workflowSummary.fields.projectId) && ` in “${projectName(workflowSummary.fields.projectId)}”`}.</>}
                 {typeof workflowSummary.fields.priority === "string" && ` Priority ${priorityLabel(workflowSummary.fields.priority)}.`}
                 {typeof workflowSummary.fields.addTag === "string" && ` Add tag “${workflowSummary.fields.addTag}”.`}
-                {typeof workflowSummary.fields.tagsText === "string" && !!workflowSummary.fields.tagsText.trim() && ` Tags: ${workflowSummary.fields.tagsText}.`}
+                {Array.isArray(workflowSummary.fields.tags) && workflowSummary.fields.tags.length > 0 && ` Tags ${workflowSummary.fields.tags.join(", ")}.`}
                 {typeof workflowSummary.fields.notes === "string" && ` Notes “${workflowSummary.fields.notes}”.`}
                 {workflowSummary.elapsedDue ? ` Due 168 hours after ${trigger === "tasks added" ? "addition" : "completion"}.` : typeof workflowSummary.fields.dueAt === "string" && ` Due ${utc(workflowSummary.fields.dueAt)}.`}
               </> : "The saved action can’t be summarized here."}</dd></div>

@@ -1146,13 +1146,14 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
     if (!mounted.current || locked.current) return;
     if (!automatic) reads.current = 0;
     clearTimeout(timer.current); locked.current = true; const turn = ++serial.current;
-    setChecking(true); setError(""); setCreated(null);
+    setChecking(true); setCreated(null);
+    if (!creation || reaction) setError("");
     try {
       const next = await callbacks.current.request<Reaction>("tasks/" + encodeURIComponent(source.id) + "/reaction" + (reconcile ? "/reconcile" : "")
         + (creation ? "?trigger=TaskCreated" : ""), reconcile ? "POST" : "GET", reconcile ? {} : undefined, lifetime.current.signal);
       if (!mounted.current || serial.current !== turn) return;
       if (!["NO_BINDING", "PENDING", "STARTED", "FINISHED"].includes(next.state)) throw new Error("Unconfirmed reaction response");
-      setReaction(next);
+      setError(""); setReaction(next);
       const observation = next.reconciliation?.receipt;
       const receipt = observation?.kind === "SUCCESS" && observation.effect === "CONFIRMED" ? observation : next.receipt;
       const isUpdate = (next.reconciliation?.capability ?? next.capability) === "tasks.update";
@@ -1189,7 +1190,7 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const noEffect = !uncertain && (receipt?.effect === "NONE" || !!reaction?.outcome
     && ["COMPLETED", "BUSINESS_REJECTION", "FAILED", "LIMIT_EXCEEDED"].includes(reaction.outcome.classification ?? "")
     && Array.isArray(reaction.outcome.effects) && reaction.outcome.effects.every(effect => effect.state === "NONE" || effect.effect === "NONE"));
-  if (creation && (!reaction || reaction.state === "NO_BINDING")) return null;
+  if (creation && (reaction?.state === "NO_BINDING" || !reaction && !error)) return null;
   return <section className="task-reaction" aria-label={creation ? "Task creation customization outcome" : "Customization outcome"}>
     <p role="status">{confirmedReceipt ? update ? unchanged ? "The update made no change." : "This task was updated."
       : created ? `Created “${created.title}”` : checking ? "A task was added. Checking its details…" : "A task was added, but it is unavailable here."
@@ -1199,12 +1200,12 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
       : reaction?.revoked ? "This customization is no longer allowed to run."
       : reaction?.state === "NO_BINDING" ? "No customization was recorded for this completion."
         : reaction?.state === "PENDING" ? "This customization has not started yet."
-          : !reaction && checking ? "Checking the customization result…" : reaction?.workflow
+          : !reaction && checking ? "Checking the customization result…" : reaction?.workflow || creation
             ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."}</p>
     {reaction?.outcome?.classification && !["COMPLETED", "UNCERTAIN"].includes(reaction.outcome.classification) && <p>{creation ? "The customization did not finish successfully. Your task is kept." : "The customization did not finish successfully. Your completed task is kept."}</p>}
     {created && <button type="button" className="quiet-button" aria-label={`Open task: ${created.title}`} onClick={() => openCreated(created)}>Open task</button>}
     {error && <p role="alert">{error}</p>}
-    <div className="task-reaction-actions"><button type="button" className="quiet-button" disabled={checking} onClick={() => void read()}>Check result</button>
+    <div className="task-reaction-actions"><button type="button" className="quiet-button" aria-disabled={checking} onClick={() => void read()}>Check result</button>
       {(uncertain || reaction?.state === "STARTED") && <button type="button" className="quiet-button" disabled={checking} onClick={() => void read(true)}>Reconcile saved observation</button>}</div>
     {reaction && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
       {confirmedReceipt && <p>{update ? "A saved native receipt confirms the update." : "A saved native receipt confirms that a task was created."}</p>}

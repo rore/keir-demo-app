@@ -18,7 +18,7 @@ export function normalizeTaskTags(value) {
 
 export function parseWorkflowTagsText(value) {
   if (value === undefined) return [];
-  if (typeof value !== 'string' || !value.isWellFormed() || Buffer.byteLength(value) > 256)
+  if (typeof value !== 'string' || !value.isWellFormed() || new TextEncoder().encode(value).byteLength > 256)
     throw new Error('Use up to 256 bytes of comma-separated tags.');
   return value.trim() ? normalizeTaskTags(value.split(',')) : [];
 }
