@@ -783,11 +783,11 @@ p {
 .detail label {
   margin:0 0 8px;
 }
-.detail input {
+.detail input,.detail #edit-priority {
   margin-bottom:24px;
   width:100%;
 }
-.detail #edit-tags {
+.detail #edit-tags,.detail #edit-due-time {
   margin-bottom:0;
 }
 .tag-hint {

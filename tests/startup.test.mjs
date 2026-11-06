@@ -72,7 +72,64 @@ function withSql(path, sql, options = {}) {
   try { db.exec(sql); } finally { db.close(); }
 }
 
-async function assertEntryPointsPreserveData(directory, expected) {
+function restoreV10Schema(path) {
+  withSql(path, 'ALTER TABLE tasks DROP COLUMN due_at; ALTER TABLE tasks DROP COLUMN priority; PRAGMA user_version=10');
+}
+
+test('exact v10 upgrades once, preserving task bytes, selection and event evidence', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'keir-task-fields-upgrade-')), path = join(directory, 'app.sqlite');
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const db = openData(path), tasks = taskService(db), projectId = tasks.listProjects('maya')[0].id;
+  const task = tasks.createTask('maya', { projectId, title: 'Before upgrade', notes: 'Old\u0000notes', tags: ['review'] });
+  const binding = seedTaskEffectBinding(db);
+  db.prepare("UPDATE extension_selections SET generation=1,revision_id=?,binding_pins=? WHERE owner_id='maya'")
+    .run(binding.revisionId, JSON.stringify(binding.pins));
+  tasks.completeTask('maya', task.id);
+  const effects = nativeEffectService(db);
+  const event = db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(task.id).event_id;
+  assert.ok(effects.claim('maya', event));
+  assert.equal(effects.createTaskOnce('maya', effects.keyFor('maya', event), { projectId, title: 'Saved effect' }).effect, 'CONFIRMED');
+  effects.finish('maya', event, { classification: 'COMPLETED' });
+  db.close();
+  restoreV10Schema(path);
+  const original = readFileSync(path);
+  await assert.rejects(resetData(directory, true, () => assert.fail('legacy reset called backup')), /Unsupported database version/);
+  assert.deepEqual(readFileSync(path), original);
+  assert.deepEqual(readdirSync(directory), ['app.sqlite']);
+
+  const legacy = new DatabaseSync(path, { readOnly: true });
+  const queries = legacy.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all().map(({ name }) => {
+    const columns = legacy.prepare(`PRAGMA table_info(${name})`).all().map(({ name, type }) => type === 'TEXT' ? `hex(${name}) AS ${name}` : name);
+    return `SELECT ${columns.join(',')} FROM ${name} ORDER BY rowid`;
+  });
+  const snapshot = database => queries.map(sql => database.prepare(sql).all());
+  const before = snapshot(legacy);
+  legacy.close();
+  const exec = DatabaseSync.prototype.exec;
+  DatabaseSync.prototype.exec = function (sql) {
+    const result = exec.call(this, sql);
+    if (sql === 'PRAGMA user_version=11') throw new Error('upgrade interrupted after version write');
+    return result;
+  };
+  try { assert.throws(() => openData(path), /upgrade interrupted/); }
+  finally { DatabaseSync.prototype.exec = exec; }
+  const rolledBack = new DatabaseSync(path, { readOnly: true });
+  try {
+    assert.equal(rolledBack.prepare('PRAGMA user_version').get().user_version, 10);
+    assert.equal(rolledBack.prepare("SELECT count(*) n FROM pragma_table_info('tasks') WHERE name IN ('priority','due_at')").get().n, 0);
+    assert.deepEqual(snapshot(rolledBack), before);
+  } finally { rolledBack.close(); }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const upgraded = openData(path);
+    try {
+      assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 11);
+      assert.deepEqual(snapshot(upgraded), before);
+      assert.deepEqual(upgraded.prepare('SELECT DISTINCT priority,due_at FROM tasks').all().map(Object.values), [['normal', null]]);
+    } finally { upgraded.close(); }
+  }
+});
+
+async function assertEntryPointsPreserveData(directory, expected, expectedReset = expected) {
   const names = readdirSync(directory);
   const bytes = names.map(name => readFileSync(join(directory, name)));
   const unchanged = () => {
@@ -85,7 +142,7 @@ async function assertEntryPointsPreserveData(directory, expected) {
   assert.equal(seed.status, 1, seed.error?.message || seed.stderr);
   assert.match(seed.stderr, expected);
   unchanged();
-  await assert.rejects(resetData(directory, true), expected);
+  await assert.rejects(resetData(directory, true), expectedReset);
   unchanged();
 }
 
@@ -100,9 +157,11 @@ test('startup, seed and reset reject unsupported databases without touching the 
   for (const [name, fresh, mutate, expected] of [
     ['preview v9', true, version(9), /Unsupported database version/],
     ['unmarked', true, version(0), /Unsupported database version/],
-    ['future', true, version(11), /Unsupported database version/],
+    ['future', true, version(12), /Unsupported database version/],
+    ['v10 marker on a different schema', true, path => withSql(path, 'PRAGMA user_version=10'), /Unsupported database (schema|version)/],
+    ['current marker on legacy schema', true, path => { restoreV10Schema(path); withSql(path, 'PRAGMA user_version=11'); }, /Unsupported database schema/],
     ['empty file', false, path => writeFileSync(path, ''), /Unsupported database format/],
-    ['invalid header with v10', true, path => {
+    ['invalid header with current marker', true, path => {
       const bytes = readFileSync(path);
       bytes[0] = 0;
       writeFileSync(path, bytes);
@@ -138,18 +197,20 @@ test('startup, seed and reset reject unsupported databases without touching the 
 });
 
 test('a hot rollback journal is validated on a disposable copy before original recovery', async t => {
-  for (const wrongSchema of [false, true]) await t.test(wrongSchema ? 'rejects a different recovered schema' : 'recovers the current schema', async t => {
+  for (const [version, wrongSchema] of [[11, false], [11, true], [10, false], [10, true]]) await t.test(
+    `v${version} ${wrongSchema ? 'rejects a different recovered schema' : 'recovers the exact schema'}`, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'keir-hot-journal-')), path = join(directory, 'app.sqlite');
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const db = openData(path);
     const tasks = db.prepare('SELECT id, notes FROM tasks ORDER BY id').all();
     db.close();
+    if (version === 10) restoreV10Schema(path);
     if (wrongSchema) withSql(path, 'DROP TRIGGER task_receipt_immutable');
     const original = readFileSync(path);
     const child = spawn(process.execPath, ['--input-type=module', '-e', `
       import { DatabaseSync } from 'node:sqlite';
       const db = new DatabaseSync(process.argv[1]);
-      db.exec("PRAGMA cache_size=5; BEGIN IMMEDIATE; UPDATE tasks SET notes=printf('%04000d', 1)");
+      db.exec("PRAGMA cache_size=5; BEGIN IMMEDIATE; PRAGMA user_version=11; UPDATE tasks SET notes=printf('%04000d', 1)");
       console.log('dirty');
       setInterval(() => {}, 60_000);
     `, path], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -162,11 +223,23 @@ test('a hot rollback journal is validated on a disposable copy before original r
     } finally { child.kill('SIGKILL'); await closed; }
     assert.notDeepEqual(readFileSync(path), original);
     assert.throws(() => withSql(path, 'PRAGMA user_version', { readOnly: true }), { errcode: 776 });
+    if (version === 10) {
+      const journal = readFileSync(path + '-journal'), dirty = readFileSync(path);
+      // Model a crash after the new marker reaches disk, with the v10 header still in the rollback journal.
+      dirty.writeUInt32BE(11, 60);
+      writeFileSync(path, dirty);
+      await assert.rejects(resetData(directory, true, () => assert.fail('legacy reset called backup')), /Unsupported database version/);
+      assert.deepEqual(readFileSync(path), dirty);
+      assert.deepEqual(readFileSync(path + '-journal'), journal);
+    }
     if (wrongSchema) {
-      await assertEntryPointsPreserveData(directory, /Unsupported database schema/);
+      await assertEntryPointsPreserveData(directory, /Unsupported database schema/, version === 10 ? /Unsupported database version/ : undefined);
     } else {
       const recovered = await start({ directory, port: await reservePort() });
-      try { assert.deepEqual(recovered.db.prepare('SELECT id, notes FROM tasks ORDER BY id').all(), tasks); }
+      try {
+        assert.deepEqual(recovered.db.prepare('SELECT id, notes FROM tasks ORDER BY id').all(), tasks);
+        assert.equal(recovered.db.prepare('PRAGMA user_version').get().user_version, 11);
+      }
       finally { await recovered.close(); }
       assert.deepEqual(readdirSync(directory), ['app.sqlite']);
     }

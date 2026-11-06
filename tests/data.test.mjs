@@ -63,7 +63,7 @@ test('services validate CRUD, bounds, ownership and completion without partial w
 test('initial seed is idempotent and all three users persist through reopen', t => {
   const dir = sandbox(), path = join(dir, 'app.sqlite');
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
   assert.deepEqual(db.prepare('SELECT owner_id,hook_id,revision_id,generation,binding_pins FROM extension_selections ORDER BY owner_id').all()
     .map(row => Object.values(row)), ['leo', 'maya', 'sam'].map(id => [id, 'TaskCompleted', null, 0, null]));
   assert.equal(db.prepare('SELECT count(*) n FROM extension_revisions').get().n, 0);
@@ -82,7 +82,7 @@ test('fresh schema, seed and current marker roll back together on initialization
   const exec = DatabaseSync.prototype.exec;
   DatabaseSync.prototype.exec = function (sql) {
     const result = exec.call(this, sql);
-    if (sql === 'PRAGMA user_version=10') throw new Error('initialization blocked');
+    if (sql === 'PRAGMA user_version=11') throw new Error('initialization blocked');
     return result;
   };
   try { assert.throws(() => openData(path), /initialization blocked/); }
@@ -132,6 +132,39 @@ test('native tags normalize, preserve exact stored text on tag-only edits and su
   assert.deepEqual(service.editTask('maya', task.id, { title: 'Now', notes: '', tags: [] }).tags, []);
   assert.deepEqual(service.editTask('maya', task.id, { tags: ['again'] }).tags, ['again']);
   assert.deepEqual(service.editTask('maya', task.id, { tags: [] }).tags, []);
+});
+
+test('native priority and UTC millisecond due time validate and update independently of task text', t => {
+  const dir = sandbox(), db = openData(join(dir, 'app.sqlite'));
+  cleanup(t, dir, () => db.close());
+  const service = taskService(db), projectId = service.listProjects('maya')[0].id;
+  const task = service.createTask('maya', { projectId, title: 'Legacy\u0000task', notes: 'Old\u0000notes' });
+  assert.deepEqual([task.priority, task.dueAt], ['normal', null]);
+  const exactText = () => db.prepare('SELECT hex(title), hex(notes) FROM tasks WHERE id=?').get(task.id);
+  const before = exactText();
+  const beforeDst = '2025-03-08T14:30:00.123Z', afterDst = '2025-03-15T14:30:00.123Z';
+  const first = service.editTask('maya', task.id, { priority: 'high', dueAt: beforeDst });
+  const second = service.editTask('maya', task.id, { dueAt: afterDst });
+  assert.deepEqual([first.dueAt, second.dueAt], [beforeDst, afterDst]);
+  assert.equal(Date.parse(second.dueAt) - Date.parse(first.dueAt), 168 * 60 * 60 * 1000);
+  assert.equal(service.editTask('maya', task.id, { priority: 'low' }).dueAt, afterDst);
+  assert.deepEqual(exactText(), before);
+  assert.equal(service.editTask('maya', task.id, { dueAt: null }).priority, 'low');
+  assert.equal(service.getTask('maya', task.id).dueAt, null);
+  const unchanged = service.getTask('maya', task.id);
+  for (const fields of [{ priority: null }, { priority: 'urgent' }, { dueAt: '' }, { dueAt: '2025-02-28' },
+    { dueAt: '2025-02-29T00:00:00.000Z' }, { dueAt: '2025-02-28T24:00:00.000Z' }, { dueAt: '0000-01-01T00:00:00.000Z' },
+    { dueAt: '2026-04-01T00:00:00Z' }, { dueAt: '2025-03-08T09:30:00.123-05:00' }, { dueAt: Date.parse(beforeDst) }]) {
+    expectStatus(400, () => service.createTask('maya', { projectId, title: 'Invalid fields', ...fields }));
+    expectStatus(400, () => service.editTask('maya', task.id, fields));
+  }
+  for (const fields of [{}, { notes: 'Missing title', dueAt: null }, { title: 'Missing notes', priority: 'high' }])
+    expectStatus(400, () => service.editTask('maya', task.id, fields));
+  expectStatus(404, () => service.editTask('leo', task.id, { priority: 'high', dueAt: beforeDst }));
+  assert.deepEqual(service.getTask('maya', task.id), unchanged);
+  for (const dueAt of ['2026-02-29T00:00:00.000Z', '2026-02-28T24:00:00.000Z', '2026-02-28T00:00:00Z', 'invalid'])
+    assert.throws(() => db.prepare('UPDATE tasks SET due_at=? WHERE id=?').run(dueAt, task.id), /CHECK/);
+  assert.throws(() => db.prepare("UPDATE tasks SET priority='urgent' WHERE id=?").run(task.id), /CHECK/);
 });
 
 test('search filters a project before paging, with exact tags and literal ASCII-folded text beyond NUL', t => {

@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { Temporal } from "temporal-polyfill";
 import "./styles.css";
 import Studio, { type Collection, type StudioTarget } from "./Studio";
 import Customizations from "./Customizations";
@@ -31,18 +32,28 @@ type Task = {
   title: string;
   notes: string;
   tags: string[];
+  priority: "low" | "normal" | "high";
+  dueAt: string | null;
   status: "open" | "completed";
   completedAt: string | null;
 };
-type TaskDraft = Pick<Task, "title" | "notes"> & { tags: string };
+type TaskDraft = Pick<Task, "title" | "notes" | "priority"> & { tags: string; dueTime: string; dueZone: string; dueTimeEdited: boolean };
 type SearchFilters = { q: string; tag: string };
 type SearchPage = { items: Task[]; nextAfter: string | null };
 type TaskSearch = SearchPage & { pending: boolean; failure: { message: string; after: string | null } | null };
 const emptyFilters = { q: "", tag: "" };
 const emptyPage = { items: [], nextAfter: null };
 
-function taskDraft(task: Task): TaskDraft {
-  return { title: task.title, notes: task.notes, tags: task.tags.join(", ") };
+function taskDraft(task: Task, dueZone = Temporal.Now.timeZoneId()): TaskDraft {
+  const local = task.dueAt ? Temporal.Instant.from(task.dueAt).toZonedDateTimeISO(dueZone).toPlainDateTime() : null;
+  const dueTime = local && local.year >= 1 && local.year <= 9999 ? local.toString({ fractionalSecondDigits: 3 }) : "";
+  return { title: task.title, notes: task.notes, tags: task.tags.join(", "), priority: task.priority ?? "normal", dueTime, dueZone, dueTimeEdited: false };
+}
+
+function formatDueTime(dueAt: string, timeZone = Temporal.Now.timeZoneId()) {
+  return new Date(dueAt).toLocaleString(undefined, { timeZone, year: "numeric", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, timeZoneName: "shortOffset",
+    era: dueAt.startsWith("0001-01-01") ? "short" : undefined });
 }
 
 class ApiError extends Error {
@@ -303,7 +314,7 @@ function Workspace({
   const [detail, setDetail] = useState<Task | null>(null);
   const [recentCompletion, setRecentCompletion] = useState<string | null>(null);
   const pendingTaskOpen = useRef<{ task: Task; navigation: number } | null>(null);
-  const [draft, setDraft] = useState<TaskDraft>({ title: "", notes: "", tags: "" });
+  const [draft, setDraft] = useState<TaskDraft>({ title: "", notes: "", tags: "", priority: "normal", dueTime: "", dueZone: "UTC", dueTimeEdited: false });
   const draftVersion = useRef(0);
   const routeKey = "daymark-studio-route:" + session.user.id;
   const [entryLink] = useState(studioLink);
@@ -730,6 +741,11 @@ function Workspace({
           <span>{task.title}</span>
           {task.notes && <small>{task.notes}</small>}
         </button>
+        {(task.priority === "high" || task.priority === "low" || task.dueAt) && <small className="muted">
+          {task.priority === "high" ? "High priority" : task.priority === "low" ? "Low priority" : ""}
+          {(task.priority === "high" || task.priority === "low") && task.dueAt && " · "}
+          {task.dueAt && <time dateTime={task.dueAt}>Due {formatDueTime(task.dueAt)}</time>}
+        </small>}
         {recentCompletion === task.id && detail?.id !== task.id && <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} />}
         </div>
         <span className="task-chevron" aria-hidden="true">
@@ -1058,16 +1074,20 @@ function Workspace({
             reactionRequest={studioRequest}
             reactionConfirmed={refreshCreatedTasks}
             openCreated={openCreatedTask}
-            save={() => {
+            save={(dueAt) => {
               const instance = detailInstance.current;
               const version = draftVersion.current;
-              const previous = taskDraft(detail);
+              const previous = taskDraft(detail, draft.dueZone);
               const textChanged = draft.title !== previous.title || draft.notes !== previous.notes;
               const tagsChanged = draft.tags !== previous.tags;
-              const tags = draft.tags.trim() ? draft.tags.split(",") : [];
-              const body = tagsChanged
-                ? { ...(textChanged ? { title: draft.title, notes: draft.notes } : {}), tags }
-                : { title: draft.title, notes: draft.notes };
+              const priorityChanged = draft.priority !== previous.priority;
+              const dueAtChanged = dueAt !== undefined && dueAt !== (detail.dueAt ?? null);
+              const body = {
+                ...(textChanged || !tagsChanged && !priorityChanged && !dueAtChanged ? { title: draft.title, notes: draft.notes } : {}),
+                ...(tagsChanged ? { tags: draft.tags.trim() ? draft.tags.split(",") : [] } : {}),
+                ...(priorityChanged ? { priority: draft.priority } : {}),
+                ...(dueAtChanged ? { dueAt } : {}),
+              };
               action(
                 () =>
                   request<Task>(`tasks/${detail.id}`, "PATCH", body),
@@ -1076,13 +1096,20 @@ function Workspace({
                   if (instance === detailInstance.current) {
                     if (version === draftVersion.current) closeDetail();
                     else {
-                      const confirmed = taskDraft(saved);
+                      const confirmed = taskDraft(saved, draft.dueZone);
                       setDetail(saved);
-                      setDraft(current => ({
-                        title: current.title === draft.title ? confirmed.title : current.title,
-                        notes: current.notes === draft.notes ? confirmed.notes : current.notes,
-                        tags: current.tags === draft.tags ? confirmed.tags : current.tags,
-                      }));
+                      setDraft(current => {
+                        const keepDueTime = current.dueTime !== draft.dueTime || current.dueTimeEdited !== draft.dueTimeEdited;
+                        return {
+                          title: current.title === draft.title ? confirmed.title : current.title,
+                          notes: current.notes === draft.notes ? confirmed.notes : current.notes,
+                          tags: current.tags === draft.tags ? confirmed.tags : current.tags,
+                          priority: current.priority === draft.priority ? confirmed.priority : current.priority,
+                          dueTime: keepDueTime ? current.dueTime : confirmed.dueTime,
+                          dueZone: current.dueZone,
+                          dueTimeEdited: keepDueTime && current.dueTimeEdited,
+                        };
+                      });
                     }
                   }
                   setNotice("Task saved.");
@@ -1195,15 +1222,39 @@ function TaskDetail({
   reactionRequest: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
   reactionConfirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
-  save: () => void;
+  save: (dueAt?: string | null) => void;
 }) {
   const { title, notes } = draft;
+  const [dueTimeError, setDueTimeError] = useState("");
+  const dueTimeInput = useRef<HTMLInputElement>(null);
+  function editDueTime(dueTime: string) {
+    setDueTimeError("");
+    setDraft({ ...draft, dueTime, dueTimeEdited: true });
+  }
+  function rejectDueTime(message: string) {
+    setDueTimeError(message);
+    dueTimeInput.current?.focus();
+  }
   return (
     <>
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        save();
+        if (!draft.dueTimeEdited) return save();
+        if (!draft.dueTime) return save(null);
+        const local = Temporal.PlainDateTime.from(draft.dueTime);
+        let dueAt: string;
+        try {
+          dueAt = local.toZonedDateTime(draft.dueZone, { disambiguation: "reject" })
+            .toInstant().toString({ fractionalSecondDigits: 3 });
+        } catch {
+          const earlier = local.toZonedDateTime(draft.dueZone, { disambiguation: "earlier" }).toPlainDateTime();
+          return rejectDueTime(earlier.equals(local)
+            ? "This local time occurs twice. Choose a different time."
+            : "This local time does not exist. Choose a different time.");
+        }
+        if (dueAt.length !== 24 || dueAt < "0001-01-01T00:00:00.000Z") return rejectDueTime("Choose a time within UTC years 0001 to 9999.");
+        save(dueAt);
       }}
     >
       <div className="detail-top">
@@ -1244,6 +1295,24 @@ function TaskDetail({
       <input id="edit-tags" value={draft.tags} aria-describedby="edit-tags-hint"
         onChange={event => setDraft({ ...draft, tags: event.target.value })} />
       <p id="edit-tags-hint" className="muted tag-hint">Separate tags with commas. Use up to 8 tags, each up to 32 characters.</p>
+      <label htmlFor="edit-priority">Priority</label>
+      <select id="edit-priority" value={draft.priority}
+        onChange={event => setDraft({ ...draft, priority: event.target.value as Task["priority"] })}>
+        <option value="low">Low</option>
+        <option value="normal">Normal</option>
+        <option value="high">High</option>
+      </select>
+      <label htmlFor="edit-due-time">Due time <span className="muted">(optional)</span></label>
+      <input id="edit-due-time" ref={dueTimeInput} type="datetime-local" min="0001-01-01T00:00" max="9999-12-31T23:59:59.999" step="0.001"
+        value={draft.dueTime} aria-invalid={dueTimeError ? true : undefined}
+        aria-describedby={dueTimeError ? "edit-due-zone edit-due-error" : "edit-due-zone"}
+        onChange={event => editDueTime(event.target.value)} />
+      <p id="edit-due-zone" className="muted tag-hint">Time zone: {draft.dueZone}.
+        {task.dueAt && !draft.dueTimeEdited && <> Saved time: {formatDueTime(task.dueAt, draft.dueZone)}.</>}
+      </p>
+      {task.dueAt && !draft.dueTime && !draft.dueTimeEdited &&
+        <button type="button" className="quiet-button" onClick={() => editDueTime("")}>Clear saved due time</button>}
+      {dueTimeError && <p id="edit-due-error" className="error" role="alert">{dueTimeError}</p>}
       {task.completedAt && (
         <p className="muted">
           Completed{" "}

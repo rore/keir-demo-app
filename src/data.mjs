@@ -10,7 +10,14 @@ const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 
   'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
 const authoringHistoryTables = ['authoring_dispatches', 'authoring_messages', 'authoring_operations'];
 const taskEffectTables = ['task_effect_receipts', 'task_completion_events'];
-const schemaVersion = 10;
+const priorSchemaVersion = 10;
+const schemaVersion = 11;
+const addTaskFields = `
+  ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high'));
+  ALTER TABLE tasks ADD COLUMN due_at TEXT
+    CHECK(due_at IS NULL OR (length(due_at)=24 AND due_at>='0001-01-01T00:00:00.000Z'
+      AND strftime('%Y-%m-%dT%H:%M:%fZ',due_at,'+0 seconds') IS due_at));
+`;
 const schema = `
   CREATE TABLE users(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
   CREATE TABLE projects(
@@ -223,7 +230,11 @@ function readBytes(path, length, position = 0) {
   } finally { closeSync(fd); }
 }
 
-function inspectDataFile(path) {
+function supportedVersion(version, allowUpgrade) {
+  return version === schemaVersion || allowUpgrade && version === priorSchemaVersion;
+}
+
+function inspectDataFile(path, allowUpgrade = false) {
   const file = lstatSync(path, { throwIfNoEntry: false });
   const journal = lstatSync(path + '-journal', { throwIfNoEntry: false });
   if (lstatSync(path + '-wal', { throwIfNoEntry: false }) || lstatSync(path + '-shm', { throwIfNoEntry: false })
@@ -236,33 +247,39 @@ function inspectDataFile(path) {
       || pageSize !== 1 && (pageSize < 512 || (pageSize & (pageSize - 1)) !== 0)
       || header[18] !== 1 || header[19] !== 1 || header[21] !== 64 || header[22] !== 32 || header[23] !== 32
       || header.readUInt32BE(44) !== 4 || header.readUInt32BE(56) !== 1) throw unsupportedFormat();
-  if (header.readUInt32BE(60) !== schemaVersion) throw new Error('Unsupported database version; no data was reset.');
+  if (!supportedVersion(header.readUInt32BE(60), allowUpgrade)) throw new Error('Unsupported database version; no data was reset.');
   // SQLite can follow paths in super-journal pointers. Daymark only uses single-database transactions.
   if (journal?.size >= 16 && readBytes(path + '-journal', 8, journal.size - 8).equals(rollbackMagic)) throw unsupportedFormat();
   return { journal: !!journal };
 }
 
 const schemaIdentity = db => JSON.stringify(db.prepare('SELECT type, name, tbl_name, CAST(sql AS BLOB) AS sql FROM main.sqlite_schema ORDER BY type,name').all());
-let currentSchema;
-function assertCurrentDatabase(db) {
-  if (db.prepare('PRAGMA main.user_version').get().user_version !== schemaVersion)
+const schemaIdentities = new Map();
+function assertDatabase(db, allowUpgrade = false) {
+  const version = db.prepare('PRAGMA main.user_version').get().user_version;
+  if (!supportedVersion(version, allowUpgrade))
     throw new Error('Unsupported database version; no data was reset.');
-  if (currentSchema === undefined) {
+  if (!schemaIdentities.has(version)) {
     const expected = new DatabaseSync(':memory:');
-    try { expected.exec(schema); currentSchema = schemaIdentity(expected); }
+    try {
+      expected.exec(schema);
+      if (version === schemaVersion) expected.exec(addTaskFields);
+      schemaIdentities.set(version, schemaIdentity(expected));
+    }
     finally { expected.close(); }
   }
-  if (schemaIdentity(db) !== currentSchema) throw new Error('Unsupported database schema; no data was reset.');
+  if (schemaIdentity(db) !== schemaIdentities.get(version)) throw new Error('Unsupported database schema; no data was reset.');
   if (db.prepare('PRAGMA main.integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA main.foreign_key_check').all().length)
     throw new Error('Database integrity check failed; no data was reset.');
+  return version;
 }
 
-function preflightData(path) {
-  const file = inspectDataFile(path);
+function preflightData(path, allowUpgrade) {
+  const file = inspectDataFile(path, allowUpgrade);
   if (!file) return false;
   try {
     const db = new DatabaseSync(path, { readOnly: true });
-    try { assertCurrentDatabase(db); } finally { db.close(); }
+    try { assertDatabase(db, allowUpgrade); } finally { db.close(); }
   } catch (error) {
     // SQLITE_READONLY_ROLLBACK means SQLite could not read the file without recovering its journal.
     if (error.code !== 'ERR_SQLITE_ERROR' || error.errcode !== 776 || !file.journal) throw error;
@@ -274,23 +291,31 @@ function preflightData(path) {
       copyFileSync(path, copy);
       copyFileSync(journalPath, copy + '-journal');
       const db = new DatabaseSync(copy);
-      try { assertCurrentDatabase(db); } finally { db.close(); }
-      const recovered = inspectDataFile(copy);
+      try { assertDatabase(db, allowUpgrade); } finally { db.close(); }
+      const recovered = inspectDataFile(copy, allowUpgrade);
       if (!recovered || recovered.journal) throw unsupportedFormat();
     } finally { rmSync(disposable, { recursive: true, force: true }); }
   }
   return true;
 }
 
-export function openData(path) {
-  const existing = path !== ':memory:' && preflightData(path);
+export function openData(path, { allowUpgrade = true } = {}) {
+  const existing = path !== ':memory:' && preflightData(path, allowUpgrade);
   const db = new DatabaseSync(path);
   try {
     db.exec('PRAGMA foreign_keys = ON');
     if (db.prepare('PRAGMA foreign_keys').get().foreign_keys !== 1) throw new Error('Foreign keys are required.');
-    if (existing) assertCurrentDatabase(db);
+    if (existing) {
+      if (assertDatabase(db, allowUpgrade) === priorSchemaVersion) transaction(db, () => {
+        if (assertDatabase(db, allowUpgrade) === schemaVersion) return;
+        db.exec(addTaskFields);
+        db.exec('PRAGMA user_version=' + schemaVersion);
+        assertDatabase(db);
+      });
+    }
     else transaction(db, () => {
       db.exec(schema);
+      db.exec(addTaskFields);
       db.exec('INSERT INTO authoring_budget VALUES (1, 0)');
       seedRows(db);
       db.exec('PRAGMA user_version=' + schemaVersion);
@@ -304,7 +329,7 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
   const release = acquireDataLock(directory);
   let db;
   try {
-    db = openData(join(resolve(directory), 'app.sqlite'));
+    db = openData(join(resolve(directory), 'app.sqlite'), { allowUpgrade: false });
     const backupDir = join(resolve(directory), 'backups');
     mkdirSync(backupDir, { recursive: true });
     const backupPath = join(backupDir, `${Date.now()}-${randomUUID()}.sqlite`);
@@ -314,7 +339,7 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
       const file = inspectDataFile(backupPath);
       if (!file || file.journal) throw unsupportedFormat();
       copy = new DatabaseSync(backupPath, { readOnly: true });
-      assertCurrentDatabase(copy);
+      assertDatabase(copy);
     } catch (error) {
       copy?.close();
       throw new Error('Backup verification failed; original data retained.', { cause: error });
@@ -350,7 +375,7 @@ function text(value, label, max, required = true) {
   return result;
 }
 const projectColumns = 'id, name, created_at AS createdAt, updated_at AS updatedAt';
-const taskColumns = 'id, project_id AS projectId, title, notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt, tags';
+const taskColumns = 'id, project_id AS projectId, title, notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt, tags, priority, due_at AS dueAt';
 const taskDto = row => ({ ...row, tags: JSON.parse(row.tags) });
 
 function tag(value) {
@@ -368,10 +393,24 @@ function tags(value) {
   return JSON.stringify([...distinct]);
 }
 
-function insertTask(db, owner, projectId, title, notes, savedTags = '[]') {
+function taskPriority(value) {
+  if (!['low', 'normal', 'high'].includes(value)) throw new AppError(400, 'Choose low, normal or high priority.');
+  return value;
+}
+
+function taskDueAt(value) {
+  if (value === null) return null;
+  if (typeof value === 'string' && value.length === 24 && value >= '0001-01-01T00:00:00.000Z') {
+    const instant = new Date(value);
+    if (Number.isFinite(instant.getTime()) && instant.toISOString() === value) return value;
+  }
+  throw new AppError(400, 'Use a valid UTC due time in YYYY-MM-DDTHH:mm:ss.sssZ format.');
+}
+
+function insertTask(db, owner, projectId, title, notes, savedTags = '[]', priority = 'normal', dueAt = null) {
   const id = randomUUID(), now = new Date().toISOString();
-  db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at,tags)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, projectId, title, notes, 'open', now, now, null, savedTags);
+  db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at,tags,priority,due_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, projectId, title, notes, 'open', now, now, null, savedTags, priority, dueAt);
   return id;
 }
 
@@ -437,25 +476,29 @@ export function taskService(db) {
       return { ...row, title: Buffer.from(row.title).toString('utf8') };
     },
     createTask(owner, input) {
-      fields(input, ['projectId', 'title', 'notes', 'tags']);
+      fields(input, ['projectId', 'title', 'notes', 'tags', 'priority', 'dueAt']);
       if (typeof input.projectId !== 'string') throw new AppError(400, 'Choose a project.');
       project(owner, input.projectId);
       const title = text(input.title, 'Task title', 120), notes = text(input.notes ?? '', 'Notes', 4000, false);
       const savedTags = Object.hasOwn(input, 'tags') ? tags(input.tags) : undefined;
-      const id = insertTask(db, owner, input.projectId, title, notes, savedTags);
+      const priority = Object.hasOwn(input, 'priority') ? taskPriority(input.priority) : undefined;
+      const dueAt = Object.hasOwn(input, 'dueAt') ? taskDueAt(input.dueAt) : undefined;
+      const id = insertTask(db, owner, input.projectId, title, notes, savedTags, priority, dueAt);
       return task(owner, id);
     },
     editTask(owner, id, input) {
-      fields(input, ['title', 'notes', 'tags']);
+      fields(input, ['title', 'notes', 'tags', 'priority', 'dueAt']);
       task(owner, id);
       const savedTags = Object.hasOwn(input, 'tags') ? tags(input.tags) : null;
-      const now = new Date().toISOString();
-      if (savedTags !== null && !Object.hasOwn(input, 'title') && !Object.hasOwn(input, 'notes')) {
-        db.prepare('UPDATE tasks SET tags = ?, updated_at = ? WHERE owner_id = ? AND id = ?').run(savedTags, now, owner, id);
-      } else {
-        db.prepare('UPDATE tasks SET title = ?, notes = ?, tags = coalesce(?, tags), updated_at = ? WHERE owner_id = ? AND id = ?')
-          .run(text(input.title, 'Task title', 120), text(input.notes, 'Notes', 4000, false), savedTags, now, owner, id);
-      }
+      const priority = Object.hasOwn(input, 'priority') ? taskPriority(input.priority) : null;
+      const hasDueAt = Object.hasOwn(input, 'dueAt');
+      const dueAt = hasDueAt ? taskDueAt(input.dueAt) : null;
+      const editText = Object.hasOwn(input, 'title') || Object.hasOwn(input, 'notes') || savedTags === null && priority === null && !hasDueAt;
+      const title = editText ? text(input.title, 'Task title', 120) : null;
+      const notes = editText ? text(input.notes, 'Notes', 4000, false) : null;
+      db.prepare(`UPDATE tasks SET title=coalesce(?,title), notes=coalesce(?,notes), tags=coalesce(?,tags),
+        priority=coalesce(?,priority), due_at=CASE WHEN ? THEN ? ELSE due_at END, updated_at=?
+        WHERE owner_id=? AND id=?`).run(title, notes, savedTags, priority, Number(hasDueAt), dueAt, new Date().toISOString(), owner, id);
       return task(owner, id);
     },
     completeTask(owner, id) {

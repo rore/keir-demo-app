@@ -21,6 +21,7 @@ const test = base.extend({
     finally { await server.close(); rmSync(directory, { recursive: true, force: true }); }
   },
 });
+test.use({ timezoneId: 'America/New_York' });
 const pictures = resolve('build/screens');
 async function screenshot(page, name) { mkdirSync(pictures, { recursive: true }); await page.screenshot({ path: join(pictures, `${name}.png`), fullPage: true }); }
 async function signIn(page, name) {
@@ -45,7 +46,7 @@ async function search(page, text, tag = '') {
 }
 
 for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height: 1000 }, phone: { width: 390, height: 844 } })) {
-  test(`native tags persist across restart and search restores focus when a match is removed on ${layout}`, async ({ page, demo }) => {
+  test(`native task fields persist across restart and search restores focus when a match is removed on ${layout}`, async ({ page, demo }) => {
     await page.setViewportSize(viewport);
     demo.db.exec('UPDATE extension_selections SET revision_id = NULL, binding_pins = NULL');
     const studioCalls = [];
@@ -56,12 +57,20 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await signIn(page, 'Maya');
     const task = taskButton(page, 'Gather material references');
     const tags = page.getByLabel('Tags', { exact: true });
+    const priority = page.getByLabel('Priority', { exact: true });
+    const dueTime = page.getByLabel('Due time (optional)', { exact: true });
     const detail = page.getByRole('dialog', { name: 'Task details' });
     await task.click();
+    await expect(priority).toHaveValue('normal');
+    await expect(dueTime).toHaveValue('');
     await tags.fill('  Material, priority, MATERIAL  ');
+    await priority.selectOption('high');
+    await dueTime.fill('2028-02-29T12:42:37.123');
     await taskButton(page, 'Save changes').click();
     await expect(detail).not.toBeVisible();
     await expect(task).toBeFocused();
+    await expect(page.locator('time[datetime="2028-02-29T17:42:37.123Z"]')).toContainText('12:42:37.123 PM GMT-5');
+    expect(demo.db.prepare("SELECT due_at FROM tasks WHERE title='Gather material references'").get().due_at).toBe('2028-02-29T17:42:37.123Z');
     await task.click();
     await expect(tags).toHaveValue('material, priority');
     await taskButton(page, 'Close task details').click();
@@ -76,7 +85,10 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await screenshot(page, `native-tags-search-${layout}`);
     await task.click();
     await expect(tags).toHaveValue('material, priority');
+    await expect(priority).toHaveValue('high');
+    await expect(dueTime).toHaveValue('2028-02-29T12:42:37.123');
     await tags.fill('material');
+    await dueTime.fill('');
     await taskButton(page, 'Save changes').click();
     await expect(detail).not.toBeVisible();
     await expect(page.getByText('No tasks match your search.', { exact: true })).toBeVisible();
@@ -86,6 +98,8 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(page.getByLabel('Filter by tag', { exact: true })).toHaveValue('');
     await task.click();
     await expect(tags).toHaveValue('material');
+    await expect(priority).toHaveValue('high');
+    await expect(dueTime).toHaveValue('');
     expect(studioCalls).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
@@ -221,25 +235,111 @@ test('native search refresh after a delayed save keeps newer search and detail d
   await expect(taskButton(page, 'Alpha')).toBeVisible();
 });
 
-test('a delayed tag save merges normalized tags without overwriting newer edits in the same detail', async ({ page, demo }) => {
+test('a delayed metadata save merges normalized tags without overwriting newer edits in the same detail', async ({ page, demo }) => {
   await page.goto(demo.origin);
   await signIn(page, 'Maya');
   await taskButton(page, 'Gather material references').click();
   const title = page.getByLabel('Task title', { exact: true });
   const tags = page.getByLabel('Tags', { exact: true });
+  const priority = page.getByLabel('Priority', { exact: true });
+  const dueTime = page.getByLabel('Due time (optional)', { exact: true });
   await tags.fill(' New Tag, new tag ');
+  await priority.selectOption('high');
+  await dueTime.fill('2027-06-01T13:42');
   const held = await holdResponse(page, /\/api\/tasks\/[^/?]+$/);
   await taskButton(page, 'Save changes').click();
   await held.started;
-  try { await title.fill('New unsaved title'); }
+  try {
+    await title.fill('New unsaved title');
+    await priority.selectOption('low');
+    await dueTime.fill('2027-06-15T13:42:37.125');
+  }
   finally { await held.deliver(); }
   await expect(page.getByRole('dialog', { name: 'Task details' })).toBeVisible();
   await expect(title).toHaveValue('New unsaved title');
   await expect(tags).toHaveValue('new tag');
+  await expect(priority).toHaveValue('low');
+  await expect(dueTime).toHaveValue('2027-06-15T13:42:37.125');
   await taskButton(page, 'Cancel').click();
   await taskButton(page, 'Gather material references').click();
   await expect(title).toHaveValue('Gather material references');
   await expect(tags).toHaveValue('new tag');
+  await expect(priority).toHaveValue('high');
+  await expect(dueTime).toHaveValue('2027-06-01T13:42');
+  expect(demo.db.prepare("SELECT due_at FROM tasks WHERE title='Gather material references'").get().due_at).toBe('2027-06-01T17:42:00.000Z');
+});
+
+for (const fallback of [false, true]) test(`local due time rejects gaps and repeated times with ${fallback ? 'the fallback' : 'native Temporal'}`, async ({ page, demo }) => {
+  const saved = '2025-11-02T06:30:00.123Z';
+  const task = demo.db.prepare("SELECT id FROM tasks WHERE title='Gather material references'").get();
+  demo.db.prepare('UPDATE tasks SET due_at=? WHERE id=?').run(saved, task.id);
+  const stored = () => demo.db.prepare('SELECT due_at FROM tasks WHERE id=?').get(task.id).due_at;
+  const patches = [];
+  page.on('request', request => {
+    if (request.method() === 'PATCH' && new URL(request.url()).pathname === '/api/tasks/' + task.id) patches.push(request.postDataJSON());
+  });
+  if (fallback) await page.addInitScript(() => Object.defineProperty(globalThis, 'Temporal', { configurable: true, value: undefined }));
+  await page.goto(demo.origin);
+  expect(await page.evaluate(() => typeof globalThis.Temporal)).toBe(fallback ? 'undefined' : 'object');
+  await signIn(page, 'Maya');
+  const open = taskButton(page, 'Gather material references');
+  const save = taskButton(page, 'Save changes');
+  const dueTime = page.getByLabel('Due time (optional)', { exact: true });
+  const detail = page.getByRole('dialog', { name: 'Task details' });
+  await expect(page.locator(`time[datetime="${saved}"]`)).toContainText('GMT-5');
+  await open.click();
+  await expect(dueTime).toHaveValue('2025-11-02T01:30:00.123');
+  await expect(dueTime).toHaveAccessibleDescription(/America\/New_York.*GMT-5/);
+  await page.getByLabel('Priority', { exact: true }).selectOption('high');
+  await save.click();
+  await expect(detail).not.toBeVisible();
+  expect(patches).toEqual([{ priority: 'high' }]);
+  expect(stored()).toBe(saved);
+
+  await open.click();
+  await page.getByLabel('Notes (optional)', { exact: true }).fill('Keep this draft while correcting the time.');
+  for (const [value, error] of [
+    ['2025-03-09T02:30', 'This local time does not exist. Choose a different time.'],
+    ['2025-11-02T01:30:00.123', 'This local time occurs twice. Choose a different time.'],
+  ]) {
+    await dueTime.fill(value);
+    await save.click();
+    await expect(detail.getByRole('alert')).toHaveText(error);
+    await expect(dueTime).toHaveAccessibleDescription(new RegExp(error.replaceAll('.', '\\.')));
+    await expect(dueTime).toBeFocused();
+    expect(patches).toHaveLength(1);
+    expect(stored()).toBe(saved);
+  }
+  await dueTime.fill('2025-03-09T03:30:00.456');
+  await expect(detail.getByRole('alert')).toHaveCount(0);
+  await save.click();
+  await expect(detail).not.toBeVisible();
+  expect(patches.at(-1)).toMatchObject({ notes: 'Keep this draft while correcting the time.', dueAt: '2025-03-09T07:30:00.456Z' });
+  expect(stored()).toBe('2025-03-09T07:30:00.456Z');
+});
+
+test('a saved due instant outside the local editor range survives unrelated edits and can be cleared', async ({ page, demo }) => {
+  const saved = '0001-01-01T00:00:00.123Z';
+  const task = demo.db.prepare("SELECT id FROM tasks WHERE title='Gather material references'").get();
+  demo.db.prepare('UPDATE tasks SET due_at=? WHERE id=?').run(saved, task.id);
+  const stored = () => demo.db.prepare('SELECT due_at FROM tasks WHERE id=?').get(task.id).due_at;
+  await page.goto(demo.origin);
+  await signIn(page, 'Maya');
+  const open = taskButton(page, 'Gather material references');
+  const detail = page.getByRole('dialog', { name: 'Task details' });
+  const dueTime = page.getByLabel('Due time (optional)', { exact: true });
+  await open.click();
+  await expect(dueTime).toHaveValue('');
+  await expect(dueTime).toHaveAccessibleDescription(/Saved time:.*BC.*GMT-/);
+  await page.getByLabel('Priority', { exact: true }).selectOption('high');
+  await taskButton(page, 'Save changes').click();
+  await expect(detail).not.toBeVisible();
+  expect(stored()).toBe(saved);
+  await open.click();
+  await taskButton(page, 'Clear saved due time').click();
+  await taskButton(page, 'Save changes').click();
+  await expect(detail).not.toBeVisible();
+  expect(stored()).toBeNull();
 });
 
 test('completion observations preserve edits and recover from failed or stale detail reads', async ({ page, demo }) => {

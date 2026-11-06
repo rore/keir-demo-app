@@ -70,21 +70,30 @@ test('same-origin session context protects CRUD and rejects cross-user and stale
   assert.equal(Object.hasOwn(project, 'ownerId'), false);
   const taskResponse = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId: project.id, title: 'API task', ownerId: 'leo' }, headers: jsonHeaders }));
   assert.equal(taskResponse.statusCode, 400);
-  const task = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId: project.id, title: 'API task', notes: 'start' }, headers: jsonHeaders }));
+  const dueAt = '2028-02-29T17:42:37.123Z';
+  const task = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId: project.id, title: 'API task', notes: 'start', tags: ['review'], priority: 'high', dueAt }, headers: jsonHeaders }));
   assert.equal(task.statusCode, 201, task.body);
+  assert.deepEqual([task.json().tags, task.json().priority, task.json().dueAt], [['review'], 'high', dueAt]);
+  const patch = body => app.inject(request('PATCH', `/api/tasks/${task.json().id}`, { ...maya, body, headers: jsonHeaders }));
+  assert.equal((await patch({ priority: 'normal', dueAt: '2027-02-29T17:42:37.123Z' })).statusCode, 400);
+  const edited = await patch({ dueAt: null });
+  assert.equal(edited.statusCode, 200, edited.body);
+  assert.deepEqual([edited.json().priority, edited.json().dueAt, edited.json().notes], ['high', null, 'start']);
   const completed = await app.inject(request('POST', `/api/tasks/${task.json().id}/complete`, { ...maya, body: {}, headers: jsonHeaders }));
   assert.equal(completed.statusCode, 200);
   assert.equal(completed.json().status, 'completed');
   assert.ok(completed.json().completedAt);
   const repeated = await app.inject(request('POST', `/api/tasks/${task.json().id}/complete`, { ...maya, body: {}, headers: jsonHeaders }));
   assert.deepEqual(repeated.json(), completed.json());
-  assert.deepEqual(Object.keys(completed.json()).sort(), ['completedAt','createdAt','id','notes','projectId','status','tags','title','updatedAt']);
+  assert.deepEqual(Object.keys(completed.json()).sort(), ['completedAt','createdAt','dueAt','id','notes','priority','projectId','status','tags','title','updatedAt']);
   const protectedKey = await app.inject(request('POST', '/api/tasks', { ...maya, body: { projectId: project.id, title: 'No public key', operationKey: 'forged' }, headers: jsonHeaders }));
   assert.equal(protectedKey.statusCode, 400);
 
   const leo = await signIn(app, 'leo', maya);
   const foreignAssociation = await app.inject(request('POST', '/api/tasks', { ...leo, body: { projectId: project.id, title: 'wrong owner' }, headers: jsonHeaders }));
   assert.equal(foreignAssociation.statusCode, 404);
+  const foreignEdit = await app.inject(request('PATCH', `/api/tasks/${task.json().id}`, { ...leo, body: { priority: 'low', dueAt }, headers: jsonHeaders }));
+  assert.equal(foreignEdit.statusCode, 404);
   for (const [method, url] of [['GET', `/api/tasks/${task.json().id}`], ['PATCH', `/api/projects/${project.id}`]]) {
     const response = await app.inject(request(method, url, { ...leo, body: method === 'PATCH' ? { name: 'stolen' } : undefined, headers: method === 'PATCH' ? jsonHeaders : {} }));
     assert.equal(response.statusCode, 404, response.body);

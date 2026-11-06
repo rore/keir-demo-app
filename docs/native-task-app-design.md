@@ -21,7 +21,15 @@ Bind loopback only. Built startup serves the native app from one local process. 
 
 Projects have an opaque stable ID, server-owned user, required trimmed name (1–80 characters) and creation/update timestamps. Tasks have an opaque ID, a project, title (1–120), notes (0–4000), status `open` or `completed`, creation/update timestamps and a completion timestamp exactly when completed. Ownership is immutable. Derive task ownership through its project, or enforce an owner-consistent composite foreign key; independent disagreeing owner fields are not acceptable.
 
-Native operations create/list/rename projects and create/list/get/edit/complete tasks. Completion is idempotent. Reopening, deletion, sharing, priority and due dates are outside this slice. Use parameterized owner-scoped queries, `NOT NULL`/status checks and enabled/verified foreign keys on every connection. Make seed and multi-statement operations transactional; invalid operations leave prior data unchanged.
+Native operations create/list/rename projects and create/list/get/edit/complete tasks. Completion is idempotent. Reopening, deletion and sharing are outside this slice. Use parameterized owner-scoped queries, `NOT NULL`/status checks and enabled/verified foreign keys on every connection. Make seed and multi-statement operations transactional. Invalid operations leave prior data unchanged.
+
+### Priority and due time
+
+A task has low, normal or high priority. New and existing tasks default to normal. Native requests and responses use `priority` with the values `low`, `normal`, or `high`, and `dueAt` with a canonical UTC instant in `YYYY-MM-DDTHH:mm:ss.sssZ` form or `null`. Supported UTC years are 0001 through 9999. Omission on create uses the default. Omission on edit preserves the saved field, and `dueAt: null` clears the time. Edits to priority, due time or tags can leave title and notes untouched. When an edit supplies either title or notes, it supplies and validates both.
+
+Task details accepts local date and time in the labeled browser time zone. It rejects newly entered times that are skipped or repeated when the offset changes. The task display shows the saved local time and its offset. Editing unrelated fields keeps the saved instant, including its milliseconds and the exact occurrence of a repeated local time.
+
+Schema 11 adds priority and due time to the exact shipped schema 10. Existing tasks start with no due time. Startup validates format, schema identity, database integrity and foreign keys, then applies the upgrade transactionally. Prior values, IDs, relationships, and extension records are preserved. Confirmed reset requires the current schema and refuses schema 10 before backup or modification. Back up a live database and verify restoration before the first separately approved upgraded startup. A pre-upgrade backup is needed to run the earlier app again, and restoration returns the data to that backup's point in time.
 
 ### Tags and project search
 
