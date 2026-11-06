@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/rore/keir-core",
   "revision": "43f28600d8db460db6f22b48c2d4c2c0de9c52b7",
-  "status": "verified-candidate",
+  "status": "verified-release",
   "release": "v0.2.0",
   "package": "@keir/runtime-node",
   "version": "0.2.0",

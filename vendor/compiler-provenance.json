@@ -1,7 +1,7 @@
 {
   "schema": "keir-demo-compiler-distribution/1",
   "compiler": "keir-compiler-java/0.2.0",
-  "status": "verified-candidate",
+  "status": "verified-release",
   "release": "v0.2.0",
   "artifact": {
     "file": "keir-compiler-java-0.2.0-cli.jar",
