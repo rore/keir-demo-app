@@ -19,7 +19,7 @@ function fixture(t) {
   function complete() {
     const task = tasks.createTask('maya', { projectId, title: 'Dispatcher source' });
     tasks.completeTask('maya', task.id);
-    return effects.status('maya', db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(task.id).event_id);
+    return effects.status('maya', db.prepare('SELECT event_id FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(task.id).event_id);
   }
   return { db, tasks, effects, complete, host, pins, projectId, revision };
 }
@@ -27,7 +27,7 @@ function fixture(t) {
 test('PENDING scan crosses blocked pages, skips revoked/STARTED, and retries dependencies only on explicit change', async t => {
   const f = fixture(t), events = Array.from({ length: 191 }, () => f.complete());
   const revoked = new Set(events.slice(140, 165).map(event => event.eventId));
-  for (const eventId of revoked) f.db.prepare('UPDATE task_completion_events SET revoked_at=1 WHERE event_id=?').run(eventId);
+  for (const eventId of revoked) f.db.prepare('UPDATE task_events SET revoked_at=1 WHERE event_id=?').run(eventId);
   const started = f.complete();
   assert.ok(f.effects.claim('maya', started.eventId));
   const visits = [];
@@ -55,7 +55,7 @@ test('PENDING scan crosses blocked pages, skips revoked/STARTED, and retries dep
   assert.equal(f.effects.status('maya', started.eventId).state, 'STARTED');
   assert.equal(f.effects.status('maya', later.eventId).state, 'PENDING');
   assert.equal(f.db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n, 0);
-  assert.equal(f.db.prepare("SELECT count(*) n FROM task_completion_events WHERE outcome IS NOT NULL").get().n, 0);
+  assert.equal(f.db.prepare("SELECT count(*) n FROM task_events WHERE outcome IS NOT NULL").get().n, 0);
 });
 
 test('execution discovery failures do not starve later PENDING work or spin on the next wake', async t => {
@@ -118,14 +118,14 @@ test('old contract PENDING stays held before discovery and STARTED, revocation a
     modelRef: { ...f.pins.modelRef, format: 'keir-dcm/effect-3' } };
   f.db.prepare("UPDATE extension_selections SET binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'").run(JSON.stringify(oldPins));
   const pending = f.complete(), started = f.complete(), revoked = f.complete(), finished = f.complete();
-  f.db.prepare("UPDATE task_completion_events SET state='STARTED' WHERE event_id IN (?,?)").run(started.eventId, finished.eventId);
+  f.db.prepare("UPDATE task_events SET state='STARTED' WHERE event_id IN (?,?)").run(started.eventId, finished.eventId);
   f.effects.finish('maya', finished.eventId, { classification: 'UNCERTAIN', effects: [] });
-  f.db.prepare('UPDATE task_completion_events SET revoked_at=1 WHERE event_id=?').run(revoked.eventId);
-  const before = f.db.prepare('SELECT * FROM task_completion_events ORDER BY rowid').all();
+  f.db.prepare('UPDATE task_events SET revoked_at=1 WHERE event_id=?').run(revoked.eventId);
+  const before = f.db.prepare('SELECT * FROM task_events ORDER BY rowid').all();
   const dispatcher = createTaskDispatcher({ db: f.db, lifecycle: { execution() { assert.fail('Old profile must be held before discovery or claim'); } } });
   t.after(() => dispatcher.close());
   await dispatcher.wake(); await dispatcher.dependenciesChanged();
-  assert.deepEqual(f.db.prepare('SELECT * FROM task_completion_events ORDER BY rowid').all(), before);
+  assert.deepEqual(f.db.prepare('SELECT * FROM task_events ORDER BY rowid').all(), before);
   assert.equal(f.effects.status('maya', pending.eventId).state, 'PENDING');
   assert.equal(f.effects.status('maya', started.eventId).state, 'STARTED');
   assert.deepEqual(dispatcher.status('maya', finished.sourceTaskId).outcome, { classification: 'UNCERTAIN', effects: [] });

@@ -40,7 +40,7 @@ function integrity(db) {
 
 test('fresh schema validates deletion timestamps and retains tombstones through reopen', t => {
   const { db, path, extension } = fixture(t);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
   assert.equal(db.prepare('SELECT deleted_at FROM extensions WHERE id=?').get(extension).deleted_at, null);
   for (const timestamp of [-1, 1.5, 'invalid']) assert.throws(() => db.prepare('UPDATE extensions SET deleted_at=? WHERE id=?').run(timestamp, extension));
   for (const timestamp of [0, 123, null, 9007199254740991]) db.prepare('UPDATE extensions SET deleted_at=? WHERE id=?').run(timestamp, extension);

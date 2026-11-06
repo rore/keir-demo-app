@@ -48,7 +48,7 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
   } catch { /* Native tasks remain available without the extension model. */ }
   function eventForTask(owner, taskId) {
     tasks.getTask(owner, taskId);
-    return db.prepare('SELECT event_id FROM task_completion_events WHERE owner_id=? AND source_task_id=?').get(owner, taskId)?.event_id;
+    return db.prepare("SELECT event_id FROM task_events WHERE owner_id=? AND source_task_id=? AND hook_id='TaskCompleted'").get(owner, taskId)?.event_id;
   }
   function publicStatus(owner, taskId) {
     const eventId = eventForTask(owner, taskId);
@@ -104,7 +104,7 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
       requested = false;
       let pages = 0;
       while (!closing) {
-        const rows = db.prepare("SELECT rowid AS sequence,* FROM task_completion_events WHERE state='PENDING' AND rowid>? ORDER BY rowid LIMIT 20").all(after);
+        const rows = db.prepare("SELECT rowid AS sequence,* FROM task_events WHERE hook_id='TaskCompleted' AND state='PENDING' AND rowid>? ORDER BY rowid LIMIT 20").all(after);
         if (!rows.length) break;
         for (const row of rows) {
           after = row.sequence;

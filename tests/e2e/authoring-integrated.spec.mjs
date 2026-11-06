@@ -430,13 +430,13 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await nativeOutcome.getByRole('button', { name: `Open task: ${fixture.metadata.title}`, exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue(fixture.metadata.title);
       expect(fixture.db.prepare("SELECT count(*) n FROM tasks WHERE owner_id='maya' AND project_id=? AND title=?").get(fixture.metadata.projectId, fixture.metadata.title).n).toBe(1);
-      const admission = fixture.db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(source.id);
+      const admission = fixture.db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.id);
       const repeated = await page.request.post(`${fixture.origin}/api/tasks/${source.id}/complete`, {
         headers: { origin: fixture.origin, 'content-type': 'application/json', 'x-session-context': session.contextToken }, data: {} });
       expect(repeated.ok(), await repeated.text()).toBe(true);
       expect(await repeated.json()).toEqual(await read(`tasks/${source.id}`));
       expect(await read(`tasks/${source.id}/reaction`)).toEqual(first);
-      expect(fixture.db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(source.id)).toEqual(admission);
+      expect(fixture.db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.id)).toEqual(admission);
       expect(fixture.db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n).toBe(1);
       await page.getByRole('button', { name: 'Close task details', exact: true }).click();
       await page.getByRole('button', { name: `Complete ${fixture.metadata.title}`, exact: true }).click();
@@ -445,7 +445,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(later.receipt).toMatchObject({ kind: 'SUCCESS', effect: 'CONFIRMED' });
       expect(later.receipt.value.id).not.toBe(createdId);
       expect(await read(`tasks/${later.receipt.value.id}`)).toMatchObject({ projectId: fixture.metadata.projectId, title: fixture.metadata.title, status: 'open' });
-      const laterAdmission = fixture.db.prepare('SELECT event_id,original_key FROM task_completion_events WHERE source_task_id=?').get(createdId);
+      const laterAdmission = fixture.db.prepare('SELECT event_id,original_key FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(createdId);
       expect(laterAdmission.event_id).not.toBe(admission.event_id); expect(laterAdmission.original_key).not.toBe(admission.original_key);
       expect(fixture.db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n).toBe(2);
       await selectProject(page, fixture.metadata.otherProjectName);

@@ -63,9 +63,9 @@ test('services validate CRUD, bounds, ownership and completion without partial w
 test('initial seed is idempotent and all three users persist through reopen', t => {
   const dir = sandbox(), path = join(dir, 'app.sqlite');
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
-  assert.deepEqual(db.prepare('SELECT owner_id,hook_id,revision_id,generation,binding_pins FROM extension_selections ORDER BY owner_id').all()
-    .map(row => Object.values(row)), ['leo', 'maya', 'sam'].map(id => [id, 'TaskCompleted', null, 0, null]));
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
+  assert.deepEqual(db.prepare('SELECT owner_id,hook_id,revision_id,generation,binding_pins FROM extension_selections ORDER BY owner_id,hook_id').all()
+    .map(row => Object.values(row)), ['leo', 'maya', 'sam'].flatMap(id => ['TaskCompleted', 'TaskCreated'].map(hook => [id, hook, null, 0, null])));
   assert.equal(db.prepare('SELECT count(*) n FROM extension_revisions').get().n, 0);
   assert.deepEqual(taskService(db).listProjects('maya').length, 1);
   assert.deepEqual(USERS.map(user => taskService(db).listProjects(user.id).length), [1, 1, 1]);
@@ -76,13 +76,37 @@ test('initial seed is idempotent and all three users persist through reopen', t 
   for (const user of USERS) assert.equal(taskService(db).listProjects(user.id).length, 2);
 });
 
+test('exact open-task lookup covers the full authorized project and fails explicitly on incomplete reads', t => {
+  const dir = sandbox(), path = join(dir, 'app.sqlite'), db = openData(path);
+  const writer = new DatabaseSync(path);
+  cleanup(t, dir, () => { writer.close(); db.close(); });
+  const tasks = taskService(db);
+  const maya = tasks.listProjects('maya')[0].id, leo = tasks.listProjects('leo')[0].id;
+  const deadline = { clock: { nowMs: () => 0 }, expiresAtMs: 1000 };
+  for (let index = 0; index < 27; index++) tasks.createTask('maya', { projectId: maya, title: 'Earlier ' + index });
+  const target = tasks.createTask('maya', { projectId: maya, title: 'Exact\u0000suffix' });
+  tasks.createTask('leo', { projectId: leo, title: 'Other owner' });
+  assert.deepEqual(tasks.hasOpenTask('maya', maya, 'Exact\u0000suffix', deadline), { matches: true });
+  for (const title of ['Exact', 'Exact\u0000wrong', 'exact\u0000suffix', ' Exact\u0000suffix', 'Other owner'])
+    assert.deepEqual(tasks.hasOpenTask('maya', maya, title, deadline), { matches: false });
+  assert.throws(() => tasks.hasOpenTask('maya', leo, 'Other owner', deadline), { status: 404 });
+  tasks.completeTask('maya', target.id);
+  assert.deepEqual(tasks.hasOpenTask('maya', maya, 'Exact\u0000suffix', deadline), { matches: false });
+  assert.throws(() => tasks.hasOpenTask('maya', maya, 'Missing', { ...deadline, expiresAtMs: 0 }), { status: 503 });
+  const ticks = [0, 1000];
+  assert.throws(() => tasks.hasOpenTask('maya', maya, 'Missing', { ...deadline, clock: { nowMs: () => ticks.shift() } }), { status: 503 });
+  writer.exec('BEGIN EXCLUSIVE');
+  try { assert.throws(() => tasks.hasOpenTask('maya', maya, 'Missing', deadline), { errcode: 5 }); }
+  finally { writer.exec('ROLLBACK'); }
+});
+
 test('fresh schema, seed and current marker roll back together on initialization failure', t => {
   const dir = sandbox(), path = join(dir, 'app.sqlite');
   cleanup(t, dir);
   const exec = DatabaseSync.prototype.exec;
   DatabaseSync.prototype.exec = function (sql) {
     const result = exec.call(this, sql);
-    if (sql === 'PRAGMA user_version=11') throw new Error('initialization blocked');
+    if (sql === 'PRAGMA user_version=12') throw new Error('initialization blocked');
     return result;
   };
   try { assert.throws(() => openData(path), /initialization blocked/); }

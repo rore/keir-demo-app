@@ -17,7 +17,7 @@ function setup(t) {
   const complete = () => {
     const task = tasks.createTask(owner, { projectId, title: 'Source task' });
     tasks.completeTask(owner, task.id);
-    return effects.status(owner, db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(task.id).event_id);
+    return effects.status(owner, db.prepare('SELECT event_id FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(task.id).event_id);
   };
   const counts = () => [db.prepare('SELECT count(*) n FROM tasks').get().n, db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n];
   return { db, tasks, projectId, revision, selected, pins, effects, complete, counts };
@@ -30,12 +30,12 @@ test('native completion snapshots one owner/hook/key and preserves first result 
   assert.deepEqual(e.input, { taskId: e.sourceTaskId }); assert.notEqual(e.eventId, e.originalKey);
   const original = f.tasks.getTask(owner, e.sourceTaskId);
   assert.deepEqual(f.tasks.completeTask(owner, original.id), original);
-  assert.equal(f.db.prepare('SELECT count(*) n FROM task_completion_events').get().n, 1);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM task_events WHERE hook_id=\'TaskCompleted\'').get().n, 1);
   const legacy = f.tasks.listTasks(owner, f.projectId).find(task => task.status === 'completed' && task.id !== original.id);
   f.tasks.completeTask(owner, legacy.id);
-  assert.equal(f.db.prepare('SELECT count(*) n FROM task_completion_events').get().n, 1);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM task_events WHERE hook_id=\'TaskCompleted\'').get().n, 1);
   f.tasks.editTask(owner, original.id, { title: 'Edited', notes: '' });
-  assert.equal(f.db.prepare('SELECT count(*) n FROM task_completion_events').get().n, 1);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM task_events WHERE hook_id=\'TaskCompleted\'').get().n, 1);
   transaction(f.db, () => revokeTaskAdmissions(f.db, owner, f.revision.extension_id));
   const unselected = f.complete(); assert.equal(unselected.state, 'NO_BINDING');
   assert.equal(f.effects.claim(owner, unselected.eventId), null);
@@ -43,16 +43,60 @@ test('native completion snapshots one owner/hook/key and preserves first result 
 
 test('event failure rolls completion back, while postcommit reaction failure leaves native success', t => {
   const f = setup(t), task = f.tasks.createTask(owner, { projectId: f.projectId, title: 'Atomic source' });
-  f.db.exec("CREATE TEMP TRIGGER fail_event BEFORE INSERT ON task_completion_events BEGIN SELECT RAISE(ABORT,'event blocked'); END");
+  f.db.exec("CREATE TEMP TRIGGER fail_event BEFORE INSERT ON task_events BEGIN SELECT RAISE(ABORT,'event blocked'); END");
   assert.throws(() => f.tasks.completeTask(owner, task.id), /event blocked/);
   assert.equal(f.tasks.getTask(owner, task.id).status, 'open');
   f.db.exec('DROP TRIGGER fail_event');
   const completed = f.tasks.completeTask(owner, task.id);
-  const eventId = f.db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(task.id).event_id;
+  const eventId = f.db.prepare('SELECT event_id FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(task.id).event_id;
   f.db.prepare('DELETE FROM extension_approvals WHERE owner_id=? AND revision_id=?').run(owner, f.revision.id);
   code('AUTHORITY_DENIED', () => f.effects.claim(owner, eventId));
   assert.deepEqual(f.tasks.getTask(owner, task.id), completed);
   assert.notEqual(f.effects.status(owner, eventId).revokedAt, null);
+});
+
+test('human creation records its own unbound trigger atomically and cannot backfill after selection', t => {
+  const f = setup(t);
+  const countTasks = () => f.db.prepare('SELECT count(*) n FROM tasks').get().n;
+  const before = countTasks();
+  f.db.exec("CREATE TEMP TRIGGER fail_creation BEFORE INSERT ON task_events WHEN NEW.hook_id='TaskCreated' BEGIN SELECT RAISE(ABORT,'creation event blocked'); END");
+  const input = { projectId: f.projectId, title: 'Human creation' };
+  assert.throws(() => f.tasks.createTask(owner, input), /creation event blocked/);
+  assert.equal(countTasks(), before);
+  f.db.exec('DROP TRIGGER fail_creation');
+  const task = f.tasks.createTask(owner, input);
+  const events = () => f.db.prepare('SELECT * FROM task_events WHERE source_task_id=? ORDER BY rowid').all(task.id);
+  const [created] = events();
+  assert.equal(created.hook_id, 'TaskCreated');
+  assert.equal(created.state, 'NO_BINDING');
+  assert.equal(created.created_at, task.createdAt);
+  assert.equal(created.selection_generation, 0);
+  assert.equal(created.revision_id, null);
+  f.db.prepare("UPDATE extension_selections SET generation=8 WHERE owner_id=? AND hook_id='TaskCreated'").run(owner);
+  const completed = f.tasks.completeTask(owner, task.id);
+  const [retained, completion] = events();
+  assert.deepEqual(retained, created);
+  assert.equal(completion.hook_id, 'TaskCompleted');
+  assert.equal(completion.created_at, completed.completedAt);
+  assert.equal(completion.state, 'PENDING');
+  assert.equal(completion.selection_generation, 1);
+  assert.notEqual(completion.original_key, created.original_key);
+  assert.throws(() => f.effects.keyFor(owner, created.event_id), { status: 404 });
+  f.tasks.completeTask(owner, task.id);
+  assert.equal(events().length, 2);
+});
+
+test('a receipt for another capability blocks reuse of the same native key before mutation', t => {
+  const f = setup(t), event = f.complete();
+  assert.ok(f.effects.claim(owner, event.eventId));
+  const payload = { projectId: f.projectId, title: 'Cross-action key' };
+  f.db.prepare('INSERT INTO task_effect_receipts VALUES (?,?,?,?,?,?,?,NULL)').run(owner, 'tasks.update', event.originalKey, '1',
+    Buffer.from(JSON.stringify(payload)), '{"kind":"BUSINESS_REJECTION","code":"TASK_INVALID","effect":"NONE"}', 'NONE');
+  const before = f.counts();
+  assert.deepEqual(f.effects.createTaskOnce(owner, f.effects.keyFor(owner, event.eventId), payload),
+    { kind: 'BUSINESS_REJECTION', code: 'KEY_PAYLOAD_MISMATCH', effect: 'NONE' });
+  assert.deepEqual(f.counts(), before);
+  assert.equal(f.effects.status(owner, event.eventId).receipt, null);
 });
 
 test('same native key preserves canonical payload, immutable receipt and audit after finish/revocation', t => {
@@ -124,7 +168,7 @@ for (const field of ['approval', 'revocation']) test(`current ${field} denial at
   const key = f.effects.keyFor(owner, e.eventId), before = f.counts();
   f.db.exec(`CREATE TEMP TRIGGER revoke_after_receipt AFTER INSERT ON task_effect_receipts BEGIN ${field === 'approval'
     ? 'DELETE FROM extension_approvals;'
-    : 'UPDATE task_completion_events SET revoked_at=1 WHERE original_key=NEW.original_key;'} END`);
+    : 'UPDATE task_events SET revoked_at=1 WHERE original_key=NEW.original_key;'} END`);
   code('AUTHORITY_DENIED', () => f.effects.createTaskOnce(owner, key, { projectId: f.projectId, title: 'Must roll back' }));
   assert.deepEqual(f.counts(), before);
   assert.notEqual(f.effects.status(owner, e.eventId).revokedAt, null);
@@ -241,9 +285,10 @@ test('originating owner is independent of browser user and generated task comple
   assert.equal(browserOwner, 'leo'); assert.equal(f.effects.claim(owner, e.eventId).owner, owner);
   const created = f.effects.createTaskOnce(owner, f.effects.keyFor(owner, e.eventId), { projectId: f.projectId, title: 'Generated' });
   assert.throws(() => f.tasks.getTask(browserOwner, created.value.id), { status: 404 });
-  assert.equal(f.db.prepare('SELECT count(*) n FROM task_completion_events').get().n, 1);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM task_events WHERE source_task_id=?').get(created.value.id).n, 0);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM task_events WHERE hook_id=\'TaskCompleted\'').get().n, 1);
   f.tasks.completeTask(owner, created.value.id);
-  const next = f.db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(created.value.id);
+  const next = f.db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(created.value.id);
   assert.ok(next); assert.notEqual(next.event_id, e.eventId); assert.notEqual(next.original_key, e.originalKey);
   assert.ok(f.effects.claim(owner, next.event_id));
 });

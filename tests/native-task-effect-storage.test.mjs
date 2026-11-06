@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { openData, resetData, taskService, taskEffectService, transaction, revokeTaskAdmissions } from '../src/data.mjs';
-import { nativeEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
+import { invocationFor, nativeEffectService, seedTaskEffectBinding } from './fixtures/task-effect-schema.mjs';
 
-const stores = ['task_completion_events', 'task_effect_receipts'];
+const stores = ['task_events', 'task_effect_receipts'];
 const effects = nativeEffectService;
 
 function fixture(t, close = () => {}) {
@@ -34,14 +34,14 @@ function insert(db, table, row) {
 function eventRow(db, changes = {}) {
   const native = taskService(db), project = native.listProjects('maya')[0];
   const task = native.createTask('maya', { projectId: project.id, title: 'Storage source' });
-  return { event_id: randomUUID(), owner_id: 'maya', source_task_id: task.id, original_key: randomUUID(), item_id: null,
+  return { event_id: randomUUID(), owner_id: 'maya', source_task_id: task.id, hook_id: 'TaskCompleted', original_key: randomUUID(), item_id: null,
     revision_id: null, selection_generation: 0, input: JSON.stringify({ taskId: task.id }), pins: null,
     state: 'NO_BINDING', revoked_at: null, outcome: null, reconciliation: null, created_at: '2026-01-01T00:00:00.000Z', ...changes };
 }
 function receiptRow(event, changes = {}) {
   return { owner_id: event.owner_id, capability_id: 'tasks.create', original_key: event.original_key, capability_version: '1',
     payload: Buffer.from('{"projectId":"original","title":"Original"}'), result: '{"kind":"BUSINESS_REJECTION","code":"PROJECT_NOT_FOUND","effect":"NONE"}',
-    effect: 'NONE', created_task_id: null, ...changes };
+    effect: 'NONE', affected_task_id: null, ...changes };
 }
 function populatedEffects(db) {
   const native = taskService(db), project = native.listProjects('maya')[0];
@@ -49,7 +49,7 @@ function populatedEffects(db) {
   db.prepare("UPDATE extension_selections SET revision_id=?,generation=4,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'").run(selected.revisionId, JSON.stringify(selected.pins));
   const source = native.createTask('maya', { projectId: project.id, title: 'Complete this task' });
   native.completeTask('maya', source.id);
-  const event = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(source.id), service = effects(db);
+  const event = db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.id), service = effects(db);
   service.claim('maya', event.event_id);
   const key = service.keyFor('maya', event.event_id), payload = { projectId: project.id, title: 'Created once' };
   const result = service.createTaskOnce('maya', key, payload);
@@ -67,7 +67,7 @@ test('reopen retains exact task, customization and receipt bytes', t => {
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
   const { type, notnull, dflt_value } = db.prepare("SELECT * FROM pragma_table_info('tasks') WHERE name='tags'").get();
   assert.deepEqual({ type, notnull, dflt_value }, { type: 'TEXT', notnull: 1, dflt_value: "'[]'" });
   assert.deepEqual(snapshot(db), before);
@@ -116,14 +116,15 @@ test('current schema rejects duplicate event/key, cross-owner lineage and invali
     [{ capability_id: 'tasks.delete' }, /CHECK/], [{ capability_version: '2' }, /CHECK/],
     [{ payload: Buffer.alloc(4097) }, /CHECK/], [{ payload: 'text' }, /BLOB/], [{ result: jsonBytes(4098) }, /CHECK/], [{ result: 'invalid JSON' }, /CHECK/],
     [{ effect: 'UNKNOWN' }, /CHECK/], [{ effect: 'CONFIRMED' }, /CHECK/],
-    [{ effect: 'CONFIRMED', created_task_id: foreign.id }, /FOREIGN KEY/],
+    [{ effect: 'CONFIRMED', affected_task_id: foreign.id }, /FOREIGN KEY/],
   ];
   for (const [changes, error] of invalidReceipts) assert.throws(() => insert(db, stores[1], receiptRow(receiptEvent, changes)), error);
   insert(db, stores[1], receiptRow(receiptEvent, { payload: Buffer.alloc(4096), result: jsonBytes(4096) }));
   assert.throws(() => insert(db, stores[1], receiptRow(receiptEvent)), /UNIQUE/);
+  assert.throws(() => insert(db, stores[1], receiptRow(receiptEvent, { capability_id: 'tasks.update' })), /UNIQUE/);
   const before = snapshot(db);
   assert.throws(() => db.prepare('DELETE FROM tasks WHERE id=?').run(event.source_task_id), /FOREIGN KEY/);
-  assert.throws(() => db.prepare('DELETE FROM task_completion_events WHERE event_id=?').run(receiptEvent.event_id), /FOREIGN KEY/);
+  assert.throws(() => db.prepare('DELETE FROM task_events WHERE event_id=?').run(receiptEvent.event_id), /FOREIGN KEY/);
   assert.deepEqual(snapshot(db), before); integrity(db);
 });
 
@@ -133,15 +134,15 @@ test('stored event identity, permanent revocation, settled outcome and receipts 
   const changes = { event_id: randomUUID(), owner_id: 'leo', source_task_id: randomUUID(), original_key: randomUUID(),
     item_id: randomUUID(), revision_id: randomUUID(), selection_generation: 99, input: '{}', pins: '{}', created_at: 'changed', state: 'PENDING' };
   const before = snapshot(db);
-  for (const [column, value] of Object.entries(changes)) assert.throws(() => db.prepare(`UPDATE task_completion_events SET ${column}=? WHERE event_id=?`).run(value, event.event_id), /immutable/);
-  for (const column of ['owner_id', 'capability_id', 'original_key', 'capability_version', 'payload', 'result', 'effect', 'created_task_id'])
+  for (const [column, value] of Object.entries(changes)) assert.throws(() => db.prepare(`UPDATE task_events SET ${column}=? WHERE event_id=?`).run(value, event.event_id), /immutable/);
+  for (const column of ['owner_id', 'capability_id', 'original_key', 'capability_version', 'payload', 'result', 'effect', 'affected_task_id'])
     assert.throws(() => db.prepare(`UPDATE task_effect_receipts SET ${column}=${column}`).run(), /immutable/);
   assert.deepEqual(snapshot(db), before);
-  db.prepare('UPDATE task_completion_events SET revoked_at=123 WHERE event_id=?').run(event.event_id);
-  for (const value of [null, 124]) assert.throws(() => db.prepare('UPDATE task_completion_events SET revoked_at=? WHERE event_id=?').run(value, event.event_id), /immutable/);
+  db.prepare('UPDATE task_events SET revoked_at=123 WHERE event_id=?').run(event.event_id);
+  for (const value of [null, 124]) assert.throws(() => db.prepare('UPDATE task_events SET revoked_at=? WHERE event_id=?').run(value, event.event_id), /immutable/);
   service.finish('maya', event.event_id, { status: 'CREATED' });
-  assert.throws(() => db.prepare("UPDATE task_completion_events SET outcome='{}' WHERE event_id=?").run(event.event_id), /immutable/);
-  assert.throws(() => db.prepare("UPDATE task_completion_events SET state='STARTED' WHERE event_id=?").run(event.event_id), /immutable/);
+  assert.throws(() => db.prepare("UPDATE task_events SET outcome='{}' WHERE event_id=?").run(event.event_id), /immutable/);
+  assert.throws(() => db.prepare("UPDATE task_events SET state='STARTED' WHERE event_id=?").run(event.event_id), /immutable/);
   integrity(db);
 });
 
@@ -159,7 +160,10 @@ test('cloned databases with identical event and original key cannot authenticate
   assert.throws(() => service.contextFor('maya', context), { code: 'HOST_KEY_INVALID' });
   assert.throws(() => service.createTaskOnce('maya', key, payload, context), { code: 'HOST_KEY_INVALID' });
   assert.deepEqual(snapshot(copy), before);
-  assert.deepEqual(service.createTaskOnce('maya', service.keyFor('maya', saved.eventId), payload), saved.receipt, 'Authenticated historical receipt is read-only');
+  const valid = invocationFor(service, 'maya', saved.eventId);
+  assert.throws(() => service.createTaskOnce('maya', valid.requestKey, payload, { ...valid, event: { ...valid.event, source: 'another task' } }),
+    { code: 'HOST_CONTEXT_INVALID' });
+  assert.deepEqual(service.createTaskOnce('maya', valid.requestKey, payload, valid), saved.receipt, 'Authenticated historical receipt is read-only');
 });
 
 test('failed native revocation is atomic; successful revocation survives reopen without erasing settled receipts', t => {
@@ -171,13 +175,13 @@ test('failed native revocation is atomic; successful revocation survives reopen 
   const task = taskService(db).createTask('maya', { projectId: taskService(db).listProjects('maya')[0].id, title: 'Pending revoke' });
   taskService(db).completeTask('maya', task.id);
   const before = snapshot(db);
-  db.exec("CREATE TEMP TRIGGER fail_revocation BEFORE UPDATE OF revoked_at ON task_completion_events BEGIN SELECT RAISE(ABORT,'revocation blocked'); END");
+  db.exec("CREATE TEMP TRIGGER fail_revocation BEFORE UPDATE OF revoked_at ON task_events BEGIN SELECT RAISE(ABORT,'revocation blocked'); END");
   assert.throws(() => transaction(db, () => revokeTaskAdmissions(db, 'maya', event.item_id)), /revocation blocked/);
   assert.deepEqual(snapshot(db), before);
   db.exec('DROP TRIGGER fail_revocation');
   transaction(db, () => revokeTaskAdmissions(db, 'maya', event.item_id));
   db.close(); db = openData(path);
-  const reopened = effects(db), pending = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(task.id);
+  const reopened = effects(db), pending = db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(task.id);
   assert.notEqual(pending.revoked_at, null); assert.equal(pending.state, 'PENDING');
   assert.throws(() => reopened.claim('maya', pending.event_id), { code: 'AUTHORITY_DENIED' });
   assert.deepEqual(reopened.status('maya', event.event_id), settled);
@@ -187,7 +191,7 @@ test('failed native revocation is atomic; successful revocation survives reopen 
 test('reset verifies both effect stores, rolls failed reseeding back and clears keys only with their tasks after a verified backup', async t => {
   const { path, directory } = fixture(t); let db = openData(path);
   const { event, key, payload, createdId } = populatedEffects(db), before = snapshot(db); db.close();
-  for (const corrupt of ['DELETE FROM task_effect_receipts', `UPDATE task_completion_events SET reconciliation='{"tampered":true}'`]) {
+  for (const corrupt of ['DELETE FROM task_effect_receipts', `UPDATE task_events SET reconciliation='{"tampered":true}'`]) {
     await assert.rejects(resetData(directory, true, async (source, destination) => {
       await backup(source, destination);
       const copy = new DatabaseSync(destination); copy.exec(corrupt); copy.close();

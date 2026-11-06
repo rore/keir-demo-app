@@ -84,7 +84,7 @@ function recordMutations(page) {
 function snapshot(db) {
   return { tasks: db.prepare('SELECT * FROM tasks ORDER BY id').all(),
     selections: db.prepare('SELECT * FROM extension_selections ORDER BY owner_id,hook_id').all(),
-    events: db.prepare('SELECT count(*) n FROM task_completion_events').get().n,
+    events: db.prepare('SELECT count(*) n FROM task_events').get().n,
     receipts: db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n };
 }
 function unchangedExceptCompletion(demo, before, task) {
@@ -95,7 +95,7 @@ function unchangedExceptCompletion(demo, before, task) {
   expect(after.selections).toEqual(before.selections);
   expect(after.events).toBe(before.events + 1);
   expect(after.receipts).toBe(before.receipts);
-  expect(demo.db.prepare('SELECT state,revision_id,pins,outcome FROM task_completion_events WHERE source_task_id=?').get(task.id))
+  expect(demo.db.prepare('SELECT state,revision_id,pins,outcome FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(task.id))
     .toEqual({ state: 'NO_BINDING', revision_id: null, pins: null, outcome: null });
 }
 

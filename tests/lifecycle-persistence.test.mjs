@@ -17,7 +17,7 @@ test('reset preserves current authored content, approval, selection and history 
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const db = openData(path), lifecycle = createLifecycle(db);
   const { extensionId, revisionId, pins } = seedTaskEffectBinding(db);
-  db.prepare("UPDATE extension_selections SET generation=1,revision_id=?,binding_pins=? WHERE owner_id='maya'").run(revisionId, JSON.stringify(pins));
+  db.prepare("UPDATE extension_selections SET generation=1,revision_id=?,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'").run(revisionId, JSON.stringify(pins));
   lifecycle.disable('maya', { extensionId, generation: 1 }, () => {});
   const before = snapshot(db);
   db.close();
@@ -33,7 +33,7 @@ test('reset preserves current authored content, approval, selection and history 
   const backupPath = await resetData(directory, true), copy = openData(backupPath);
   try {
     assert.deepEqual(snapshot(copy), before);
-    assert.equal(copy.prepare("SELECT generation FROM extension_selections WHERE owner_id='maya'").get().generation, 2);
+    assert.equal(copy.prepare("SELECT generation FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get().generation, 2);
   } finally { copy.close(); }
   reopened = openData(path);
   try {

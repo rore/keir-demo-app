@@ -16,7 +16,7 @@ const title = 'Prepare customer review';
 const serialize = cases => cases.map(value => JSON.stringify(value));
 const input = state => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
 const rows = (db, tables) => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
-const nativeTables = ['tasks', 'task_completion_events', 'task_effect_receipts', 'extension_selections', 'extension_approvals'];
+const nativeTables = ['tasks', 'task_events', 'task_effect_receipts', 'extension_selections', 'extension_approvals'];
 
 function setup(t) {
   const db = openData(':memory:');
@@ -252,7 +252,7 @@ test('offline authoring checks an exact suffix and repairs scenario syntax witho
   await dispatcher.close();
   assert.equal(saved.receipt.effect, 'CONFIRMED');
   assert.equal(native.getTask('maya', saved.receipt.value.id).title, expectedTitle);
-  assert.equal(db.prepare('SELECT revision_id FROM task_completion_events WHERE source_task_id=?').get(source.id).revision_id, state.draft.id);
+  assert.equal(db.prepare('SELECT revision_id FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.id).revision_id, state.draft.id);
 });
 
 for (const provider of ['openai', 'anthropic']) test(`${provider} offline authoring reopens and runs a checked follow-up in each completed task’s project`, async t => {
@@ -441,14 +441,14 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   for (const task of sources) {
     const reaction = dispatcher.status('maya', task.id);
     assert.equal(reaction.receipt.effect, 'CONFIRMED');
-    assert.equal(db.prepare('SELECT revision_id FROM task_completion_events WHERE source_task_id=?').get(task.id).revision_id, proof.revisionId);
+    assert.equal(db.prepare('SELECT revision_id FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(task.id).revision_id, proof.revisionId);
     const created = native.getTask('maya', reaction.receipt.value.id);
     assert.equal(created.projectId, task.projectId);
     assert.equal(created.title, task.title + suffix);
   }
-  const effects = rows(db, ['tasks', 'task_completion_events', 'task_effect_receipts']);
+  const effects = rows(db, ['tasks', 'task_events', 'task_effect_receipts']);
   assert.equal(effects.tasks.length - before.tasks.length, 4);
-  assert.equal(effects.task_completion_events.length, 2);
+  assert.equal(effects.task_events.filter(event => event.hook_id === 'TaskCompleted').length, 2);
   assert.equal(effects.task_effect_receipts.length, 2);
   for (const task of sources) native.completeTask('maya', task.id);
   await dispatcher.dependenciesChanged();

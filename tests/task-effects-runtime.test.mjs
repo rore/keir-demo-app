@@ -82,14 +82,14 @@ for (const title of ['Send the release checklist', 'Arrange a customer review'])
     assert.deepEqual(reconciled.reconciliation.receipt, status.receipt);
     assert.ok(reconciled.reconciliation.observedAt);
     // Creating a task does not itself emit completion; a later explicit native completion can react.
-    assert.equal(f.db.prepare('SELECT count(*) AS n FROM task_completion_events WHERE source_task_id=?').get(created.id).n, 0);
+    assert.equal(f.db.prepare('SELECT count(*) AS n FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(created.id).n, 0);
     f.native.completeTask(f.owner, created.id); await f.dispatcher.wake();
     assert.equal(f.native.listTasks(f.owner, f.project.id).filter(task => task.title === title).length, 2);
-    const original = f.db.prepare('SELECT event_id,original_key FROM task_completion_events WHERE source_task_id=?').get(source.id);
-    const later = f.db.prepare('SELECT event_id,original_key FROM task_completion_events WHERE source_task_id=?').get(created.id);
+    const original = f.db.prepare('SELECT event_id,original_key FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.id);
+    const later = f.db.prepare('SELECT event_id,original_key FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(created.id);
     assert.notEqual(later.event_id, original.event_id); assert.notEqual(later.original_key, original.original_key);
     const saved = f.lifecycle.source(f.owner, f.state.draft.id, f.extensionId);
-    const event = f.db.prepare('SELECT pins FROM task_completion_events WHERE source_task_id=?').get(source.id);
+    const event = f.db.prepare('SELECT pins FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.id);
     assert.equal(JSON.parse(event.pins).artifactDigest, saved.pins.artifactDigest, 'Simulation and real admission retain the same artifact digest.');
   });
 }
@@ -125,7 +125,7 @@ test('disable and reenable never revive an old native admission', async t => {
   f.disable(); f.activate(); await f.dispatcher.dependenciesChanged();
   const stale = f.dispatcher.status(f.owner, old.id);
   assert.equal(stale.state, 'PENDING'); assert.equal(stale.outcome, null); assert.equal(stale.receipt, null);
-  assert.ok(f.db.prepare('SELECT revoked_at FROM task_completion_events WHERE source_task_id=?').get(old.id).revoked_at);
+  assert.ok(f.db.prepare('SELECT revoked_at FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(old.id).revoked_at);
   const fresh = f.native.createTask(f.owner, { projectId: f.project.id, title: 'New admission' });
   f.native.completeTask(f.owner, fresh.id); await f.dispatcher.wake();
   assert.equal(f.dispatcher.status(f.owner, fresh.id).receipt?.effect, 'CONFIRMED');
@@ -158,7 +158,7 @@ test('native deadline expiry before commit rolls back the new task and receipt w
   assert.equal(status.receipt, null);
   assert.equal(f.native.getTask(f.owner, source.id).status, 'completed');
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM tasks').get().n, before);
-  assert.ok(f.db.prepare('SELECT revoked_at FROM task_completion_events WHERE source_task_id=?').get(source.id).revoked_at);
+  assert.ok(f.db.prepare('SELECT revoked_at FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.id).revoked_at);
   now = 0; await f.dispatcher.dependenciesChanged();
   assert.deepEqual(f.dispatcher.status(f.owner, source.id), status);
 });
@@ -186,7 +186,7 @@ test('opaque native failure stays UNKNOWN until a separate read-only reconciliat
 
 test('failed outcome settlement keeps STARTED and a confirmed native receipt without claiming it never started', async t => {
   const f = await setup(t); f.activate();
-  f.db.exec(`CREATE TEMP TRIGGER fail_outcome_settlement BEFORE UPDATE OF state ON task_completion_events
+  f.db.exec(`CREATE TEMP TRIGGER fail_outcome_settlement BEFORE UPDATE OF state ON task_events
     WHEN NEW.state='FINISHED' BEGIN SELECT RAISE(ABORT, 'Isolated outcome settlement failure'); END`);
   const source = f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete before failed settlement' });
   const before = f.db.prepare('SELECT count(*) AS n FROM tasks').get().n;
@@ -200,10 +200,10 @@ test('failed outcome settlement keeps STARTED and a confirmed native receipt wit
   assert.equal(created.title, f.fixture.metadata.title); assert.equal(created.projectId, f.project.id); assert.equal(created.status, 'open');
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM tasks').get().n, before + 1);
   const rows = table => f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
-  const tasks = rows('tasks'), receipts = rows('task_effect_receipts'), events = rows('task_completion_events');
+  const tasks = rows('tasks'), receipts = rows('task_effect_receipts'), events = rows('task_events');
   assert.equal(receipts.length, 1);
   assert.deepEqual(f.dispatcher.status(f.owner, source.id), status);
-  assert.deepEqual(rows('task_completion_events'), events, 'Status reads never settle or reexecute an interrupted reaction.');
+  assert.deepEqual(rows('task_events'), events, 'Status reads never settle or reexecute an interrupted reaction.');
   const reconciled = f.dispatcher.reconcile(f.owner, source.id);
   assert.equal(reconciled.state, 'STARTED'); assert.equal(reconciled.outcome, null);
   assert.deepEqual(reconciled.receipt, status.receipt); assert.deepEqual(reconciled.reconciliation.receipt, status.receipt);
@@ -214,5 +214,5 @@ test('failed outcome settlement keeps STARTED and a confirmed native receipt wit
   f.native.completeTask(f.owner, source.id); await f.dispatcher.wake();
   assert.deepEqual(f.dispatcher.status(f.owner, source.id), reconciled);
   assert.deepEqual(rows('tasks'), tasks); assert.deepEqual(rows('task_effect_receipts'), receipts);
-  assert.equal(rows('task_completion_events').length, events.length, 'Repeated completion cannot capture or replay a second event.');
+  assert.equal(rows('task_events').length, events.length, 'Repeated completion cannot capture or replay a second event.');
 });

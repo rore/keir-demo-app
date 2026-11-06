@@ -42,7 +42,7 @@ export function nativeEffectService(db) {
   return { ...service,
     claim(owner, eventId, context = invocationFor(service, owner, eventId)) { return service.claim(owner, eventId, context); },
     createTaskOnce(owner, key, input, context) {
-      const event = db.prepare('SELECT event_id FROM task_completion_events WHERE owner_id=? AND original_key=?').get(owner, key?.value);
+      const event = db.prepare('SELECT event_id FROM task_events WHERE owner_id=? AND original_key=?').get(owner, key?.value);
       return service.createTaskOnce(owner, key, input, context ?? (event && invocationFor(service, owner, event.event_id, key)));
     },
   };

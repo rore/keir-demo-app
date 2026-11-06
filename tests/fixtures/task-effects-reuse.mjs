@@ -72,7 +72,7 @@ try {
   assert.equal(revoked.status.outcome.error.code, 'ACCESS_DENIED');
   assert.deepEqual(revoked.status.outcome.trace.filter(row => row.event === 'CALL_DISPATCHED').map(row => row.capability), ['tasks.get']);
   assert.deepEqual(revoked.status.outcome.effects, [], 'The reached read implementation rejects before any native write.');
-  assert.ok(db.prepare('SELECT revoked_at FROM task_completion_events WHERE source_task_id=?').get(revoked.source.id).revoked_at);
+  assert.ok(db.prepare('SELECT revoked_at FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(revoked.source.id).revoked_at);
 
   sam.state = lifecycle.activate('sam', { ...sam.input, generation: sam.state.selection.generation, evidenceId: sam.state.approvedEvidenceId }, () => {});
   now = 300;
@@ -81,7 +81,7 @@ try {
   const expired = await complete('sam', project.id, 'Fresh deadline expires at commit');
   assert.equal(expired.status.state, 'FINISHED'); assert.equal(expired.status.receipt, null);
   assert.equal(expired.status.outcome.effects.some(effect => effect.state === 'CONFIRMED'), false);
-  assert.ok(db.prepare('SELECT revoked_at FROM task_completion_events WHERE source_task_id=?').get(expired.source.id).revoked_at);
+  assert.ok(db.prepare('SELECT revoked_at FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(expired.source.id).revoked_at);
   assert.equal(native.listTasks('sam', project.id).filter(task => task.title === fixture.metadata.title).length, 1);
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
 
@@ -93,7 +93,7 @@ try {
   assert.equal(new Set(invocations.map(row => row.invocation.event.id)).size, 4);
   assert.equal(new Set(invocations.map(row => row.invocation.deadline)).size, 4);
   for (const row of invocations) {
-    const event = db.prepare('SELECT original_key,source_task_id FROM task_completion_events WHERE event_id=?').get(row.invocation.event.id);
+    const event = db.prepare('SELECT original_key,source_task_id FROM task_events WHERE event_id=?').get(row.invocation.event.id);
     assert.equal(row.invocation.requestKey.value, event.original_key);
     assert.equal(row.invocation.event.source, event.source_task_id);
     assert.equal(row.input.taskId, event.source_task_id);

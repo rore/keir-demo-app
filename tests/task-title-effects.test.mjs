@@ -61,7 +61,7 @@ test('a checked revision executes queued and new completions and keeps its appro
     return source;
   };
   const queued = complete('Queued before the dispatcher starts');
-  const event = id => db.prepare('SELECT state,pins FROM task_completion_events WHERE source_task_id=?').get(id);
+  const event = id => db.prepare('SELECT state,pins FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(id);
   assert.equal(event(queued.id).state, 'PENDING');
   const dispatcher = fixture.dispatch();
   async function checkCompletion(source) {
@@ -207,7 +207,7 @@ test('a checked title rule copies the exact saved title, skips a different title
   assert.throws(() => dispatcher.status('maya', matching.id), { status: 404 });
   assert.deepEqual(native.getTask('maya', foreign.id), foreign);
   assert.equal(native.getTaskForCustomization('maya', foreign.id).title, title);
-  const events = db.prepare('SELECT revision_id,pins FROM task_completion_events WHERE owner_id=?').all(owner);
+  const events = db.prepare('SELECT revision_id,pins FROM task_events WHERE hook_id=\'TaskCompleted\' AND owner_id=?').all(owner);
   assert.equal(events.length, 4);
   assert.ok(events.every(row => row.revision_id === input.revisionId && JSON.parse(row.pins).artifactDigest === artifactDigest));
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
@@ -281,7 +281,7 @@ test('a checked suffix rule preserves Unicode and reaches the byte limit before 
   assert.deepEqual(rejected.outcome.error, { code: 'TASK_INVALID', path: '/steps/3' });
   assert.deepEqual(rejected.outcome.effects, [{ step: 'created', capability: 'tasks.create', state: 'NONE' }]);
   assert.equal(rejected.receipt, null);
-  const events = db.prepare('SELECT revision_id,pins FROM task_completion_events WHERE owner_id=?').all(owner);
+  const events = db.prepare('SELECT revision_id,pins FROM task_events WHERE hook_id=\'TaskCompleted\' AND owner_id=?').all(owner);
   assert.equal(events.length, 4);
   assert.ok(events.every(row => row.revision_id === input.revisionId && JSON.parse(row.pins).artifactDigest === artifactDigest));
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);

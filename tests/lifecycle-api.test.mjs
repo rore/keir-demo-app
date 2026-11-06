@@ -196,7 +196,7 @@ test('authored source and independent suites create immutable revisions; only ex
   assert.equal(active.json().selection.revision.id, correctedRevision);
   assert.equal(active.json().selection.approvedEvidenceId, state.approvedEvidenceId);
   assert.equal(active.json().selection.eligible, true);
-  assert.equal(db.prepare('SELECT count(*) AS n FROM task_completion_events').get().n, 0, 'Approval and activation capture no native completion.');
+  assert.equal(db.prepare('SELECT count(*) AS n FROM task_events WHERE hook_id=\'TaskCompleted\'').get().n, 0, 'Approval and activation capture no native completion.');
 });
 
 test('authored API keeps owner and artifact authority host-bound and rejects malformed scenario strings', async t => {

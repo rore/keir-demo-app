@@ -16,10 +16,10 @@ if (config.boundary === 'before') {
     return 0;
   });
   const triggers = {
-    complete: 'AFTER INSERT ON task_completion_events',
-    claim: "AFTER UPDATE OF state ON task_completion_events WHEN NEW.state='STARTED'",
+    complete: "AFTER INSERT ON task_events WHEN NEW.hook_id='TaskCompleted'",
+    claim: "AFTER UPDATE OF state ON task_events WHEN NEW.state='STARTED'",
     create: 'AFTER INSERT ON task_effect_receipts',
-    finish: "AFTER UPDATE OF state ON task_completion_events WHEN NEW.state='FINISHED'",
+    finish: "AFTER UPDATE OF state ON task_events WHEN NEW.state='FINISHED'",
   };
   db.exec(`CREATE TEMP TRIGGER test_crash_boundary ${triggers[config.operation]} BEGIN SELECT test_crash_barrier(); END`);
 }

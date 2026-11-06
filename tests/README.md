@@ -6,6 +6,8 @@ The current task-completion integration is an implemented candidate. Integrated 
 
 ## What each layer proves
 
+The v11 migration fixture, `fixtures/daymark-shipped-v11.sqlite.gz`, was created with Daymark `59c819a` and synthetic data. It includes all four completion states, a settled receipt and reconciliation, and legacy title and notes containing embedded NUL bytes. Tests also derive an exact v10 schema from it by removing the two v11 task columns. The shipped fixture requires no compiler, checkout or database from a running app.
+
 | Layer | Coverage and boundary |
 | --- | --- |
 | Native data/API/session tests | Owner-scoped CRUD, validation, committed-write identity, auth races, locks, fresh database initialization, rejection of unsupported databases before writable open, current backups, reset and restart preservation. |

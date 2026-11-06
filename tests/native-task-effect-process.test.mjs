@@ -85,7 +85,7 @@ function complete(fixture) {
   const db = fixture.open();
   try {
     taskService(db).completeTask(owner, fixture.taskId);
-    return db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(fixture.taskId);
+    return db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(fixture.taskId);
   } finally { db.close(); }
 }
 
@@ -105,7 +105,7 @@ test('separate processes complete one task with one original event/key', options
   assert.equal(results[0].completedAt, results[1].completedAt);
   const db = fixture.open();
   try {
-    const events = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').all(fixture.taskId);
+    const events = db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').all(fixture.taskId);
     assert.equal(events.length, 1);
     assert.equal(events[0].owner_id, owner);
     assert.notEqual(events[0].event_id, events[0].original_key);
@@ -127,7 +127,7 @@ test('separate processes claim once and create one stable receipt for the origin
     const receipts = db.prepare('SELECT * FROM task_effect_receipts WHERE original_key=?').all(event.original_key);
     assert.equal(receipts.length, 1);
     assert.equal(receipts[0].owner_id, owner);
-    assert.equal(receipts[0].created_task_id, results[0].value.id);
+    assert.equal(receipts[0].affected_task_id, results[0].value.id);
     assert.equal(taskEffectService(db).claim(owner, event.event_id), null);
   } finally { db.close(); }
 });
@@ -146,7 +146,7 @@ test('selection committed in one process is captured by later completion in anot
   await selecting.kill();
   const db = fixture.open();
   try {
-    const events = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').all(fixture.taskId);
+    const events = db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').all(fixture.taskId);
     assert.equal(events.length, 1);
     assert.equal(events[0].state, 'PENDING');
     assert.equal(events[0].owner_id, owner);
@@ -164,7 +164,7 @@ test('selection committed after completion cannot replace NO_BINDING or mint ano
   await completing.wait('boundary');
   let db = fixture.open(), original;
   try {
-    original = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(fixture.taskId);
+    original = db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(fixture.taskId);
     assert.equal(original.state, 'NO_BINDING');
     assert.equal(original.revision_id, null);
     assert.equal(original.pins, null);
@@ -182,7 +182,7 @@ test('selection committed after completion cannot replace NO_BINDING or mint ano
   assert.equal((await repeating.done).code, 0);
   db = fixture.open();
   try {
-    const events = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').all(fixture.taskId);
+    const events = db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').all(fixture.taskId);
     assert.deepEqual(events, [original]);
     const selected = db.prepare("SELECT revision_id,binding_pins,generation FROM extension_selections WHERE owner_id=? AND hook_id='TaskCompleted'").get(owner);
     assert.equal(selected.revision_id, fixture.selection.revisionId);
@@ -211,7 +211,7 @@ for (const operation of ['complete', 'claim', 'create', 'finish']) {
       try {
         assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
         assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
-        const saved = db.prepare('SELECT * FROM task_completion_events WHERE source_task_id=?').get(fixture.taskId);
+        const saved = db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(fixture.taskId);
         const committed = boundary === 'after';
         if (operation === 'complete') {
           assert.equal(taskService(db).getTask(owner, fixture.taskId).status, committed ? 'completed' : 'open');
@@ -234,7 +234,7 @@ for (const operation of ['complete', 'claim', 'create', 'finish']) {
             assert.equal(effects.claim(owner, event.event_id), null);
             if (committed) {
               assert.equal(receipt.effect, 'CONFIRMED');
-              assert.equal(effects.createTaskOnce(owner, effects.keyFor(owner, event.event_id), fixture.payload).value.id, receipt.created_task_id);
+              assert.equal(effects.createTaskOnce(owner, effects.keyFor(owner, event.event_id), fixture.payload).value.id, receipt.affected_task_id);
               assert.equal(db.prepare('SELECT count(*) n FROM tasks WHERE owner_id=? AND title=?').get(owner, fixture.payload.title).n, 1);
             }
           } else {

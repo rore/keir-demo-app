@@ -35,7 +35,7 @@ test('an admitted owner A completion keeps its exact native context after the br
   assert.equal(source.statusCode, 201);
   // Hold dispatch until after the session switch while creating the normal native event.
   assert.equal(taskService(db).completeTask('maya', source.json().id).status, 'completed');
-  const eventId = db.prepare('SELECT event_id FROM task_completion_events WHERE source_task_id=?').get(source.json().id).event_id;
+  const eventId = db.prepare('SELECT event_id FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.json().id).event_id;
   const leo = await signIn(app, 'leo', maya);
   const effects = taskEffectService(db), invocation = invocationFor(effects, 'maya', eventId);
   const captured = effects.contextFor('maya', invocation);
