@@ -6,7 +6,7 @@ The current task-completion integration is an implemented candidate. Integrated 
 
 ## What each layer proves
 
-The v11 migration fixture, `fixtures/daymark-shipped-v11.sqlite.gz`, was created with Daymark `59c819a` and synthetic data. It includes all four completion states, a settled receipt and reconciliation, and legacy title and notes containing embedded NUL bytes. Tests also derive an exact v10 schema from it by removing the two v11 task columns. The v12 fixture, `fixtures/daymark-shipped-v12.sqlite.gz`, comes from upgrading that copy with exact Daymark `e007019` and settling its eligible pending event through the Keir 1 dispatcher. Stage B tests retain its original rows and receipts and verify that a later pending admission blocks cutover.
+The v11 migration fixture, `fixtures/daymark-shipped-v11.sqlite.gz`, was created with Daymark `59c819a` and synthetic data. It includes all four completion states, a settled receipt and reconciliation, and legacy title and notes containing embedded NUL bytes. Tests also derive an exact v10 schema from it by removing the two v11 task columns. The v12 fixture, `fixtures/daymark-shipped-v12.sqlite.gz`, comes from upgrading that copy with exact Daymark `e007019` and settling its eligible pending event through the Keir 1 dispatcher. It also contains a definitive no-effect receipt from the old native adapter. Stage B tests retain both kinds of receipt and verify that a later unrevoked pending admission blocks cutover.
 
 | Layer | Coverage and boundary |
 | --- | --- |

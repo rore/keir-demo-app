@@ -57,14 +57,17 @@ test('Stage A cutover preserves old rows, historical proof, and the definitive r
       assert.equal(proof.historical, true);
       assert.equal(proof.passed, true);
       assert.throws(() => lifecycle.execution(selected.owner_id, selected.revision_id, extensionId), { status: 410 });
-      const saved = db.prepare('SELECT * FROM task_effect_receipts ORDER BY rowid LIMIT 1').get();
       const effect = taskEffectService(db);
-      const event = db.prepare('SELECT event_id,source_task_id FROM task_events WHERE owner_id=? AND original_key=?').get(saved.owner_id, saved.original_key);
-      const key = effect.keyFor(saved.owner_id, event.event_id), invocation = {
-        requestKey: key, event: { id: event.event_id, source: event.source_task_id }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 },
-      };
-      assert.deepEqual(effect.createTaskOnce(saved.owner_id, key, JSON.parse(Buffer.from(saved.payload)), invocation), JSON.parse(saved.result));
-      assert.equal(effect.updateTaskOnce(saved.owner_id, key, { priority: 'high' }, invocation).code, 'KEY_PAYLOAD_MISMATCH');
+      const receipts = db.prepare('SELECT * FROM task_effect_receipts ORDER BY rowid').all();
+      assert.deepEqual(receipts.map(row => row.effect), ['CONFIRMED', 'CONFIRMED', 'NONE']);
+      for (const saved of receipts) {
+        const event = db.prepare('SELECT event_id,source_task_id FROM task_events WHERE owner_id=? AND original_key=?').get(saved.owner_id, saved.original_key);
+        const key = effect.keyFor(saved.owner_id, event.event_id), invocation = {
+          requestKey: key, event: { id: event.event_id, source: event.source_task_id }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 },
+        };
+        assert.deepEqual(effect.createTaskOnce(saved.owner_id, key, JSON.parse(Buffer.from(saved.payload)), invocation), JSON.parse(saved.result));
+        assert.equal(effect.updateTaskOnce(saved.owner_id, key, { priority: 'high' }, invocation).code, 'KEY_PAYLOAD_MISMATCH');
+      }
       assert.deepEqual(queries.map(query => query(db, true)), prior);
     } finally { db.close(); }
   }
@@ -104,20 +107,32 @@ test('cutover rechecks pending work, preserves revoked rows and rolls back after
     assert.deepEqual(upgraded.prepare('SELECT * FROM task_events WHERE event_id=?').get(revoked.event_id), revoked);
   } finally { await dispatcher.close(); upgraded.close(); }
 
-  writeFileSync(path, stageA);
-  DatabaseSync.prototype.exec = function (sql) {
-    const result = exec.call(this, sql);
-    if (sql === 'PRAGMA user_version=13') throw new Error('Interrupted after version write');
-    return result;
-  };
-  try { assert.throws(() => openData(path), /Interrupted after version write/); }
-  finally { DatabaseSync.prototype.exec = exec; }
-  old = new DatabaseSync(path, { readOnly: true });
+  const reference = new DatabaseSync(disposable(t), { readOnly: true });
   try {
-    assert.equal(old.prepare('PRAGMA user_version').get().user_version, 12);
-    assert.equal(old.prepare("SELECT 1 FROM sqlite_schema WHERE name='legacy_extension_selections'").get(), undefined);
-    const restored = new DatabaseSync(disposable(t), { readOnly: true });
-    try { for (const read of comparison(restored)) assert.deepEqual(read(old), read(restored)); }
-    finally { restored.close(); }
-  } finally { old.close(); }
+    const before = comparison(reference), schema = db => db.prepare('SELECT * FROM sqlite_schema ORDER BY name').all();
+    for (const boundary of ['UPDATE extension_selections', 'ALTER TABLE task_effect_receipts', 'INSERT INTO task_effect_receipts',
+      'DROP TABLE previous_workflow_receipts', 'PRAGMA user_version=13']) {
+      writeFileSync(path, stageA);
+      DatabaseSync.prototype.exec = function (sql) {
+        if (sql === boundary) {
+          exec.call(this, sql);
+          throw new Error('Interrupted after version write');
+        }
+        const offset = sql.includes('CREATE TABLE legacy_extension_selections') ? sql.indexOf(boundary) : -1;
+        if (offset !== -1) {
+          exec.call(this, sql.slice(0, offset));
+          throw new Error('Interrupted during cutover');
+        }
+        return exec.call(this, sql);
+      };
+      try { assert.throws(() => openData(path), /Interrupted/); }
+      finally { DatabaseSync.prototype.exec = exec; }
+      old = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.equal(old.prepare('PRAGMA user_version').get().user_version, 12);
+        assert.deepEqual(schema(old), schema(reference));
+        for (const read of before) assert.deepEqual(read(old), read(reference));
+      } finally { old.close(); }
+    }
+  } finally { reference.close(); }
 });

@@ -190,3 +190,55 @@ test('a native update applies all authored fields together and retains a rejecti
     assert.equal(tasks.listTasks(owner, projectId).length, count);
   } finally { db.close(); }
 });
+
+test('tagged creates preserve authored request bytes and enforce native and wire limits', async () => {
+  const db = openData(':memory:'), tasks = taskService(db), projectId = tasks.listProjects(owner)[0].id;
+  const destinationProjectId = tasks.createProject(owner, { name: 'Tagged review tasks' }).id;
+  const lifecycle = createLifecycle(db, { compiler: createCompiler() }), effects = taskEffectService(db);
+  const input = { projectId: destinationProjectId, title: 'Tagged result' };
+  try {
+    await approveAndActivate(db, lifecycle, 'TaskCompleted', projectId, 'review', { projectId, destinationProjectId });
+    const claim = () => {
+      const task = tasks.createTask(owner, { projectId, title: 'Tagged source', priority: 'high', tags: ['review'] });
+      tasks.completeTask(owner, task.id);
+      const row = db.prepare("SELECT event_id,original_key FROM task_events WHERE source_task_id=? AND hook_id='TaskCompleted'").get(task.id);
+      const key = effects.keyFor(owner, row.event_id);
+      const invocation = { requestKey: key, event: { id: row.event_id, source: task.id }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 } };
+      assert.ok(effects.claim(owner, row.event_id, invocation));
+      return { row, key, invocation };
+    };
+    const boundary = ['😀'.repeat(16), '😁'.repeat(16), '😂'.repeat(16), '😃'.repeat(15) + 'a'];
+    assert.equal(Buffer.byteLength(boundary.join(',')), 256);
+    const accepted = [
+      [{}, []], [{ tagsText: '' }, []], [{ tagsText: '   ' }, []],
+      [{ tagsText: ' É, E\u0301 , Client ' }, ['é', 'client']], [{ tagsText: boundary.join(',') }, boundary],
+    ];
+    for (const [metadata, expected] of accepted) {
+      const { key, invocation } = claim(), request = { ...input, ...metadata };
+      const created = effects.createTaskOnce(owner, key, request, invocation);
+      assert.equal(created.effect, 'CONFIRMED');
+      assert.deepEqual(tasks.getTask(owner, created.value.id).tags, expected);
+      assert.deepEqual(effects.createTaskOnce(owner, key, { ...request }, invocation), created);
+      if ('tagsText' in request)
+        assert.equal(effects.createTaskOnce(owner, key, input, invocation).code, 'KEY_PAYLOAD_MISMATCH');
+    }
+    for (const tagsText of [null, ',client', 'client,', 'client,,review', 'client,\u0000review', '1,2,3,4,5,6,7,8,9']) {
+      const { row, key, invocation } = claim(), before = tasks.listTasks(owner, destinationProjectId).length;
+      const rejected = effects.createTaskOnce(owner, key, { ...input, tagsText }, invocation);
+      assert.deepEqual(rejected, { kind: 'BUSINESS_REJECTION', code: 'TASK_INVALID', effect: 'NONE' });
+      assert.deepEqual(effects.status(owner, row.event_id).receipt, rejected);
+      assert.equal(tasks.listTasks(owner, destinationProjectId).length, before);
+    }
+    const overflow = claim(), before = tasks.listTasks(owner, destinationProjectId).length;
+    assert.throws(() => effects.createTaskOnce(owner, overflow.key, { ...input, tagsText: boundary.join(',') + 'a' }, overflow.invocation),
+      { code: 'INPUT_INVALID' });
+    assert.equal(effects.status(owner, overflow.row.event_id).receipt, null);
+    assert.equal(tasks.listTasks(owner, destinationProjectId).length, before);
+
+    const oldVersion = claim();
+    db.prepare("INSERT INTO task_effect_receipts(owner_id,capability_id,original_key,capability_version,payload,result,effect) VALUES (?,'tasks.create',?,'1',?,?,'NONE')")
+      .run(owner, oldVersion.row.original_key, Buffer.from(JSON.stringify(input)), '{"kind":"BUSINESS_REJECTION","code":"TASK_INVALID","effect":"NONE"}');
+    assert.equal(effects.createTaskOnce(owner, oldVersion.key, input, oldVersion.invocation).code, 'KEY_PAYLOAD_MISMATCH');
+    assert.equal(tasks.listTasks(owner, destinationProjectId).length, before);
+  } finally { db.close(); }
+});
