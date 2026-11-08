@@ -2,7 +2,7 @@
 
 Studio helps you describe a customization and check examples before deciding whether to use it. Live AI needs a configured provider and can incur charges. Native tasks and saved history work without AI setup. A workflow can create one task or update the triggering task after a matching creation or completion. Real execution requires a compatible approved revision, activation and current native host permission. See [task effects](task-effects.md).
 
-Compiling new customizations requires Java 21 and the independently pinned Keir compiler. App startup needs only the documented Node runtime. The app does not install or upgrade Java, and a working compiler does not qualify native effects.
+The app uses released Core 0.2.0 packages and the authoring companion v4 guide. Compiling new customizations requires Java 21 and the independently pinned Keir compiler. App startup needs only the documented Node runtime. The app does not install or upgrade Java, and a working compiler does not qualify native effects.
 
 ## Configure a provider
 
@@ -19,7 +19,7 @@ When set, the allowance is shared across all demo owners in the database. Daymar
 
 The provider can receive your authoring text, bounded recent conversation, the published host contract, format examples, current draft and cases, and bounded synthetic check summaries. Daymark offers owner-scoped project discovery for named project choices. The provider does not receive session cookies or protected runtime bindings. Avoid unrelated private information in messages.
 
-Without valid settings, AI authoring is unavailable; native tasks and saved history remain available. For tool authors learning Keir, use the [core manual authoring guide](https://github.com/rore/keir-core/blob/main/docs/manual-authoring.md).
+AI authoring requires valid settings. Native tasks and saved history work before provider setup. For tool authors learning the current contract, use the [bundled v4 authoring guide](../vendor/customer-authoring-guide-v4.md).
 
 Changing the provider, model, key or allowance requires fresh authoring context for future requests. The saved conversation stays with the customization. Continue explicitly in Studio when ready. If a save response is lost, resubmit the complete settings only if you want to retry the save. Wait for ongoing authoring or cancellation to settle before saving again.
 
@@ -32,13 +32,13 @@ The assistant asks about missing business choices and uses the owner's project c
 ### How Daymark runs the assistant
 
 1. On an explicit send, Daymark supplies instructions, the message, bounded saved context, and an allowlist of authoring tools to its configured model. Daymark owns the conversation, resource limits, and tool execution.
-2. `discover_catalog` returns the exact published domain capability model (DCM), its profile and fingerprint, supported hooks, draft state, host guidance, and source and scenario examples. The DCM defines the callable operations, typed inputs and results, and protected parameters. The host guidance explains what those concepts mean in Daymark. Examples illustrate syntax.
+2. `discover_catalog` returns the exact published domain capability model (DCM), its identity and fingerprint, supported hooks, the selected trigger when established, draft state, host guidance, and source and scenario examples. The DCM defines the callable operations, typed inputs and results, and protected parameters. The host guidance explains what those concepts mean in Daymark. Examples illustrate syntax.
 3. The model can ask a question or propose source and expected examples. Daymark validates tool arguments and checks the current owner and draft on each operation. The Keir compiler checks source against the host's pinned DCM. The runtime runs the compiled artifact with simulation implementations and returns evidence for review.
-4. Approval and activation are explicit user actions handled by Daymark. On a later task completion, Daymark supplies the active artifact, real implementations, and fresh trusted context to Keir. That execution uses the compiled rule without an AI request.
+4. Approval and activation are explicit user actions handled by Daymark. On a later matching task creation or completion, Daymark selects the active artifact for that owner and trigger and supplies real implementations and fresh trusted context to Keir. That execution uses the compiled rule without an AI request.
 
 Earlier advice conversations, scripted examples and their approvals remain historical. They cannot be resumed or turned into a task-creating customization. Start a new customization with fresh checks, approval and activation. Original receipt recovery remains readable and never creates a replacement item or repeats an old write.
 
-Describe matching and nonmatching outcomes before checking them. A deliberately opened canvas shows recognizable example tasks, independently expected created tasks and actual simulated effects. It also shows the current version's own exact checked behavior, or explains that it is unavailable; a label or source result such as `CREATED` is not evidence of a task. These examples are synthetic and make no native changes. Close the example to return to the same exchange and focus. Choose **Approve this change** only when the checked behavior matches your intent. **Turn on for my tasks** is a separate decision; switching names the replaced customization and keeps it saved. Activation creates nothing and replays no earlier completion. An unavailable runtime binding permits review and approval but cannot run the change.
+Describe matching and nonmatching outcomes before checking them. Studio shows **About this rule** and **Simulation** in the conversation, with the example task, independently expected changes and observed simulated result. It reports created or updated tasks, no change, uncertainty and unavailable evidence distinctly. **Hide simulation** keeps the conversation and unsent text. Secondary inspection shows one saved version at a time. These examples use synthetic data. Choose **Approve this change** when the checked behavior matches your intent. **Turn on for tasks added** or **Turn on for tasks completed** activates the approved version for that trigger. Switching identifies the replaced customization and keeps it saved. Activation takes effect on future matching events. An unavailable runtime binding permits review and approval while execution remains unavailable.
 
 ## Conversations and recovery
 

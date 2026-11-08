@@ -118,6 +118,68 @@ for (const [workflow, hookId] of [['intake', 'TaskCreated'], ['review', 'TaskCom
   });
 }
 
+for (const eventCount of [1, 2]) {
+  test(eventCount === 1 ? 'concurrent dispatch and exact event replay retain one native task and receipt'
+    : 'distinct concurrent events may both create after the same false open-match snapshot', async () => {
+    const db = openData(':memory:'), tasks = taskService(db), effects = taskEffectService(db);
+    const projectId = tasks.listProjects(owner)[0].id;
+    const destinationProjectId = tasks.createProject(owner, { name: 'Concurrent follow-ups' }).id;
+    const lifecycle = createLifecycle(db, { compiler: createCompiler() });
+    const dispatchers = [createTaskDispatcher({ db, lifecycle, clock: () => 0 }), createTaskDispatcher({ db, lifecycle, clock: () => 0 })];
+    const prepare = db.prepare, snapshots = [];
+    try {
+      const selected = await approveAndActivate(db, lifecycle, 'TaskCompleted', projectId, 'follow-up', { destinationProjectId });
+      const sources = Array.from({ length: eventCount }, (_, index) => tasks.createTask(owner, { projectId, title: 'Source ' + index }));
+      for (const task of sources) tasks.completeTask(owner, task.id);
+      const events = sources.map(task => db.prepare("SELECT * FROM task_events WHERE source_task_id=? AND hook_id='TaskCompleted'").get(task.id));
+      assert.equal(new Set(events.map(event => event.event_id)).size, eventCount);
+      assert.equal(new Set(events.map(event => event.original_key)).size, eventCount);
+      for (const event of events) assert.equal(JSON.parse(event.pins).artifactDigest, selected.draft.pins.artifactDigest);
+      db.prepare = function (sql) {
+        const statement = prepare.call(this, sql);
+        if (!sql.startsWith('SELECT EXISTS(SELECT 1 FROM tasks')) return statement;
+        return { get(...args) {
+          const result = statement.get(...args);
+          snapshots.push({ args, matches: result.matches,
+            created: prepare.call(db, 'SELECT count(*) AS n FROM tasks WHERE project_id=?').get(destinationProjectId).n });
+          return result;
+        } };
+      };
+      // Start both invocations before awaiting either, allowing their async native reads to precede writes.
+      await Promise.all(dispatchers.map(dispatcher => dispatcher.wake()));
+      assert.deepEqual(snapshots, sources.map(() => ({ args: ['Follow-up', owner, destinationProjectId], matches: 0, created: 0 })));
+      const saved = events.map(event => effects.status(owner, event.event_id));
+      const receiptRows = () => db.prepare('SELECT * FROM task_effect_receipts ORDER BY original_key').all();
+      const receipts = receiptRows();
+      const created = tasks.listTasks(owner, destinationProjectId);
+      assert.equal(created.length, eventCount);
+      assert.equal(receipts.length, eventCount);
+      assert.equal(new Set(saved.map(status => status.receipt.value.id)).size, eventCount);
+      for (const status of saved) {
+        assert.equal(status.state, 'FINISHED');
+        assert.equal(status.outcome.classification, 'COMPLETED');
+        assert.deepEqual(status.outcome.effects, [{ step: 'changed', capability: 'tasks.create', state: 'CONFIRMED' }]);
+        assert.equal(tasks.getTask(owner, status.receipt.value.id).title, 'Follow-up');
+        const key = effects.keyFor(owner, status.eventId);
+        const invocation = { requestKey: key, event: { id: status.eventId, source: status.sourceTaskId },
+          deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 } };
+        assert.equal(effects.claim(owner, status.eventId, invocation), null);
+        assert.deepEqual(effects.createTaskOnce(owner, key, { projectId: destinationProjectId, title: 'Follow-up' }, invocation), status.receipt);
+      }
+      for (const task of sources) tasks.completeTask(owner, task.id);
+      await Promise.all(dispatchers.map(dispatcher => dispatcher.dependenciesChanged()));
+      assert.deepEqual(events.map(event => effects.status(owner, event.event_id)), saved);
+      assert.deepEqual(receiptRows(), receipts);
+      assert.deepEqual(tasks.listTasks(owner, destinationProjectId), created);
+      assert.equal(snapshots.length, eventCount, 'Settled event replay must not repeat the lookup.');
+    } finally {
+      db.prepare = prepare;
+      await Promise.all(dispatchers.map(dispatcher => dispatcher.close()));
+      db.close();
+    }
+  });
+}
+
 test('a native update applies all authored fields together and retains a rejection on tag overflow', async () => {
   const db = openData(':memory:'), tasks = taskService(db), projectId = tasks.listProjects(owner)[0].id;
   const lifecycle = createLifecycle(db, { compiler: createCompiler() }), effects = taskEffectService(db);
