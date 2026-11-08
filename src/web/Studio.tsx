@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { normalizeWorkflowTitle, parseWorkflowTagsText } from "../task-workflow-values.mjs";
 import "./Studio.css";
 
-type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: { artifactDigest?: string; rawSourceDigest?: string; modelRef?: { format?: string } }; provenance: "operator" | "customer" };
+type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; pins: { artifactDigest?: string; rawSourceDigest?: string; compiledSourceDigest?: string; modelRef?: { format?: string } }; provenance: "operator" | "customer" };
 type History = { id: number; generation: number; operation: string; revisionId: string | null; label?: string | null };
 export type State = {
   retired?: boolean;
@@ -160,10 +160,10 @@ type Props = {
 const knownTask = (task?: TaskPreview) => !!task && typeof task.title === "string" && !!task.title.trim() && typeof task.projectId === "string" && !!task.projectId;
 const knownScenarioTask = (task?: TaskPreview) => !!task && typeof task.id === "string" && !!task.id && typeof task.title === "string" && !!task.title.trim();
 const knownTasks = (tasks?: TaskPreview[] | null) => Array.isArray(tasks) && tasks.every(knownTask);
-type Condition = ({ field: "projectId" | "title" | "tag" | "priority" | "dueAbsent"; value?: string }
+type Condition = ({ field: "projectId" | "title" | "tag" | "priority" | "dueAbsent" | "status"; value?: string }
   | { field: "noOpenMatch"; projectId: string; title: string }) & { step: string };
 type RuleAction = { title: string; projectId?: string } | { hook: string; conditional: boolean; capability: "tasks.create" | "tasks.update";
-  fields: Record<string, unknown>; step: string; conditions?: Condition[]; elapsedDue?: boolean; titlePrefix?: string };
+  fields: Record<string, unknown>; step: string; conditions?: Condition[]; elapsedDue?: boolean; titlePrefix?: string; titleSuffix?: string; sameProject?: boolean };
 async function sha256(value: string) {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -235,14 +235,19 @@ async function savedRuleAction(saved: SavedSource, artifactDigest: string, rawSo
         catch { fields.tagsText = undefined; }
       }
     }
-    let facts;
+    let facts, followUp;
     if (rawSourceDigest && saved.pins.rawSourceDigest === rawSourceDigest && typeof saved.source === "string" && await sha256(saved.source) === rawSourceDigest) {
       try { facts = workflowSourceFacts(saved.source, artifact.entrypoint, write.id, write.capability); }
       catch { /* YAML and unsupported JSON stay available in the exact details. */ }
+      if (!facts?.conditions && saved.pins.compiledSourceDigest === artifact.sourceDigest) {
+        const { taskFollowUpSummary } = await import("./task-follow-up-summary");
+        followUp = taskFollowUpSummary(artifact);
+      }
     }
     if (facts?.projectId) fields.projectId = facts.projectId;
     return { hook: artifact.entrypoint, conditional: !!write.when, capability: write.capability, fields, step: write.id,
-      conditions: facts?.conditions, elapsedDue: facts?.elapsedDue, titlePrefix: facts?.titlePrefix };
+      conditions: followUp?.conditions ?? facts?.conditions, elapsedDue: facts?.elapsedDue, titlePrefix: facts?.titlePrefix,
+      titleSuffix: followUp?.titleSuffix, sameProject: followUp?.sameProject };
   }
   if (artifact?.format !== "keir-artifact/1" || artifact.entrypoint !== "TaskCompleted" || !Array.isArray(artifact.steps)) return null;
   const creates = artifact.steps.filter((step: { op?: string; capability?: string }) => step?.op === "CALL" && step.capability === "tasks.create");
@@ -724,6 +729,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       return name ? `“${name}” has no open task titled exactly “${fact.title}”` : "";
     }
     if (fact.field === "dueAbsent") return "this task has no due date";
+    if (fact.field === "status" && fact.value === "COMPLETED") return "this task is completed";
     if (!fact.value) return "";
     if (fact.field === "tag") return `this task has the tag “${fact.value}”`;
     if (fact.field === "title") return `this task is titled exactly “${fact.value}”`;
@@ -738,8 +744,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     : workflowSummary && !workflowSummary.conditional ? "No additional rule conditions." : "The saved conditions can’t be summarized here.";
   const fullWorkflowSummary = workflowSummary && (!workflowSummary.conditional || conditionsKnown)
     && Object.entries(workflowSummary.fields).every(([field, value]) => {
-      if (field === "title") return typeof value === "string" || workflowSummary.titlePrefix !== undefined;
-      if (field === "projectId") return typeof value === "string" && !!projectName(value);
+      if (field === "title") return typeof value === "string" || workflowSummary.titlePrefix !== undefined || workflowSummary.titleSuffix !== undefined;
+      if (field === "projectId") return workflowSummary.sameProject || typeof value === "string" && !!projectName(value);
       if (field === "dueAt") return typeof value === "string" || workflowSummary.elapsedDue;
       if (field === "tags") return Array.isArray(value);
       return ["priority", "addTag", "notes"].includes(field) && typeof value === "string";
@@ -782,6 +788,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       const taskFacts = currentRule.conditions?.filter(fact => fact.step === taskRead.step) ?? [];
       for (const fact of taskFacts) {
         if (fact.field === "dueAbsent" && task.dueAt) { noChangeReason = "This task already has a due date."; break; }
+        if (fact.field === "status" && fact.value === "COMPLETED" && task.status !== "COMPLETED") { noChangeReason = "This task isn’t completed."; break; }
         if (fact.field === "title" && fact.value && task.title !== fact.value) { noChangeReason = `This task’s title isn’t exactly “${fact.value}”.`; break; }
         if (fact.field === "priority" && fact.value && task.priority && task.priority !== fact.value) { noChangeReason = `The rule requires ${priorityLabel(fact.value)} priority.`; break; }
         if (fact.field === "tag" && fact.value && Array.isArray(task.tags) && !task.tags.includes(fact.value)) { noChangeReason = `This task doesn’t have the tag “${fact.value}”.`; break; }
@@ -1890,7 +1897,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               <div><dt>When</dt><dd>{trigger === "tasks added" ? "A task is added." : "A task is completed."}</dd></div>
               <div><dt>Only when</dt><dd>{onlyWhen}</dd></div>
               <div><dt>Then</dt><dd>{workflowSummary ? <>
-                {workflowSummary.capability === "tasks.update" ? "Update this task." : <>Create a task{typeof workflowSummary.fields.title === "string" ? ` titled “${workflowSummary.fields.title}”` : workflowSummary.titlePrefix !== undefined && ` titled “${workflowSummary.titlePrefix}” followed by this task’s title`}{typeof workflowSummary.fields.projectId === "string" && projectName(workflowSummary.fields.projectId) && ` in “${projectName(workflowSummary.fields.projectId)}”`}.</>}
+                {workflowSummary.capability === "tasks.update" ? "Update this task." : <>Create a task{typeof workflowSummary.fields.title === "string" ? ` titled “${workflowSummary.fields.title}”` : workflowSummary.titlePrefix !== undefined ? ` titled “${workflowSummary.titlePrefix}” followed by this task’s title` : workflowSummary.titleSuffix !== undefined && ` with this task’s title followed by “${workflowSummary.titleSuffix}”`}{workflowSummary.sameProject ? " in this task’s project" : typeof workflowSummary.fields.projectId === "string" && projectName(workflowSummary.fields.projectId) && ` in “${projectName(workflowSummary.fields.projectId)}”`}.</>}
                 {typeof workflowSummary.fields.priority === "string" && ` Priority ${priorityLabel(workflowSummary.fields.priority)}.`}
                 {typeof workflowSummary.fields.addTag === "string" && ` Add tag “${workflowSummary.fields.addTag}”.`}
                 {Array.isArray(workflowSummary.fields.tags) && workflowSummary.fields.tags.length > 0 && ` Tags ${workflowSummary.fields.tags.join(", ")}.`}

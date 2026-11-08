@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { loadHost } from '../../src/extension-catalog.mjs';
@@ -112,6 +113,59 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
         await expect(rule).not.toContainText('168 hours');
       }
     }
+  } finally { await fixture.close(); }
+});
+
+test('Studio summarizes the exact YAML follow-up and keeps forged or unsupported summaries conservative', async ({ page }, testInfo) => {
+  const captured = JSON.parse(readFileSync(new URL('../fixtures/task-follow-up-summary.json', import.meta.url)));
+  const fixture = await startAuthoringFixture({ unconfigured: true });
+  try {
+    await page.goto(fixture.origin);
+    await page.getByRole('button', { name: /^Continue as Maya/ }).click();
+    const { contextToken } = await (await page.request.get(fixture.origin + '/api/session')).json();
+    const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Follow-up in the same project' });
+    const compiled = await page.request.post(`${fixture.origin}/api/extensions/${extensionId}/compile`, {
+      headers: { origin: fixture.origin, 'X-Session-Context': contextToken },
+      data: { hookId: 'TaskCompleted', source: captured.source, draftVersion: 0 },
+    });
+    expect(compiled.ok(), await compiled.text()).toBe(true);
+    const state = await compiled.json();
+    expect(state.draft.pins.artifactDigest).toBe(captured.pins.artifactDigest);
+    const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
+    const rule = studio.getByRole('article', { name: 'About this rule', exact: true });
+    for (const width of [1440, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(`${fixture.origin}/#customization=${extensionId}`);
+      await expect(rule.getByText('this task is completed.', { exact: true })).toBeVisible();
+      await expect(rule).toContainText('Create a task with this task’s title followed by “ - follow up” in this task’s project.');
+      await expect(rule).not.toContainText('A full summary isn’t available');
+      expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await expect(studio.getByLabel('Message to Daymark assistant', { exact: true })).toBeInViewport();
+      await rule.screenshot({ path: testInfo.outputPath(`same-project-follow-up-${width}.png`) });
+    }
+    const path = `**/api/extensions/${extensionId}/revisions/${state.draft.id}`;
+    for (const forge of [
+      saved => ({ ...saved, artifact: saved.artifact + ' ' }),
+      saved => ({ ...saved, source: saved.source + '\n' }),
+      saved => ({ ...saved, pins: { ...saved.pins, compiledSourceDigest: 'sha256:' + '0'.repeat(64) } }),
+    ]) {
+      await page.route(path, async route => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: forge(await response.json()) });
+      });
+      await page.reload();
+      await expect(rule).toContainText('A full summary isn’t available for this version.');
+      await expect(rule).not.toContainText('followed by');
+      await page.unroute(path);
+    }
+    const unsupported = await page.request.post(`${fixture.origin}/api/extensions/${extensionId}/compile`, {
+      headers: { origin: fixture.origin, 'X-Session-Context': contextToken },
+      data: { hookId: 'TaskCompleted', source: captured.source.replace('source.status ==', 'source.status !='), draftVersion: state.draftVersion },
+    });
+    expect(unsupported.ok(), await unsupported.text()).toBe(true);
+    await page.reload();
+    await expect(rule).toContainText('The saved conditions can’t be summarized here.');
+    await expect(rule).not.toContainText('this task is completed');
   } finally { await fixture.close(); }
 });
 
