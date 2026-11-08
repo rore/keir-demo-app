@@ -60,6 +60,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     const nav = page.getByRole('navigation', { name: 'Main navigation' });
     await expect(nav).toBeVisible();
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
     const { contextToken } = await (await page.request.get(fixture.origin + '/api/session')).json();
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
     const rule = studio.getByRole('article', { name: 'About this rule', exact: true });
@@ -122,6 +123,7 @@ test('Studio summarizes the exact YAML follow-up and keeps forged or unsupported
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
     const { contextToken } = await (await page.request.get(fixture.origin + '/api/session')).json();
     const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Follow-up in the same project' });
     const compiled = await page.request.post(`${fixture.origin}/api/extensions/${extensionId}/compile`, {
@@ -177,6 +179,7 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     const nav = page.getByRole('navigation', { name: 'Main navigation' });
     await expect(nav).toBeVisible();
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
     const { user: owner } = await (await page.request.get(fixture.origin + '/api/session')).json();
     const extension = { id: 'new-rule', name: 'Intake priority', hookId: 'TaskCreated' };
     const artifact = JSON.stringify({ format: 'keir-artifact/2', entrypoint: extension.hookId,
