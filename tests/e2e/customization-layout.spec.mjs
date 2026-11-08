@@ -388,14 +388,31 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await page.setViewportSize(viewport); await enter(page, demo); await openStudio(page, false);
     const studio = ui(page), composer = studio.getByLabel('Message to Daymark assistant');
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);
-    await prepareChoice(page, proposedLabel); await composer.fill('Keep this unsent thought'); await checkChoice(page);
+    await prepareChoice(page, proposedLabel); await composer.fill('Keep this unsent thought');
+    const log = studio.getByRole('log');
+    if (viewport.height === 384) {
+      const fetched = Promise.withResolvers(), release = Promise.withResolvers();
+      const path = `**/api/extensions/${(await savedState(page)).extension.id}/simulate`;
+      await page.route(path, async route => {
+        const response = await route.fetch();
+        fetched.resolve();
+        await release.promise;
+        await route.fulfill({ response });
+      });
+      try {
+        await studio.getByRole('button', { name: 'Check this revised change', exact: true }).click();
+        await fetched.promise;
+        await wheel(page, log, -100_000);
+      } finally { release.resolve(); }
+      await expect(studio.getByRole('button', { name: 'New messages ↓', exact: true })).toBeVisible();
+      await page.unroute(path);
+    } else await checkChoice(page);
     const named = studio.getByRole('button', { name: 'View saved changes', exact: true }).first();
     await named.click(); const heading = studio.getByRole('heading', { name: 'Simulation', exact: true });
     await expect(heading).toBeFocused();
     const results = studio.getByRole('article', { name: 'Current decision' });
     const action = results.getByRole('button', { name: 'Approve this change', exact: true });
     await expect(action).toBeEnabled();
-    const log = studio.getByRole('log');
     await expect(log.getByRole('heading', { name: 'About this rule', exact: true })).toBeVisible();
     await expect(log.getByRole('article', { name: 'Current decision' })).toHaveCount(1);
     await expect(composer).toBeInViewport();
@@ -414,6 +431,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     }
     await expect(log.getByRole('article', { name: 'About this rule', exact: true })).toContainText('Create a task titled');
     if (viewport.height === 384) {
+      await expect(studio.getByRole('button', { name: 'New messages ↓', exact: true })).toBeVisible();
       await expect(studio.locator('.rs-setup-notice')).toContainText('Set up the assistant');
       await expect.poll(async () => {
         const available = await log.boundingBox(), button = await action.boundingBox();
@@ -427,6 +445,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     });
     await expect(action).toBeInViewport({ ratio: 0.99 });
     await expect(composer).toBeInViewport({ ratio: 0.99 });
+    if (viewport.height === 384) await picture(page, 'short-inline-unread-action-visible');
     const id = (await savedState(page)).evidence.id;
     await results.getByRole('button', { name: 'Hide simulation', exact: true }).click(); await expect(named).toBeFocused();
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);
