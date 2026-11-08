@@ -271,9 +271,9 @@
   .rs-example p { margin: 0; font-size: 12px; }
   .rs-example details { margin-top: 4px; }
   .rs-example details summary { padding: 0; }
-  .read-studio.rs-review-open .rs-breadcrumb, .read-studio.rs-review-open .rs-canvas-tabs { display: none; }
-  .read-studio.rs-review-open .rs-header { padding: 4px 12px; }
-  .read-studio.rs-review-open .rs-header button { max-width: none; white-space: nowrap; font-size: 12px; padding: 4px 8px; }
+  .read-studio:is(.rs-review-open, .rs-inline-open) .rs-breadcrumb, .read-studio.rs-review-open .rs-canvas-tabs { display: none; }
+  .read-studio:is(.rs-review-open, .rs-inline-open) .rs-header { padding: 4px 12px; }
+  .read-studio:is(.rs-review-open, .rs-inline-open) .rs-header button { max-width: none; white-space: nowrap; font-size: 12px; padding: 4px 8px; }
   .read-studio.rs-review-open .rs-status-summary { display: flex; min-height: 40px; gap: 8px; padding: 4px 12px; }
   .read-studio.rs-review-open .rs-status-summary > div:first-child { flex-shrink: 1; }
   .read-studio.rs-review-open .rs-summary-actions { padding: 0; overflow: visible; }

@@ -413,12 +413,20 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await picture(page, `studio-simulation-rows-${viewport.width}x${viewport.height}`);
     }
     await expect(log.getByRole('article', { name: 'About this rule', exact: true })).toContainText('Create a task titled');
+    if (viewport.height === 384) {
+      await expect(studio.locator('.rs-setup-notice')).toContainText('Set up the assistant');
+      await expect.poll(async () => {
+        const available = await log.boundingBox(), button = await action.boundingBox();
+        return available.height - button.height;
+      }).toBeGreaterThanOrEqual(0);
+    }
     await action.evaluate(button => {
       const scroller = button.closest('[role="log"]');
       const target = button.getBoundingClientRect(), bounds = scroller.getBoundingClientRect();
       scroller.scrollTop += (target.top + target.bottom - bounds.top - bounds.bottom) / 2;
     });
     await expect(action).toBeInViewport({ ratio: 0.99 });
+    await expect(composer).toBeInViewport({ ratio: 0.99 });
     const id = (await savedState(page)).evidence.id;
     await results.getByRole('button', { name: 'Hide simulation', exact: true }).click(); await expect(named).toBeFocused();
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);
