@@ -17,7 +17,8 @@ test('offline due-date conversation explains checked behavior and keeps approval
   };
   const seeChange = async () => {
     await studio.getByRole('button', { name: 'See proposed change', exact: true }).first().click();
-    await expect(studio.getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
+    await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
+    await expect(decision.locator('.rs-review-status')).not.toHaveText('Checking saved results…');
   };
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -240,7 +241,9 @@ test('a different supported behavior keeps its exact supplied name and truthful 
     await expect(studio.locator('.rs-rule-facts')).toContainText('A task is completed.');
     expect((await exactState()).extension.name).toBe(name);
     await studio.getByRole('button', { name: 'See proposed change', exact: true }).first().click();
-    await expect(decision.getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
+    await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
+    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+    await expect(decision.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
     await page.screenshot({ path: testInfo.outputPath('other-behavior-summary-simulation.png') });
 
     await page.reload();
@@ -250,10 +253,149 @@ test('a different supported behavior keeps its exact supplied name and truthful 
     await expect(reopened.locator('.rs-rule-summary')).toContainText(`create a new task titled “${name}”`);
     const reopenedDecision = reopened.getByRole('article', { name: 'Current decision', exact: true });
     await reopened.getByRole('button', { name: 'See proposed change', exact: true }).first().click();
-    await expect(reopenedDecision.getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
+    await expect(reopened.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
+    await reopened.getByRole('button', { name: 'View simulation', exact: true }).click();
+    await expect(reopenedDecision.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
     expect((await exactState()).extension.name).toBe(name);
     const persisted = fixture.db.prepare('SELECT name FROM extensions WHERE id=?').get(extensionId);
     expect(persisted.name).toBe(name);
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
+});
+
+test('proposal links settle on an unobscured Summary while View simulation remains a separate destination at desktop, narrow and short sizes', async ({ page }) => {
+  test.setTimeout(90_000);
+  const fixture = await startAuthoringFixture({ missingDue: true });
+  const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
+  const composer = studio.getByLabel('Message to Daymark assistant', { exact: true });
+  const decision = studio.getByRole('article', { name: 'Current decision', exact: true });
+  let release;
+  const expectDestination = async name => {
+    const heading = studio.getByRole('heading', { name, exact: true });
+    await expect(heading).toBeFocused();
+    await expect(heading).toBeInViewport({ ratio: 1 });
+    await expect.poll(() => heading.evaluate(node => {
+      const region = node.closest('.read-studio');
+      const log = region.querySelector('.rs-messages');
+      const scroller = getComputedStyle(region).overflowY === 'auto' ? region : log;
+      const bounds = scroller.getBoundingClientRect(), rect = node.getBoundingClientRect();
+      const stickyBottom = Math.max(0, ...[...region.querySelectorAll(':scope > .rs-header, :scope > .rs-status-summary')]
+        .filter(element => getComputedStyle(element).position === 'sticky')
+        .map(element => element.getBoundingClientRect().bottom));
+      return rect.top >= Math.max(0, bounds.top, stickyBottom) - 1
+        && rect.bottom <= Math.min(innerHeight, bounds.bottom) + 1;
+    })).toBe(true);
+  };
+  try {
+    await page.goto(fixture.origin);
+    await page.getByRole('button', { name: /^Continue as Maya/ }).click();
+    await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
+    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await composer.fill('Could you help me give new tasks a due date automatically?');
+    await studio.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(studio.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
+    await composer.fill('Confirmed: every project, only when the new task has no due date. Use exactly 168 hours after addition.');
+    await studio.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(studio.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
+    const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
+    const { contextToken } = await (await page.request.get(fixture.origin + '/api/session')).json();
+    const state = async () => {
+      const response = await page.request.get(`${fixture.origin}/api/extensions/${id}`, { headers: { 'x-session-context': contextToken } });
+      expect(response.ok(), await response.text()).toBe(true);
+      return response.json();
+    };
+    const before = await state(), providerCalls = fixture.requests.map(request => request.name);
+    const tasksBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
+    const writes = [];
+    page.on('request', request => {
+      if (request.method() !== 'GET' && new URL(request.url()).pathname.startsWith('/api/')) writes.push(request.url());
+    });
+    const draft = 'Keep this unsent navigation question exactly.';
+    await composer.fill(draft);
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 320, height: 740 }, { width: 683, height: 384 }]) {
+      await page.setViewportSize(viewport);
+      for (const invoker of ['header', 'conversation']) {
+        const gate = Promise.withResolvers(), proofArrived = Promise.withResolvers(), sourceArrived = Promise.withResolvers();
+        release = gate.resolve;
+        const proofPath = `**/api/extensions/${id}/evidence/${before.evidence.id}`;
+        const sourcePath = `**/api/extensions/${id}/revisions/${before.draft.id}`;
+        await page.route(sourcePath, async route => {
+          const response = await route.fetch();
+          sourceArrived.resolve(); await gate.promise;
+          try { await route.fulfill({ response }); } catch { /* Teardown can close a held page. */ }
+        });
+        await page.route(proofPath, async route => {
+          const response = await route.fetch();
+          proofArrived.resolve(); await gate.promise;
+          try { await route.fulfill({ response }); } catch { /* Teardown can close a held page. */ }
+        });
+        await page.reload();
+        await expect(composer).toHaveValue(draft);
+        const link = invoker === 'header' ? studio.locator('#studio-view-saved')
+          : studio.locator('.rs-message').getByRole('button', { name: 'See proposed change', exact: true });
+        await expect(link).toHaveAccessibleName('See proposed change');
+        if (viewport.width === 320 && invoker === 'header') {
+          await expect(link.locator('.rs-short-label')).toHaveText('Summary');
+          await expect(link.locator('.rs-short-label')).toBeVisible();
+        }
+        await link.click();
+        await Promise.all([proofArrived.promise, sourceArrived.promise]);
+        gate.resolve();
+        await expect(studio.locator('.rs-rule-summary')).toContainText('give it a due date exactly 7 days after it was added');
+        await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await expectDestination('Summary');
+        await expect(composer).toHaveValue(draft);
+        await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+        await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await expectDestination('Simulation');
+        await expect(composer).toHaveValue(draft);
+        await page.unroute(proofPath); await page.unroute(sourcePath);
+      }
+    }
+    // A wheel over the sticky status row must cancel the late anchor without changing focus.
+    await page.setViewportSize({ width: 683, height: 384 });
+    const gate = Promise.withResolvers(), proofArrived = Promise.withResolvers();
+    release = gate.resolve;
+    const proofPath = `**/api/extensions/${id}/evidence/${before.evidence.id}`;
+    await page.route(proofPath, async route => {
+      const response = await route.fetch();
+      proofArrived.resolve(); await gate.promise;
+      try { await route.fulfill({ response }); } catch { /* Teardown can close a held page. */ }
+    });
+    await page.reload();
+    await expect(studio.locator('.rs-rule-summary')).toContainText('give it a due date exactly 7 days after it was added');
+    await studio.locator('#studio-view-saved').click();
+    await proofArrived.promise;
+    await expectDestination('Summary');
+    await expect(studio).toHaveCSS('overflow-y', 'auto');
+    const status = studio.locator(':scope > .rs-status-summary');
+    await expect(status).toHaveCSS('position', 'sticky');
+    const bounds = await status.boundingBox();
+    expect(bounds).not.toBeNull();
+    const point = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+    expect(await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.rs-status-summary'), point)).toBe(true);
+    const previousScroll = await studio.evaluate(element => element.scrollTop);
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.wheel(0, 120);
+    await expect.poll(() => studio.evaluate(element => element.scrollTop)).toBeGreaterThan(previousScroll + 20);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const readingPosition = await studio.evaluate(element => element.scrollTop);
+    const summary = studio.getByRole('heading', { name: 'Summary', exact: true });
+    const readingTop = await summary.evaluate(element => element.getBoundingClientRect().top);
+    await expect(summary).toBeFocused();
+    gate.resolve();
+    await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect.poll(async () => Math.abs(await studio.evaluate(element => element.scrollTop) - readingPosition)).toBeLessThanOrEqual(2);
+    await expect.poll(async () => Math.abs(await summary.evaluate(element => element.getBoundingClientRect().top) - readingTop)).toBeLessThanOrEqual(2);
+    await expect(summary).toBeFocused();
+    await expect(composer).toHaveValue(draft);
+    await page.unroute(proofPath);
+    expect(await state()).toEqual(before);
+    expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(tasksBefore);
+    expect(fixture.requests.map(request => request.name)).toEqual(providerCalls);
+    expect(writes).toEqual([]);
+  } finally { release?.(); await page.close(); await fixture.close(); }
 });

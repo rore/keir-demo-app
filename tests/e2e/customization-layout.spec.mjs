@@ -412,7 +412,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.unroute(path);
     } else await checkChoice(page);
     const named = studio.getByRole('button', { name: 'See proposed change', exact: true }).first();
-    await named.click(); const heading = studio.getByRole('heading', { name: 'Simulation', exact: true });
+    await named.click(); const heading = studio.getByRole('heading', { name: 'Summary', exact: true });
     await expect(heading).toBeFocused();
     const results = studio.getByRole('article', { name: 'Current decision' });
     const action = results.getByRole('button', { name: 'Approve this change', exact: true });

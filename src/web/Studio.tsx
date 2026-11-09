@@ -1233,7 +1233,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     return { latest, currentProof: eligible && sameReviewDraft(latest, snapshot)
       && (!activating || latest.approved && latest.approvedEvidenceId === snapshot.evidenceId && latest.executionAvailability?.available !== false) };
   }
-  async function openReview(evidenceId?: string) {
+  async function openReview(evidenceId?: string, destination: "studio-saved-change" | "studio-review-heading" = "studio-review-heading") {
     const proofId = evidenceId ?? decisionEvidenceId ?? failedEvidenceId;
     const failed = !!proofId && proofId === failedEvidenceId;
     if (!state?.draft || !state.extension || !inlineAvailable || disabled || locked.current || !proofId
@@ -1256,7 +1256,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     }
     setActiveView(false);
     setInlineOpen(true);
-    focusInline("studio-review-heading");
+    focusInline(destination);
     const current = () => mounted.current && !authoringLifetime.current.signal.aborted && reviewLoad.current === load
       && viewIntent.current === intent && !currentPane.current.open && serial.current === requestSerial && stateEpoch.current === epoch
       && extensionId.current === snapshot.extension.id && ownerId === snapshot.owner.id;
@@ -1939,7 +1939,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       <div className="rs-summary-actions">
         <button id="studio-manage" aria-label="More" disabled={!!restart} onClick={openTools}>More</button>
         {decisionEvidenceId && <button id="studio-view-saved" aria-label={latestReviewAvailable && inlineOpen ? "See current proposal" : "See proposed change"}
-          disabled={!reviewAllowed} onClick={() => void openReview(latestReviewAvailable && inlineOpen ? newerEvidenceId ?? decisionEvidenceId : decisionEvidenceId)}>
+          disabled={!reviewAllowed} onClick={() => void openReview(latestReviewAvailable && inlineOpen ? newerEvidenceId ?? decisionEvidenceId : decisionEvidenceId, "studio-saved-change")}>
           <span className="rs-full-label">{latestReviewAvailable && inlineOpen ? "See current proposal" : "See proposed change"}</span>
           <span className="rs-short-label" aria-hidden="true">{latestReviewAvailable && inlineOpen ? "Latest" : "Summary"}</span></button>}
         {inlineAvailable && !decisionEvidenceId && <button onClick={() => {
@@ -1981,7 +1981,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             return <article className={`rs-message ${message.who === "You" ? "rs-yours" : "rs-assistant"}`} data-conversation-message={!!message.conversationId || undefined} key={message.id}>
               <strong>{message.who === "Studio" ? "Daymark assistant" : message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}
               {message.evidenceId && (currentReceipt
-                ? <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview()}>See proposed change</button>
+                ? <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview(undefined, "studio-saved-change")}>See proposed change</button>
                 : <button data-evidence-link={message.evidenceId} disabled={!!busy} className="rs-link" onClick={() => void (inlineAvailable && message.evidenceId === failedEvidenceId
                   ? openReview(message.evidenceId) : showEvidence(message.evidenceId!))}>{message.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button>)}
               {latestExplanation && <button className="rs-link" onClick={() => void openReview()}>Show example checks</button>}
