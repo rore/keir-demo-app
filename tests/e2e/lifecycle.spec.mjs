@@ -462,13 +462,13 @@ test('exact authored review shows saved A, preserves unsent conversation B, and 
   expect(approved.approvedEvidenceId).toBe(saved.evidence.id);
   await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
   await open(page);
-  await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue('');
+  await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue(conversationB);
   await openSavedChanges(page);
   await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
   await ui.getByText('Technical details for this version', { exact: true }).click();
   await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
   await expect(ui.getByLabel('Saved example 1 for approval', { exact: true })).toHaveText(await expectedExample(page));
-  await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue('');
+  await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue(conversationB);
 });
 
 test('exact authored review fails closed on unavailable or mismatched saved documents and can retry', async ({ page, demo }) => {

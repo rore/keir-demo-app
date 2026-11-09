@@ -202,6 +202,7 @@ test('a different supported behavior keeps its exact supplied name and truthful 
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
     const rule = taskCustomizationFixture({ projectId: fixture.metadata.projectId, otherProjectId: fixture.metadata.otherProjectId, title: name });
     const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name });
     const { contextToken } = await (await page.request.get(fixture.origin + '/api/session')).json();
