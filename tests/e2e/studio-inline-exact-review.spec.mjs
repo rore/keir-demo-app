@@ -61,7 +61,7 @@ async function expectProof(page, id) {
 async function expectIllustration(page, expectedTitle) {
   await expect(behavior(page).getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
   await expect(behavior(page)).toContainText(`Create a task titled “${expectedTitle}”`);
-  await expect(behavior(page)).not.toContainText('A full summary isn’t available for this version.');
+  await expect(behavior(page)).not.toContainText('A full summary');
   await expect(behavior(page)).not.toContainText('Completed example task');
 }
 
@@ -93,7 +93,7 @@ test('the rule summary rejects artifact bytes that differ from the saved revisio
     const served = page.waitForResponse(response => response.url().endsWith(`/revisions/${input.revisionId}`));
     await openItem(page, extensionId);
     await served;
-    await expect(behavior(page)).toContainText('A full summary isn’t available for this version.');
+    await expect(behavior(page)).toContainText('A full summary of this rule is unavailable.');
     await expect(behavior(page)).not.toContainText(changedTitle);
     await page.unroute(url);
     await page.reload();

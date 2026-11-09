@@ -34,10 +34,17 @@ export function taskCreateGuardFixture({ host, rule, projectId = 'project1', oth
       matchingDeny: proposal({}),
       nonmatchingAllow: proposal({ projectId: otherProjectId }),
     },
+    'project-priority': {
+      condition: 'input.projectId == chosenProject && input.priority == "normal"',
+      message: 'Choose a priority for this task.',
+      matchingAllow: proposal({ priority: 'high' }),
+      matchingDeny: proposal({ priority: 'normal' }),
+      nonmatchingAllow: proposal({ projectId: otherProjectId, priority: 'normal' }),
+    },
   };
   assert.ok(Object.hasOwn(examples, rule), 'Choose a supported authored test rule.');
   const example = examples[rule];
-  const projectStep = rule === 'project-review'
+  const projectStep = ['project-review', 'project-priority'].includes(rule)
     ? [{ id: 'chosenProject', let: { literal: projectId, type: 'ProjectId' } }] : [];
   const source = JSON.stringify({ language: 'keir/2', name: 'task-create-guard-' + rule,
     domain: { id: host.pins.modelRef.domainId, version: host.pins.modelRef.domainVersion, fingerprint: host.pins.modelDigest },
@@ -47,7 +54,7 @@ export function taskCreateGuardFixture({ host, rule, projectId = 'project1', oth
       message: { cel: 'restricted ? ' + JSON.stringify(example.message) + ' : ""' } } },
   }, null, 2);
 
-  const bindIds = rule === 'project-review' ? ['chosenProject', 'restricted'] : ['restricted'];
+  const bindIds = ['project-review', 'project-priority'].includes(rule) ? ['chosenProject', 'restricted'] : ['restricted'];
   const completed = (id, input, decision, message) => {
     const result = { decision, message };
     const events = [{ event: 'INVOCATION_START' },
@@ -64,7 +71,7 @@ export function taskCreateGuardFixture({ host, rule, projectId = 'project1', oth
     completed(rule + '-matching-deny', example.matchingDeny, 'DENY', example.message),
     completed(rule + '-nonmatch-allow', example.nonmatchingAllow, 'ALLOW', ''),
     { format: 'keir-scenario/3', id: rule + '-unavailable',
-      given: { input: example.matchingDeny, fixture: 'invalid-key' }, stubs: [],
+      given: { input: rule === 'project-priority' ? example.matchingAllow : example.matchingDeny, fixture: 'invalid-key' }, stubs: [],
       expect: { outcome: { classification: 'FAILED', error: { code: 'HOST_CONTEXT_INVALID', path: '' }, effects: [],
         trace: [{ sequence: 0, event: 'INVOCATION_START' }, { sequence: 1, event: 'TERMINATED', code: 'HOST_CONTEXT_INVALID' }] },
       calls: [], consumption: { status: 'BLOCKED' } } },

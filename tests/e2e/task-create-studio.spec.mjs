@@ -140,7 +140,8 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(examples.nth(1)).toContainText('<strong>Add a due date</strong>');
     await expect(examples.nth(1).locator('a,strong,input')).toHaveCount(0);
     await expect(examples.nth(3)).toContainText('Could not check');
-    await expect(examples.nth(3)).toContainText('Handled as expected');
+    await expect(examples.nth(3)).toContainText('Saving stopped as expected');
+    await expect(examples.nth(3)).not.toContainText('This example deliberately');
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await expect(studio(page).locator('.rs-setup-notice')).toBeVisible();
     await composer(page).scrollIntoViewIfNeeded();
@@ -199,7 +200,7 @@ for (const summaryState of ['absent', 'unchecked']) test(`before-create results 
   const examples = review(page).getByRole('article', { name: /^Example:/ });
   await expect(examples).toHaveCount(4);
   await expect(examples.getByText('Matches', { exact: true })).toHaveCount(0);
-  await expect(examples.getByText('Handled as expected', { exact: true })).toHaveCount(0);
+  await expect(examples.getByText('Saving stopped as expected', { exact: true })).toHaveCount(0);
   await expect(examples.getByText('Needs another check', { exact: true })).toHaveCount(4);
   await expect(examples.nth(3)).toContainText('Could not check');
   expect(mock.mutations).toEqual([]);

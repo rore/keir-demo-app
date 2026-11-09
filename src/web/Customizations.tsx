@@ -3,11 +3,12 @@ import type { Collection, State, StudioTarget } from "./Studio";
 import { pendingRequests, taskTriggerGroup } from "./Studio";
 import { describeRule } from "./rule-description";
 
-export default function Customizations({ request, changed, beforeSelectionChange, open, focusAction = "", notice = "" }: {
+export default function Customizations({ request, changed, beforeSelectionChange, open, projects, focusAction = "", notice = "" }: {
   request: <T>(path: string, method?: string, body?: object) => Promise<T>;
   changed: (generation: number) => void;
   beforeSelectionChange: () => void;
   open: (target?: StudioTarget) => void;
+  projects: { id: string; name: string }[];
   focusAction?: string;
   notice?: string;
 }) {
@@ -155,17 +156,23 @@ export default function Customizations({ request, changed, beforeSelectionChange
         const selected = selection?.revision;
         const selectedItem = selected?.extensionId === item.extension!.id;
         const inUse = selectedItem && selection?.eligible && !item.retired;
-        const behavior = describeRule(item.draft?.ruleDescription, () => undefined);
+        const projectName = (id: string) => projects.find(project => project.id === id)?.name;
+        const behavior = inUse ? describeRule(selected?.ruleDescription, projectName) : null;
         const changes = !!item.draft && (!selectedItem || item.draft.id !== selected?.id);
+        const proposed = item.draft && (!inUse || item.draft.id !== selected?.id)
+          ? describeRule(item.draft.ruleDescription, projectName) : null;
         const status = item.retired ? "Retired · history only" : selectedItem ? inUse ? changes ? item.approved ? "In use · Approved changes ready to turn on" : "In use · Changes in progress" : "In use" : "Couldn’t check what’s in use"
           : item.approved ? "Approved · Not on yet" : item.draft ? "Proposed change · Not on" : item.extension!.hookId ? "Not on" : "In discussion";
         return <article key={item.extension!.id} className="customization-card" aria-label={item.extension!.name}>
           <div className="customization-copy">{!item.retired && taskTriggerGroup(item.extension!.hookId) && <p className="muted">{taskTriggerGroup(item.extension!.hookId)}</p>}<p className="customization-identity">Saved name</p><h2>{item.extension!.name}</h2>
             <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{status}</span></p>
             {item.retired && <p>This earlier customization cannot run or be resumed. Its saved source, examples and history remain available.</p>}
-            {!item.retired && behavior && <div className="customization-behavior"><h3>{behavior.title}</h3><p>{behavior.summary}
+            {!item.retired && behavior && <div className="customization-behavior"><h3>What’s in use: {behavior.title}</h3><p>{behavior.summary}
               {!behavior.complete && " Open the conversation for the remaining details and limits."}</p></div>}
-            {!item.retired && !behavior && item.draft && <p>The behavior description is unavailable. Open the conversation to inspect this proposal.</p>}
+            {!item.retired && proposed && <div className="customization-behavior"><h3>Proposed changes: {proposed.title}</h3><p>{proposed.summary}
+              {!proposed.complete && " Open the conversation for the remaining details and limits."}</p></div>}
+            {!item.retired && !behavior && inUse && <p>The behavior description is unavailable. Open the conversation to inspect what’s in use.</p>}
+            {!item.retired && !proposed && item.draft && (!inUse || item.draft.id !== selected?.id) && <p>The proposed behavior description is unavailable. Open the conversation to inspect this proposal.</p>}
             {item.requestExcerpt && <details className="customization-discussion"><summary>Discussion started with</summary><p>{item.requestExcerpt}</p></details>}
           </div>
           <div className="customization-actions"><button id={`edit-${item.extension!.id}`} className="primary" disabled={deleting} onClick={() => open({ extensionId: item.extension!.id })}>{item.retired ? "Open history" : changes ? "Continue changes" : "Open"}<span aria-hidden="true"> →</span></button>

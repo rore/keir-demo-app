@@ -43,6 +43,35 @@ function example(id = 'example', { effect = 'NONE', classification = 'COMPLETED'
 const summarize = ({ row, original }) => evidenceSummary({ reports: [row] }, [original]);
 const facts = row => [row.verification, row.availability, row.outcome];
 
+test('deliberate before-save failure comes only from the exact verified scenario setup', () => {
+  const saved = example('ordinary-case-name', { guard: 'BLOCKED' });
+  saved.row.label = 'High-priority task';
+  assert.equal(summarize(saved).cases[0].simulatedFailure, 'invalid-host-context');
+  assert.equal(evidenceSummary({ reports: [saved.row] }, [saved.original], { presentation: false }).cases[0].simulatedFailure, 'invalid-host-context');
+  assert.equal(evidenceSummary({ reports: [saved.row] }, []).cases[0].simulatedFailure, undefined);
+  assert.equal(evidenceSummary({ reports: [saved.row] }, [saved.original, saved.original]).cases[0].simulatedFailure, undefined);
+  const ordinarySetup = JSON.parse(saved.original);
+  ordinarySetup.given.fixture = 'normal';
+  assert.equal(evidenceSummary({ reports: [saved.row] }, [JSON.stringify(ordinarySetup)]).cases[0].simulatedFailure, undefined,
+    'A matching error and BLOCKED result do not establish a deliberately invalid setup.');
+  for (const corrupt of [
+    row => { row.report.native.error.code = 'OTHER_FAILURE'; },
+    row => { row.report.scenario.proposal.priority = 'low'; },
+    row => { row.report.status = 'FAIL'; row.report.mismatches.push({ stage: 'OUTCOME', code: 'MISMATCH' }); },
+  ]) {
+    const changed = structuredClone(saved); corrupt(changed.row);
+    assert.notEqual(summarize(changed).cases[0].verification, 'matched');
+    assert.equal(summarize(changed).cases[0].simulatedFailure, undefined);
+  }
+  const unexpected = example('ordinary-case-name', { guard: 'ALLOWED' });
+  unexpected.row.report.consumption = { status: 'BLOCKED' };
+  unexpected.row.report.native = structuredClone(saved.row.report.native);
+  const summary = summarize(unexpected).cases[0];
+  assert.equal(summary.verification, 'mismatched');
+  assert.equal(summary.outcome, 'mismatch');
+  assert.equal(summary.simulatedFailure, undefined);
+});
+
 test('compact authoring evidence preserves all bounded facts and coverage while omitting UI-derived duplicates', () => {
   const samples = [example('changed', { effect: 'CONFIRMED', updatedTasks: [{ id: 'example-task', dueAt: '2027-01-07T23:00:00Z' }] }),
     example('read-unavailable', { classification: 'FAILED', code: 'ADAPTER_TRANSIENT' }),

@@ -40,7 +40,7 @@ async function submit(page) {
 }
 
 for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height: 1000 }, narrow: { width: 320, height: 740 }, short: { width: 683, height: 384 } })) {
-  for (const rule of ['client-due', 'priority-note', 'project-review']) {
+  for (const rule of ['client-due', 'priority-note', 'project-review', 'project-priority']) {
     test(`real ${rule} review and native correction on ${layout}`, async ({ page }, testInfo) => {
       test.setTimeout(60_000);
       const fixture = await startAuthoringFixture({ unconfigured: true });
@@ -91,18 +91,28 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         await expect(studio.getByLabel('Customization status')).toContainText('Checks before adding');
         await expect(about).toContainText('Before a new task is saved.');
         await expect(about).toContainText('This rule can stop a new task from being added.');
-        await expect(about).toContainText('See the example tasks and exact rule for its requirements.');
+        await expect(about).not.toContainText('See the example tasks and exact rule for its requirements.');
+        await expect(about).not.toContainText('A full summary');
+        await expect(about).not.toContainText('The saved conditions can’t be summarized here.');
+        await expect(about).toContainText(program.metadata.message);
+        if (rule === 'project-priority') {
+          await expect(about).toContainText(`the task is in “${projectName}” and its priority is Normal`);
+          await expect(about).not.toContainText('missing priority');
+        }
         await about.getByRole('button', { name: 'View simulation', exact: true }).click();
         const review = studio.getByRole('article', { name: 'Current decision', exact: true });
         await expect(review.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
         await expect(review).toContainText('Example tasks; your tasks are unchanged.');
-        const example = id => review.getByRole('article', { name: `Example: New task example ${evidence.reports.findIndex(item => item.id === id) + 1}`, exact: true });
+        const example = id => review.getByRole('article', { name: evidence.summary.cases.find(item => item.id === id)?.simulatedFailure
+          ? 'Example: Safety check: required check unavailable' : `Example: New task example ${evidence.reports.findIndex(item => item.id === id) + 1}`, exact: true });
         await expect(example(`${rule}-matching-deny`)).toContainText(program.metadata.message);
         await expect(review.getByRole('heading', { name: `${rule}-matching-deny`, exact: true })).toHaveCount(0);
         await expect(review.getByLabel('Exact checked examples', { exact: true })).toContainText(`${rule}-matching-deny`);
         const unavailableExample = example(`${rule}-unavailable`);
         await expect(unavailableExample).toContainText('Could not check');
-        await expect(unavailableExample.getByText('Handled as expected', { exact: true })).toBeVisible();
+        await expect(unavailableExample).toContainText('This example deliberately');
+        await expect(unavailableExample).toContainText('The rule did not run.');
+        await expect(unavailableExample.getByText('Saving stopped as expected', { exact: true })).toBeVisible();
         await expect(review).not.toContainText('Needs another check');
         expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         await unavailableExample.scrollIntoViewIfNeeded();
@@ -146,24 +156,25 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         expect(JSON.parse(Buffer.from(deniedRow.candidate))).toMatchObject({ projectId, title: draft.title, notes: draft.notes, tags: ['client', 'internal'], priority: draft.priority });
         await page.screenshot({ path: testInfo.outputPath(`${rule}-${layout}-denied.png`) });
 
-        const correction = rule === 'client-due' ? { dueTime: correctedDueTime } : rule === 'priority-note' ? { notes: 'Correction note.' } : { tags: draft.tags + ', Review' };
+        const correction = rule === 'client-due' ? { dueTime: correctedDueTime } : rule === 'priority-note' ? { notes: 'Correction note.' }
+          : rule === 'project-priority' ? { priority: 'high' } : { tags: draft.tags + ', Review' };
         await fill(page, correction);
         const success = await submit(page);
         expect(success.status(), await success.text()).toBe(201);
         const task = await success.json();
         await expect(dialog(page)).not.toBeVisible();
         await expect(page.locator('.task-open').filter({ hasText: draft.title })).toBeVisible();
-        expect(task).toMatchObject({ projectId, title: draft.title, notes: correction.notes ?? draft.notes, priority: draft.priority,
+        expect(task).toMatchObject({ projectId, title: draft.title, notes: correction.notes ?? draft.notes, priority: correction.priority ?? draft.priority,
           tags: rule === 'project-review' ? ['client', 'internal', 'review'] : ['client', 'internal'], dueAt: '2027-03-06T16:00:00.000Z' });
         expect(fixture.db.prepare('SELECT count(*) AS n FROM tasks WHERE owner_id=? AND title=?').get(owner, draft.title).n).toBe(1);
         expect(counts()).toEqual([originalCounts[0] + 1, originalCounts[1] + 1, originalCounts[2] + 2, originalCounts[3]]);
 
-        if (rule === 'project-review') await selectProject(page, otherProjectName);
+        if (['project-review', 'project-priority'].includes(rule)) await selectProject(page, otherProjectName);
         await page.getByRole('button', { name: 'Details', exact: true }).click();
         await fill(page, { title: `${rule} ${layout} nonmatch`, notes: '', tags: 'internal', priority: rule === 'priority-note' ? 'low' : 'normal', dueTime: '' });
         const nonmatch = await submit(page);
         expect(nonmatch.status(), await nonmatch.text()).toBe(201);
-        expect((await nonmatch.json()).projectId).toBe(rule === 'project-review' ? otherProjectId : projectId);
+        expect((await nonmatch.json()).projectId).toBe(['project-review', 'project-priority'].includes(rule) ? otherProjectId : projectId);
         await expect(dialog(page)).not.toBeVisible();
         expect(counts()).toEqual([originalCounts[0] + 2, originalCounts[1] + 2, originalCounts[2] + 3, originalCounts[3]]);
 

@@ -56,6 +56,34 @@ test('every condition is retained in a naturally worded project-scoped priority 
   assert.doesNotMatch(result.summary, /any project|inbox|priority.*priority unchanged/);
 });
 
+test('before-save wording states the exact denial, trigger and ordinary checks after it', () => {
+  const result = describeRule({ coverage: 'complete', hook: 'TaskBeforeCreate', guard: { conditions: [
+    { field: 'projectId', value: 'inbox' }, { field: 'priority', value: 'normal' },
+  ], message: 'Choose a priority for this task.' } }, projectName);
+  assert.equal(result.complete, true);
+  assert.equal(result.when, 'Before a new task is saved.');
+  assert.match(result.summary, /Before saving a new task, stop saving when the task is in “Inbox & Co” and its priority is Normal/);
+  assert.match(result.summary, /Show “Choose a priority for this task\.”/);
+  assert.match(result.summary, /Otherwise, this rule lets the app continue its normal permission, validation and save checks/);
+  assert.match(result.unchanged, /does not change task details/);
+  assert.doesNotMatch(result.summary, /only when .*Normal priority is missing/);
+});
+
+test('guard tag and boolean conditions are explicit and missing project names stay partial', () => {
+  const guard = conditions => ({ coverage: 'complete', hook: 'TaskBeforeCreate', guard: {
+    conditions, message: 'Review this task.',
+  } });
+  const flags = describeRule(guard([{ field: 'hasNotes', value: false }, { field: 'hasDueDate', value: true },
+    { field: 'tag', value: 'blocked', negated: true }]), projectName);
+  for (const phrase of ['it has no notes', 'it has a due date', 'it does not have the tag “blocked”'])
+    assert.ok(flags.summary.includes(phrase), phrase);
+  const partial = describeRule(guard([{ field: 'projectId', value: 'missing' }, { field: 'priority', value: 'normal' }]), projectName);
+  assert.equal(partial.complete, false);
+  assert.match(partial.summary, /full behavior could not be described/);
+  assert.match(partial.summary, /chosen project \(name unavailable\)/);
+  assert.match(partial.summary, /priority is Normal/);
+});
+
 test('unconditional due writes disclose replacement while omitted fields and existing tags stay intact', () => {
   const overwrite = describeRule(update({ dueAt: { kind: 'eventOffset', seconds: 3600 } }), projectName);
   assert.equal(overwrite.title, 'Set due dates for new tasks');

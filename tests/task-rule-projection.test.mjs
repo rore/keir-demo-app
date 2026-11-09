@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test, { before } from 'node:test';
 import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
@@ -43,9 +44,12 @@ before(async () => {
   const partial = JSON.parse(taskWorkflowSource(host, 'missing-due'));
   partial.steps[1].let.cel = '!has(source.dueAt) || source.priority == "high"';
   const guardHost = loadHost('TaskBeforeCreate');
+  const unsupportedGuard = JSON.parse(taskEffectSyntax(guardHost));
+  unsupportedGuard.steps[0].let.cel = 'input.priority == "high" || !input.hasNotes';
+  const capturedGuard = JSON.parse(readFileSync(new URL('./fixtures/task-guard-summary.json', import.meta.url)));
   for (const [key, source, definition] of [
     ['complete', genericYaml, host], ['partial', JSON.stringify(partial), host],
-    ['unavailable', taskEffectSyntax(guardHost), guardHost],
+    ['unavailable', JSON.stringify(unsupportedGuard), guardHost], ['guard', capturedGuard.source, guardHost],
   ]) {
     const result = await compiler.compile(Buffer.from(source), { definition });
     assert.deepEqual(result.diagnostics, []);
@@ -105,16 +109,19 @@ async function api(t, f) {
 
 test('one checked projection is reused in source, revision, state and collection with no GET writes or renames', async t => {
   const f = setup(t), states = [];
-  for (const [coverage, name] of [['complete', 'Task customization'], ['partial', 'My chosen name'], ['unavailable', 'Before save check']])
+  for (const [coverage, name] of [['complete', 'Task customization'], ['partial', 'My chosen name'], ['unavailable', 'Before save check'], ['guard', 'Chosen check name']])
     states.push(await create(f, coverage, { name }));
   const checkedState = await checked(f);
   const call = await api(t, f);
   const before = snapshot(f.db), changes = f.db.prepare('SELECT total_changes() AS count').get().count;
   f.db.exec('PRAGMA query_only=ON');
   for (const [index, state] of states.entries()) {
-    const coverage = ['complete', 'partial', 'unavailable'][index], extensionId = state.extension.id, revisionId = state.draft.id;
+    const coverage = ['complete', 'partial', 'unavailable', 'guard'][index], extensionId = state.extension.id, revisionId = state.draft.id;
     const expected = taskRuleDescription(JSON.parse(programs.get(coverage).artifact), programs.get(coverage).definition);
-    assert.equal(expected.coverage, coverage);
+    assert.equal(expected.coverage, coverage === 'guard' ? 'complete' : coverage);
+    if (coverage === 'guard') assert.deepEqual(expected.guard.conditions, [
+      { field: 'projectId', value: 'summary-project' }, { field: 'priority', value: 'normal' },
+    ]);
     assert.deepEqual(f.lifecycle.source('maya', revisionId, extensionId).ruleDescription, expected);
     assert.deepEqual(f.lifecycle.revisionPage('maya', extensionId).rows[0].ruleDescription, expected);
     assert.deepEqual(f.lifecycle.state('maya', extensionId).draft.ruleDescription, expected);

@@ -61,6 +61,7 @@ type CreateProposal = { projectId: string; priority: "low" | "normal" | "high"; 
 type GuardConsumption = { status: "ALLOWED" | "DENIED"; result: { decision: "ALLOW" | "DENY"; message: string } } | { status: "BLOCKED" };
 type SavedSource = { extensionId?: string; revisionId: string; source: string; artifact: string; pins: Revision["pins"]; cases: string[]; suiteDigest: string | null; ruleDescription?: RuleDescription };
 type CaseSummary = { id?: string; verification: "matched" | "mismatched" | "unchecked"; availability: "available" | "unavailable" | "unknown";
+  simulatedFailure?: "invalid-host-context";
   outcome: "changed" | "unchanged" | "handled-problem" | "uncertain" | "unchecked" | "mismatch" };
 type SimulationSummary = { cases: CaseSummary[]; totalCases: number; returnedCases: number; truncated: boolean;
   counts: { verification: Record<CaseSummary["verification"], number>; outcome: Record<CaseSummary["outcome"], number> } };
@@ -750,25 +751,28 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const expected = guardConsumption(item.expected.consumption), observed = guardConsumption(item.report.consumption);
     const matches = facts?.verification === "matched" && item.report.status === "PASS" && checkedObservation(item);
     const unavailable = !observed || observed.status === "BLOCKED";
-    const label = exampleLabel(item, index);
+    const simulatedFailure = matches && observed?.status === "BLOCKED" && facts?.simulatedFailure === "invalid-host-context";
+    const label = simulatedFailure ? "Safety check: required check unavailable" : exampleLabel(item, index);
     function outcome(result: GuardConsumption | null) {
       return <><p>{guardResultLabel(result)}</p>{result?.status === "DENIED"
         ? <p>{result.result.message.trim() ? result.result.message : "This sample task does not meet the rule."}</p>
         : <p>{result?.status === "ALLOWED" ? "The app may continue its normal permission, validation and save checks."
-          : result?.status === "BLOCKED" ? "The required check could not finish. Saving is stopped in this example."
+          : result?.status === "BLOCKED" ? simulatedFailure
+            ? "The rule did not run. The app stopped saving instead of bypassing the required check. No example task was added."
+            : "The app could not get a valid decision from the required check, so saving was stopped. This does not show whether the task meets the rule."
             : "The saved result could not be verified. This example does not establish whether normal save checks could continue."}</p>}</>;
     }
     return <article className="rs-example rs-workflow-case rs-guard-case" key={item.id} aria-label={`Example: ${label}`}>
       <h4>{label}</h4>
       <dl>
-        <div><dt>Situation</dt><dd>{knownProposal(proposal) ? <>
+        <div><dt>Situation</dt><dd>{simulatedFailure && <p>This example deliberately makes the app unable to verify that the check is authorized to run.</p>}{knownProposal(proposal) ? <>
           <p>New task in {projectName(proposal!.projectId) ? `“${projectName(proposal!.projectId)}”` : "the chosen project"}.</p>
           <p>{priorityLabel(proposal!.priority)} priority · {proposal!.tags.length ? `Tags ${proposal!.tags.join(", ")}` : "No tags"}
             {` · ${proposal!.hasNotes ? "Notes present" : "No notes"} · ${proposal!.hasDueDate ? "Due date present" : "No due date"}`}</p>
         </> : "The proposed task details could not be checked."}</dd></div>
         <div><dt>Expected</dt><dd>{matches ? <details><summary>Expected behavior</summary>{outcome(expected)}</details> : outcome(expected)}</dd></div>
         <div><dt>What happened</dt><dd>{outcome(observed)}</dd></div>
-        <div><dt>Result</dt><dd><p className={matches ? "rs-match" : "rs-mismatch"}>{matches ? unavailable ? "Handled as expected" : "Matches" : "Needs another check"}</p></dd></div>
+        <div><dt>Result</dt><dd><p className={matches ? "rs-match" : "rs-mismatch"}>{matches ? unavailable ? "Saving stopped as expected" : "Matches" : "Needs another check"}</p></dd></div>
       </dl>
     </article>;
   }
@@ -2040,7 +2044,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               <div><dt>{beforeCreate ? "Required" : "Then"}</dt><dd>{displayedRule?.then ?? (beforeCreate ? "See the example tasks and exact rule for its requirements." : "The saved action can’t be summarized here.")}</dd></div>
             </dl></details>}
             {displayedRule?.timing && <p className="rs-timing">{displayedRule.timing}</p>}
-            {summaryPending ? <p className="muted" role="status">Reading the saved rule…</p> : !fullWorkflowSummary && <p className="muted">A full summary isn’t available for this version. {state.evidence
+            {summaryPending ? <p className="muted" role="status">Reading the saved rule…</p> : !fullWorkflowSummary && <p className="muted">A full summary of this rule is unavailable. {state.evidence
               ? "See which situations were checked and what happened in the simulation."
               : "Sample checks show what happens in the cases you try."}</p>}
             <div className="rs-summary-controls">

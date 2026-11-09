@@ -10,6 +10,7 @@ import { taskWorkflowSource } from './fixtures/task-workflow-source.mjs';
 
 const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
 const captured = JSON.parse(readFileSync(new URL('./fixtures/task-follow-up-summary.json', import.meta.url)));
+const capturedGuard = JSON.parse(readFileSync(new URL('./fixtures/task-guard-summary.json', import.meta.url)));
 const oldArtifact = JSON.parse(captured.artifact);
 const host = loadHost('TaskCompleted');
 const literal = value => ({ kind: 'literal', value });
@@ -160,6 +161,69 @@ test('deep alias chains exceed bounded recognition without claiming completeness
   const result = taskRuleDescription(artifact, host);
   assert.equal(result.coverage, 'partial');
   assert.equal(Object.hasOwn(result, 'conditions'), false);
+});
+
+test('captured before-create rule describes its actual project and normal-priority denial', async () => {
+  const guardHost = loadHost('TaskBeforeCreate');
+  const artifact = JSON.parse(capturedGuard.artifact);
+  const expected = { coverage: 'complete', hook: 'TaskBeforeCreate', guard: {
+    conditions: [{ field: 'projectId', value: 'summary-project' }, { field: 'priority', value: 'normal' }],
+    message: 'Choose a priority for this task.',
+  } };
+  assert.deepEqual(taskRuleDescription(artifact, guardHost), expected);
+  assert.deepEqual(taskRuleDescription(await compile(capturedGuard.source, guardHost), guardHost), expected);
+});
+
+test('before-create description fails closed for unsupported decision logic and unused steps', () => {
+  const guardHost = loadHost('TaskBeforeCreate'), artifact = JSON.parse(capturedGuard.artifact);
+  for (const change of [
+    item => { item.entrypoint = 'TaskCreated'; },
+    item => { item.steps.push({ id: 'unused', op: 'BIND', resultType: 'String', value: { literal: 'extra', type: 'String' } }); },
+    item => { item.steps[1].when = 'other'; },
+    item => { item.steps[1].value.expr = 'missing'; },
+    item => { item.return.fields.message.expr = item.return.fields.decision.expr; },
+  ]) {
+    const changed = structuredClone(artifact); change(changed);
+    assert.equal(taskRuleDescription(changed, guardHost).coverage, 'unavailable', change.toString());
+  }
+});
+
+test('compiled before-create aliases preserve equivalent guards while unsupported predicates stay unavailable', async () => {
+  const guardHost = loadHost('TaskBeforeCreate'), original = capturedGuard.source;
+  const renamed = original.replaceAll('needsPriority', 'projectAndPriorityMatch');
+  assert.deepEqual(taskRuleDescription(await compile(renamed, guardHost), guardHost), taskRuleDescription(
+    await compile(original, guardHost), guardHost));
+
+  const disjunction = original.replace('input.projectId == project2 && input.priority == "normal"',
+    'input.projectId == project2 || input.priority == "normal"');
+  assert.equal(taskRuleDescription(await compile(disjunction, guardHost), guardHost).coverage, 'unavailable');
+  const differentMessagePredicate = original.replace(
+    'message:\n      cel: \'needsPriority ? "Choose a priority for this task." : ""\'',
+    'message:\n      cel: \'input.hasNotes ? "Choose a priority for this task." : ""\'');
+  assert.equal(taskRuleDescription(await compile(differentMessagePredicate, guardHost), guardHost).coverage, 'unavailable');
+
+  const artifact = await compile(original, guardHost);
+  const extraCall = structuredClone(artifact);
+  extraCall.steps.push({ id: 'extra', op: 'CALL', capability: 'tasks.get', version: '3', resultType: 'Task' });
+  assert.equal(taskRuleDescription(extraCall, guardHost).coverage, 'unavailable');
+  const extraReturnField = structuredClone(artifact);
+  extraReturnField.return.fields.extra = { literal: 'unexpected', type: 'String' };
+  assert.equal(taskRuleDescription(extraReturnField, guardHost).coverage, 'unavailable');
+});
+
+test('compiled before-create messages are trimmed and oversized UTF-8 messages stay unavailable', async () => {
+  const guardHost = loadHost('TaskBeforeCreate'), original = capturedGuard.source;
+  const padded = original.replace('"Choose a priority for this task."', JSON.stringify('  Choose a priority for this task.  '));
+  assert.equal(taskRuleDescription(await compile(padded, guardHost), guardHost).guard.message, 'Choose a priority for this task.');
+  const oversized = original.replace('"Choose a priority for this task."', JSON.stringify('é'.repeat(129)));
+  assert.equal(Buffer.byteLength('é'.repeat(129), 'utf8'), 258);
+  const result = await compiler.compile(Buffer.from(oversized), { definition: guardHost });
+  assert.ok(result.diagnostics.some(item => item.code === 'BUDGET_EXCEEDED'));
+  const artifact = await compile(original, guardHost), checked = fromBinary(CheckedExprSchema,
+    Buffer.from(artifact.expressions.e2.checked, 'base64'));
+  checked.expr.exprKind.value.args[1].exprKind.value.constantKind.value = 'é'.repeat(129);
+  artifact.expressions.e2.checked = Buffer.from(toBinary(CheckedExprSchema, checked)).toString('base64');
+  assert.equal(taskRuleDescription(artifact, guardHost).coverage, 'unavailable');
 });
 
 test('fractional checked durations never claim an exact rounded offset', async () => {

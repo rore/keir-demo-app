@@ -22,7 +22,7 @@ export function taskRuleDescription(artifact, definition) {
       || artifact.entrypoint !== hook || artifact.compiler !== pins.compiler
       || json(artifact.environment) !== json(pins.environment) || json(artifact.modelRef) !== json(pins.modelRef)
       || !/^sha256:[0-9a-f]{64}$/.test(artifact.sourceDigest ?? '')) return unavailable('The checked rule does not match its host definition.');
-    if (!['TaskCreated', 'TaskCompleted'].includes(hook)) return unavailable('This hook is not described yet.');
+    if (!['TaskCreated', 'TaskCompleted', 'TaskBeforeCreate'].includes(hook)) return unavailable('This hook is not described yet.');
     if (!Array.isArray(artifact.steps) || artifact.steps.length > 64 || !keys(artifact.expressions, Object.keys(artifact.expressions ?? {})))
       return unavailable('The checked rule is malformed or exceeds description limits.');
     const steps = artifact.steps, indices = new Map();
@@ -68,6 +68,51 @@ export function taskRuleDescription(artifact, definition) {
       if (kind?.case === 'callExpr') return { kind: 'call', name: kind.value.function,
         target: kind.value.target ? node(kind.value.target, before, depth + 1) ?? {} : undefined,
         args: kind.value.args.map(arg => node(arg, before, depth + 1)) };
+    }
+    if (hook === 'TaskBeforeCreate') {
+      const returned = artifact.return, output = model.types[model.entrypoints[hook].output]?.fields;
+      if (!keys(artifact, ['format', 'compiler', 'environment', 'expressions', 'entrypoint', 'modelRef', 'return', 'sourceDigest', 'steps'])
+        || !keys(returned, ['fields', 'type']) || returned.type !== model.entrypoints[hook].output
+        || Object.keys(returned.fields ?? {}).sort().join() !== 'decision,message'
+        || returned.fields.decision.type !== output.decision || returned.fields.message.type !== output.message
+        || steps.some(step => step.op !== 'BIND' || !keys(step, ['id', 'op', 'resultType', 'value'])
+          || step.value?.type !== step.resultType)) return unavailable('The before-save decision could not be fully described.');
+      const decision = expression(returned.fields.decision, steps.length), message = expression(returned.fields.message, steps.length);
+      if (!call(decision, '_?_:_', 3) || decision.args[1]?.kind !== 'literal' || decision.args[1].value !== 'DENY'
+        || decision.args[2]?.kind !== 'literal' || decision.args[2].value !== 'ALLOW'
+        || !call(message, '_?_:_', 3) || json(decision.args[0]) !== json(message.args[0])
+        || message.args[1]?.kind !== 'literal' || typeof message.args[1].value !== 'string'
+        || !message.args[1].value.isWellFormed() || Buffer.byteLength(message.args[1].value) > 256
+        || !message.args[1].value.trim() || message.args[2]?.kind !== 'literal' || message.args[2].value !== '')
+        return unavailable('The before-save outcomes could not be fully described.');
+      function guardConditions(expr) {
+        if (call(expr, '_&&_', 2)) {
+          const left = guardConditions(expr.args[0]), right = guardConditions(expr.args[1]);
+          return left && right ? [...left, ...right] : undefined;
+        }
+        if (call(expr, '_==_', 2)) {
+          for (const [selected, value] of [expr.args, [...expr.args].reverse()]) {
+            if (!field(selected, 'input') || value?.kind !== 'literal') continue;
+            if (['projectId', 'priority'].includes(selected.name) && typeof value.value === 'string'
+              && (selected.name === 'projectId' ? !!value.value : ['low', 'normal', 'high'].includes(value.value)))
+              return [{ field: selected.name, value: value.value }];
+            if (['hasNotes', 'hasDueDate'].includes(selected.name) && typeof value.value === 'boolean')
+              return [{ field: selected.name, value: value.value }];
+          }
+        }
+        if (call(expr, '@in', 2) && expr.args[0]?.kind === 'literal' && typeof expr.args[0].value === 'string'
+          && field(expr.args[1], 'input', 'tags')) return [{ field: 'tag', value: expr.args[0].value }];
+        if (field(expr, 'input') && ['hasNotes', 'hasDueDate'].includes(expr.name)) return [{ field: expr.name, value: true }];
+        if (call(expr, '!_', 1)) {
+          const nested = guardConditions(expr.args[0]);
+          if (nested?.length === 1 && ['hasNotes', 'hasDueDate'].includes(nested[0].field))
+            return [{ ...nested[0], value: !nested[0].value }];
+          if (nested?.length === 1 && nested[0].field === 'tag') return [{ ...nested[0], negated: !nested[0].negated }];
+        }
+      }
+      const conditions = guardConditions(decision.args[0]);
+      if (!conditions || steps.some(step => !used.has(step.id))) return unavailable('The before-save conditions could not be fully described.');
+      return { coverage: 'complete', hook, guard: { conditions, message: message.args[1].value.trim() } };
     }
     const writes = steps.filter(step => step.op === 'CALL' && ['tasks.create', 'tasks.update'].includes(step.capability));
     if (writes.length !== 1) return unavailable('A single task change could not be identified.');

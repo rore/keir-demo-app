@@ -112,7 +112,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       await details.getByText('Rule details', { exact: true }).click();
       for (const fact of facts) await expect(rule).toContainText(fact);
       await details.getByText('Rule details', { exact: true }).click();
-      await expect(rule).not.toContainText('A full summary isn’t available');
+      await expect(rule).not.toContainText('A full summary');
       await rule.getByRole('button', { name: 'View simulation', exact: true }).click();
       const review = studio.getByRole('article', { name: 'Current decision' });
       await expandExamples(review);
@@ -133,7 +133,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
           await route.fulfill({ response: exact, json: { ...saved, source: saved.source.replace('604800s', '60s') } });
         });
         await page.reload();
-        await expect(rule).toContainText('A full summary isn’t available for this version.');
+        await expect(rule).toContainText('A full summary of this rule is unavailable.');
         await expect(rule).toContainText('The saved conditions can’t be summarized here.');
         await expect(rule).not.toContainText('168 hours');
       }
@@ -170,7 +170,7 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
       await expect(rule.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
       await expect(rule.locator('.rs-rule-summary')).toContainText('create a new task with the triggering task’s title followed by “ - follow up” in the triggering task’s project');
       await expect(rule.locator('.rs-rule-summary')).toContainText('only if the triggering task is completed');
-      await expect(rule).not.toContainText('A full summary isn’t available');
+      await expect(rule).not.toContainText('A full summary');
       expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
       const composer = studio.getByLabel('Message to Daymark assistant', { exact: true });
       await composer.scrollIntoViewIfNeeded(); await expect(composer).toBeInViewport();
@@ -187,7 +187,7 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
         await route.fulfill({ response, json: forge(await response.json()) });
       });
       await page.reload();
-      await expect(rule).toContainText('A full summary isn’t available for this version.');
+      await expect(rule).toContainText('A full summary of this rule is unavailable.');
       await expect(rule).not.toContainText('followed by');
       await page.unroute(path);
     }
@@ -199,7 +199,7 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
     await page.reload();
     await expect(rule).toContainText('The full conditions could not be described.');
     await expect(rule).not.toContainText('this task is completed');
-    await expect(rule).toContainText('A full summary isn’t available for this version.');
+    await expect(rule).toContainText('A full summary of this rule is unavailable.');
     await expect(rule.locator('.rs-rule-summary')).toContainText('The full behavior could not be described.');
     await expect(rule.locator('.rs-rule-summary')).toContainText('create a new task with the triggering task’s title followed by “ - follow up” in the triggering task’s project');
   } finally { await fixture.close(); }

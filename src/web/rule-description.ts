@@ -2,7 +2,10 @@ export type RuleCondition = ({ field: "projectId" | "title" | "tag" | "priority"
   | { field: "noOpenMatch"; projectId: string; title: string }) & { step: string };
 export type RuleValue = { kind: "literal"; value: unknown } | { kind: "taskField"; step: string; field: string }
   | { kind: "eventOffset"; seconds: number } | { kind: "title"; step: string; prefix?: string; suffix?: string };
+export type GuardCondition = { field: "projectId" | "priority" | "tag"; value: string; negated?: boolean }
+  | { field: "hasNotes" | "hasDueDate"; value: boolean };
 export type RuleDescription = { coverage: "complete" | "partial" | "unavailable"; hook?: string; conditions?: RuleCondition[];
+  guard?: { conditions: GuardCondition[]; message: string };
   action?: { capability: "tasks.create" | "tasks.update"; step: string; target: "newTask" | "triggeringTask"; fields: Record<string, RuleValue> }; reason?: string };
 
 const priority = (value: string) => value[0]?.toUpperCase() + value.slice(1).toLowerCase();
@@ -19,6 +22,29 @@ export function elapsedTime(seconds: number) {
 // Format host-derived facts; this layer never parses or evaluates a rule.
 export function describeRule(description: RuleDescription | null | undefined, projectName: (id: string) => string | undefined) {
   if (!description || description.coverage === "unavailable") return null;
+  if (description.hook === "TaskBeforeCreate" && description.guard) {
+    const guard = description.guard;
+    let complete = description.coverage === "complete";
+    const conditions = guard.conditions.map(condition => {
+      if (condition.field === "projectId") {
+        const project = projectName(condition.value);
+        if (!project) complete = false;
+        return project ? `the task is in “${project}”` : "the task is in the chosen project (name unavailable)";
+      }
+      if (condition.field === "priority") return `its priority is ${priority(condition.value)}`;
+      if (condition.field === "tag") return `it ${condition.negated ? "does not have" : "has"} the tag “${condition.value}”`;
+      if (condition.field === "hasNotes") return `it has ${condition.value ? "notes" : "no notes"}`;
+      return `it has ${condition.value ? "a due date" : "no due date"}`;
+    });
+    const conditionText = new Intl.ListFormat("en").format(conditions);
+    const statement = `Before saving a new task, stop saving when ${conditionText}. Show “${guard.message}”. Otherwise, this rule lets the app continue its normal permission, validation and save checks.`;
+    const unchanged = "This check does not change task details. Existing tasks stay unchanged.";
+    return { complete, title: "Check new tasks before saving", when: "Before a new task is saved.",
+      summary: `${complete ? "" : "The full behavior could not be described. Known details: "}${statement} ${unchanged}`,
+      scope: undefined, onlyWhen: `Saving is stopped only when ${conditionText}.`,
+      then: `Show “${guard.message}”. Otherwise, this rule allows the normal save checks to continue.`,
+      timing: null, unchanged };
+  }
   const { action, conditions, hook } = description;
   const event = hook === "TaskCreated" ? "the task was added" : hook === "TaskCompleted" ? "the task was completed" : "the event";
   let complete = description.coverage === "complete" && conditions !== undefined && !!action

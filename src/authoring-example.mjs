@@ -118,6 +118,9 @@ export function evidenceSummary(proof, originals, { presentation = true } = {}) 
       id: text(item.id), ...((presentation || item.label !== item.id) && { label: text(item.label) }),
       status: text(report.status), ...((presentation || verification !== 'matched') && { verification }),
       ...(presentation && { availability, outcome }),
+      ...(verification === 'matched' && guard && example?.given?.fixture === 'invalid-key'
+        && decision === 'BLOCKED' && native?.classification === 'FAILED' && native?.error?.code === 'HOST_CONTEXT_INVALID'
+        && { simulatedFailure: 'invalid-host-context' }),
       ...((presentation || typeof item.taskStatus === 'string') && { taskStatus: text(item.taskStatus) ?? null }),
       ...((presentation || typeof item.readFailure === 'string') && { readFailure: text(item.readFailure) ?? null }),
       expected: { ...fields(expected?.outcome ?? expected, ['classification', 'code']), consumption: consumption(expected?.consumption),
