@@ -161,6 +161,8 @@ type Props = {
   backLabel: string;
   target: StudioTarget;
   ownerId: string;
+  draftScope: string | null;
+  drafts: Map<string, string | null>;
   recoveryKey: string;
   projects: readonly { id: string; name: string }[];
   targeted: (target: StudioTarget) => void;
@@ -171,7 +173,7 @@ const knownTask = (task?: TaskPreview) => !!task && typeof task.title === "strin
 const knownScenarioTask = (task?: TaskPreview) => !!task && typeof task.id === "string" && !!task.id && typeof task.title === "string" && !!task.title.trim();
 const knownTasks = (tasks?: TaskPreview[] | null) => Array.isArray(tasks) && tasks.every(knownTask);
 type Condition = RuleCondition;
-async function sha256(value: string) {
+export async function sha256(value: string) {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return "sha256:" + Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -450,7 +452,7 @@ function CustomizationName({ ownerId, itemId, name, disabled, request, saved }: 
   </>;
 }
 
-export default function Studio({ request, changed, beforeSelectionChange, back, backToTasks, createNew, backLabel, target, ownerId, recoveryKey, projects, targeted, unavailable, task }: Props) {
+export default function Studio({ request, changed, beforeSelectionChange, back, backToTasks, createNew, backLabel, target, ownerId, draftScope, drafts, recoveryKey, projects, targeted, unavailable, task }: Props) {
   const initialTarget = useRef(target);
   const extensionId = useRef(target.extensionId);
   const requestedConversation = useRef<string | null>(null);
@@ -496,12 +498,28 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [inspection, setInspection] = useState<(SavedSource & { key: string; historical: boolean }) | null>(null);
   const [restore, setRestore] = useState("");
   const [lookup, setLookup] = useState("");
-  const [text, setText] = useState("");
+  const draftKey = "daymark-studio-draft:" + JSON.stringify([ownerId, draftScope, target.extensionId ? ["item", target.extensionId] : ["entry", recoveryKey]]);
+  function readDraft(key: string) {
+    if (drafts.has(key)) return drafts.get(key) ?? null;
+    if (!draftScope) return null;
+    try { const value = sessionStorage.getItem(key); return value !== null && value.length <= 8192 ? value : null; }
+    catch { return null; }
+  }
+  const [restoredDraft] = useState(() => readDraft(draftKey));
+  const [text, setText] = useState(restoredDraft ?? "");
+  const draftValue = useRef(restoredDraft);
+  const currentText = useRef(text);
+  currentText.current = text;
+  const draftEdits = useRef(0);
+  const submittedDraft = useRef<{ operationId: string; edit: number } | null>(null);
+  const draftBinding = useRef({ key: draftKey, ownerId, draftScope, item: target.extensionId });
+  const [draftStorageUnavailable, setDraftStorageUnavailable] = useState(false);
   const [authoring, setAuthoring] = useState<Authoring | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [authoringError, setAuthoringError] = useState("");
   const [contextContinuation, setContextContinuation] = useState<{ conversationId: string; expectedVersion: number } | null>(null);
   const [pendingTurn, setPendingTurn] = useState<Turn | null>(() => pendingRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId))?.turn ?? null);
+  const restoredSubmission = useRef(pendingTurn && restoredDraft === null ? pendingTurn.operationId : null);
   const [retryTurn, setRetryTurn] = useState(false);
   const [observationPaused, setObservationPaused] = useState(false);
   const [visible, setVisible] = useState(!document.hidden);
@@ -545,6 +563,55 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const stateEpoch = useRef(0);
   const callbacks = useRef({ request, changed, beforeSelectionChange, targeted, unavailable });
   callbacks.current = { request, changed, beforeSelectionChange, targeted, unavailable };
+  function keepDraft(key: string, value: string | null) {
+    drafts.set(key, value);
+    try {
+      if (!draftScope) throw new Error("Draft session unavailable");
+      if (value !== null) sessionStorage.setItem(key, value);
+      else sessionStorage.removeItem(key);
+      setDraftStorageUnavailable(false);
+      return true;
+    } catch { setDraftStorageUnavailable(true); return false; }
+  }
+  function editText(value: string) {
+    draftEdits.current++;
+    draftValue.current = value;
+    currentText.current = value;
+    setText(value);
+    keepDraft(draftBinding.current.key, value);
+  }
+  function settleDraft(input: Turn, rejected = false) {
+    if (!mounted.current) return;
+    const submitted = submittedDraft.current;
+    const unchanged = submitted?.operationId === input.operationId && submitted.edit === draftEdits.current;
+    const recoverable = restoredSubmission.current === input.operationId && draftEdits.current === 0 && !currentText.current;
+    if (submitted?.operationId === input.operationId) submittedDraft.current = null;
+    if (restoredSubmission.current === input.operationId) restoredSubmission.current = null;
+    if (!unchanged && !(rejected && recoverable)) return;
+    const value = rejected ? input.text : "";
+    draftValue.current = rejected ? input.text : null;
+    currentText.current = value;
+    setText(value);
+    keepDraft(draftBinding.current.key, draftValue.current);
+  }
+  const draftText = draftValue.current ?? "";
+  useLayoutEffect(() => {
+    const previous = draftBinding.current;
+    if (previous.key !== draftKey) {
+      const binding = previous.ownerId === ownerId && previous.draftScope === draftScope && previous.item === null && !!target.extensionId;
+      const value = binding ? draftValue.current ?? readDraft(draftKey) : readDraft(draftKey);
+      draftBinding.current = { key: draftKey, ownerId, draftScope, item: target.extensionId };
+      draftValue.current = value;
+      if (!binding) { submittedDraft.current = null; restoredSubmission.current = null; }
+      if (keepDraft(draftKey, value) && binding) {
+        drafts.delete(previous.key);
+        try { sessionStorage.removeItem(previous.key); } catch { setDraftStorageUnavailable(true); }
+      }
+      if ((value ?? "") !== text) { draftEdits.current++; currentText.current = value ?? ""; setText(value ?? ""); }
+      return;
+    }
+    keepDraft(draftKey, draftValue.current);
+  }, [draftKey, text]);
   function extensionPath(id = extensionId.current) {
     if (!id) throw new Error("Choose an exact customization first");
     return "extensions/" + encodeURIComponent(id);
@@ -668,7 +735,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const workflowSummary = summarized && summarized.hook === state?.extension?.hookId && summarized.action
     ? { ...summarized.action, conditions: summarized.conditions } : null;
   const displayedRule = describeRule(summarized, id => projects.find(project => project.id === id)?.name);
-  const matchingExamples = reviewEvidence?.reports.filter(item => item.report.status === "PASS" && checkedObservation(item)).length ?? 0;
   const behaviorSummary = summarizeExamples(reviewEvidence);
   const activeSelectionMatches = !!activeSnapshot && activeSnapshot.ownerId === state?.owner.id && activeSnapshot.extensionId === state.extension?.id
     && activeSnapshot.revision.id === state.selection.revision?.id && activeSnapshot.generation === state.selection.generation
@@ -678,10 +744,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
 
   function projectName(projectId?: string) { return projects.find(project => project.id === projectId)?.name; }
   const fullWorkflowSummary = displayedRule?.complete === true;
-  function checkedGuardExample(item: CheckedCase, index: number) {
+  function checkedGuardExample(item: CheckedCase, index: number, facts?: CaseSummary) {
     const proposal = item.report.scenario?.proposal;
     const expected = guardConsumption(item.expected.consumption), observed = guardConsumption(item.report.consumption);
-    const matches = item.report.status === "PASS" && checkedObservation(item);
+    const matches = facts?.verification === "matched" && item.report.status === "PASS" && checkedObservation(item);
     const unavailable = !observed || observed.status === "BLOCKED";
     const label = exampleLabel(item, index);
     function outcome(result: GuardConsumption | null) {
@@ -878,7 +944,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   function checkedExample(item: Evidence["reports"][number], index: number, compact = false, proof: Evidence | null = evidence) {
     const facts = proof?.reports.includes(item) ? proof.summary?.cases.find(row => row.id === item.id) : undefined;
-    if (guardCase(item)) return checkedGuardExample(item, index);
+    if (guardCase(item)) return checkedGuardExample(item, index, facts);
     if (workflowCase(item)) return checkedWorkflowExample(item, index, compact, facts);
     const source = item.report.scenario?.task, observed = knownObservation(item.report.observed), expected = knownTasks(item.expected.createdTasks);
     const readFailure = observed && item.report.observed?.effect === "NONE" && Array.isArray(item.report.calls)
@@ -1395,7 +1461,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       }
       if (!mounted.current || serial.current !== turn) return;
       retainTurn(null); setRetryTurn(false); setAuthoringError("");
-      setText(value => value === input.text ? "" : value);
+      settleDraft(input);
       return;
     } catch (failure) {
       if (!mounted.current || serial.current !== turn) return;
@@ -1426,7 +1492,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           if (accepted.operation.id !== input.operationId || accepted.operation.version !== input.expectedVersion + 1 || accepted.conversation.version < accepted.operation.version || !accepted.operation.runId || input.conversationId && accepted.conversation.id !== input.conversationId) throw new Error("Unconfirmed authoring receipt");
           await adoptConversation(accepted.conversation, turn, input.target.kind === "create");
           if (!mounted.current || serial.current !== turn) return;
-          retainTurn(null); setText(value => value === input.text ? "" : value); setObservationPaused(false);
+          retainTurn(null); settleDraft(input); setObservationPaused(false);
         } catch (failure) {
           if (!mounted.current || serial.current !== turn) return;
           if (!acceptedResponse && deletedOutcome(failure, input.operationId)) return;
@@ -1435,7 +1501,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             setRetiredOperation(true); setRetryTurn(false); setAuthoringError(authoringReason(problem.code)); return;
           }
           if (!acceptedResponse && problem.status === 503 && problem.code === "AUTHORING_GUIDE_UNAVAILABLE") {
-            retainTurn(null); setText(value => value || input.text);
+            retainTurn(null); settleDraft(input, true);
             setAuthoringError(authoringReason(problem.code));
             setAuthoring(current => current && { ...current, availability: { ...current.availability, available: false, code: "AUTHORING_GUIDE_UNAVAILABLE" } });
             void callbacks.current.request<Authoring>(authoringPath(), "GET", undefined, authoringLifetime.current.signal).then(refreshed => {
@@ -1447,7 +1513,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               && ["STALE_DRAFT", "STALE_CONVERSATION", "STALE_CONTEXT", "CONFIG_CHANGED"].includes(problem.code ?? "")) {
             const notice = problem.code === "CONFIG_CHANGED" ? authoringReason(problem.code)
               : "This request was rejected because saved work changed. Your text is kept. Check the current proposal before sending again.";
-            retainTurn(null); setRetryTurn(false); setText(value => value || input.text);
+            retainTurn(null); setRetryTurn(false); settleDraft(input, true);
             try {
               const saved = await callbacks.current.request<State>(extensionPath(input.target.extensionId), "GET", undefined, authoringLifetime.current.signal);
               if (!mounted.current || serial.current !== turn) return;
@@ -1802,18 +1868,22 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (locked.current || !text.trim() || sendDisabled || !authoring?.availability.available) return;
+    if (locked.current || !trusted || retired || !text.trim() || sendDisabled || !authoring?.availability.available) return;
     if (authoring?.availability.available) {
       if (/[\uD800-\uDFFF]/u.test(text) || new TextEncoder().encode(text).length > 8192) { setAuthoringError("Use valid text within the 8 KiB description limit."); return; }
       const target = turnTarget(), resumed = target.kind === "resume" ? conversation : null;
-      void submitAuthoring({ target, conversationId: resumed?.id ?? null, operationId: crypto.randomUUID(), text,
-        expectedVersion: resumed?.version ?? 0, expectedDraftVersion: state!.draftVersion });
+      const input = { target, conversationId: resumed?.id ?? null, operationId: crypto.randomUUID(), text,
+        expectedVersion: resumed?.version ?? 0, expectedDraftVersion: state!.draftVersion };
+      submittedDraft.current = { operationId: input.operationId, edit: draftEdits.current };
+      draftValue.current = null;
+      keepDraft(draftBinding.current.key, null);
+      void submitAuthoring(input);
       return;
     }
   }
   function chooseStarter(request: string) {
     setStarterNotice(text.length ? "Clear your draft before choosing another starting point." : "");
-    if (!text.length) setText(request);
+    if (!text.length) editText(request);
     document.getElementById("studio-message")?.focus({ preventScroll: true });
   }
   const restoreTarget = state?.restoreTargets.find(item => item.id === restore);
@@ -2045,13 +2115,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
         <form hidden={retired || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Daymark assistant</label>
-          <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; setText(e.target.value); setStarterNotice(""); }} placeholder="Ask or describe a change…"
+          <textarea id="studio-message" maxLength={8192} rows={2} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; editText(e.target.value); setStarterNotice(""); }} placeholder="Ask or describe a change…"
             onKeyDown={event => {
               if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
               event.preventDefault();
               if (!event.repeat && !sendDisabled && authoring?.availability.available && text.trim() && !locked.current) event.currentTarget.form?.requestSubmit();
             }} />
           <button disabled={!authoring?.availability.available || sendDisabled || !text.trim()}>Send</button></form>
+        {!retired && !restart && draftStorageUnavailable && draftText && <p className="rs-setup-notice" role="status">This browser could not keep this draft for reload. Your text is kept in this tab while you stay signed in.</p>}
         <p hidden={retired || !!restart} className="rs-chat-note">{authoring?.availability.available ? "Ask about this proposal or describe a change." : "You decide whether to approve and turn on a change."}</p>
       </section>
       <div hidden={!reviewOpen} className="rs-divider" role="separator" tabIndex={0} aria-label="Resize conversation and proposal" aria-orientation="vertical"

@@ -2,12 +2,16 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Temporal } from "temporal-polyfill";
 import "./styles.css";
-import Studio, { type Collection, type StudioTarget } from "./Studio";
+import Studio, { sha256, type Collection, type StudioTarget } from "./Studio";
 import Customizations from "./Customizations";
 import { normalizeTaskTags } from "../task-workflow-values.mjs";
 
 type User = { id: string; name: string; description?: string };
-type Session = { user: User | null; contextToken: string; users?: User[] };
+type Session = { user: User | null; contextToken: string; users?: User[]; draftScope?: string | null };
+async function withDraftScope(session: Session): Promise<Session> {
+  try { return { ...session, draftScope: session.user ? await sha256(session.contextToken) : null }; }
+  catch { return { ...session, draftScope: null }; }
+}
 function studioLink() {
   if (!location.hash) return { valid: true, target: null };
   const params = new URLSearchParams(location.hash.slice(1));
@@ -175,12 +179,16 @@ function App() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const authBusy = useRef(false);
+  const authVersion = useRef(0);
   const channel = useRef<BroadcastChannel | null>(null);
   useEffect(() => {
     const abort = new AbortController();
+    const version = authVersion.current;
     api<Session>("session", undefined, "GET", undefined, abort.signal)
-      .then((data) => {
-        setSession(data);
+      .then(async (data) => {
+        const scoped = await withDraftScope(data);
+        if (abort.signal.aborted || authVersion.current !== version) return;
+        setSession(scoped);
         setUsers(data.users ?? []);
       })
       .catch((error) => {
@@ -192,6 +200,8 @@ function App() {
       .finally(() => setLoading(false));
     channel.current = new BroadcastChannel("keir-demo-session");
     channel.current.onmessage = () => {
+      // A queued explicit sign-in still runs in cross-tab lock order.
+      if (!authBusy.current) authVersion.current++;
       setSession(null);
       setError(
         "The demo person changed in another tab. Choose a person to continue.",
@@ -203,6 +213,7 @@ function App() {
     };
   }, []);
   function expired() {
+    authVersion.current++;
     setSession(null);
     setError(
       "Your demo session changed or the app restarted. Choose a person to continue.",
@@ -211,6 +222,7 @@ function App() {
   async function authenticate(userId?: string) {
     if (authBusy.current) return;
     authBusy.current = true;
+    const version = ++authVersion.current;
     if (session?.user && session.user.id !== userId) history.replaceState(null, "", location.pathname + location.search);
     setPending(true);
     setSession(null);
@@ -222,15 +234,19 @@ function App() {
         );
       // Hold the cross-tab lock until the cookie-writing response is fully consumed.
       await navigator.locks.request("keir-demo-auth", async () => {
+        if (authVersion.current !== version) return;
         const current = await api<Session>("session");
+        if (authVersion.current !== version) return;
         const next = await api<Session>(
           "session",
           current.contextToken,
           userId ? "POST" : "DELETE",
           userId ? { userId } : {},
         );
-        setSession(next);
         channel.current?.postMessage("changed");
+        const scoped = await withDraftScope(next);
+        if (authVersion.current !== version) return;
+        setSession(scoped);
       });
     } catch (error) {
       setError(
@@ -357,6 +373,7 @@ function Workspace({
   createRecovery: Map<string, CreateRecovery>;
 }) {
   const retainedCreate = useRef(createRecovery.get(session.user.id));
+  const studioDrafts = useRef(new Map<string, string | null>());
   const invalidCreateProject = useRef(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsReady, setProjectsReady] = useState(false);
@@ -1287,7 +1304,7 @@ function Workspace({
         </main>
         {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange} open={target => void openStudio("overview", target)} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} />}
         {destination === "studio" && <main className="studio-main"><Studio key={studioTarget.entryId} request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
-          target={studioTarget} ownerId={session.user.id} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId} projects={projects}
+          target={studioTarget} ownerId={session.user.id} draftScope={session.draftScope ?? null} drafts={studioDrafts.current} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId} projects={projects}
           targeted={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) rememberStudio({ ...next, entryId: studioTarget.entryId }); }}
           unavailable={() => { if (currentStudioEntry.current !== studioTarget.entryId || lifetime.current.signal.aborted) return; currentStudioEntry.current = null; setCustomizationNotice("That customization or conversation is unavailable. Choose a saved item or start a new one."); setDestination("customizations"); }} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
           back={returnFromStudio} backToTasks={returnToTasks} createNew={() => void openStudio("overview", { extensionId: null })} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}

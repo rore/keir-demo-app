@@ -46,6 +46,8 @@ Choose **Approve this change** when the checked behavior matches your intent. Ap
 
 ## Conversations and recovery
 
+Unsent composer text stays with its exact customization in the current browser tab and authentication session, including navigation away and reload. It is never submitted automatically and is separate from submitted-request recovery. Changing the demo person or starting another authentication session does not restore it. If tab storage or the session fingerprint is unavailable, Studio keeps the draft in memory across navigation and reports that reload recovery is unavailable.
+
 **New customization** opens an empty conversation. The first accepted message creates the saved item. Each saved customization has one visible conversation in Studio, even when a fresh authoring run is needed. Reopening the item and reading earlier messages use saved data. Sending a turn is an explicit action. History retains earlier saved versions and displaced drafts for inspection. Starting again from the version in use requires confirmation.
 
 Conversations persist under their demo owner and saved customization and survive process restarts. If the process stops during a provider or host operation, the saved conversation is marked interrupted. Startup only reads and marks the saved state; it does not call the provider, compiler, or simulator again. Open the conversation, inspect its saved draft and status, and explicitly continue only when the UI offers that action. A cancel, timeout, or lost response can leave a saved change; check the original submitted request before retrying. Recovery does not automatically repeat a paid turn or create another item.

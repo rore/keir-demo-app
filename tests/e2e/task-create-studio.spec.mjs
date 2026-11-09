@@ -21,7 +21,7 @@ const review = page => studio(page).getByRole('article', { name: 'Current decisi
 const composer = page => studio(page).getByLabel('Message to Daymark assistant', { exact: true });
 const digest = text => 'sha256:' + createHash('sha256').update(text).digest('hex');
 
-async function fixture(page, demo, { mismatch = false, corruptPass = false } = {}) {
+async function fixture(page, demo, { mismatch = false, corruptPass = false, proposalMismatch = false, summaryState = 'matched' } = {}) {
   await page.goto(demo.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
   await expect(page.getByRole('heading', { name: 'The spring collection', exact: true })).toBeVisible();
@@ -37,7 +37,7 @@ async function fixture(page, demo, { mismatch = false, corruptPass = false } = {
     TaskCompleted: { generation: 13, revision: { id: 'completed-rule', extensionId: 'after-completed', extensionName: 'Completed action' }, eligible: true, approvedEvidenceId: 'completed-proof' },
   };
   let state = { owner, extension: { id: 'new-task-check', name: 'Client task check', hookId: 'TaskBeforeCreate' }, retired: false,
-    catalog: [], draftVersion: 2, draft, evidence: { id: 'proof-draft', revisionId: draft.id, passed: !mismatch }, approved: false, approvedEvidenceId: null,
+    catalog: [], draftVersion: 2, draft, evidence: { id: 'proof-draft', revisionId: draft.id, passed: !mismatch && !proposalMismatch }, approved: false, approvedEvidenceId: null,
     selection, history: [], restoreTargets: [], evidenceHistory: [{ id: 'proof-history', revisionId: historical.id }], historyNext: null };
   const allowed = { status: 'ALLOWED', result: { decision: 'ALLOW', message: '' } };
   const denied = { status: 'DENIED', result: { decision: 'DENY', message: '<strong>Add a due date</strong> for this client task.' } };
@@ -48,22 +48,32 @@ async function fixture(page, demo, { mismatch = false, corruptPass = false } = {
     ['Task without the client tag', { tags: ['review'], hasDueDate: false }, allowed],
     ['The required check is unavailable', { tags: ['client'], hasDueDate: true }, blocked],
   ];
-  const proof = (id, revisionId) => ({ id, revisionId, kind: 'authored', identity: {}, passed: !mismatch,
-    reports: cases.map(([label, changes, expected], index) => ({ id: 'sample-' + index, label,
+  const proof = (id, revisionId) => {
+    const reports = cases.map(([label, changes, expected], index) => ({ id: 'sample-' + index, label,
       expected: { consumption: expected }, report: {
         status: mismatch && index === 0 ? 'MISMATCH' : 'PASS',
-        scenario: { hookId: 'TaskBeforeCreate', proposal: { projectId, priority: 'normal', tags: [], hasNotes: false, hasDueDate: false, ...changes } },
+        scenario: { hookId: 'TaskBeforeCreate', proposal: { projectId, priority: 'normal', tags: [], hasNotes: index === 0 && proposalMismatch, hasDueDate: false, ...changes } },
         consumption: index === 0 && mismatch ? blocked : index === 0 && corruptPass ? denied : expected,
         observed: { effect: 'NONE', createdTasks: [], updatedTasks: [] },
         native: { classification: expected.status === 'BLOCKED' ? 'FAILED' : 'COMPLETED', effects: [] },
         mismatches: mismatch && index === 0 ? [{ stage: 'CONSUMPTION', code: 'UNEXPECTED_DECISION' }] : [],
-      } })),
-  });
+      } }));
+    const summaryCases = reports.map((item, index) => {
+      const verification = summaryState === 'unchecked' ? 'unchecked' : index === 0 && (mismatch || proposalMismatch) ? 'mismatched' : 'matched';
+      return { id: item.id, verification, availability: item.report.consumption.status === 'BLOCKED' ? 'unavailable' : 'available',
+        outcome: verification === 'unchecked' ? 'unchecked' : verification === 'mismatched' ? 'mismatch' : item.report.consumption.status === 'BLOCKED' ? 'handled-problem' : 'unchanged' };
+    });
+    const counts = { verification: { matched: 0, mismatched: 0, unchecked: 0 },
+      outcome: { changed: 0, unchanged: 0, 'handled-problem': 0, uncertain: 0, unchecked: 0, mismatch: 0 } };
+    for (const item of summaryCases) { counts.verification[item.verification]++; counts.outcome[item.outcome]++; }
+    return { id, revisionId, kind: 'authored', identity: {}, passed: !mismatch && !proposalMismatch, reports,
+      ...(summaryState !== 'absent' && { summary: { cases: summaryCases, counts, totalCases: cases.length, returnedCases: cases.length, truncated: false } }) };
+  };
   const proofs = { 'proof-draft': proof('proof-draft', draft.id), 'proof-active': proof('proof-active', active.id), 'proof-history': proof('proof-history', historical.id) };
   const conversation = { id: 'guard-discussion', extensionId: state.extension.id, purpose: 'REVISE', version: 1, status: 'REVIEW_AVAILABLE', runId: 'saved-run',
     operation: { id: 'saved-operation', runId: 'saved-run', version: 1 }, draft: { revisionId: draft.id, draftVersion: 2, suiteDigest: draft.suiteDigest },
     selection: { revisionId: active.id, generation: 7 }, code: null,
-    review: { revisionId: draft.id, draftVersion: 2, suiteDigest: draft.suiteDigest, evidenceId: 'proof-draft', eligible: !mismatch },
+    review: { revisionId: draft.id, draftVersion: 2, suiteDigest: draft.suiteDigest, evidenceId: 'proof-draft', eligible: !mismatch && !proposalMismatch },
     messages: [
       { id: 'earlier-proof', role: 'assistant', kind: 'review', text: 'Earlier saved examples are available to read.', receipt: { revisionId: historical.id, draftVersion: 1, suiteDigest: historical.suiteDigest, evidenceId: 'proof-history' } },
       ...Array.from({ length: 12 }, (_, index) => ({ id: 'discussion-' + index, role: index % 2 ? 'assistant' : 'user', kind: 'text', text: `Saved discussion ${index + 1}. We are checking a proposed task using sample data. Approval and turning on remain separate choices.` })),
@@ -104,7 +114,7 @@ async function fixture(page, demo, { mismatch = false, corruptPass = false } = {
   await expect(page.getByText('Actions after completing', { exact: true })).toBeVisible();
   await page.locator('#edit-new-task-check').click();
   await expect(composer(page)).toBeVisible();
-  return { mutations, eventSelections, holdApproval() { approvalGate = { entered: Promise.withResolvers(), release: Promise.withResolvers() }; return approvalGate; } };
+  return { mutations, eventSelections, proof: proofs['proof-draft'], holdApproval() { approvalGate = { entered: Promise.withResolvers(), release: Promise.withResolvers() }; return approvalGate; } };
 }
 
 for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height: 1000 }, narrow: { width: 320, height: 740 }, short: { width: 683, height: 384 } })) {
@@ -124,6 +134,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(examples).toHaveCount(4);
     await expect(examples.nth(0)).toContainText('Allowed by this rule');
     await expect(examples.nth(0)).toContainText('normal permission, validation and save checks');
+    for (const index of [0, 1, 2]) await expect(examples.nth(index).getByText('Matches', { exact: true })).toBeVisible();
     await expect(examples.nth(1)).toContainText('<strong>Add a due date</strong>');
     await expect(examples.nth(1).locator('a,strong,input')).toHaveCount(0);
     await expect(examples.nth(3)).toContainText('Could not check');
@@ -152,11 +163,44 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
 }
 
 test('a PASS label cannot qualify mismatching independent before-create expectations', async ({ page, demo }) => {
-  await fixture(page, demo, { corruptPass: true });
+  const mock = await fixture(page, demo, { corruptPass: true });
+  // Even a forged matched summary cannot bypass the existing decision-shape comparison.
+  expect(mock.proof.summary.cases[0].verification).toBe('matched');
   await studio(page).locator('#studio-view-saved').click();
   await expect(review(page)).toContainText('Needs another check');
   await expect(review(page)).toContainText('Approval is unavailable.');
   await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
+});
+
+test('a raw PASS guard proposal cannot override a mismatched host summary', async ({ page, demo }) => {
+  const mock = await fixture(page, demo, { proposalMismatch: true });
+  const first = mock.proof.reports[0];
+  expect(first.report.status).toBe('PASS');
+  expect(first.report.consumption).toEqual(first.expected.consumption);
+  expect(first.report.scenario.proposal.hasNotes).toBe(true);
+  expect(mock.proof.summary.cases[0].verification).toBe('mismatched');
+  await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+  const example = review(page).getByRole('article', { name: 'Example: Client task with a due date', exact: true });
+  await expect(example).toContainText('Notes present');
+  await expect(example).toContainText('Allowed by this rule');
+  await expect(example.getByText('Needs another check', { exact: true })).toBeVisible();
+  await expect(example.getByText('Matches', { exact: true })).toHaveCount(0);
+  await expect(review(page)).toContainText('3 example decisions matched their expectations.');
+  await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
+  expect(mock.mutations).toEqual([]);
+});
+
+for (const summaryState of ['absent', 'unchecked']) test(`before-create results with ${summaryState} summary never claim a match`, async ({ page, demo }) => {
+  const mock = await fixture(page, demo, { summaryState });
+  expect(mock.proof.reports.every(item => item.report.status === 'PASS')).toBe(true);
+  await studio(page).locator('#studio-view-saved').click();
+  const examples = review(page).getByRole('article', { name: /^Example:/ });
+  await expect(examples).toHaveCount(4);
+  await expect(examples.getByText('Matches', { exact: true })).toHaveCount(0);
+  await expect(examples.getByText('Handled as expected', { exact: true })).toHaveCount(0);
+  await expect(examples.getByText('Needs another check', { exact: true })).toHaveCount(4);
+  await expect(examples.nth(3)).toContainText('Could not check');
+  expect(mock.mutations).toEqual([]);
 });
 
 test('historical before-create evidence stays exact and read-only', async ({ page, demo }) => {
