@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -130,8 +131,15 @@ test('real task scenario admission rejects malformed read-error formats without 
   assert.deepEqual(rows(db, nativeTables), Object.fromEntries(nativeTables.map(table => [table, before[table]])));
 });
 
-test('offline authoring checks an exact suffix and repairs scenario syntax without dropping requested examples', async t => {
+for (const extra of ['', ' Please show the checked results before asking for my approval.']) test('offline authoring checks an exact suffix and repairs scenario syntax without dropping requested examples' + (extra ? ' with extra wording' : ''), async t => {
   const { db, lifecycle, project, other } = setup(t);
+  const byteLength = Buffer.byteLength;
+  let largestRequest = 0;
+  t.mock.method(Buffer, 'byteLength', (value, ...args) => {
+    const size = byteLength(value, ...args);
+    if (typeof value === 'string' && value.startsWith('{"model":')) largestRequest = Math.max(largestRequest, size);
+    return size;
+  });
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-format-key' });
   const before = rows(db, nativeTables), calls = [];
   const suffix = ' – 🧪', expectedTitle = 'Re\u0301sumé 🚀 – 🧪';
@@ -223,9 +231,11 @@ test('offline authoring checks an exact suffix and repairs scenario syntax witho
   } });
   t.after(() => service.close());
   const started = await service.turn('maya', { conversationId: null, operationId: 'scenario-format-recovery', expectedVersion: 0, expectedDraftVersion: 0,
-    target: { kind: 'create' }, text: 'In Format regression project, create a follow-up after completion using the completed task title plus " – 🧪". Check matching, other-project, unfinished, missing, denied, transient-read and oversized result cases. Keep every requested example.' },
+    target: { kind: 'create' }, text: 'In Format regression project, create a follow-up after completion using the completed task title plus " – 🧪". Check matching, other-project, unfinished, missing, denied, transient-read and oversized result cases. Keep every requested example.' + extra },
   { sessionId: 'format-regression-session', current: () => true });
   const settled = await service.wait('maya', started.conversation.id);
+  t.diagnostic('Maximum serialized request bytes ' + largestRequest);
+  assert.ok(largestRequest <= 131072, 'Every provider request must remain within the unchanged context limit.');
   assert.equal(settled.status, 'REVIEW_AVAILABLE', JSON.stringify(settled));
   assert.equal(settled.review.eligible, true);
   assert.deepEqual(calls, ['discover_catalog', 'compile_draft', 'propose_scenarios', 'propose_scenarios', 'propose_scenarios', 'simulate_draft', 'offer_review']);
@@ -245,7 +255,7 @@ test('offline authoring checks an exact suffix and repairs scenario syntax witho
   const approved = lifecycle.approve('maya', { ...selection, evidenceId: settled.review.evidenceId }, () => {});
   lifecycle.activate('maya', { ...selection, generation: approved.selection.generation, evidenceId: approved.approvedEvidenceId }, () => {});
   const native = taskService(db);
-  const source = native.createTask('maya', { projectId: project.id, title: 'Re\u0301sumé 🚀' });
+  const source = await native.createTask('maya', { projectId: project.id, title: 'Re\u0301sumé 🚀' }, { operationId: randomUUID() });
   native.completeTask('maya', source.id);
   const dispatcher = createTaskDispatcher({ db, lifecycle });
   await dispatcher.wake();
@@ -271,7 +281,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const openai = provider === 'openai';
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: openai ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
-  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v4.md', import.meta.url), 'utf8');
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v5.md', import.meta.url), 'utf8');
   const calls = [], requestBytes = [];
   function respond(openaiContent, anthropicContent, stopReason) {
     const usage = { input_tokens: 10, output_tokens: 5 };
@@ -294,8 +304,8 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
     let name, args;
     if (index === 0) {
       assert.match(instructions, /supportedHooks from discover_catalog for availability/);
-      assert.match(instructions, /exact approved model, event entrypoint and compiler configuration/);
-      assert.match(instructions, /protected parameters, result type, declared errors/);
+      assert.match(instructions, /exact entrypoint, compiler configuration and scoped tools/);
+      assert.match(instructions, /protected bindings, declared errors/);
       assert.match(instructions, /two positives with different source projects and titles/);
       assert.match(instructions, /clarify only genuinely unclear behavior/);
       assert.equal(body.tools.some(tool => /approve|activate|create_task/.test(tool.name)), false);
@@ -306,7 +316,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       assert.equal(discovery.selectedHook, null);
       const { sourceExample, scenarioExample, scenarioExamples } = discovery.examplesByHook[TASK_HOOK];
       assert.equal(JSON.parse(sourceExample).language, 'keir/2');
-      assert.equal(JSON.parse(scenarioExample).format, 'keir-scenario/2');
+      assert.equal(JSON.parse(scenarioExample).format, 'keir-scenario/3');
       assert.equal(discovery.conversationContext.messages.at(-1).text, request);
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));
@@ -437,7 +447,8 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   assert.equal(activated.selection.approvedEvidenceId, proof.id);
   const dispatcher = createTaskDispatcher({ db, lifecycle });
   t.after(() => dispatcher.close());
-  const sources = examples.map(({ projectId, title }) => native.createTask('maya', { projectId, title }));
+  const sources = [];
+  for (const { projectId, title } of examples) sources.push(await native.createTask('maya', { projectId, title }, { operationId: randomUUID() }));
   for (const task of sources) native.completeTask('maya', task.id);
   await dispatcher.wake();
   for (const task of sources) {

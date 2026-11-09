@@ -1,13 +1,13 @@
 {
   "repository": "https://github.com/rore/keir-core",
-  "revision": "43f28600d8db460db6f22b48c2d4c2c0de9c52b7",
+  "revision": "b2329440dd2a25acc547f3ebfea214748d912022",
   "status": "verified-release",
-  "release": "v0.2.0",
+  "release": "v0.3.0",
   "package": "@keir/runtime-node",
-  "version": "0.2.0",
-  "archive": "keir-runtime-node-0.2.0.tgz",
-  "sha256": "sha256:e50e9c6dbe7fb80e3d9572e1330393e0eb5ce4f4dae1bd12f60f2cd7399e9dd7",
-  "integrity": "sha512-4Rxkk3sbguL7B8e438xEAZiQhmIYul2wvn3ZAAPaKtZsm/6Bpom9UhQGW9IA/zu4VHrtMaX5fM/kWNNeKx6nJg==",
+  "version": "0.3.0",
+  "archive": "keir-runtime-node-0.3.0.tgz",
+  "sha256": "sha256:40d71748bf142872c832e7d48aa6e8f827d0759c6ca5006c1abfd19db52935cc",
+  "integrity": "sha512-9MJu5RronOfAW78xZ/uj7Y28/1ZkKEz8pNUgqn7O+AsqL/Z3q9tGfbF00q8OUEiD78Ot/HiMhPPhpVuRtAR84w==",
   "files": [
     {
       "path": "LICENSE",
@@ -15,11 +15,11 @@
     },
     {
       "path": "README.md",
-      "sha256": "sha256:490ee4956b4410c2d7a8bf9509458c25a2f38f9e65e3c87e39ed2fb2f6c4e25d"
+      "sha256": "sha256:493b909eb710da3ca08afc15c02ad84d438c026e6466fef6cf632cc12936668a"
     },
     {
       "path": "package.json",
-      "sha256": "sha256:841c42f1dc248f31c8a232d671476efd5ec4bb03ab756a608762f0d8ef5a4697"
+      "sha256": "sha256:bba57e491473af433319bdd5ff076ba4989d3cb6a5b4f98f9350e5ca64698343"
     },
     {
       "path": "src/canonical.js",
@@ -39,13 +39,13 @@
     },
     {
       "path": "src/validation.js",
-      "sha256": "sha256:add31d0d405669c4192f74e20f526fd8db409df5718d249d1629d298363475e9"
+      "sha256": "sha256:9b80525b6376173973aee7dcc846b3ffdfab17bbf7b3eab0833ca08b4f5835c6"
     }
   ],
   "compiler": {
-    "revision": "43f28600d8db460db6f22b48c2d4c2c0de9c52b7",
-    "producer": "keir-compiler-java/0.2.0",
-    "jarDigest": "sha256:a53551e45c94f1c5a63325e821a47e9742cf9a588720269077f96f0e9b37b7b0"
+    "revision": "b2329440dd2a25acc547f3ebfea214748d912022",
+    "producer": "keir-compiler-java/0.3.0",
+    "jarDigest": "sha256:368ce1fc3e7ba54fb5e3c9880dc1c17f9dc9fc03cd6fe7a0df55fcc025e1c7a3"
   },
   "environment": {
     "celJava": "0.14.0",

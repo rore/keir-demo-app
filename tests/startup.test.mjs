@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync, symlinkSync, copyFileSync, readdirSync } from 'node:fs';
@@ -43,12 +44,12 @@ test('real startup refuses another server/reset and a verified backup starts in 
     server.db.prepare("UPDATE extension_selections SET generation=1,revision_id=?,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'")
       .run(binding.revisionId, JSON.stringify(binding.pins));
     const tasks = taskService(server.db), effects = nativeEffectService(server.db);
-    const task = tasks.createTask('maya', { projectId: saved.id, title: 'Before reset' });
+    const task = await tasks.createTask('maya', { projectId: saved.id, title: 'Before reset' }, { operationId: randomUUID() });
     tasks.completeTask('maya', task.id);
     event = server.db.prepare("SELECT event_id FROM task_events WHERE hook_id='TaskCompleted' AND source_task_id=?").get(task.id).event_id;
     assert.ok(effects.claim('maya', event));
     payload = { projectId: saved.id, title: 'Created before reset' };
-    receipt = effects.createTaskOnce('maya', effects.keyFor('maya', event), payload);
+    receipt = await effects.createTaskOnce('maya', effects.keyFor('maya', event), payload);
     assert.equal(receipt.effect, 'CONFIRMED');
     effects.finish('maya', event, { classification: 'COMPLETED' });
     records = proofRows(server.db);
@@ -63,7 +64,7 @@ test('real startup refuses another server/reset and a verified backup starts in 
     assert.deepEqual(taskService(restored.db).listProjects('maya').find(project => project.id === saved.id), saved);
     assert.deepEqual(proofRows(restored.db), records);
     const effects = nativeEffectService(restored.db);
-    assert.deepEqual(effects.createTaskOnce('maya', effects.keyFor('maya', event), payload), receipt);
+    assert.deepEqual(await effects.createTaskOnce('maya', effects.keyFor('maya', event), payload), receipt);
     assert.deepEqual(proofRows(restored.db), records);
   } finally { await restored.close(); }
 });
@@ -108,7 +109,7 @@ for (const version of [10, 11]) test('v' + version + ' upgrades once, preserving
   const before = snapshot(legacy);
   legacy.close();
   const exec = DatabaseSync.prototype.exec;
-  for (const boundary of ['CREATE TABLE task_events', 'ALTER TABLE task_effect_receipts', 'CREATE INDEX task_events_item', 'PRAGMA user_version=13']) {
+  for (const boundary of ['CREATE TABLE task_events', 'ALTER TABLE task_effect_receipts', 'CREATE INDEX task_events_item', 'PRAGMA user_version=14']) {
     DatabaseSync.prototype.exec = function (sql) {
       if (sql === boundary) {
         exec.call(this, sql);
@@ -132,9 +133,10 @@ for (const version of [10, 11]) test('v' + version + ' upgrades once, preserving
   for (let attempt = 0; attempt < 2; attempt++) {
     const upgraded = openData(path);
     try {
-      assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 13);
+      assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, 14);
       assert.deepEqual(snapshot(upgraded, true), before);
       assert.equal(upgraded.prepare("SELECT count(*) n FROM extension_selections WHERE hook_id='TaskCreated' AND generation=1 AND revision_id IS NULL AND binding_pins IS NULL").get().n, 3);
+      assert.equal(upgraded.prepare("SELECT count(*) n FROM extension_selections WHERE hook_id='TaskBeforeCreate' AND generation=0 AND revision_id IS NULL AND binding_pins IS NULL").get().n, 3);
       if (version === 10)
         assert.deepEqual(upgraded.prepare('SELECT DISTINCT priority,due_at FROM tasks').all().map(Object.values), [['normal', null]]);
     } finally { upgraded.close(); }
@@ -178,9 +180,9 @@ test('startup, seed and reset reject unsupported databases without touching the 
   for (const [name, fresh, mutate, expected] of [
     ['preview v9', true, version(9), /Unsupported database version/],
     ['unmarked', true, version(0), /Unsupported database version/],
-    ['future', true, version(14), /Unsupported database version/],
+    ['future', true, version(15), /Unsupported database version/],
     ['v10 marker on a different schema', true, path => withSql(path, 'PRAGMA user_version=10'), /Unsupported database (schema|version)/],
-    ['current marker on legacy schema', true, path => { restoreLegacy(path, 10); withSql(path, 'PRAGMA user_version=13'); }, /Unsupported database schema/],
+    ['current marker on legacy schema', true, path => { restoreLegacy(path, 10); withSql(path, 'PRAGMA user_version=14'); }, /Unsupported database schema/],
     ['empty file', false, path => writeFileSync(path, ''), /Unsupported database format/],
     ['invalid header with current marker', true, path => {
       const bytes = readFileSync(path);
@@ -218,7 +220,7 @@ test('startup, seed and reset reject unsupported databases without touching the 
 });
 
 test('a hot rollback journal is validated on a disposable copy before original recovery', async t => {
-  for (const [version, wrongSchema] of [[13, false], [13, true], [10, false], [10, true]]) await t.test(
+  for (const [version, wrongSchema] of [[14, false], [14, true], [10, false], [10, true]]) await t.test(
     `v${version} ${wrongSchema ? 'rejects a different recovered schema' : 'recovers the exact schema'}`, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'keir-hot-journal-')), path = join(directory, 'app.sqlite');
     t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -231,7 +233,7 @@ test('a hot rollback journal is validated on a disposable copy before original r
     const child = spawn(process.execPath, ['--input-type=module', '-e', `
       import { DatabaseSync } from 'node:sqlite';
       const db = new DatabaseSync(process.argv[1]);
-      db.exec("PRAGMA cache_size=5; BEGIN IMMEDIATE; PRAGMA user_version=13; UPDATE tasks SET notes=printf('%04000d', 1)");
+      db.exec("PRAGMA cache_size=5; BEGIN IMMEDIATE; PRAGMA user_version=14; UPDATE tasks SET notes=printf('%04000d', 1)");
       console.log('dirty');
       setInterval(() => {}, 60_000);
     `, path], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -247,7 +249,7 @@ test('a hot rollback journal is validated on a disposable copy before original r
     if (version === 10) {
       const journal = readFileSync(path + '-journal'), dirty = readFileSync(path);
       // Model a crash after the new marker reaches disk, with the v10 header still in the rollback journal.
-      dirty.writeUInt32BE(13, 60);
+      dirty.writeUInt32BE(14, 60);
       writeFileSync(path, dirty);
       await assert.rejects(resetData(directory, true, () => assert.fail('legacy reset called backup')), /Unsupported database version/);
       assert.deepEqual(readFileSync(path), dirty);
@@ -259,7 +261,7 @@ test('a hot rollback journal is validated on a disposable copy before original r
       const recovered = await start({ directory, port: await reservePort() });
       try {
         assert.deepEqual(recovered.db.prepare('SELECT id, notes FROM tasks ORDER BY id').all(), tasks);
-        assert.equal(recovered.db.prepare('PRAGMA user_version').get().user_version, 13);
+        assert.equal(recovered.db.prepare('PRAGMA user_version').get().user_version, 14);
       }
       finally { await recovered.close(); }
       assert.deepEqual(readdirSync(directory), ['app.sqlite']);

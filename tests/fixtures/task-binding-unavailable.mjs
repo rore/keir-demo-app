@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mock } from 'node:test';
 
 const runtime = await import('@keir/runtime-node');
@@ -26,6 +27,7 @@ try {
     authoring: { config: { status: 'unavailable', code: 'AI_NOT_CONFIGURED' } } });
   const request = (method, url, { token, cookie, body } = {}) => app.inject({ method, url,
     headers: { host: '127.0.0.1:32123', ...(token && { 'x-session-context': token }),
+      ...(method === 'POST' && url === '/api/tasks' && { 'x-task-create-id': randomUUID() }),
       ...(cookie && { cookie: `keir_demo_session=${cookie}` }),
       ...(body !== undefined && { origin, 'content-type': 'application/json' }) },
     ...(body !== undefined && { payload: JSON.stringify(body) }) });
@@ -33,7 +35,7 @@ try {
   const login = await request('POST', '/api/session', { token: bootstrap.json().contextToken, body: { userId: 'maya' } });
   assert.equal(login.statusCode, 200, login.body);
   const auth = { token: login.json().contextToken, cookie: login.cookies.find(value => value.name === 'keir_demo_session').value };
-  assert.deepEqual(boundVersions, ['4'], 'the actual dispatcher rejects the current model binding');
+  assert.deepEqual(boundVersions, ['5', '5'], 'the actual guard and dispatcher reject their current model bindings');
   for (const path of ['/api/extensions', `/api/extensions/${extensionId}`]) {
     const response = await request('GET', path, auth);
     assert.equal(response.statusCode, 200, response.body);

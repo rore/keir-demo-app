@@ -6,7 +6,8 @@ import { resolve, join, relative, isAbsolute, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { AppError, USERS, taskService } from './data.mjs';
 import { createTaskDispatcher } from './task-effects.mjs';
-import { TASK_HOOK, TASK_HOOKS } from './extension-catalog.mjs';
+import { createTaskCreateGuard } from './task-create-guard.mjs';
+import { TASK_HOOK, TASK_EVENT_HOOKS } from './extension-catalog.mjs';
 import { createLifecycle } from './extension-lifecycle.mjs';
 import { createAuthoringService, AUTHORING_CODES } from './authoring-service.mjs';
 import { authoringChoices } from './authoring-config.mjs';
@@ -17,22 +18,23 @@ const COOKIE = 'keir_demo_session';
 // Encoded URL aliases must share the matched route's security and privacy checks.
 const routePath = request => request.routeOptions.url ?? request.url.split('?')[0];
 
-export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler, authoring = {}, authoringSettingsFile }) {
+export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler, guard, authoring = {}, authoringSettingsFile }) {
   assertAuthoringSettingsLocation(authoringSettingsFile, staticRoot);
   const url = new URL(origin);
   const app = Fastify({ logger: false, bodyLimit: 24 * 1024, requestTimeout: 10_000, connectionTimeout: 10_000, ajv: { customOptions: { removeAdditional: false } } });
   const sessions = new Map();
   const anonymousContext = nonce();
-  const service = taskService(db);
   if (compiler === undefined) {
     try { const { createCompiler } = await import('./compiler.mjs'); compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN }); }
     catch { /* Missing compiler assets never prevent native or stored advice startup. */ }
   }
   const lifecycle = createLifecycle(db, { compiler });
-  const effects = createTaskDispatcher({ db, lifecycle });
+  guard ??= createTaskCreateGuard({ db, lifecycle, commitReserveMs: 100 });
+  const service = taskService(db, { guard });
+  const effects = createTaskDispatcher({ db, lifecycle, guard });
   const settings = createAuthoringSettings({ file: authoringSettingsFile, config: authoring.config });
   const ai = createAuthoringService({ db, lifecycle, ...authoring, config: settings.config });
-  app.addHook('onClose', async () => { await Promise.all([ai.close(), effects.close()]); });
+  app.addHook('onClose', async () => { await Promise.all([ai.close(), effects.close(), guard.close?.()]); });
   const wakeEffects = () => setImmediate(() => { void effects.wake().catch(() => {}); });
   app.addHook('onReady', async () => { wakeEffects(); });
   await app.register(cookie);
@@ -71,8 +73,11 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     }
     const diagnostics = error instanceof AppError && Array.isArray(error.diagnostics)
       && Buffer.byteLength(JSON.stringify(error.diagnostics)) <= 16384 ? error.diagnostics : undefined;
+    if (routePath(request) === '/api/tasks' && error instanceof AppError && error.state === 'NOT_CREATED'
+        && ['RULE_DENIED', 'CHECK_UNAVAILABLE', 'STALE_ATTEMPT', 'NATIVE_REJECTED'].includes(error.code))
+      return reply.code(status).send({ operationId: error.operationId, state: error.state, code: error.code, message: error.message });
     reply.code(status).send({ message: status >= 500 && !(error instanceof AppError) ? 'Something could not be saved. Please try again.' : error.message,
-      ...(diagnostics ? { diagnostics } : {}), ...([...AUTHORING_CODES, 'CUSTOMIZATION_DELETED', 'CUSTOMIZATION_BUSY'].includes(error.code) ? { code: error.code } : {}) });
+      ...(diagnostics ? { diagnostics } : {}), ...([...AUTHORING_CODES, 'CUSTOMIZATION_DELETED', 'CUSTOMIZATION_BUSY', 'CREATE_PAYLOAD_MISMATCH'].includes(error.code) ? { code: error.code } : {}) });
   });
   app.get('/api/session', request => {
     const session = current(request);
@@ -230,7 +235,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   app.get('/api/tasks/:id', request => service.getTask(authorize(request).userId, request.params.id));
   const reactionHook = request => {
     const hook = request.query.trigger ?? TASK_HOOK;
-    if (Object.keys(request.query).some(key => key !== 'trigger') || !TASK_HOOKS.includes(hook)) throw new AppError(400, 'Choose a task trigger.');
+    if (Object.keys(request.query).some(key => key !== 'trigger') || !TASK_EVENT_HOOKS.includes(hook)) throw new AppError(400, 'Choose a task trigger.');
     return hook;
   };
   app.get('/api/tasks/:id/reaction', request => effects.status(authorize(request).userId, request.params.id, reactionHook(request)));
@@ -239,9 +244,17 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new AppError(400, 'Checking a saved outcome takes no fields.');
     return effects.reconcile(session.userId, request.params.id, hook);
   });
-  app.post('/api/tasks', (request, reply) => {
-    const result = service.createTask(authorize(request).userId, request.body);
+  app.post('/api/tasks', async (request, reply) => {
+    const owner = authorize(request).userId;
+    const result = await withSignal(request, reply, signal => service.createTask(owner, request.body,
+      { operationId: request.headers['x-task-create-id'], signal, authorize: () => authorize(request).userId }));
+    authorize(request);
     wakeEffects(); reply.code(201); return result;
+  });
+  app.get('/api/task-create-operations/:operationId', request => {
+    noQuery(request);
+    return service.getCreateOperation(authorize(request).userId, request.params.operationId,
+      { authorize: () => authorize(request).userId });
   });
   app.patch('/api/tasks/:id', request => service.editTask(authorize(request).userId, request.params.id, request.body));
   app.post('/api/tasks/:id/complete', request => {

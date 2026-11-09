@@ -1,0 +1,28 @@
+{
+  "schema": "daymark-authoring-companion-provenance/1",
+  "repository": "https://github.com/rore/keir-core",
+  "files": {
+    "customer-authoring-guide-v5.md": {
+      "edition": 5,
+      "status": "verified-release",
+      "release": "v0.3.0",
+      "revision": "f988c2b147933fcdd8b8f74ce7920f78acd4eca5",
+      "source": "docs/agents/customer-authoring-guide-v5.md",
+      "bytes": 6224,
+      "sha256": "sha256:f9bb403c6f2cb75d834b8113e87bb94de034754ecb10bf7001bd36e129216cb0",
+      "distribution": {
+        "file": "keir-authoring-v5.zip",
+        "sha256": "sha256:20249307192494acb1cf07cc002e7203bda4f6baf8a8c2257dd752ce1d8cfe44"
+      }
+    },
+    "customer-authoring-guide-v4.md": {
+      "edition": 4,
+      "status": "historical-copy",
+      "release": null,
+      "revision": null,
+      "source": null,
+      "bytes": 2920,
+      "sha256": "sha256:aeece1c28713ba945743dca47ad4fc6242f3f94cfda4fac9005b5b9df7afb5f7"
+    }
+  }
+}

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createCompiler } from '../src/compiler.mjs';
-import { digest, loadHost, TASK_HOOKS } from '../src/extension-catalog.mjs';
+import { digest, loadHost, TASK_EVENT_HOOKS } from '../src/extension-catalog.mjs';
 import { decodeKeirScenario } from '../src/keir-scenario.mjs';
 import { runTaskEffectSimulation, taskEffectScenarioExamples, taskEffectSyntax } from '../src/task-effect-simulation.mjs';
 import { taskWorkflowCases, taskWorkflowSource } from './fixtures/task-workflow-source.mjs';
@@ -22,12 +22,12 @@ async function simulate(hook, workflow, options) {
   return { reports: result.reports.map(row => row.report), run, cases };
 }
 
-test('scenario reader keeps /1 history and admits the exact frozen /2 structure', async () => {
+test('scenario reader keeps /1 and frozen /2 history and admits current /3 event scenarios', async () => {
   const path = name => new URL('../vendor/keir-verification/' + name, import.meta.url);
   assert.equal(digest(readFileSync(path('scenario-v2.schema.json'))),
     'sha256:04f7a3d00eb02bc3fdcf7a6387ae84a9995430d9b7b8165eccc204384e9cd9e2');
   assert.equal(decodeKeirScenario(readFileSync(path('scenarios/main/normal.json'))).format, 'keir-scenario/1');
-  for (const hook of TASK_HOOKS) {
+  for (const hook of TASK_EVENT_HOOKS) {
     const host = loadHost(hook);
     const { diagnostics, artifact } = await compiler.compile(Buffer.from(taskEffectSyntax(host)), { definition: host });
     assert.deepEqual(diagnostics, []);
@@ -35,11 +35,14 @@ test('scenario reader keeps /1 history and admits the exact frozen /2 structure'
     const result = await runTaskEffectSimulation({ host, artifactBytes: artifact, scenarios });
     assert.equal(result.status, 'PASS', JSON.stringify(result));
     assert.equal(result.reports.length, 6);
-    const wrongHost = loadHost(TASK_HOOKS.find(other => other !== hook));
+    const wrongHost = loadHost(TASK_EVENT_HOOKS.find(other => other !== hook));
     assert.equal((await runTaskEffectSimulation({ host: wrongHost, artifactBytes: artifact, scenarios })).status, 'FAIL');
-    const historical = scenarios[0].replace('keir-scenario/2', 'keir-scenario/1');
-    assert.equal(decodeKeirScenario(Buffer.from(historical)).format, 'keir-scenario/1');
-    assert.equal((await runTaskEffectSimulation({ host, artifactBytes: artifact, scenarios: [historical] })).status, 'FAIL');
+    assert.equal(decodeKeirScenario(Buffer.from(scenarios[0])).format, 'keir-scenario/3');
+    for (const format of ['keir-scenario/1', 'keir-scenario/2']) {
+      const historical = scenarios[0].replace('keir-scenario/3', format);
+      assert.equal(decodeKeirScenario(Buffer.from(historical)).format, format);
+      assert.equal((await runTaskEffectSimulation({ host, artifactBytes: artifact, scenarios: [historical] })).status, 'FAIL');
+    }
   }
 });
 

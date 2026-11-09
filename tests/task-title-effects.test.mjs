@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openData, taskService } from '../src/data.mjs';
@@ -55,12 +56,12 @@ test('a checked revision executes queued and new completions and keeps its appro
   assert.equal(lifecycle.evidence(owner, saved.evidenceId, saved.extensionId).passed, true);
   assert.deepEqual(lifecycle.execution(owner, saved.revisionId, saved.extensionId).artifactBytes, Buffer.from(saved.artifact));
 
-  const complete = label => {
-    const source = native.createTask(owner, { projectId, title: label });
+  const complete = async label => {
+    const source = await native.createTask(owner, { projectId, title: label }, { operationId: randomUUID() });
     native.completeTask(owner, source.id);
     return source;
   };
-  const queued = complete('Queued before the dispatcher starts');
+  const queued = await complete('Queued before the dispatcher starts');
   const event = id => db.prepare('SELECT state,pins FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(id);
   assert.equal(event(queued.id).state, 'PENDING');
   const dispatcher = fixture.dispatch();
@@ -74,18 +75,19 @@ test('a checked revision executes queued and new completions and keeps its appro
     assert.equal(event(source.id).pins, saved.bindingPins);
   }
   await checkCompletion(queued);
-  await checkCompletion(complete('Completed under the retained selection'));
+  await checkCompletion(await complete('Completed under the retained selection'));
 
   const selectedPins = JSON.parse(saved.bindingPins);
   const updatePins = db.prepare('UPDATE extension_selections SET binding_pins=? WHERE owner_id=? AND hook_id=?');
-  const held = [
+  const held = [];
+  for (const pins of [
     { ...selectedPins, packageIntegrity: 'sha512-' + Buffer.alloc(64, 1).toString('base64') },
     { ...selectedPins, definitionId: 'daymark.task-completed/2' },
-  ].map(pins => {
+  ]) {
     updatePins.run(json(pins), owner, TASK_HOOK);
-    try { return complete('Completion with unsupported execution pins'); }
+    try { held.push(await complete('Completion with unsupported execution pins')); }
     finally { updatePins.run(saved.bindingPins, owner, TASK_HOOK); }
-  });
+  }
   await dispatcher.wake();
   await dispatcher.dependenciesChanged();
   for (const source of held) {
@@ -136,8 +138,8 @@ test('a checked title rule copies the exact saved title, skips a different title
   const title = prefix + 'X', otherTitle = prefix + 'x', overflowTitle = '界'.repeat(100);
   assert.equal(Buffer.byteLength(title), 256);
   assert.ok(overflowTitle.length <= 120 && Buffer.byteLength(overflowTitle) > 256);
-  const foreign = native.createTask('maya', { projectId: native.listProjects('maya')[0].id, title });
-  const probe = native.createTask(owner, { projectId, title: 'Check foreign read authorization' });
+  const foreign = await native.createTask('maya', { projectId: native.listProjects('maya')[0].id, title }, { operationId: randomUUID() });
+  const probe = await native.createTask(owner, { projectId, title: 'Check foreign read authorization' }, { operationId: randomUUID() });
   const { program, match, nonmatch, missing } = ruleAndCases(host, projectId, title);
   program.steps[1].args.taskId = { cel: 'input.taskId == probeTask ? foreignTask : input.taskId' };
   program.steps[2].let.cel += ` && source.title == ${JSON.stringify(title)}`;
@@ -176,9 +178,9 @@ test('a checked title rule copies the exact saved title, skips a different title
   state = lifecycle.activate(owner, { ...input, generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorize);
   assert.equal(state.selection.revision.id, input.revisionId);
 
-  const matching = native.createTask(owner, { projectId, title: 'Title before the last saved edit' });
-  const different = native.createTask(owner, { projectId, title: otherTitle });
-  const overflow = native.createTask(owner, { projectId, title: overflowTitle });
+  const matching = await native.createTask(owner, { projectId, title: 'Title before the last saved edit' }, { operationId: randomUUID() });
+  const different = await native.createTask(owner, { projectId, title: otherTitle }, { operationId: randomUUID() });
+  const overflow = await native.createTask(owner, { projectId, title: overflowTitle }, { operationId: randomUUID() });
   assert.equal(native.getTask(owner, overflow.id).title, overflowTitle);
   assert.throws(() => native.completeTask('maya', matching.id), { status: 404 });
   const before = db.prepare('SELECT count(*) AS n FROM tasks').get().n;
@@ -259,7 +261,8 @@ test('a checked suffix rule preserves Unicode and reaches the byte limit before 
   assert.equal(state.selection.revision, null);
   lifecycle.activate(owner, { ...input, generation: state.selection.generation, evidenceId: state.approvedEvidenceId }, authorize);
 
-  const sources = [title, otherTitle, limitTitle, nativeLimitTitle].map(title => native.createTask(owner, { projectId, title }));
+  const sources = [];
+  for (const sourceTitle of [title, otherTitle, limitTitle, nativeLimitTitle]) sources.push(await native.createTask(owner, { projectId, title: sourceTitle }, { operationId: randomUUID() }));
   const before = native.listTasks(owner, projectId).length;
   for (const source of sources) native.completeTask(owner, source.id);
   const dispatcher = fixture.dispatch();

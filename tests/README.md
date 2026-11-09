@@ -2,7 +2,11 @@
 
 Build with `npm run build`. `npm test` uses Node's test runner and temporary SQLite databases. Full authored-source verification also needs the pinned compiler and Java 21. Tests do not install Java, change global configuration, reuse an operator database or make live provider requests.
 
-The current task workflow integration uses Core 0.2.0 and authoring companion v4. Workflows run after task creation or completion, with a separate active selection for each trigger. See [task effects](../docs/task-effects.md) for the runtime contract and host-owned authority checks. Runtime startup requires no deployment certificate or report approval.
+The current integration pins Core 0.3.0 release archives and authoring companion v5. New authoring uses the `/3` model and artifact formats; original `/2` event artifacts, approvals and receipts remain pinned and executable. There is a separate active selection for checks before adding and actions after adding or completing. See [task customizations](../docs/task-effects.md) for the runtime contract and host-owned authority checks. Runtime startup requires no deployment certificate or report approval.
+
+Before-create tests compile the three required rules with the actual compiler, run independent scenario expectations, approve and activate exact artifacts, and exercise native/API creation. They cover read consistency, the operation's own insert, parent budgets, cancellation, approval/selection changes, original-key concurrency, old/new artifact coexistence, native limits and unchanged automation receipt bytes. Separate decision-consumer checks reject malformed outputs, trace/ledger inconsistencies and handled rejections that return ALLOW.
+
+Creation-operation tests exercise committed-response recovery across restart, canonical candidate mismatch, immutable snapshots after task edits/deletion, current project/session access, concurrent winners, atomic rollback, and the real exclusive reset/backup inventory. Browser checks cover the three actual rule journeys at desktop, 320px and 683×384, separately from mocked Studio presentation tests. They assert denial/unavailable field retention and a single corrected native save. Recorded browser qualification does not certify other browser engines or live deployment.
 
 ## What each layer proves
 
@@ -41,7 +45,7 @@ Browser setup downloads pinned Chromium into ignored `.tools/playwright/`, separ
 
 Layout, recovery, setup, lifecycle and integrated-authoring journeys cover owner boundaries, late responses, reading position, unsaved native fields and exact authority under the current contract. `continuous-authoring.spec.mjs` exercises current conversation and history pagination, retry at the exact cursor and lost first-create receipt recovery. Layout cases include wheel/PageDown, stable rail/header/composer, pane edges, splitter limits and narrow/short viewports. Rendered designer review remains separate from automated assertions.
 
-Integrated qualification passed the four workflows for intake priority, review-task creation, open-match follow-ups and missing due dates. Each used the same compiled artifact in simulation and against native task rows. The migration checks covered preserved records and receipts, rollback, the pending-event guard, reopening and restore with the previous package. The final hosted run passed the build, 375 Node tests and 182 Chromium tests, with 12 opt-in Node tests skipped. [Native workflow tests](native-task-workflow.test.mjs) · [Workflow browser tests](e2e/studio-workflow.spec.mjs) · [Hosted verification](https://github.com/rore/keir-demo-app/actions/runs/42261861370)
+The earlier Keir 2 integrated qualification passed the four workflows for intake priority, review-task creation, open-match follow-ups and missing due dates. Each used the same compiled artifact in simulation and against native task rows. The migration checks covered preserved records and receipts, rollback, the pending-event guard, reopening and restore with the previous package. That hosted run passed the build, 375 Node tests and 182 Chromium tests, with 12 opt-in Node tests skipped. [Native workflow tests](native-task-workflow.test.mjs) · [Workflow browser tests](e2e/studio-workflow.spec.mjs) · [Hosted verification](https://github.com/rore/keir-demo-app/actions/runs/42261861370)
 
 ## Offline configured-AI fixture
 

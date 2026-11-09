@@ -9,7 +9,7 @@ type Step = { id: string; op: string; capability?: string; version?: string; whe
 export function taskFollowUpSummary(artifact: unknown) {
   try {
     const program = artifact as { format?: string; entrypoint?: string; steps: Step[]; expressions: Record<string, { checked: string }> };
-    if (program.format !== "keir-artifact/2" || program.entrypoint !== "TaskCompleted" || !Array.isArray(program.steps)) return null;
+    if (!["keir-artifact/2", "keir-artifact/3"].includes(program.format ?? "") || program.entrypoint !== "TaskCompleted" || !Array.isArray(program.steps)) return null;
     const calls = program.steps.filter(step => step.op === "CALL");
     const [read, write] = calls;
     if (calls.length !== 2 || read.capability !== "tasks.get" || read.version !== "3" || read.when

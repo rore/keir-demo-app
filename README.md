@@ -1,6 +1,6 @@
 # Daymark · A Keir Demo
 
-Daymark is a local task manager that demonstrates customer customizations with Keir. Use **Tasks** to manage projects, tag tasks, and search within a project. Open **Customizations** to draft and test a rule for what happens after a task completes. The task workspace runs without an AI provider or Java. Each fictional demo user has separate data, stored in SQLite across restarts.
+Daymark is a local task manager that demonstrates customer customizations with Keir. Use **Tasks** to manage projects, tag tasks, and search within a project. Open **Customizations** to check new tasks before saving or react after a task is added or completed. The task workspace runs without an AI provider or Java. Each fictional demo user has separate data, stored in SQLite across restarts.
 
 ## Run locally
 
@@ -16,15 +16,17 @@ Open the exact address printed in the terminal (by default `http://127.0.0.1:300
 
 ## Try a customization
 
-Today, a rule can react to a new task completion and create at most one task in an existing project you can access. It can match the source task's project or exact title and use a fixed title, copy the source title or append a literal suffix. The original task completion is saved independently of the reaction. See the [task customization contract](docs/task-effects.md).
+A before-save rule can require a due date for client-tagged tasks, notes for high-priority tasks, or a review tag in a chosen project. Use **Details** beside quick-add to enter these fields before adding the task. A denied or unavailable check keeps the draft editable. Rules after adding or completing can read tasks and create one task or update the triggering task; their outcomes remain separate from the original save. See the [task customization contract](docs/task-effects.md).
 
 1. With **Java 21** available, open **Customizations** → **New customization**. Use **Configure** to set up a provider, API key and spending allowance. Sending a request to the provider can incur charges. See [AI authoring setup](docs/ai-authoring.md#configure-a-provider).
 2. In Maya's seeded workspace, try “When I complete a task in The spring collection, create a task titled Follow up in that project.” If you chose another demo user, use one of their projects. Review matching and nonmatching examples. The examples simulate service calls and leave saved tasks alone.
 3. Choose **Approve this change** when the checked examples match your intent. Separately choose **Turn on for my tasks**. If another customization is active, the action is **Switch to this customization**.
 4. Return to **Tasks** and complete a new matching task. Check its **Customization outcome** for the real result. Earlier completions stay as they were.
 
-Daymark uses pinned Keir packages and native permission checks for real reactions. See the [documentation](docs/README.md) for setup, usage, and integration details, or [Contributing](CONTRIBUTING.md) for development and testing.
+If a creation response is lost, **Check result** reads the original attempt. An explicit same-attempt retry keeps its original ID and submitted values; newer edits remain separate. See [task creation and readback](docs/task-creation.md).
+
+Daymark pins the compiler, runtime and authoring companion from [Keir Core 0.3.0](https://github.com/rore/keir-core/releases/tag/v0.3.0). Provenance records their exact source revisions and archive checksums. See the [documentation](docs/README.md) for setup, usage, and integration details, or [Contributing](CONTRIBUTING.md) for development and testing.
 
 [Keir Core](https://github.com/rore/keir-core) provides the compiler, runtimes and embedding guides.
 
-License selection and public release are pending. No open-source license grant is implied.
+Licensed under the [Apache License 2.0](LICENSE).

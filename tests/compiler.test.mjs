@@ -11,13 +11,13 @@ import { CompilerError, createCompiler } from '../src/compiler.mjs';
 import { loadHost, TASK_HOOK } from '../src/extension-catalog.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const model = readFileSync(join(root, 'extensions/task-effect/workflow/dcm.json'));
+const model = readFileSync(join(root, 'extensions/task-effect/current/dcm.json'));
 const vendor = join(root, 'vendor');
-const jarName = 'keir-compiler-java-0.2.0-cli.jar';
-const jarDigest = 'a53551e45c94f1c5a63325e821a47e9742cf9a588720269077f96f0e9b37b7b0';
+const jarName = 'keir-compiler-java-0.3.0-cli.jar';
+const jarDigest = '368ce1fc3e7ba54fb5e3c9880dc1c17f9dc9fc03cd6fe7a0df55fcc025e1c7a3';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const source = Buffer.from(JSON.stringify({
-  language: 'keir/2', domain: { id: 'demo.tasks', version: '4', fingerprint: 'sha256:' + sha(model) },
+  language: 'keir/2', domain: { ...JSON.parse(model).domain, fingerprint: 'sha256:' + sha(model) },
   entrypoint: TASK_HOOK, name: 'daymark-title-probe',
   steps: [
     { id: 'eligibleProject', let: { literal: 'project1', type: 'ProjectId' } },
@@ -83,9 +83,13 @@ test('distribution is the pinned independent compiler and notice metadata resolv
   assert.equal(sha(await readFile(join(vendor, jarName))), info.artifact.sha256.slice(7));
   assert.equal(info.artifact.file, jarName);
   assert.equal(info.artifact.sha256, 'sha256:' + jarDigest);
-  assert.equal(info.artifact.bytes, 8_818_933);
-  assert.equal(info.compiler, 'keir-compiler-java/0.2.0');
-  assert.equal(info.distribution.sha256, 'sha256:5aa1bd71ef10493de21e700053005c119a5835aaeb85c71ba5c00ce7fc175b05');
+  assert.equal(info.artifact.bytes, 8_819_384);
+  assert.equal(info.compiler, 'keir-compiler-java/0.3.0');
+  assert.equal(info.status, 'verified-release');
+  assert.equal(info.release, 'v0.3.0');
+  assert.equal(info.source.revision, 'b2329440dd2a25acc547f3ebfea214748d912022');
+  assert.deepEqual(info.distribution, { file: 'keir-compiler-cli-0.3.0.zip',
+    sha256: 'sha256:596ef85cbec91d9e459fcd67aff83e05099df9b7610fd0fca643e573d27d090c' });
   const notices = await readFile(join(vendor, info.notices), 'utf8');
   assert.equal((notices.match(/ sha256:[a-f0-9]{64}/g) ?? []).length, 19);
   assert.match(await readFile(join(vendor, 'compiler-notices/LICENSE'), 'utf8'), /Apache License/);
@@ -372,12 +376,13 @@ test('actual pinned compiler works from a standalone directory and preserves raw
   const imported = await import(pathToFileURL(join(directory, 'src/compiler.mjs')));
   const compiler = imported.createCompiler({ modelBytes: model, javaExecutable: java });
   const first = await compiler.compile(source);
-  assert.equal(sha(first.artifact), 'fe2516a772473ded446b93768a04e11b00a50351c6e8a5fa78f2dcf129c98a36');
-  const artifact = JSON.parse(first.artifact);
-  assert.equal(artifact.format, 'keir-artifact/2');
-  assert.equal(artifact.compiler, 'keir-compiler-java/0.2.0');
-  assert.equal(Object.hasOwn(artifact, 'profile'), false);
   assert.deepEqual(first.diagnostics, []);
+  assert.ok(first.artifact instanceof Uint8Array);
+  assert.equal(sha(first.artifact), '7912462c90a5cde42101975fe0403a40fef86afa6a298067fdc0621eba1854bd');
+  const artifact = JSON.parse(first.artifact);
+  assert.equal(artifact.format, 'keir-artifact/3');
+  assert.equal(artifact.compiler, 'keir-compiler-java/0.3.0');
+  assert.equal(Object.hasOwn(artifact, 'profile'), false);
   const changed = Buffer.concat([source, Buffer.from('\n  \n')]);
   const second = await compiler.compile(changed);
   assert.notEqual(sha(source), sha(changed));
@@ -390,10 +395,12 @@ test('actual pinned compiler works from a standalone directory and preserves raw
     assert.equal(oldSource.artifact, null);
     assert.equal(oldSource.diagnostics[0].code, 'PROFILE_UNSUPPORTED');
   }
-  const oldModel = await readFile(join(root, 'extensions/task-effect/title/dcm.json'));
-  const rejectedModel = await imported.createCompiler({ modelBytes: oldModel, javaExecutable: java }).compile(source);
-  assert.equal(rejectedModel.artifact, null);
-  assert.equal(rejectedModel.diagnostics[0].path, '/dcm/format');
+  for (const path of ['title', 'workflow']) {
+    const oldModel = await readFile(join(root, 'extensions/task-effect', path, 'dcm.json'));
+    const rejectedModel = await imported.createCompiler({ modelBytes: oldModel, javaExecutable: java }).compile(source);
+    assert.equal(rejectedModel.artifact, null);
+    assert.equal(rejectedModel.diagnostics[0].path, '/dcm/format');
+  }
   const excessiveDiagnostic = Buffer.from(JSON.stringify({ language: 'keir/2', ['x'.repeat(20_000)]: false }));
   await assert.rejects(compiler.compile(excessiveDiagnostic), error => error.code === 'COMPILER_LIMIT' && error.status === 413);
 });

@@ -149,7 +149,7 @@ test('an unavailable runtime archive blocks execution and preserves exact saved 
   const proof = lifecycle.evidence('maya', active.approvedEvidenceId, id);
   const read = fs.readFileSync;
   fs.readFileSync = (path, ...args) => {
-    if (String(path).endsWith('/vendor/keir-runtime-node-0.2.0.tgz')) throw new Error('Runtime archive unavailable');
+    if (String(path).endsWith('/vendor/keir-runtime-node-0.3.0.tgz')) throw new Error('Runtime archive unavailable');
     return read(path, ...args);
   };
   syncBuiltinESMExports();
@@ -220,7 +220,7 @@ test('a malformed later scenario prevents any dispatch or saved evidence', async
   let simulations = 0;
   const { db, lifecycle } = setup(t, { runTaskSimulation: async () => { simulations++; assert.fail('Preflight must reject the whole suite'); } });
   const state = await load(lifecycle), input = currentInput(state), examples = fixtureFor().cases;
-  const malformed = [examples[0], examples[1].replace('"format":', '"format": "keir-scenario/2", "format":')];
+  const malformed = [examples[0], examples[1].replace('"format":', '"format": "keir-scenario/3", "format":')];
   const evidenceCount = () => db.prepare('SELECT count(*) AS count FROM extension_evidence').get().count;
   await assert.rejects(lifecycle.proposeScenarios('maya', { ...input, cases: malformed }, authorized),
     { status: 400, diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/1' }] });
@@ -398,7 +398,7 @@ function readOnlyProgram(steps) {
     { event: 'CALL_DISPATCHED', step, capability: 'tasks.get' }, { event: 'CALL_SUCCEEDED', step, capability: 'tasks.get' }])
     : [{ event: 'STEP_START', step: 'constant' }, { event: 'VALUE_BOUND', step: 'constant' }]), { event: 'RETURNED' }, { event: 'TERMINATED' }];
   const outcome = { classification: 'COMPLETED', result: { status: 'NO_OP' }, effects: [], trace: trace.map((event, sequence) => ({ sequence, ...event })) };
-  return { source: JSON.stringify(source), row: { format: 'keir-scenario/2', id: 'normal',
+  return { source: JSON.stringify(source), row: { format: 'keir-scenario/3', id: 'normal',
     given: { input: { taskId: 'task1', occurredAt: '2026-03-07T12:34:56.789Z' }, fixture: 'normal' },
     stubs: calls.map(call => ({ ...call, response: { kind: 'SUCCESS',
       value: { id: 'task1', projectId: 'project1', status: 'COMPLETED', title: 'Example task', tags: [], priority: 'normal' } } })),

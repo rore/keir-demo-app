@@ -117,8 +117,11 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
   } finally { await fixture.close(); }
 });
 
-test('Studio summarizes the exact YAML follow-up and keeps forged or unsupported summaries conservative', async ({ page }, testInfo) => {
+test('Studio summarizes the current YAML follow-up and keeps forged or unsupported summaries conservative', async ({ page }, testInfo) => {
   const captured = JSON.parse(readFileSync(new URL('../fixtures/task-follow-up-summary.json', import.meta.url)));
+  const currentHost = loadHost('TaskCompleted'), originalArtifact = JSON.parse(captured.artifact);
+  const currentSource = captured.source.replace("version: '4'", "version: '5'")
+    .replace(originalArtifact.modelRef.digest, currentHost.pins.modelDigest);
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
     await page.goto(fixture.origin);
@@ -128,11 +131,13 @@ test('Studio summarizes the exact YAML follow-up and keeps forged or unsupported
     const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Follow-up in the same project' });
     const compiled = await page.request.post(`${fixture.origin}/api/extensions/${extensionId}/compile`, {
       headers: { origin: fixture.origin, 'X-Session-Context': contextToken },
-      data: { hookId: 'TaskCompleted', source: captured.source, draftVersion: 0 },
+      data: { hookId: 'TaskCompleted', source: currentSource, draftVersion: 0 },
     });
     expect(compiled.ok(), await compiled.text()).toBe(true);
     const state = await compiled.json();
-    expect(state.draft.pins.artifactDigest).toBe(captured.pins.artifactDigest);
+    expect(state.draft.pins.modelRef.format).toBe('keir-dcm/3');
+    expect(state.draft.pins.artifactDigest).not.toBe(captured.pins.artifactDigest);
+    expect(state.draft.pins.rawSourceDigest).toBe('sha256:' + createHash('sha256').update(currentSource).digest('hex'));
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
     const rule = studio.getByRole('article', { name: 'About this rule', exact: true });
     for (const width of [1440, 320]) {
@@ -162,7 +167,7 @@ test('Studio summarizes the exact YAML follow-up and keeps forged or unsupported
     }
     const unsupported = await page.request.post(`${fixture.origin}/api/extensions/${extensionId}/compile`, {
       headers: { origin: fixture.origin, 'X-Session-Context': contextToken },
-      data: { hookId: 'TaskCompleted', source: captured.source.replace('source.status ==', 'source.status !='), draftVersion: state.draftVersion },
+      data: { hookId: 'TaskCompleted', source: currentSource.replace('source.status ==', 'source.status !='), draftVersion: state.draftVersion },
     });
     expect(unsupported.ok(), await unsupported.text()).toBe(true);
     await page.reload();

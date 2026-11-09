@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -15,8 +16,11 @@ function cleanup(t, dir, close = () => {}) { t.after(() => { close(); rmSync(dir
 function expectStatus(status, action) {
   assert.throws(action, error => error instanceof AppError && error.status === status);
 }
+function expectAsyncStatus(status, action) {
+  return assert.rejects(action, error => error instanceof AppError && error.status === status);
+}
 
-test('services validate CRUD, bounds, ownership and completion without partial writes', t => {
+test('services validate CRUD, bounds, ownership and completion without partial writes', async t => {
   const dir = sandbox(), db = openData(join(dir, 'app.sqlite'));
   cleanup(t, dir, () => db.close());
   const maya = taskService(db), leo = taskService(db);
@@ -32,17 +36,17 @@ test('services validate CRUD, bounds, ownership and completion without partial w
   }
   expectStatus(400, () => maya.createProject('maya', { name: 'ok', ownerId: 'leo' }));
   expectStatus(400, () => maya.createProject('maya', {}));
-  expectStatus(400, () => maya.createTask('maya', { projectId: project.id, title: 't', ownerId: 'leo' }));
-  expectStatus(400, () => maya.createTask('maya', { projectId: project.id, title: 'x'.repeat(121) }));
-  expectStatus(400, () => maya.createTask('maya', { projectId: project.id, title: ' ', notes: '' }));
-  assert.equal(maya.createTask('maya', { projectId: project.id, title: 't'.repeat(120), notes: 'n'.repeat(4000) }).title.length, 120);
-  expectStatus(400, () => maya.createTask('maya', { projectId: project.id, title: 'ok', notes: 'n'.repeat(4001) }));
-  expectStatus(404, () => maya.createTask('maya', { projectId: leoSeed.id, title: 'foreign' }));
+  await expectAsyncStatus(400, () => maya.createTask('maya', { projectId: project.id, title: 't', ownerId: 'leo' }, { operationId: randomUUID() }));
+  await expectAsyncStatus(400, () => maya.createTask('maya', { projectId: project.id, title: 'x'.repeat(121) }, { operationId: randomUUID() }));
+  await expectAsyncStatus(400, () => maya.createTask('maya', { projectId: project.id, title: ' ', notes: '' }, { operationId: randomUUID() }));
+  assert.equal((await maya.createTask('maya', { projectId: project.id, title: 't'.repeat(120), notes: 'n'.repeat(4000) }, { operationId: randomUUID() })).title.length, 120);
+  await expectAsyncStatus(400, () => maya.createTask('maya', { projectId: project.id, title: 'ok', notes: 'n'.repeat(4001) }, { operationId: randomUUID() }));
+  await expectAsyncStatus(404, () => maya.createTask('maya', { projectId: leoSeed.id, title: 'foreign' }, { operationId: randomUUID() }));
   expectStatus(404, () => maya.getTask('maya', 'missing'));
   expectStatus(404, () => maya.renameProject('maya', leoSeed.id, { name: 'steal' }));
   expectStatus(404, () => maya.listTasks('maya', leoSeed.id));
 
-  const task = maya.createTask('maya', { projectId: project.id, title: ' initial ', notes: '' });
+  const task = await maya.createTask('maya', { projectId: project.id, title: ' initial ', notes: '' }, { operationId: randomUUID() });
   assert.equal(task.title, 'initial');
   assert.equal(maya.editTask('maya', task.id, { title: 'Edited', notes: 'notes' }).notes, 'notes');
   expectStatus(400, () => maya.editTask('maya', task.id, { notes: '' }));
@@ -63,9 +67,9 @@ test('services validate CRUD, bounds, ownership and completion without partial w
 test('initial seed is idempotent and all three users persist through reopen', t => {
   const dir = sandbox(), path = join(dir, 'app.sqlite');
   let db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
   assert.deepEqual(db.prepare('SELECT owner_id,hook_id,revision_id,generation,binding_pins FROM extension_selections ORDER BY owner_id,hook_id').all()
-    .map(row => Object.values(row)), ['leo', 'maya', 'sam'].flatMap(id => ['TaskCompleted', 'TaskCreated'].map(hook => [id, hook, null, 0, null])));
+    .map(row => Object.values(row)), ['leo', 'maya', 'sam'].flatMap(id => ['TaskBeforeCreate', 'TaskCompleted', 'TaskCreated'].map(hook => [id, hook, null, 0, null])));
   assert.equal(db.prepare('SELECT count(*) n FROM extension_revisions').get().n, 0);
   assert.deepEqual(taskService(db).listProjects('maya').length, 1);
   assert.deepEqual(USERS.map(user => taskService(db).listProjects(user.id).length), [1, 1, 1]);
@@ -76,16 +80,16 @@ test('initial seed is idempotent and all three users persist through reopen', t 
   for (const user of USERS) assert.equal(taskService(db).listProjects(user.id).length, 2);
 });
 
-test('exact open-task lookup covers the full authorized project and fails explicitly on incomplete reads', t => {
+test('exact open-task lookup covers the full authorized project and fails explicitly on incomplete reads', async t => {
   const dir = sandbox(), path = join(dir, 'app.sqlite'), db = openData(path);
   const writer = new DatabaseSync(path);
   cleanup(t, dir, () => { writer.close(); db.close(); });
   const tasks = taskService(db);
   const maya = tasks.listProjects('maya')[0].id, leo = tasks.listProjects('leo')[0].id;
   const deadline = { clock: { nowMs: () => 0 }, expiresAtMs: 1000 };
-  for (let index = 0; index < 27; index++) tasks.createTask('maya', { projectId: maya, title: 'Earlier ' + index });
-  const target = tasks.createTask('maya', { projectId: maya, title: 'Exact\u0000suffix' });
-  tasks.createTask('leo', { projectId: leo, title: 'Other owner' });
+  for (let index = 0; index < 27; index++) await tasks.createTask('maya', { projectId: maya, title: 'Earlier ' + index }, { operationId: randomUUID() });
+  const target = await tasks.createTask('maya', { projectId: maya, title: 'Exact\u0000suffix' }, { operationId: randomUUID() });
+  await tasks.createTask('leo', { projectId: leo, title: 'Other owner' }, { operationId: randomUUID() });
   assert.deepEqual(tasks.hasOpenTask('maya', maya, 'Exact\u0000suffix', deadline), { matches: true });
   for (const title of ['Exact', 'Exact\u0000wrong', 'exact\u0000suffix', ' Exact\u0000suffix', 'Other owner'])
     assert.deepEqual(tasks.hasOpenTask('maya', maya, title, deadline), { matches: false });
@@ -106,7 +110,7 @@ test('fresh schema, seed and current marker roll back together on initialization
   const exec = DatabaseSync.prototype.exec;
   DatabaseSync.prototype.exec = function (sql) {
     const result = exec.call(this, sql);
-    if (sql === 'PRAGMA user_version=13') throw new Error('initialization blocked');
+    if (sql === 'PRAGMA user_version=14') throw new Error('initialization blocked');
     return result;
   };
   try { assert.throws(() => openData(path), /initialization blocked/); }
@@ -119,13 +123,13 @@ test('fresh schema, seed and current marker roll back together on initialization
   assert.throws(() => openData(path), /Unsupported database format/);
 });
 
-test('native tags normalize, preserve exact stored text on tag-only edits and survive reopen', t => {
+test('native tags normalize, preserve exact stored text on tag-only edits and survive reopen', async t => {
   const dir = sandbox(), path = join(dir, 'app.sqlite');
   let db = openData(path);
   cleanup(t, dir, () => db.close());
   let service = taskService(db);
   const projectId = service.listProjects('maya')[0].id;
-  const task = service.createTask('maya', { projectId, title: 'Tag me', tags: [' J\u030C ', '\u01F0', ' CAFE\u0301 ', 'caf\u00E9'] });
+  const task = await service.createTask('maya', { projectId, title: 'Tag me', tags: [' J\u030C ', '\u01F0', ' CAFE\u0301 ', 'caf\u00E9'] }, { operationId: randomUUID() });
   assert.deepEqual(task.tags, ['\u01F0', 'caf\u00E9']);
   assert.deepEqual(service.searchTasks('maya', projectId, { tag: ' J\u030C ' }).items.map(row => row.id), [task.id]);
   assert.deepEqual(service.editTask('maya', task.id, { title: 'Edited', notes: 'Updated' }).tags, task.tags);
@@ -141,7 +145,7 @@ test('native tags normalize, preserve exact stored text on tag-only edits and su
 
   const count = service.listTasks('maya', projectId).length;
   for (const tags of [null, 'x', [42], [' '], ['x,y'], ['x\u0000y'], ['x\u0085y'], ['\uD800'], ['😀'.repeat(17)], Array.from({ length: 9 }, (_, i) => String(i))]) {
-    expectStatus(400, () => service.createTask('maya', { projectId, title: 'Invalid', tags }));
+    await expectAsyncStatus(400, () => service.createTask('maya', { projectId, title: 'Invalid', tags }, { operationId: randomUUID() }));
     expectStatus(400, () => service.editTask('maya', task.id, { tags }));
   }
   assert.equal(service.listTasks('maya', projectId).length, count);
@@ -158,11 +162,11 @@ test('native tags normalize, preserve exact stored text on tag-only edits and su
   assert.deepEqual(service.editTask('maya', task.id, { tags: [] }).tags, []);
 });
 
-test('native priority and UTC millisecond due time validate and update independently of task text', t => {
+test('native priority and UTC millisecond due time validate and update independently of task text', async t => {
   const dir = sandbox(), db = openData(join(dir, 'app.sqlite'));
   cleanup(t, dir, () => db.close());
   const service = taskService(db), projectId = service.listProjects('maya')[0].id;
-  const task = service.createTask('maya', { projectId, title: 'Legacy\u0000task', notes: 'Old\u0000notes' });
+  const task = await service.createTask('maya', { projectId, title: 'Legacy\u0000task', notes: 'Old\u0000notes' }, { operationId: randomUUID() });
   assert.deepEqual([task.priority, task.dueAt], ['normal', null]);
   const exactText = () => db.prepare('SELECT hex(title), hex(notes) FROM tasks WHERE id=?').get(task.id);
   const before = exactText();
@@ -179,7 +183,7 @@ test('native priority and UTC millisecond due time validate and update independe
   for (const fields of [{ priority: null }, { priority: 'urgent' }, { dueAt: '' }, { dueAt: '2025-02-28' },
     { dueAt: '2025-02-29T00:00:00.000Z' }, { dueAt: '2025-02-28T24:00:00.000Z' }, { dueAt: '0000-01-01T00:00:00.000Z' },
     { dueAt: '2026-04-01T00:00:00Z' }, { dueAt: '2025-03-08T09:30:00.123-05:00' }, { dueAt: Date.parse(beforeDst) }]) {
-    expectStatus(400, () => service.createTask('maya', { projectId, title: 'Invalid fields', ...fields }));
+    await expectAsyncStatus(400, () => service.createTask('maya', { projectId, title: 'Invalid fields', ...fields }, { operationId: randomUUID() }));
     expectStatus(400, () => service.editTask('maya', task.id, fields));
   }
   for (const fields of [{}, { notes: 'Missing title', dueAt: null }, { title: 'Missing notes', priority: 'high' }])
@@ -191,18 +195,19 @@ test('native priority and UTC millisecond due time validate and update independe
   assert.throws(() => db.prepare("UPDATE tasks SET priority='urgent' WHERE id=?").run(task.id), /CHECK/);
 });
 
-test('search filters a project before paging, with exact tags and literal ASCII-folded text beyond NUL', t => {
+test('search filters a project before paging, with exact tags and literal ASCII-folded text beyond NUL', async t => {
   const dir = sandbox(), db = openData(join(dir, 'app.sqlite'));
   cleanup(t, dir, () => db.close());
   const service = taskService(db), owner = 'maya';
   const { id: projectId } = service.createProject(owner, { name: 'Search fixture' });
-  const add = input => service.createTask(owner, { projectId, title: 'Ordinary', ...input });
-  for (let index = 0; index < 30; index++) add({ notes: 'needle XX É', tags: ['ready'] });
-  const matching = Array.from({ length: 27 }, (_, index) => add(index % 2
+  const add = input => service.createTask(owner, { projectId, title: 'Ordinary', ...input }, { operationId: randomUUID() });
+  for (let index = 0; index < 30; index++) await add({ notes: 'needle XX É', tags: ['ready'] });
+  const matching = [];
+  for (let index = 0; index < 27; index++) matching.push(await add(index % 2
     ? { title: 'NEEDLE %_ É', tags: ['ready'] }
     : { notes: 'before\u0000needle %_ É', tags: ['ready'] }));
-  const widerTag = add({ notes: 'needle %_ É', tags: ['ready later'] });
-  add({ notes: 'needle %_ é', tags: ['ready'] });
+  const widerTag = await add({ notes: 'needle %_ É', tags: ['ready later'] });
+  await add({ notes: 'needle %_ é', tags: ['ready'] });
   const completed = service.completeTask(owner, matching[0].id);
   assert.equal(completed.status, 'completed');
   const anchorTime = '2026-01-02T00:00:00.000Z';

@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
 import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -255,7 +256,7 @@ test('narrow Studio inspects current saved source and keeps a restored task choi
   await openDetails(page);
   await ui.getByRole('button', { name: 'Inspect saved source and examples', exact: true }).click();
   await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toContainText('keir/2');
-  await expect(ui.getByLabel('Artifact pins for inspection', { exact: true })).toContainText('keir-dcm/2');
+  await expect(ui.getByLabel('Artifact pins for inspection', { exact: true })).toContainText('keir-dcm/3');
   await closeDetails(page);
   await ui.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
   await openDetails(page); await ui.getByText('Manage saved customization', { exact: true }).click();
@@ -315,7 +316,8 @@ async function nativeRequest(page, path, data) {
   const origin = new URL(page.url()).origin;
   const { contextToken } = await (await page.request.get(origin + '/api/session')).json();
   const response = await page.request[data === undefined ? 'get' : 'post'](origin + '/api/' + path, {
-    headers: { origin, 'x-session-context': contextToken }, ...(data === undefined ? {} : { data }),
+    headers: { origin, 'x-session-context': contextToken,
+      ...(data !== undefined && path === 'tasks' ? { 'x-task-create-id': randomUUID() } : {}) }, ...(data === undefined ? {} : { data }),
   });
   expect(response.ok(), await response.text()).toBe(true);
   return response.json();

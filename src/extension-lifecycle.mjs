@@ -1,18 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, notFound, transaction, revokeTaskAdmissions } from './data.mjs';
-import { loadHost, readCurrentDefinition, admitArtifact, digest, json, TASK_HOOK, TASK_HOOKS, TASK_DEFINITION } from './extension-catalog.mjs';
-import { runTaskEffectSimulation, taskEffectProofMatches, preflightTaskEffectScenarios, taskEffectExpected, TASK_EFFECT_VERSIONS as versions } from './task-effect-simulation.mjs';
+import { loadHost, readCurrentDefinition, readDefinitionForPins, definitionForPins, admitArtifact, digest, json, TASK_HOOK, TASK_HOOKS, TASK_DEFINITION } from './extension-catalog.mjs';
+import { runTaskEffectSimulation, taskEffectProofMatches, preflightTaskEffectScenarios, taskEffectExpected, taskEffectVersions } from './task-effect-simulation.mjs';
 
 const conflict = () => { throw new AppError(409, 'This extension changed. Review the current version before trying again.'); };
 const deleted = () => { const error = new AppError(410, 'This customization was deleted. Return to your customizations.'); error.code = 'CUSTOMIZATION_DELETED'; throw error; };
 const retired = () => { throw Object.assign(new AppError(410, 'This earlier customization is read-only. Start a new customization to change task behavior.'), { code: 'LEGACY_CUSTOMIZATION_RETIRED' }); };
 const abort = signal => { if (signal?.aborted) throw new AppError(499, 'Preparation stopped. Check saved state before trying again.'); };
 export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulation, compiler } = {}) {
-  const hosts = new Map(), savedDefinitions = new Map();
+  const hosts = new Map(), savedDefinitions = new Map(), availableDefinitions = new Set();
+  const definitionKey = pins => json({ model: pins.modelDigest, hook: pins.hook });
   for (const hook of TASK_HOOKS) {
-    try { hosts.set(hook, loadHost(hook)); } catch { /* Native tasks remain available without the extension model. */ }
-    try { savedDefinitions.set(hook, hosts.get(hook) ?? readCurrentDefinition(hook)); }
-    catch { /* Unrecognized saved pins stay unavailable. */ }
+    try {
+      const definition = loadHost(hook);
+      hosts.set(hook, definition); availableDefinitions.add(definitionKey(definition.pins));
+    } catch { /* Native tasks remain available without the extension model. */ }
+    try {
+      const definition = hosts.get(hook) ?? readCurrentDefinition(hook);
+      savedDefinitions.set(definitionKey(definition.pins), definition);
+    } catch { /* Unknown saved definitions stay unavailable. */ }
   }
   const host = hosts.get(TASK_HOOK);
   const simulations = new Set();
@@ -24,14 +30,20 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     if (!/^sha256:[0-9a-f]{64}$/.test(artifact.sourceDigest)) throw new Error('Invalid source identity');
     return { ...definition.pins, rawSourceDigest: digest(value.source), compiledSourceDigest: artifact.sourceDigest,
       artifactDigest: digest(value.artifact), suiteDigest: value.suite === null ? null : digest(value.suite),
-      fixture: versions.fixtureVersion };
+      fixture: taskEffectVersions(definition).fixtureVersion };
   }
   function matchesHost(candidate, pins) {
     return candidate && pins?.hook === candidate.pins.hook && !Object.hasOwn(pins, 'profile')
       && Object.entries(candidate.pins).every(([key, value]) => json(pins[key]) === json(value));
   }
   function definition(row) {
-    const pins = JSON.parse(row.identity), saved = savedDefinitions.get(pins.hook);
+    const pins = JSON.parse(row.identity), key = definitionKey(pins);
+    if (!savedDefinitions.has(key)) {
+      savedDefinitions.set(key, readDefinitionForPins(pins));
+      try { definitionForPins(pins); availableDefinitions.add(key); }
+      catch { /* Saved source and proof remain readable without execution dependencies. */ }
+    }
+    const saved = savedDefinitions.get(key);
     if (!matchesHost(saved, pins)) throw new Error('Host definition mismatch');
     return saved;
   }
@@ -59,7 +71,10 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     if (!row) throw notFound();
     return row;
   }
-  function valid(row) { const item = stored(row); return !!item && !item.legacy && hosts.has(item.pins.hook); }
+  function valid(row) {
+    try { const item = stored(row); return !!item && !item.legacy && availableDefinitions.has(definitionKey(item.pins)); }
+    catch { return false; }
+  }
   function view(row) {
     if (!row) return null;
     let pins = {};
@@ -84,7 +99,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     if (item.draft_id) {
       try {
         const pins = JSON.parse(revision(owner, item.draft_id, extensionId).identity);
-        if (pins.hook === item.hook_id && pins.definitionId === TASK_DEFINITION && pins.modelRef?.format === 'keir-dcm/2') return true;
+        if (pins.hook === item.hook_id && pins.definitionId === TASK_DEFINITION && ['keir-dcm/2', 'keir-dcm/3'].includes(pins.modelRef?.format)) return true;
       } catch { /* The original conversation can still identify a repairable current draft. */ }
     }
     return !!db.prepare(`SELECT 1 FROM extension_conversation_links l JOIN authoring_conversations c ON c.id=l.conversation_id AND c.owner_id=l.owner_id
@@ -105,7 +120,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     });
   }
   function suiteIdentity(row) {
-    return digest(json({ ...versions, simulator: row.identity, cases: cases(row).map(item => ({ id: item.id, digest: digest(item.bytes) })) }));
+    return digest(json({ ...taskEffectVersions(definition(row)), simulator: row.identity, cases: cases(row).map(item => ({ id: item.id, digest: digest(item.bytes) })) }));
   }
   function evidence(owner, id, extensionId) {
     const row = db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND id=?').get(owner, id);
@@ -462,7 +477,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         authorize(); abort(signal);
         const { reports } = result;
         const suiteDigest = suiteIdentity(row);
-        const payload = json({ identity: { dependencies: item.pins, ...versions, suiteDigest }, reports });
+        const payload = json({ identity: { dependencies: item.pins, ...taskEffectVersions(definition(row)), suiteDigest }, reports });
         if (Buffer.byteLength(payload) > 131072) throw new AppError(413, 'Sample evidence exceeds the host limit.');
         commit(owner, input.extensionId, authorize, () => {
           abort(signal); currentDraft(owner, input);
@@ -510,7 +525,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       if (!proof || proof.identity !== row.identity || proof.suite_identity !== suiteIdentity(row) || Buffer.byteLength(proof.payload) > 131072) return null;
       const view = api.evidence(owner, proof.id, input.extensionId);
       return view.id === proof.id && view.revisionId === row.id
-        && json(view.identity) === json({ dependencies: pins, ...versions, suiteDigest: proof.suite_identity }) ? view : null;
+        && json(view.identity) === json({ dependencies: pins, ...taskEffectVersions(definition(row)), suiteDigest: proof.suite_identity }) ? view : null;
     },
     evidence(owner, id, extensionId) {
       draft(owner, extensionId);
@@ -522,13 +537,14 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       const reports = payload.reports.map(item => {
         const original = originals.find(example => example.id === item.id);
         if (!original) return item;
-          const projectName = id => typeof id === 'string'
-            ? db.prepare('SELECT name FROM projects WHERE owner_id=? AND id=?').get(owner, id)?.name ?? 'Example project' : undefined;
-          const decorate = rows => rows === null ? null : rows?.map(value => ({ ...value, projectName: projectName(value.projectId) }));
-          return { ...item, expected: { ...item.expected, createdTasks: decorate(item.expected.createdTasks) },
-            report: { ...item.report, scenario: item.report.scenario ? { ...item.report.scenario, task: { ...item.report.scenario.task,
-              projectName: projectName(item.report.scenario.task.projectId) } } : undefined,
-              observed: item.report.observed ? { ...item.report.observed, createdTasks: decorate(item.report.observed.createdTasks) } : undefined } };
+        const projectName = id => typeof id === 'string'
+          ? db.prepare('SELECT name FROM projects WHERE owner_id=? AND id=?').get(owner, id)?.name ?? 'Example project' : undefined;
+        const decorate = rows => rows === null ? null : rows?.map(value => ({ ...value, projectName: projectName(value.projectId) }));
+        const scenario = item.report.scenario;
+        return { ...item, expected: { ...item.expected, createdTasks: decorate(item.expected.createdTasks) },
+          report: { ...item.report, scenario: scenario?.task ? { ...scenario, task: { ...scenario.task,
+            projectName: projectName(scenario.task.projectId) } } : scenario,
+            observed: item.report.observed ? { ...item.report.observed, createdTasks: decorate(item.report.observed.createdTasks) } : undefined } };
       });
       const historical = stored(row)?.legacy === true;
       return { id: proof.id, revisionId: proof.revision_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
@@ -565,13 +581,14 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       const row = revision(owner, revisionId, extensionId);
       requireTask(owner, extensionId);
       const item = stored(row);
-      if (!item || item.legacy || !hosts.has(item.pins.hook)) throw new AppError(503, 'The exact saved execution dependencies are unavailable.');
+      if (!item || item.legacy) throw new AppError(503, 'The exact saved execution dependencies are unavailable.');
+      if (!availableDefinitions.has(definitionKey(item.pins))) throw new AppError(503, 'The exact saved execution dependencies are unavailable.');
       return { artifactBytes: item.artifactBytes, host: definition(row), pins: item.pins };
     },
     admissionCurrent(context) {
       try {
         const state = draft(context.owner, context.itemId), row = revision(context.owner, context.revisionId, context.itemId), item = stored(row);
-        if (state.hook_id !== context.hookId || !item || !eligible(row) || !matchesHost(hosts.get(context.hookId), context.pins)) return false;
+        if (state.hook_id !== context.hookId || !item || !eligible(row) || !matchesHost(definition(row), context.pins)) return false;
         if (!Object.entries(item.pins).every(([key, value]) => json(context.pins[key]) === json(value))) return false;
         const capturedProof = context.pins.approvedEvidenceId && evidence(context.owner, context.pins.approvedEvidenceId, context.itemId);
         return !!capturedProof && capturedProof.revision_id === row.id && passing(row, capturedProof);

@@ -1,9 +1,10 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Temporal } from "temporal-polyfill";
 import "./styles.css";
 import Studio, { type Collection, type StudioTarget } from "./Studio";
 import Customizations from "./Customizations";
+import { normalizeTaskTags } from "../task-workflow-values.mjs";
 
 type User = { id: string; name: string; description?: string };
 type Session = { user: User | null; contextToken: string; users?: User[] };
@@ -42,11 +43,59 @@ type Task = {
   completedAt: string | null;
 };
 type TaskDraft = Pick<Task, "title" | "notes" | "priority"> & { tags: string; dueTime: string; dueZone: string; dueTimeEdited: boolean };
+type CreateBody = Pick<Task, "projectId" | "title" | "notes" | "tags" | "priority" | "dueAt">;
+type CreateNotCreated = { operationId: string; state: "NOT_CREATED"; code: "RULE_DENIED" | "CHECK_UNAVAILABLE" | "STALE_ATTEMPT" | "NATIVE_REJECTED"; message: string };
+type CreateResult = CreateNotCreated | { operationId: string; state: "CREATED"; task: Task } | { operationId: string; state: "UNRESOLVED" };
+type CreateAttempt = { operationId: string; body: CreateBody; draftVersion: number; checked: boolean; suspended: boolean };
+type CreateRecovery = { attempt: CreateAttempt; draft: TaskDraft; version: number };
+const createUncertain = "We couldn't confirm whether this task was added. Your entries are still here.";
+
+function isTask(value: unknown): value is Task {
+  const task = value as Task | null;
+  return !!task && typeof task === "object" && typeof task.id === "string" && !!task.id && typeof task.projectId === "string"
+    && typeof task.title === "string" && typeof task.notes === "string" && Array.isArray(task.tags) && task.tags.every(tag => typeof tag === "string")
+    && ["low", "normal", "high"].includes(task.priority) && ["open", "completed"].includes(task.status)
+    && (task.dueAt === null || typeof task.dueAt === "string") && (task.completedAt === null || typeof task.completedAt === "string");
+}
+function createResult(value: unknown, operationId: string): CreateResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as CreateResult;
+  const keys = Object.keys(result).sort().join(",");
+  if (result.operationId !== operationId) return null;
+  if (result.state === "NOT_CREATED" && keys === "code,message,operationId,state"
+    && ["RULE_DENIED", "CHECK_UNAVAILABLE", "STALE_ATTEMPT", "NATIVE_REJECTED"].includes(result.code)
+    && typeof result.message === "string" && result.message.length <= 4096) return result;
+  if (result.state === "CREATED" && keys === "operationId,state,task" && isTask(result.task)) return result;
+  if (result.state === "UNRESOLVED" && keys === "operationId,state") return result;
+  return null;
+}
 type SearchFilters = { q: string; tag: string };
 type SearchPage = { items: Task[]; nextAfter: string | null };
 type TaskSearch = SearchPage & { pending: boolean; failure: { message: string; after: string | null } | null };
 const emptyFilters = { q: "", tag: "" };
 const emptyPage = { items: [], nextAfter: null };
+
+function newTaskDraft(): TaskDraft {
+  return { title: "", notes: "", tags: "", priority: "normal", dueTime: "", dueZone: Temporal.Now.timeZoneId(), dueTimeEdited: false };
+}
+
+function draftDueAt(draft: TaskDraft): string | null | undefined {
+  if (!draft.dueTimeEdited) return undefined;
+  if (!draft.dueTime) return null;
+  const local = Temporal.PlainDateTime.from(draft.dueTime);
+  let dueAt: string;
+  try {
+    dueAt = local.toZonedDateTime(draft.dueZone, { disambiguation: "reject" })
+      .toInstant().toString({ fractionalSecondDigits: 3 });
+  } catch {
+    const earlier = local.toZonedDateTime(draft.dueZone, { disambiguation: "earlier" }).toPlainDateTime();
+    throw new Error(earlier.equals(local)
+      ? "This local time occurs twice. Choose a different time."
+      : "This local time does not exist. Choose a different time.");
+  }
+  if (dueAt.length !== 24 || dueAt < "0001-01-01T00:00:00.000Z") throw new Error("Choose a time within UTC years 0001 to 9999.");
+  return dueAt;
+}
 
 function taskDraft(task: Task, dueZone = Temporal.Now.timeZoneId()): TaskDraft {
   const local = task.dueAt ? Temporal.Instant.from(task.dueAt).toZonedDateTimeISO(dueZone).toPlainDateTime() : null;
@@ -66,6 +115,7 @@ class ApiError extends Error {
     public status: number,
     public diagnostics?: unknown[],
     public code?: string,
+    public createResult?: CreateNotCreated,
   ) {
     super(message);
   }
@@ -77,6 +127,7 @@ async function api<T>(
   method = "GET",
   body?: object,
   signal?: AbortSignal,
+  createId?: string,
 ): Promise<T> {
   const response = await fetch(`/api/${path}`, {
     method,
@@ -86,16 +137,19 @@ async function api<T>(
     headers: {
       ...(context ? { "X-Session-Context": context } : {}),
       ...(method === "GET" ? {} : { "Content-Type": "application/json" }),
+      ...(createId ? { "X-Task-Create-Id": createId } : {}),
     },
     body: method === "GET" ? undefined : JSON.stringify(body ?? {}),
   });
   const data = await response.json();
+  const terminal = createId ? createResult(data, createId) : null;
   if (!response.ok)
     throw new ApiError(
-      data.message ?? "The request could not be completed.",
+      typeof data.message === "string" ? data.message : "The request could not be completed.",
       response.status,
       Array.isArray(data.diagnostics) ? data.diagnostics : undefined,
       typeof data.code === "string" ? data.code : undefined,
+      terminal?.state === "NOT_CREATED" ? terminal : undefined,
     );
   return data;
 }
@@ -114,6 +168,7 @@ function Brand() {
   );
 }
 function App() {
+  const createRecovery = useRef(new Map<string, CreateRecovery>());
   const [session, setSession] = useState<Session | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -281,6 +336,7 @@ function App() {
       signOut={() => authenticate()}
       switchUser={authenticate}
       expired={expired}
+      createRecovery={createRecovery.current}
     />
   );
 }
@@ -291,13 +347,17 @@ function Workspace({
   signOut,
   switchUser,
   expired,
+  createRecovery,
 }: {
   session: Session & { user: User };
   users: User[];
   signOut: () => void;
   switchUser: (id: string) => void;
   expired: () => void;
+  createRecovery: Map<string, CreateRecovery>;
 }) {
+  const retainedCreate = useRef(createRecovery.get(session.user.id));
+  const invalidCreateProject = useRef(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsReady, setProjectsReady] = useState(false);
   const [projectId, setProjectId] = useState("");
@@ -310,7 +370,23 @@ function Workspace({
   const searchHeading = useRef<HTMLHeadingElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [title, setTitle] = useState("");
+  const [createDraft, setCreateDraft] = useState<TaskDraft>(() => retainedCreate.current?.draft ?? newTaskDraft());
+  const createDraftRef = useRef(createDraft);
+  createDraftRef.current = createDraft;
+  const [createAttempt, setCreateAttempt] = useState<CreateAttempt | null>(() => retainedCreate.current ? { ...retainedCreate.current.attempt, checked: false, suspended: false } : null);
+  const createAttemptRef = useRef(createAttempt);
+  createAttemptRef.current = createAttempt;
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [createNotice, setCreateNotice] = useState("");
+  const [createFormNotice, setCreateFormNotice] = useState("");
+  const [createActivity, setCreateActivity] = useState<"adding" | "checking" | null>(null);
+  const createRecoveryControls = useRef<HTMLDivElement>(null);
+  const createConfirmation = useRef<HTMLParagraphElement>(null);
+  const removedRecoveryFocus = useRef<HTMLElement | null>(null);
+  const createVersion = useRef(retainedCreate.current?.version ?? 0);
+  const createInstance = useRef(0);
+  const createPending = useRef(false);
   const [projectName, setProjectName] = useState("");
   const [newProject, setNewProject] = useState(false);
   const [rename, setRename] = useState(false);
@@ -379,6 +455,8 @@ function Workspace({
   }, [routeKey]);
   const detailVisible = useRef(false);
   detailVisible.current = destination === "tasks" && !!detail;
+  const createVisible = useRef(false);
+  createVisible.current = destination === "tasks" && createOpen;
   const resumeDetail = useRef(false);
   const destinationFocus = useRef<string | null>(null);
   const taskScroller = useRef<HTMLElement>(null);
@@ -425,7 +503,8 @@ function Workspace({
     method = "GET",
     body?: object,
     signal = lifetime.current.signal,
-  ) => api<T>(path, session.contextToken, method, body, signal);
+    createId?: string,
+  ) => api<T>(path, session.contextToken, method, body, signal, createId);
   async function studioRequest<T>(path: string, method?: string, body?: object, signal?: AbortSignal) {
     const scopedSignal = signal ? AbortSignal.any([lifetime.current.signal, signal]) : lifetime.current.signal;
     try { return await request<T>(path, method, body, scopedSignal); }
@@ -538,7 +617,14 @@ function Workspace({
       .then((data) => {
         if (!lifetime.current.signal.aborted) {
           setProjects(data);
-          setProjectId(data[0]?.id ?? "");
+          const recovery = createRecovery.get(session.user.id);
+          const original = recovery && data.find(project => project.id === recovery.attempt.body.projectId);
+          if (recovery && !original) {
+            retainCreate(null);
+            retainedCreate.current = undefined;
+            invalidCreateProject.current = true;
+          }
+          setProjectId(original?.id ?? data[0]?.id ?? "");
           setProjectsReady(true);
         }
       })
@@ -553,10 +639,22 @@ function Workspace({
     setTasks([]);
     setRecentCompletion(null);
     setDetail(null);
-    setTitle("");
+    const recovery = createRecovery.get(session.user.id);
+    const restoring = recovery?.attempt.body.projectId === projectId;
+    if (projectId || !retainedCreate.current) {
+      createVersion.current = restoring ? recovery.version : createVersion.current + 1;
+      const next = restoring ? recovery.draft : newTaskDraft();
+      createDraftRef.current = next;
+      setCreateDraft(next);
+      setCreateOpen(restoring);
+      setCreateError(restoring ? createUncertain : "");
+      setCreateFormNotice("");
+    }
     setError("");
     setRename(false);
     setNotice("");
+    setCreateNotice(invalidCreateProject.current ? "The project for the previous task addition is no longer available. Its saved draft and retry are no longer available here." : "");
+    invalidCreateProject.current = false;
     taskScroll.current = 0;
     if (taskScroller.current) taskScroller.current.scrollTop = 0;
     if (!projectId) return;
@@ -602,8 +700,9 @@ function Workspace({
   }, [destination]);
   useLayoutEffect(() => {
     if (destination === "tasks" && taskScroller.current) taskScroller.current.scrollTop = taskScroll.current;
-    if (detail && destination === "tasks") {
+    if ((detail || createOpen) && destination === "tasks") {
       detailRef.current?.showModal();
+      if (createOpen) document.getElementById("edit-title")?.focus();
       if (resumeDetail.current) {
         document.getElementById("open-customizations")?.focus();
         resumeDetail.current = false;
@@ -619,7 +718,13 @@ function Workspace({
         returnFocus.current = null;
       }
     }
-  }, [detail?.id, destination]);
+  }, [detail?.id, createOpen, destination]);
+  useLayoutEffect(() => {
+    const previous = removedRecoveryFocus.current;
+    removedRecoveryFocus.current = null;
+    if (previous && !previous.isConnected && createVisible.current && detailRef.current?.open
+      && (document.activeElement === document.body || document.activeElement === detailRef.current)) createConfirmation.current?.focus();
+  }, [createAttempt, createFormNotice]);
   async function action<T>(
     operation: () => Promise<T>,
     success: (data: T) => void,
@@ -664,15 +769,147 @@ function Workspace({
   }
   function addTask(event: FormEvent) {
     event.preventDefault();
-    action(
-      () => request<Task>("tasks", "POST", { projectId, title }),
-      (saved) => {
-        setTasks((old) => [...old, saved]);
-        refreshSearch();
-        setTitle("");
-        setNotice("Task added.");
-      },
-    );
+    try { void createTask(draftDueAt(createDraft)); }
+    catch (failure) {
+      openCreate();
+      setCreateError((failure as Error).message);
+    }
+  }
+  function changeCreateDraft(next: TaskDraft) {
+    createVersion.current++;
+    createDraftRef.current = next;
+    setCreateDraft(next);
+    const attempt = createAttemptRef.current;
+    if (attempt?.body.projectId === projectId) createRecovery.set(session.user.id, { attempt, draft: next, version: createVersion.current });
+  }
+  function retainCreate(attempt: CreateAttempt | null) {
+    createAttemptRef.current = attempt;
+    setCreateAttempt(attempt);
+    if (attempt) createRecovery.set(session.user.id, { attempt, draft: createDraftRef.current, version: createVersion.current });
+    else createRecovery.delete(session.user.id);
+  }
+  function openCreate() {
+    if (detailVisible.current) return;
+    if (!createVisible.current) {
+      createInstance.current++;
+      returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      returnToSearch.current = false;
+    }
+    setCreateOpen(true);
+  }
+  function closeCreate() {
+    createVersion.current++;
+    createInstance.current++;
+    if (createAttemptRef.current?.body.projectId === projectId) retainCreate(createAttemptRef.current);
+    setCreateOpen(false);
+  }
+  async function createTask(dueAt?: string | null) {
+    if (busy || createPending.current || createAttemptRef.current) return;
+    let body: CreateBody;
+    try {
+      const title = createDraft.title.trim(), notes = createDraft.notes;
+      if (!title || title.length > 120) throw new Error("Task title must be 1–120 characters.");
+      if (notes.length > 4000) throw new Error("Notes must be 0–4000 characters.");
+      body = { projectId, title, notes, tags: normalizeTaskTags(createDraft.tags.trim() ? createDraft.tags.split(",") : []),
+        priority: createDraft.priority, dueAt: dueAt ?? null };
+    } catch (failure) {
+      setCreateError((failure as Error).message);
+      openCreate();
+      return;
+    }
+    const attempt = { operationId: crypto.randomUUID(), body, draftVersion: createVersion.current, checked: false, suspended: false };
+    retainCreate(attempt);
+    await sendCreate(attempt);
+  }
+  async function confirmedCreate(attempt: CreateAttempt, saved: Task, current: number) {
+    const newerDraftOpen = createVisible.current && attempt.draftVersion !== createVersion.current;
+    const focused = document.activeElement;
+    if (newerDraftOpen && focused instanceof HTMLElement && createRecoveryControls.current?.contains(focused)) removedRecoveryFocus.current = focused;
+    setCreateFormNotice(newerDraftOpen ? "The original task was added. Your newer changes are still here." : "");
+    retainCreate(null);
+    setCreateError("");
+    if (attempt.draftVersion === createVersion.current) {
+      createVersion.current++;
+      const next = newTaskDraft();
+      createDraftRef.current = next;
+      setCreateDraft(next);
+      setCreateOpen(false);
+    }
+    setCreateNotice("The original save was confirmed.");
+    try {
+      const next = await request<Task[]>(`projects/${attempt.body.projectId}/tasks`);
+      if (lifetime.current.signal.aborted || current !== generation.current) return;
+      setTasks(next);
+      refreshSearch();
+      setCreateNotice(next.some(task => task.id === saved.id) ? "Task added." : "The original save was confirmed. This task is no longer available in this project.");
+    } catch (failure) {
+      if (lifetime.current.signal.aborted || current !== generation.current) return;
+      if (failure instanceof ApiError && failure.status === 401) { expired(); return; }
+      setCreateNotice("The original save was confirmed, but the current task list could not be refreshed.");
+    }
+  }
+  async function sendCreate(attempt: CreateAttempt) {
+    if (busy || createPending.current || attempt.body.projectId !== projectId) return;
+    createPending.current = true;
+    const current = generation.current;
+    const instance = createInstance.current;
+    retainCreate({ ...attempt, checked: false });
+    setCreateActivity("adding");
+    setBusy(true);
+    setCreateError("");
+    setCreateNotice("");
+    setCreateFormNotice("");
+    setNotice("");
+    try {
+      const saved = await request<unknown>("tasks", "POST", attempt.body, lifetime.current.signal, attempt.operationId);
+      if (lifetime.current.signal.aborted || current !== generation.current) return;
+      if (!isTask(saved) || saved.projectId !== attempt.body.projectId) throw new Error("Unconfirmed task response");
+      await confirmedCreate(attempt, saved, current);
+    } catch (failure) {
+      if (lifetime.current.signal.aborted || current !== generation.current || (failure as Error).name === "AbortError") return;
+      if (failure instanceof ApiError && failure.createResult) {
+        retainCreate(null);
+        setCreateError("Not added. " + (failure.createResult.message.trim() ? failure.createResult.message : "Your entries are still here."));
+      } else {
+        retainCreate({ ...attempt, checked: false, suspended: failure instanceof ApiError && [401, 403, 404].includes(failure.status) });
+        setCreateError(createUncertain);
+        if (failure instanceof ApiError && failure.status === 401) { expired(); return; }
+      }
+      if (instance === createInstance.current || createVisible.current) openCreate();
+    } finally {
+      createPending.current = false;
+      if (!lifetime.current.signal.aborted) { setBusy(false); setCreateActivity(null); }
+    }
+  }
+  async function checkCreate() {
+    const attempt = createAttemptRef.current;
+    if (!attempt || attempt.body.projectId !== projectId || busy || createPending.current) return;
+    createPending.current = true;
+    const current = generation.current;
+    setCreateActivity("checking");
+    setBusy(true);
+    try {
+      const result = createResult(await request<unknown>(`task-create-operations/${attempt.operationId}`), attempt.operationId);
+      if (lifetime.current.signal.aborted || current !== generation.current) return;
+      if (!result || result.state === "CREATED" && result.task.projectId !== attempt.body.projectId) throw new Error("Unconfirmed task result");
+      if (result.state === "CREATED") await confirmedCreate(attempt, result.task, current);
+      else if (result.state === "NOT_CREATED") {
+        retainCreate(null);
+        setCreateError("Not added. " + (result.message.trim() ? result.message : "Your entries are still here."));
+      } else {
+        retainCreate({ ...attempt, checked: true, suspended: false });
+        setCreateError(createUncertain);
+      }
+    } catch (failure) {
+      if (lifetime.current.signal.aborted || current !== generation.current) return;
+      const accessRejected = failure instanceof ApiError && [401, 403, 404].includes(failure.status);
+      retainCreate({ ...attempt, checked: false, suspended: accessRejected });
+      setCreateError(accessRejected ? "This task addition could not be checked with your current access. Your entries are kept." : createUncertain);
+      if (failure instanceof ApiError && failure.status === 401) expired();
+    } finally {
+      createPending.current = false;
+      if (!lifetime.current.signal.aborted) { setBusy(false); setCreateActivity(null); }
+    }
   }
   function complete(task: Task) {
     action(
@@ -934,17 +1171,19 @@ function Workspace({
               </label>
               <input
                 id="new-task"
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
+                value={createDraft.title}
+                onChange={(event) => changeCreateDraft({ ...createDraft, title: event.target.value })}
                 required
                 maxLength={120}
                 placeholder="What would you like to get done?"
               />
-              <button className="primary" disabled={busy || loading}>
+              <button type="button" className="quiet-button" onClick={openCreate} disabled={loading}>Details</button>
+              <button className="primary" disabled={busy || loading || !!createAttempt}>
                 Add task <span aria-hidden="true">↵</span>
               </button>
             </form>
           )}
+          {createNotice && <p className="task-create-notice" role="status">{createNotice}</p>}
           {project && (
             <form className="task-search-form" onSubmit={event => {
               event.preventDefault();
@@ -1059,12 +1298,30 @@ function Workspace({
         aria-labelledby="detail-title"
         onCancel={(event) => {
           event.preventDefault();
-          closeDetail();
+          if (createOpen) closeCreate(); else closeDetail();
         }}
         onClose={() => {
           if (detailVisible.current && !detailRef.current?.open) closeDetail();
+          if (createVisible.current && !detailRef.current?.open) closeCreate();
         }}
       >
+        {createOpen && <TaskForm draft={createDraft} setDraft={changeCreateDraft} busy={busy} error={createError} submitBlocked={!!createAttempt}
+          closeLabel={createAttempt ? "Close" : "Cancel"}
+          closeNotice={createAttempt ? createActivity === "adding" ? "Adding… Closing this form won't stop the save." : "Closing this form won't stop the original save if it is still running." : undefined}
+          recovery={<>
+            {createFormNotice && <p ref={createConfirmation} className="task-create-notice" role="status" tabIndex={-1}>{createFormNotice}</p>}
+            {createAttempt && <div ref={createRecoveryControls} className="task-create-recovery">
+            {createAttempt.body.projectId !== projectId
+              ? <><p>A task addition in another project still needs checking.</p>
+                <button type="button" className="quiet-button" disabled={busy || !projects.some(project => project.id === createAttempt.body.projectId)}
+                  onClick={() => setProjectId(createAttempt.body.projectId)}>Return to that project</button></>
+              : <><p>Original task title: {createAttempt.body.title}</p>
+                <p>{createAttempt.suspended ? "Checking is suspended until access is available." : "Checking or retrying uses the original submitted details. Your current edits stay here."}</p>
+                <div><button type="button" className="quiet-button" aria-disabled={busy} onClick={() => void checkCreate()}>Check result</button>
+                  {createAttempt.checked && !createAttempt.suspended && <button type="button" className="quiet-button" aria-disabled={busy}
+                    onClick={() => void sendCreate(createAttempt)}>Retry same attempt</button>}</div></>}
+          </div>}</>}
+          close={closeCreate} save={dueAt => void createTask(dueAt)} />}
         {detail && (
           <TaskDetail
             key={detail.id}
@@ -1248,9 +1505,34 @@ function TaskDetail({
   openCreated: (created: Task) => void;
   save: (dueAt?: string | null) => void;
 }) {
+  return <TaskForm task={task} draft={draft} setDraft={setDraft} busy={busy} error={error} close={close} save={save}>
+    {task.status === "completed" && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} />}
+    <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation />
+    <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>
+  </TaskForm>;
+}
+
+function TaskForm({ task, draft, setDraft, busy, error, close, save, children, recovery, submitBlocked = false, closeLabel = "Cancel", closeNotice }: {
+  task?: Task;
+  draft: TaskDraft;
+  setDraft: (draft: TaskDraft) => void;
+  busy: boolean;
+  error: string;
+  close: () => void;
+  save: (dueAt?: string | null) => void;
+  children?: ReactNode;
+  recovery?: ReactNode;
+  submitBlocked?: boolean;
+  closeLabel?: string;
+  closeNotice?: string;
+}) {
   const { title, notes } = draft;
   const [dueTimeError, setDueTimeError] = useState("");
   const dueTimeInput = useRef<HTMLInputElement>(null);
+  const errorSummary = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!task && error) errorSummary.current?.focus();
+  }, [task, error]);
   function editDueTime(dueTime: string) {
     setDueTimeError("");
     setDraft({ ...draft, dueTime, dueTimeEdited: true });
@@ -1264,20 +1546,9 @@ function TaskDetail({
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        if (!draft.dueTimeEdited) return save();
-        if (!draft.dueTime) return save(null);
-        const local = Temporal.PlainDateTime.from(draft.dueTime);
-        let dueAt: string;
-        try {
-          dueAt = local.toZonedDateTime(draft.dueZone, { disambiguation: "reject" })
-            .toInstant().toString({ fractionalSecondDigits: 3 });
-        } catch {
-          const earlier = local.toZonedDateTime(draft.dueZone, { disambiguation: "earlier" }).toPlainDateTime();
-          return rejectDueTime(earlier.equals(local)
-            ? "This local time occurs twice. Choose a different time."
-            : "This local time does not exist. Choose a different time.");
-        }
-        if (dueAt.length !== 24 || dueAt < "0001-01-01T00:00:00.000Z") return rejectDueTime("Choose a time within UTC years 0001 to 9999.");
+        let dueAt: string | null | undefined;
+        try { dueAt = draftDueAt(draft); }
+        catch (failure) { return rejectDueTime((failure as Error).message); }
         save(dueAt);
       }}
     >
@@ -1285,16 +1556,18 @@ function TaskDetail({
         <button
           type="button"
           className="icon-button"
-          aria-label="Close task details"
+          aria-label={task ? "Close task details" : "Close new task"}
           onClick={close}
         >
           ×
         </button>
       </div>
-      <h2 id="detail-title">Task details</h2>
-      <span className={`status-label ${task.status}`}>
+      <h2 id="detail-title">{task ? "Task details" : "New task"}</h2>
+      {!task && error && <div ref={errorSummary} className="error" role="alert" tabIndex={-1}>{error}</div>}
+      {recovery}
+      {task && <span className={`status-label ${task.status}`}>
         {task.status === "completed" ? "✓ Completed" : "○ Up next"}
-      </span>
+      </span>}
       <label htmlFor="edit-title">Task title</label>
       <input
         id="edit-title"
@@ -1332,12 +1605,12 @@ function TaskDetail({
         aria-describedby={dueTimeError ? "edit-due-zone edit-due-error" : "edit-due-zone"}
         onChange={event => editDueTime(event.target.value)} />
       <p id="edit-due-zone" className="muted tag-hint">Time zone: {draft.dueZone}.
-        {task.dueAt && !draft.dueTimeEdited && <> Saved time: {formatDueTime(task.dueAt, draft.dueZone)}.</>}
+        {task?.dueAt && !draft.dueTimeEdited && <> Saved time: {formatDueTime(task.dueAt, draft.dueZone)}.</>}
       </p>
-      {task.dueAt && !draft.dueTime && !draft.dueTimeEdited &&
+      {task?.dueAt && !draft.dueTime && !draft.dueTimeEdited &&
         <button type="button" className="quiet-button" onClick={() => editDueTime("")}>Clear saved due time</button>}
       {dueTimeError && <p id="edit-due-error" className="error" role="alert">{dueTimeError}</p>}
-      {task.completedAt && (
+      {task?.completedAt && (
         <p className="muted">
           Completed{" "}
           {new Date(task.completedAt).toLocaleDateString(undefined, {
@@ -1346,20 +1619,19 @@ function TaskDetail({
           })}
         </p>
       )}
-      {error && (
+      {task && error && (
         <div className="error" role="alert">
           {error}
         </div>
       )}
-      {task.status === "completed" && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} />}
-      <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation />
-      <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>
+      {children}
       <div className="detail-actions">
+        {closeNotice && <p className="detail-close-notice" role="status">{closeNotice}</p>}
         <button type="button" className="quiet-button" onClick={close}>
-          Cancel
+          {closeLabel}
         </button>
-        <button className="primary" disabled={busy}>
-          Save changes
+        <button className="primary" disabled={busy || submitBlocked}>
+          {task ? "Save changes" : "Add task"}
         </button>
       </div>
     </form>

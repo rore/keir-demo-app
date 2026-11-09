@@ -24,7 +24,7 @@ if (config.boundary === 'before') {
   db.exec(`CREATE TEMP TRIGGER test_crash_boundary ${triggers[config.operation]} BEGIN SELECT test_crash_barrier(); END`);
 }
 
-process.once('message', () => {
+process.once('message', async () => {
   try {
     let result;
     switch (config.operation) {
@@ -34,7 +34,7 @@ process.once('message', () => {
         break;
       case 'complete': result = taskService(db).completeTask(config.owner, config.taskId); break;
       case 'claim': result = effects.claim(config.owner, config.eventId); break;
-      case 'create': result = effects.createTaskOnce(config.owner, effects.keyFor(config.owner, config.eventId), config.payload); break;
+      case 'create': result = await effects.createTaskOnce(config.owner, effects.keyFor(config.owner, config.eventId), config.payload); break;
       case 'finish': result = effects.finish(config.owner, config.eventId, config.outcome); break;
       default: throw new Error('Unsupported fixture operation');
     }

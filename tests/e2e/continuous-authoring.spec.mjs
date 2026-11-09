@@ -27,7 +27,11 @@ const test = base.extend({
         conversations: [], current: null, next: null }));
       await use({ ...fixture, extensionId, leoId: leo.extensionId, admit });
     }
-    finally { await fixture.close(); }
+    finally {
+      // demo depends on page, so stop the client before closing its server.
+      try { await page.close(); }
+      finally { await fixture.close(); }
+    }
   },
 });
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });

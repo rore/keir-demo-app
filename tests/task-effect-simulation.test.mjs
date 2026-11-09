@@ -10,7 +10,7 @@ const host = loadHost(TASK_HOOK);
 const examples = () => taskEffectScenarioExamples(host).map(text => JSON.parse(text));
 const invalid = { status: 'NOT_REPORTED', code: 'OUTCOME_INVALID' };
 
-test('catalog admits two exact hooks with one public workflow model', () => {
+test('catalog admits three exact hooks with one current public model', () => {
   assert.equal(host.definitionId, TASK_DEFINITION);
   assert.equal(TASK_DEFINITION, 'daymark.task-workflow/1');
   assert.equal(host.pins.definitionId, TASK_DEFINITION);
@@ -18,7 +18,7 @@ test('catalog admits two exact hooks with one public workflow model', () => {
   assert.equal(host.pins.modelRef.digest, host.pins.modelDigest);
   assert.deepEqual(definitionForPins(host.pins).dcmBytes, host.dcmBytes);
   const model = JSON.parse(host.dcmBytes);
-  assert.equal(model.format, 'keir-dcm/2');
+  assert.equal(model.format, 'keir-dcm/3');
   assert.ok(!Object.hasOwn(model, 'assurance'));
   assert.equal(model.hostKey.type, 'demo.TaskWorkflowKey/1');
   assert.deepEqual(Object.keys(model.capabilities).sort(), ['tasks.create', 'tasks.get', 'tasks.openMatch', 'tasks.update']);
@@ -170,7 +170,7 @@ test('installed runtime runs exact compiled bytes with independent match/nonmatc
   const compiled = await compiler.compile(Buffer.from(source), { definition: host });
   assert.deepEqual(compiled.diagnostics, []);
   const artifact = admitArtifact(compiled.artifact, host);
-  assert.equal(artifact.format, 'keir-artifact/2');
+  assert.equal(artifact.format, 'keir-artifact/3');
   for (const changed of [
     { ...artifact, format: 'keir-artifact/1' },
     { ...artifact, format: 'keir-artifact/effect-4' },
@@ -207,7 +207,7 @@ test('installed runtime runs exact compiled bytes with independent match/nonmatc
   assert.equal(mismatch.reports[0].report.calls[0].step, 'source');
   const leftover = structuredClone(cases[1]); leftover.stubs.push(cases[0].stubs[1]);
   assert.deepEqual((await runTaskEffectSimulation({ artifactBytes: second.artifact, host, scenarios: [JSON.stringify(leftover)] })).reports, []);
-  assert.deepEqual(readFileSync(new URL('../extensions/task-effect/workflow/dcm.json', import.meta.url)), host.dcmBytes);
+  assert.deepEqual(readFileSync(new URL('../extensions/task-effect/current/dcm.json', import.meta.url)), host.dcmBytes);
 });
 
 test('title-aware simulation matches exactly, preserves the composed title and stops on concatenation overflow', async () => {

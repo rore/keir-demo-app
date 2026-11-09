@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Collection, State, StudioTarget } from "./Studio";
-import { pendingRequests } from "./Studio";
+import { pendingRequests, taskTriggerGroup } from "./Studio";
 
 export default function Customizations({ request, changed, beforeSelectionChange, open, focusAction = "", notice = "" }: {
   request: <T>(path: string, method?: string, body?: object) => Promise<T>;
@@ -153,7 +153,7 @@ export default function Customizations({ request, changed, beforeSelectionChange
         const status = item.retired ? "Retired · history only" : selectedItem ? inUse ? changes ? item.approved ? "In use · Approved changes ready to turn on" : "In use · Changes in progress" : "In use" : "Couldn’t check what’s in use"
           : item.approved ? "Approved · Not in use" : item.draft ? "Saved changes · Not in use" : item.extension!.hookId ? "Not in use" : "In discussion";
         return <article key={item.extension!.id} className="customization-card" aria-label={item.extension!.name}>
-          <div className="customization-copy"><h2>{item.extension!.name}</h2>
+          <div className="customization-copy">{!item.retired && taskTriggerGroup(item.extension!.hookId) && <p className="muted">{taskTriggerGroup(item.extension!.hookId)}</p>}<h2>{item.extension!.name}</h2>
             <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{status}</span></p>
             {item.retired && <p>This earlier customization cannot run or be resumed. Its saved source, examples and history remain available.</p>}
             {item.extension!.name === "Untitled customization" && item.requestExcerpt && <p className="customization-request">Request: {item.requestExcerpt}</p>}

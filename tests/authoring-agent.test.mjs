@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { AUTHORING_TOOLS, createAuthoringState, runAuthoringTurn } from '../src/authoring-agent.mjs';
 import { AuthoringError, createAuthoringProvider } from '../src/authoring-provider.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
@@ -27,14 +29,14 @@ test('project discovery pages are read-only tool results and task compilation re
   assert.equal(names.some(name => /approve|activate|event|create_task|write_task/.test(name)), false);
 });
 
-test('the compile tool passes the exact task addition hook to the host', async () => {
+for (const hook of ['TaskCreated', 'TaskBeforeCreate']) test('the compile tool passes the exact ' + hook + ' hook to the host', async () => {
   const f = fixture([call('discover_catalog'), call('compile_draft', {
-    hookId: 'TaskCreated', sourceJson: '{"entrypoint":"TaskCreated"}', expectedDraftVersion: 0,
+    hookId: hook, sourceJson: JSON.stringify({ entrypoint: hook }), expectedDraftVersion: 0,
   })]);
   const compile = f.host.compile;
-  f.host.compile = (source, version, signal, hook) => {
-    assert.equal(hook, 'TaskCreated');
-    assert.equal(JSON.parse(source).entrypoint, hook);
+  f.host.compile = (source, version, signal, actualHook) => {
+    assert.equal(actualHook, hook);
+    assert.equal(JSON.parse(source).entrypoint, actualHook);
     return compile(source, version, signal);
   };
   await f.run();
@@ -46,9 +48,35 @@ test('task coaching requires discovered constants and independent expectations w
   const instructions = f.requests[0].instructions;
   for (const phrase of ['discover_projects', 'Project names may repeat', 'selectedHook', 'FORMAT ONLY',
     'Only host-observed effect evidence', 'UNKNOWN never means no effect or safe retry', 'later completes that generated task',
-    'independent expected scenarios', 'language keir/2', 'format keir-scenario/2', 'duration("604800s")',
-    'one ordinary-language question', 'never infer an existing task identity']) assert.ok(instructions.includes(phrase), phrase);
+    'independent expected scenarios', 'language keir/2', 'format keir-scenario/3', 'duration("604800s")',
+    'one ordinary-language question', 'never infer an existing task identity', 'TaskBeforeCreate is a read-only decision',
+    'Whitespace-only native notes have hasNotes false', 'ALLOW permits normal native checks to continue',
+    'matching ALLOW, matching DENY, nonmatching ALLOW and unavailable', 'exactly {status:"BLOCKED"}']) assert.ok(instructions.includes(phrase), phrase);
   assert.doesNotMatch(instructions, /choose Check task advice|outside the discovered read-only contract/);
+});
+
+test('authoring loads the exact released v5 companion and retains historical v4 bytes', async () => {
+  const metadata = JSON.parse(readFileSync(new URL('../vendor/authoring-companion-provenance.json', import.meta.url)));
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v5.md', import.meta.url));
+  const current = metadata.files['customer-authoring-guide-v5.md'];
+  assert.equal(current.status, 'verified-release');
+  assert.equal(current.release, 'v0.3.0');
+  assert.equal(current.revision, 'f988c2b147933fcdd8b8f74ce7920f78acd4eca5');
+  assert.equal(current.source, 'docs/agents/customer-authoring-guide-v5.md');
+  assert.equal(current.bytes, 6224);
+  assert.equal(current.sha256, 'sha256:f9bb403c6f2cb75d834b8113e87bb94de034754ecb10bf7001bd36e129216cb0');
+  assert.deepEqual(current.distribution, { file: 'keir-authoring-v5.zip',
+    sha256: 'sha256:20249307192494acb1cf07cc002e7203bda4f6baf8a8c2257dd752ce1d8cfe44' });
+  for (const [path, info] of Object.entries(metadata.files)) {
+    const bytes = readFileSync(new URL('../vendor/' + path, import.meta.url));
+    assert.equal(bytes.length, info.bytes);
+    assert.equal('sha256:' + createHash('sha256').update(bytes).digest('hex'), info.sha256);
+  }
+  const old = metadata.files['customer-authoring-guide-v4.md'];
+  assert.equal(old.status, 'historical-copy');
+  assert.equal(old.sha256, 'sha256:aeece1c28713ba945743dca47ad4fc6242f3f94cfda4fac9005b5b9df7afb5f7');
+  const f = fixture(); await f.run();
+  assert.equal(f.requests[0].instructions.endsWith(guide.toString('utf8')), true);
 });
 
 function fixture(steps = [], initial = {}) {

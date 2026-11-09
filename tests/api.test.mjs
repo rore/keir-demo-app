@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +20,8 @@ function setup(t) {
   });
 }
 const request = (method, url, { cookie, token, body, headers = {} } = {}) => ({
-  method, url, headers: { host: '127.0.0.1:32123', ...(cookie ? { cookie: `keir_demo_session=${cookie}` } : {}), ...(token ? { 'x-session-context': token } : {}), ...headers },
+  method, url, headers: { host: '127.0.0.1:32123', ...(cookie ? { cookie: `keir_demo_session=${cookie}` } : {}), ...(token ? { 'x-session-context': token } : {}),
+    ...(method === 'POST' && url === '/api/tasks' ? { 'x-task-create-id': randomUUID() } : {}), ...headers },
   ...(body !== undefined ? { payload: JSON.stringify(body) } : {}),
 });
 
@@ -43,7 +45,7 @@ test('an admitted owner A completion keeps its exact native context after the br
   const captured = effects.contextFor('maya', invocation);
   assert.equal(captured.owner, 'maya'); assert.equal(captured.sourceTaskId, source.json().id);
   assert.deepEqual(effects.claim('maya', eventId, invocation).pins, pins);
-  const result = effects.createTaskOnce('maya', invocation.requestKey, { projectId, title: 'Owner A result' }, invocation);
+  const result = await effects.createTaskOnce('maya', invocation.requestKey, { projectId, title: 'Owner A result' }, invocation);
   assert.equal(result.effect, 'CONFIRMED');
   const foreignRead = await app.inject(request('GET', `/api/tasks/${result.value.id}`, leo));
   assert.equal(foreignRead.statusCode, 404);

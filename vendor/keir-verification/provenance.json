@@ -29,6 +29,12 @@
     "scenarios/main/write-rejected.json": {
       "source": "conformance/keir-1/scenarios/main/write-rejected.json",
       "sha256": "73bb915cd23e724fe3eae28a0a4243c056b075617ae5f5c1e64e42c1ed80e9ba"
+    },
+    "scenario-v3.schema.json": {
+      "source": "schemas/scenario-3/scenario.schema.json",
+      "status": "verified-source",
+      "revision": "f988c2b147933fcdd8b8f74ce7920f78acd4eca5",
+      "sha256": "80761a26039bcf8f33fdc3b16da624f665c855eba48c37fa59f4584f66609161"
     }
   }
 }

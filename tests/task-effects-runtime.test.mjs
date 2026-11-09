@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -62,7 +63,7 @@ for (const title of ['Send the release checklist', 'Arrange a customer review'])
     f.activate();
     await f.dispatcher.wake();
     assert.equal(f.native.listTasks(f.owner, f.project.id).length, before, 'Approval and activation execute nothing.');
-    const source = f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete me' });
+    const source = await f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete me' }, { operationId: randomUUID() });
     const completed = f.native.completeTask(f.owner, source.id);
     assert.equal(completed.status, 'completed');
     await f.dispatcher.wake();
@@ -96,7 +97,7 @@ for (const title of ['Send the release checklist', 'Arrange a customer review'])
 
 test('actual runtime nonmatch produces no task or receipt', async t => {
   const f = await setup(t); f.activate();
-  const source = f.native.createTask(f.owner, { projectId: f.other.id, title: 'Unrelated task' });
+  const source = await f.native.createTask(f.owner, { projectId: f.other.id, title: 'Unrelated task' }, { operationId: randomUUID() });
   const before = f.db.prepare('SELECT count(*) AS n FROM tasks').get().n;
   f.native.completeTask(f.owner, source.id); await f.dispatcher.wake();
   const status = f.dispatcher.status(f.owner, source.id);
@@ -109,7 +110,7 @@ test('actual runtime nonmatch produces no task or receipt', async t => {
 
 test('a source-authored CREATED label cannot invent a native effect or receipt', async t => {
   const f = await setup(t, { reportedStatus: 'CREATED' }); f.activate();
-  const source = f.native.createTask(f.owner, { projectId: f.other.id, title: 'Nonmatching source' });
+  const source = await f.native.createTask(f.owner, { projectId: f.other.id, title: 'Nonmatching source' }, { operationId: randomUUID() });
   const before = f.db.prepare('SELECT count(*) AS n FROM tasks').get().n;
   f.native.completeTask(f.owner, source.id); await f.dispatcher.wake();
   const status = f.dispatcher.status(f.owner, source.id);
@@ -120,13 +121,13 @@ test('a source-authored CREATED label cannot invent a native effect or receipt',
 
 test('disable and reenable never revive an old native admission', async t => {
   const f = await setup(t); f.activate();
-  const old = f.native.createTask(f.owner, { projectId: f.project.id, title: 'Old admission' });
+  const old = await f.native.createTask(f.owner, { projectId: f.project.id, title: 'Old admission' }, { operationId: randomUUID() });
   f.native.completeTask(f.owner, old.id);
   f.disable(); f.activate(); await f.dispatcher.dependenciesChanged();
   const stale = f.dispatcher.status(f.owner, old.id);
   assert.equal(stale.state, 'PENDING'); assert.equal(stale.outcome, null); assert.equal(stale.receipt, null);
   assert.ok(f.db.prepare('SELECT revoked_at FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(old.id).revoked_at);
-  const fresh = f.native.createTask(f.owner, { projectId: f.project.id, title: 'New admission' });
+  const fresh = await f.native.createTask(f.owner, { projectId: f.project.id, title: 'New admission' }, { operationId: randomUUID() });
   f.native.completeTask(f.owner, fresh.id); await f.dispatcher.wake();
   assert.equal(f.dispatcher.status(f.owner, fresh.id).receipt?.effect, 'CONFIRMED');
   assert.equal(f.native.listTasks(f.owner, f.project.id).filter(task => task.title === f.fixture.metadata.title).length, 1);
@@ -139,7 +140,7 @@ test('one current binding reuses its prepared handle with fresh event, owner, ke
   });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.deepEqual(JSON.parse(result.stdout), { boundVersions: ['4'], prepares: 1, invocations: 4,
+  assert.deepEqual(JSON.parse(result.stdout), { boundVersions: ['5'], prepares: 1, invocations: 4,
     outcomes: ['CONFIRMED', 'NO_OP', 'REVOKED', 'EXPIRED'] });
 });
 
@@ -148,7 +149,7 @@ test('native deadline expiry before commit rolls back the new task and receipt w
   const f = await setup(t, { clock: () => now }); f.activate();
   f.db.function('expireNativeDeadline', () => { now = 1001; return 0; });
   f.db.exec('CREATE TEMP TRIGGER expire_task_effect AFTER INSERT ON task_effect_receipts BEGIN SELECT expireNativeDeadline(); END');
-  const source = f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete with expiry' });
+  const source = await f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete with expiry' }, { operationId: randomUUID() });
   const before = f.db.prepare('SELECT count(*) AS n FROM tasks').get().n;
   f.native.completeTask(f.owner, source.id); await f.dispatcher.wake();
   const status = f.dispatcher.status(f.owner, source.id);
@@ -167,7 +168,7 @@ test('opaque native failure stays UNKNOWN until a separate read-only reconciliat
   const f = await setup(t); f.activate();
   f.db.function('opaqueNativeFailure', () => { throw new Error('Isolated native failure'); });
   f.db.exec('CREATE TEMP TRIGGER fail_task_effect AFTER INSERT ON task_effect_receipts BEGIN SELECT opaqueNativeFailure(); END');
-  const source = f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete with unavailable response' });
+  const source = await f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete with unavailable response' }, { operationId: randomUUID() });
   const before = f.db.prepare('SELECT count(*) AS n FROM tasks').get().n;
   assert.equal(f.native.completeTask(f.owner, source.id).status, 'completed');
   await f.dispatcher.wake();
@@ -188,7 +189,7 @@ test('failed outcome settlement keeps STARTED and a confirmed native receipt wit
   const f = await setup(t); f.activate();
   f.db.exec(`CREATE TEMP TRIGGER fail_outcome_settlement BEFORE UPDATE OF state ON task_events
     WHEN NEW.state='FINISHED' BEGIN SELECT RAISE(ABORT, 'Isolated outcome settlement failure'); END`);
-  const source = f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete before failed settlement' });
+  const source = await f.native.createTask(f.owner, { projectId: f.project.id, title: 'Complete before failed settlement' }, { operationId: randomUUID() });
   const before = f.db.prepare('SELECT count(*) AS n FROM tasks').get().n;
   assert.equal(f.native.completeTask(f.owner, source.id).status, 'completed');
   await f.dispatcher.wake();

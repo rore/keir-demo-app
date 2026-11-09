@@ -565,6 +565,32 @@ p {
 .quick-add .primary {
   padding:9px 14px;
 }
+.quick-add button {
+  flex-shrink:0;
+}
+.task-create-notice {
+  margin-top:12px;
+  font-size:14px;
+  overflow-wrap:anywhere;
+}
+.task-create-recovery {
+  margin-bottom:20px;
+  font-size:14px;
+  overflow-wrap:anywhere;
+}
+.task-create-recovery>div {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:8px;
+}
+.task-create-recovery button[aria-disabled="true"] {
+  opacity:.55;
+  cursor:wait;
+}
+.detail .task-create-notice {
+  margin:0 0 20px;
+}
 .task-search-form {
   display:flex;
   flex-wrap:wrap;
@@ -801,13 +827,19 @@ p {
 }
 .detail-actions {
   display:flex;
+  flex-wrap:wrap;
   justify-content:space-between;
   gap:10px;
   margin-top:auto;
   padding-top:24px;
 }
+.detail-close-notice {
+  flex-basis:100%;
+  font-size:13px;
+}
 .detail .error {
   display:block;
+  overflow-wrap:anywhere;
 }
 .customizations-main h1 {
   margin-bottom:12px;
@@ -974,9 +1006,11 @@ p {
   .quick-add {
     gap:8px;
     padding-left:10px;
+    flex-wrap:wrap;
   }
   .quick-add input {
     font-size:14px;
+    flex-basis:calc(100% - 35px);
   }
   .quick-add .primary {
     padding:10px;

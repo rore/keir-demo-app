@@ -7,6 +7,7 @@ const ajv = new Ajv2020({ strict: true, strictTypes: false, strictRequired: fals
 const schemas = new Map([
   ['keir-scenario/1', 'scenario.schema.json'],
   ['keir-scenario/2', 'scenario-v2.schema.json'],
+  ['keir-scenario/3', 'scenario-v3.schema.json'],
 ].map(([format, file]) => {
   const schema = JSON.parse(readFileSync(new URL('../vendor/keir-verification/' + file, import.meta.url)));
   return [format, ajv.compile(schema)];

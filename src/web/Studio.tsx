@@ -31,8 +31,12 @@ type HostCatalog = {
   hooks: { id: string; label: string; description: string; effect: string; trigger: string }[];
   model: { dcm: string; digest: string; hook: string; consumer: object; compiler: unknown };
 };
-const taskTrigger = (hookId: string | null | undefined) => hookId === "TaskCreated" ? "tasks added" : hookId === "TaskCompleted" ? "tasks completed" : null;
+const taskTrigger = (hookId: string | null | undefined) => hookId === "TaskBeforeCreate" ? "new tasks" : hookId === "TaskCreated" ? "tasks added" : hookId === "TaskCompleted" ? "tasks completed" : null;
+export const taskTriggerGroup = (hookId: string | null | undefined) => hookId === "TaskBeforeCreate" ? "Checks before adding"
+  : hookId === "TaskCreated" ? "Actions after adding" : hookId === "TaskCompleted" ? "Actions after completing" : null;
 const workflowStarters = [
+  { label: "Check new tasks", hook: "TaskBeforeCreate", capabilities: [],
+    text: "Before adding a new task tagged client, require a due date." },
   { label: "Prioritize new requests", hook: "TaskCreated", capabilities: ["tasks.get", "tasks.update"],
     text: "When a new task in Inbox is tagged client and its title is exactly ‘Quote for spring launch’, give it high priority." },
   { label: "Arrange a review", hook: "TaskCompleted", capabilities: ["tasks.get", "tasks.create"],
@@ -53,10 +57,12 @@ type TaskFields = { notes?: string; tags?: string[]; priority?: string; dueAt?: 
 type TaskPreview = TaskFields & { id?: string; title: string; status?: "OPEN" | "COMPLETED"; projectId?: string; projectName?: string };
 type TaskUpdate = { id: string; addTag?: string; priority?: string; dueAt?: string };
 type EffectObservation = { effect: "CONFIRMED" | "NONE" | "UNKNOWN" | "NOT_OBSERVED"; createdTasks: TaskPreview[] | null; updatedTasks?: TaskUpdate[] | null };
+type CreateProposal = { projectId: string; priority: "low" | "normal" | "high"; tags: string[]; hasNotes: boolean; hasDueDate: boolean };
+type GuardConsumption = { status: "ALLOWED" | "DENIED"; result: { decision: "ALLOW" | "DENY"; message: string } } | { status: "BLOCKED" };
 type SavedSource = { extensionId?: string; revisionId: string; source: string; artifact: string; pins: Revision["pins"]; cases: string[]; suiteDigest: string | null };
 type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"; identity: object; passed: boolean; reports: {
   id: string; label: string; expected: { createdTasks?: TaskPreview[] | null; updatedTasks?: TaskUpdate[] | null; [key: string]: unknown }; taskStatus?: "OPEN" | "COMPLETED" | null; readFailure?: "TASK_NOT_FOUND" | "ACCESS_DENIED" | "TRANSIENT_FAILURE" | null;
-  report: { status: string; scenario?: { task: TaskPreview; occurredAt?: string; hookId?: string; openMatches?: { projectId: string; title: string; matches: boolean }[] }; observed?: EffectObservation; native?: Outcome; calls?: { step?: string; capability: string; args?: { projectId?: string; title?: string; taskId?: string } }[]; consumption?: { status: string; code?: string }; mismatches: { stage?: string; code?: string }[] };
+  report: { status: string; scenario?: { task?: TaskPreview; proposal?: CreateProposal; occurredAt?: string; hookId?: string; openMatches?: { projectId: string; title: string; matches: boolean }[] }; observed?: EffectObservation; native?: Outcome; calls?: { step?: string; capability: string; args?: { projectId?: string; title?: string; taskId?: string } }[]; consumption?: { status: string; code?: string; result?: { decision: string; message: string } }; mismatches: { stage?: string; code?: string }[] };
 }[] };
 type SavedReview = { owner: State["owner"]; extension: NonNullable<State["extension"]>; revision: Revision;
   draftVersion: number; evidenceId: string; suiteDigest: string | null; selection: State["selection"] };
@@ -219,7 +225,7 @@ function workflowSourceFacts(text: string, hook: string, writeId: string, capabi
 async function savedRuleAction(saved: SavedSource, artifactDigest: string, rawSourceDigest?: string): Promise<RuleAction | null> {
   if (typeof saved.artifact !== "string" || saved.pins?.artifactDigest !== artifactDigest || await sha256(saved.artifact) !== artifactDigest) return null;
   const artifact = JSON.parse(saved.artifact);
-  if (artifact?.format === "keir-artifact/2" && taskTrigger(artifact.entrypoint) && Array.isArray(artifact.steps)) {
+  if (["keir-artifact/2", "keir-artifact/3"].includes(artifact?.format) && ["TaskCreated", "TaskCompleted"].includes(artifact.entrypoint) && Array.isArray(artifact.steps)) {
     const writes = artifact.steps.filter((step: { op?: string; capability?: string }) => step?.op === "CALL"
       && (step.capability === "tasks.create" || step.capability === "tasks.update"));
     if (writes.length !== 1) return null;
@@ -274,10 +280,36 @@ const expectedTasks = (value: Evidence["reports"][number]["expected"], project?:
   : value.createdTasks!.length ? `Create ${taskNames(value.createdTasks!, project)}.` : "Create no task.";
 const checkedUncertainty = (item: Evidence["reports"][number]) => item.expected.createdTasks === null && item.report.observed?.effect === "UNKNOWN" && item.report.observed.createdTasks === null;
 type CheckedCase = Evidence["reports"][number];
+const guardCase = (item: CheckedCase) => item.report.scenario?.hookId === "TaskBeforeCreate" || item.report.scenario?.proposal !== undefined;
+function knownProposal(proposal?: CreateProposal) {
+  return !!proposal && Object.keys(proposal).sort().join(",") === "hasDueDate,hasNotes,priority,projectId,tags"
+    && typeof proposal.projectId === "string" && !!proposal.projectId && ["low", "normal", "high"].includes(proposal.priority)
+    && Array.isArray(proposal.tags) && proposal.tags.length <= 8 && proposal.tags.every(tag => typeof tag === "string" && !!tag && tag.length <= 32)
+    && typeof proposal.hasNotes === "boolean" && typeof proposal.hasDueDate === "boolean";
+}
+function guardConsumption(value: unknown): GuardConsumption | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as GuardConsumption;
+  const keys = Object.keys(result).sort().join(",");
+  if (result.status === "BLOCKED" && keys === "status") return result;
+  if ((result.status === "ALLOWED" || result.status === "DENIED") && keys === "result,status"
+    && result.result && Object.keys(result.result).sort().join(",") === "decision,message"
+    && result.result.decision === (result.status === "ALLOWED" ? "ALLOW" : "DENY")
+    && typeof result.result.message === "string" && new TextEncoder().encode(result.result.message).byteLength <= 256) return result;
+  return null;
+}
+function matchingGuardConsumption(item: CheckedCase) {
+  const expected = guardConsumption(item.expected.consumption), observed = guardConsumption(item.report.consumption);
+  return !!expected && !!observed && expected.status === observed.status && (expected.status === "BLOCKED"
+    || observed.status !== "BLOCKED" && expected.result.decision === observed.result.decision && expected.result.message === observed.result.message);
+}
+const guardResultLabel = (result: GuardConsumption | null) => result?.status === "ALLOWED" ? "Allowed by this rule" : result?.status === "DENIED" ? "Blocked" : "Could not check";
 const workflowCase = (item: CheckedCase) => item.report.observed?.updatedTasks !== undefined || item.expected.updatedTasks !== undefined;
 const knownUpdates = (updates?: TaskUpdate[] | null) => Array.isArray(updates) && updates.every(update =>
   !!update && typeof update.id === "string" && !!update.id && [update.priority, update.dueAt, update.addTag].some(field => typeof field === "string" && !!field));
 function checkedObservation(item: CheckedCase) {
+  if (guardCase(item)) return knownProposal(item.report.scenario?.proposal) && matchingGuardConsumption(item)
+    && item.report.observed?.effect === "NONE" && item.report.observed.createdTasks?.length === 0 && item.report.observed.updatedTasks?.length === 0;
   if (!knownScenarioTask(item.report.scenario?.task)) return false;
   const observed = item.report.observed, expected = item.expected;
   if (!workflowCase(item)) return knownTasks(expected.createdTasks) && knownObservation(observed) || checkedUncertainty(item);
@@ -287,6 +319,7 @@ function checkedObservation(item: CheckedCase) {
   return observed.createdTasks!.length + observed.updatedTasks!.length === (observed.effect === "CONFIRMED" ? 1 : 0);
 }
 const summarizeExamples = (proof: Evidence | null) => [...new Set(proof?.reports.filter(checkedObservation).map(item => {
+  if (guardCase(item)) return guardResultLabel(guardConsumption(item.report.consumption));
   const observed = item.report.observed;
   if (!workflowCase(item)) return observedTasks(observed).replace(/\.$/, "");
   if (observed?.effect === "NONE") return "No change";
@@ -636,7 +669,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const retired = state?.retired === true || conversation?.retired === true && !conversation.extensionId || retiredOperation;
   const workflowHost = !catalogError && ["TaskCreated", "TaskCompleted"].every(id => hostCatalog?.hooks.some(hook => hook.id === id));
   const workflowRevision = state?.draft ?? state?.selection.revision;
-  const trigger = !retired && (workflowHost || workflowRevision?.pins.modelRef?.format === "keir-dcm/2" || state?.extension?.hookId === "TaskCreated")
+  const beforeCreate = state?.extension?.hookId === "TaskBeforeCreate";
+  const trigger = !retired && (workflowHost || ["keir-dcm/2", "keir-dcm/3"].includes(workflowRevision?.pins.modelRef?.format ?? "") || beforeCreate || state?.extension?.hookId === "TaskCreated")
     ? taskTrigger(state?.extension?.hookId) : null;
   const { capabilities, taskFields } = hostFeatures(workflowHost ? hostCatalog : null);
   const conditions = Object.entries({ projectId: "project", title: "exact title", tags: "tags", priority: "priority", dueAt: "due date" })
@@ -691,6 +725,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     && state.selection.approvedEvidenceId === savedReview.evidenceId;
   const reviewActionDisabled = disabled || !inlineOpen || reviewOpen || !canReview || !reviewReady || review !== reviewKey || !reviewAllowed;
   const exampleLabel = (item: Evidence["reports"][number], index: number) => {
+    if (guardCase(item)) return typeof item.label === "string" && item.label.trim() && item.label.trim() !== item.id ? item.label : "New task example " + (index + 1);
     const task = item.report.scenario?.task;
     if (!knownScenarioTask(task)) return "Earlier saved example " + (index + 1);
     if (task!.title !== "Example task") return task!.title;
@@ -750,6 +785,33 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (field === "tags") return Array.isArray(value);
       return ["priority", "addTag", "notes"].includes(field) && typeof value === "string";
     });
+  function checkedGuardExample(item: CheckedCase, index: number) {
+    const proposal = item.report.scenario?.proposal;
+    const expected = guardConsumption(item.expected.consumption), observed = guardConsumption(item.report.consumption);
+    const matches = item.report.status === "PASS" && checkedObservation(item);
+    const unavailable = !observed || observed.status === "BLOCKED";
+    const label = exampleLabel(item, index);
+    function outcome(result: GuardConsumption | null) {
+      return <><p>{guardResultLabel(result)}</p>{result?.status === "DENIED"
+        ? <p>{result.result.message.trim() ? result.result.message : "This sample task does not meet the rule."}</p>
+        : <p>{result?.status === "ALLOWED" ? "The app may continue its normal permission, validation and save checks."
+          : result?.status === "BLOCKED" ? "The required check could not finish. Saving is stopped in this example."
+            : "The saved result could not be verified. This example does not establish whether normal save checks could continue."}</p>}</>;
+    }
+    return <article className="rs-example rs-workflow-case rs-guard-case" key={item.id} aria-label={`Example: ${label}`}>
+      <h4>{label}</h4>
+      <dl>
+        <div><dt>Situation</dt><dd>{knownProposal(proposal) ? <>
+          <p>New task in {projectName(proposal!.projectId) ? `“${projectName(proposal!.projectId)}”` : "the chosen project"}.</p>
+          <p>{priorityLabel(proposal!.priority)} priority · {proposal!.tags.length ? `Tags ${proposal!.tags.join(", ")}` : "No tags"}
+            {` · ${proposal!.hasNotes ? "Notes present" : "No notes"} · ${proposal!.hasDueDate ? "Due date present" : "No due date"}`}</p>
+        </> : "The proposed task details could not be checked."}</dd></div>
+        <div><dt>Expected</dt><dd>{matches ? <details><summary>Expected behavior</summary>{outcome(expected)}</details> : outcome(expected)}</dd></div>
+        <div><dt>What happened</dt><dd>{outcome(observed)}</dd></div>
+        <div><dt>Result</dt><dd><p className={matches ? "rs-match" : "rs-mismatch"}>{matches ? unavailable ? "Handled as expected" : "Matches" : "Needs another check"}</p></dd></div>
+      </dl>
+    </article>;
+  }
   function checkedWorkflowExample(item: CheckedCase, index: number, compact: boolean) {
     const { scenario, observed, calls, native } = item.report;
     const task = scenario?.task;
@@ -851,6 +913,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
 
   function checkedExample(item: Evidence["reports"][number], index: number, compact = false) {
+    if (guardCase(item)) return checkedGuardExample(item, index);
     if (workflowCase(item)) return checkedWorkflowExample(item, index, compact);
     const source = item.report.scenario?.task, observed = knownObservation(item.report.observed), expected = knownTasks(item.expected.createdTasks);
     const readFailure = observed && item.report.observed?.effect === "NONE" && Array.isArray(item.report.calls)
@@ -1811,10 +1874,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     {executionUnavailable && <p role="status" className="rs-setup-notice">{state?.executionAvailability?.message || "Task customizations cannot run in this installation yet. Your tasks still work."}</p>}
     {state && <div className="rs-status-summary" aria-label="Customization status">
       <div><strong id="studio-customization-status" tabIndex={-1}>{state.extension ? ownActive ? state.selection.eligible
-        ? state.draft && !selectedDraft ? "Earlier version in use" : "On for my tasks" : "Couldn’t check what’s in use"
+        ? state.draft && !selectedDraft ? "Earlier version in use" : beforeCreate ? "On for new tasks" : "On for my tasks" : "Couldn’t check what’s in use"
         : state.approved ? "Approved · Still off" : state.draft ? "Draft · Not in use" : "In discussion · Not in use" : "New customization · Not saved"}</strong>
         {ownActive && state.draft && !selectedDraft && <span>{!state.evidence ? "Saved changes · Examples pending" : state.approved ? "Saved changes · Approved · Still off" : "Saved changes · Not in use"}</span>}
-        {trigger ? <span>{`For ${trigger} · `}{!trusted || state.selection.revision && !state.selection.eligible ? "Couldn’t check which rule is on"
+        {trigger ? <span>{beforeCreate ? "Checks before adding · " : `For ${trigger} · `}{!trusted || state.selection.revision && !state.selection.eligible ? "Couldn’t check which rule is on"
           : state.selection.revision ? `Currently on: ${state.selection.revision.extensionName}` : `No rule is on for ${trigger}`}</span>
           : !workflowHost && state.selection.revision && !ownActive && <span>{state.selection.eligible ? "Another customization is in use" : "Couldn’t check the saved selection"}</span>}</div>
       <div className="rs-summary-actions">
@@ -1850,7 +1913,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {availableStarters.length > 0 ? <><p>Choose a starting point, then make it yours.</p><div className="rs-starters">{availableStarters.map(starter =>
               <button key={starter.label} type="button" onClick={() => chooseStarter(starter.text)}>{starter.label}</button>)}</div><p role="status">{starterNotice}</p></>
               : <p>Tell me what you want to happen. We’ll check what Daymark can support and work through useful examples together.</p>}
-            {catalogError ? <p role="status">What Daymark supports could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p> : hostCatalog && <details><summary>{workflowHost ? "What can I ask for?" : "What Daymark supports"}</summary>{hostCatalog.hooks.map(hook => <p key={hook.id}><strong>{hook.label}</strong> · {hook.description}</p>)}
+            {catalogError ? <p role="status">What Daymark supports could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p> : hostCatalog && <details><summary>{workflowHost ? "What can I ask for?" : "What Daymark supports"}</summary>{hostCatalog.hooks.map(hook => <p key={hook.id}><strong>{taskTriggerGroup(hook.id) ?? hook.label}</strong> · {hook.description}</p>)}
               {workflowHost && <><p>{[capabilities.includes("tasks.create") && "Create a task.", capabilities.includes("tasks.update") && "Update the task that triggered the rule."].filter(Boolean).join(" ")} Each rule uses one trigger.</p>
                 {conditions.length > 0 && <p>Narrow a rule by {new Intl.ListFormat("en", { type: "disjunction" }).format(conditions)}.</p>}</>}</details>}
           </article>}
@@ -1893,10 +1956,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <h3 id="studio-saved-change" tabIndex={-1}>About this rule</h3>
             {legacySummary && <p>After a task completes, this rule can request a follow-up titled “{legacySummary.title}”
               {destination && <> in “{destination}”</>}.</p>}
+            {beforeCreate && <p>This rule can stop a new task from being added. Your rules for tasks added or completed run afterward.</p>}
             {trigger && <dl className="rs-rule-facts">
-              <div><dt>When</dt><dd>{trigger === "tasks added" ? "A task is added." : "A task is completed."}</dd></div>
-              <div><dt>Only when</dt><dd>{onlyWhen}</dd></div>
-              <div><dt>Then</dt><dd>{workflowSummary ? <>
+              <div><dt>When</dt><dd>{beforeCreate ? "Before a new task is saved." : trigger === "tasks added" ? "A task is added." : "A task is completed."}</dd></div>
+              <div><dt>{beforeCreate ? "Applies to" : "Only when"}</dt><dd>{beforeCreate ? "The saved conditions can’t be summarized here." : onlyWhen}</dd></div>
+              <div><dt>{beforeCreate ? "Required" : "Then"}</dt><dd>{beforeCreate ? "See the checked examples and exact saved rule for its requirements." : workflowSummary ? <>
                 {workflowSummary.capability === "tasks.update" ? "Update this task." : <>Create a task{typeof workflowSummary.fields.title === "string" ? ` titled “${workflowSummary.fields.title}”` : workflowSummary.titlePrefix !== undefined ? ` titled “${workflowSummary.titlePrefix}” followed by this task’s title` : workflowSummary.titleSuffix !== undefined && ` with this task’s title followed by “${workflowSummary.titleSuffix}”`}{workflowSummary.sameProject ? " in this task’s project" : typeof workflowSummary.fields.projectId === "string" && projectName(workflowSummary.fields.projectId) && ` in “${projectName(workflowSummary.fields.projectId)}”`}.</>}
                 {typeof workflowSummary.fields.priority === "string" && ` Priority ${priorityLabel(workflowSummary.fields.priority)}.`}
                 {typeof workflowSummary.fields.addTag === "string" && ` Add tag “${workflowSummary.fields.addTag}”.`}
@@ -1918,14 +1982,15 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           </article>}
           {savedReview && state && <article id="studio-review" hidden={!inlineOpen} className="rs-sheet rs-review rs-inline-review" aria-label="Current decision">
             <h3 id="studio-review-heading" tabIndex={-1}>Simulation</h3>
-            <p className="rs-review-status">{viewedInUse ? "On for my tasks" : reviewLoading ? "Checking saved results…"
+            <p className="rs-review-status">{viewedInUse ? beforeCreate ? "On for new tasks" : "On for my tasks" : reviewLoading ? "Checking saved results…"
               : !viewedDraft || !inlineAvailable ? trigger ? "Earlier simulation · read-only" : "Earlier saved changes · read-only" : reviewError ? "Saved results unavailable for a decision" : viewingCurrentFailure ? "Check needs a correction"
               : !viewedCurrent || review !== reviewKey ? "Saved examples · read-only" : reviewedApproved ? "Approved · Still off" : "Ready for your review"}</p>
             {reviewError && <div role="alert"><p>{reviewError}</p>{(viewedCurrent || viewingCurrentFailure) && <button disabled={disabled} onClick={() => void openReview(savedReview.evidenceId)}>Check saved results again</button>}</div>}
             {!viewedCurrent && !viewingCurrentFailure && !viewedInUse && !reviewLoading && <p>Saved work or its use changed. These examples are read-only. Open the latest changes before making a decision.</p>}
+            {beforeCreate && reviewEvidence && reviewEvidence.revisionId !== state.draft?.id && <p>This rule has changed since these examples were checked.</p>}
             {reviewEvidence && <>
-              <p className="muted">{reviewEvidence.reports.length} sample {reviewEvidence.reports.length === 1 ? "case" : "cases"} · {trigger ? "Sample tasks only · your tasks have not changed" : "Example only · no real tasks changed"}</p>
-              {(viewedInUse || state.selection.revision && state.selection.generation === savedReview.selection.generation) && <p>{viewedInUse ? trigger ? `“${savedReview.extension.name}” is on for ${trigger}. This applies to future matching events.` : `“${savedReview.extension.name}” is now in use. New matching task completions can use this change. Turning it on does not complete or replay earlier tasks.`
+              <p className="muted">{reviewEvidence.reports.length} sample {reviewEvidence.reports.length === 1 ? "case" : "cases"} · {beforeCreate ? "Sample tasks only · no tasks are saved" : trigger ? "Sample tasks only · your tasks have not changed" : "Example only · no real tasks changed"}</p>
+              {(viewedInUse || state.selection.revision && state.selection.generation === savedReview.selection.generation) && <p>{viewedInUse ? beforeCreate ? `“${savedReview.extension.name}” checks new tasks before saving. Actions after adding or completing keep their current selections.` : trigger ? `“${savedReview.extension.name}” is on for ${trigger}. This applies to future matching events.` : `“${savedReview.extension.name}” is now in use. New matching task completions can use this change. Turning it on does not complete or replay earlier tasks.`
                 : trusted && state.selection.eligible ? state.selection.revision!.extensionId !== savedReview.extension.id
                   ? `Another customization is in use: “${state.selection.revision!.extensionName}”.`
                   : state.selection.revision!.id === savedReview.revision.id
@@ -1945,6 +2010,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
                 ? savedReview.selection.revision.extensionId !== savedReview.extension.id
                   ? trigger ? `This replaces “${savedReview.selection.revision.extensionName}” for this trigger.` : ` instead of “${savedReview.selection.revision.extensionName}”. Switching turns it off and keeps it saved.`
                   : trigger ? "This replaces the version currently in use." : ". This replaces the version currently in use." : trigger ? "" : " for your tasks."}</p>}
+              {beforeCreate && reviewedApproved && !viewedInUse && !executionUnavailable && <p>This runs before saving a new task. Actions after adding or completing keep their current selections.</p>}
               {viewedInUse ? <p id="studio-use-confirmed" tabIndex={-1} role="status">This change is on. You can keep asking questions or describe your next change.</p>
                 : inlineAvailable && viewedCurrent && reviewReady && review === reviewKey && <div className="rs-decision-actions">{reviewedApproved
                   ? <button id="use-customization" className="rs-primary" disabled={reviewActionDisabled || executionUnavailable} onClick={() => {

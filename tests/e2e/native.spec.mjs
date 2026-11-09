@@ -476,7 +476,9 @@ test('mobile, keyboard/detail focus, empty, validation and API error states', as
   await newProject(page, 'A blank page', true); await screenshot(page, 'empty-mobile');
   await page.route('**/api/tasks', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ message: 'The local database could not be reached. Please try again.' }) }));
   await page.getByLabel('New task title').fill('Keep my draft'); await page.getByRole('button', { name: 'Add task', exact: false }).click();
-  await expect(page.getByRole('alert')).toContainText('The local database could not be reached.');
+  await expect(page.getByRole('alert')).toContainText("We couldn't confirm whether this task was added.");
+  await expect(page.getByRole('button', { name: 'Check result', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Add task', exact: true })).toBeDisabled();
   await expect(page.getByLabel('New task title')).toHaveValue('Keep my draft');
   await screenshot(page, 'api-error-mobile');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

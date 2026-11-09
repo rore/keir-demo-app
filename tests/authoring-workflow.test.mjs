@@ -6,7 +6,7 @@ import { createAuthoringService } from '../src/authoring-service.mjs';
 import { openData } from '../src/data.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
 
-test('discovery shows both trigger contracts without binding a trigger or activating an item', async t => {
+test('discovery shows all three trigger contracts without binding a trigger or activating an item', async t => {
   const db = openData(':memory:'), lifecycle = createLifecycle(db);
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra',
     KEIR_AI_MAX_USD: '1', OPENAI_API_KEY: 'synthetic-key' });
@@ -28,16 +28,21 @@ test('discovery shows both trigger contracts without binding a trigger or activa
   const { conversation: admitted } = await service.turn('maya', input, lease);
   const conversation = await service.wait('maya', admitted.id);
   assert.equal(conversation.status, 'IDLE');
-  assert.equal(discovery.dcm.format, 'keir-dcm/2');
+  assert.equal(discovery.dcm.format, 'keir-dcm/3');
   assert.equal(discovery.selectedHook, null);
   assert.equal(discovery.currentUse.unavailableReason, 'TRIGGER_UNRESOLVED');
   assert.equal(discovery.hook, undefined);
-  for (const hook of ['TaskCreated', 'TaskCompleted']) {
+  for (const hook of ['TaskCreated', 'TaskCompleted', 'TaskBeforeCreate']) {
     assert.ok(discovery.supportedHooks.some(item => item.id === hook));
     const examples = discovery.examplesByHook[hook];
     assert.equal(JSON.parse(examples.sourceExample).entrypoint, hook);
-    assert.equal(JSON.parse(examples.scenarioExample).format, 'keir-scenario/2');
+    assert.equal(JSON.parse(examples.scenarioExample).format, 'keir-scenario/3');
   }
+  const guard = discovery.examplesByHook.TaskBeforeCreate;
+  assert.deepEqual(guard.scenarioExamples.map(text => JSON.parse(text).expect.consumption.status), ['ALLOWED', 'DENIED', 'ALLOWED', 'BLOCKED']);
+  for (const text of guard.scenarioExamples) assert.deepEqual(Object.keys(JSON.parse(text).given.input).sort(),
+    ['hasDueDate', 'hasNotes', 'priority', 'projectId', 'tags']);
+  assert.equal(discovery.dcm.entrypoints.TaskBeforeCreate.consumer.kind, 'DECISION');
   assert.equal(lifecycle.state('maya', conversation.extensionId).extension.hookId, null);
   assert.equal(conversation.draft.revisionId, null);
 
@@ -69,4 +74,35 @@ test('assistant evidence keeps write types, exact dates and Boolean lookup crite
   assert.deepEqual(example.expected.updatedTasks, updatedTasks);
   assert.deepEqual(example.scenario, { occurredAt, task, openMatches: [criterion] });
   assert.equal(summary.truncated, false);
+});
+
+test('assistant evidence preserves independent decision expectations and the closed proposal without claiming a saved task', () => {
+  const allow = { status: 'ALLOWED', result: { decision: 'ALLOW', message: '' } };
+  const deny = { status: 'DENIED', result: { decision: 'DENY', message: '<b>Add a due date</b>', private: 'hidden' } };
+  const proposal = { projectId: 'project1', priority: 'high', tags: ['client'], hasNotes: false, hasDueDate: false };
+  const proof = { reports: [
+    { id: 'mismatch', expected: { outcome: { classification: 'COMPLETED' }, consumption: allow }, report: {
+      status: 'FAIL', native: { classification: 'COMPLETED', result: deny.result }, consumption: deny,
+      scenario: { proposal: { ...proposal, title: 'hidden', notes: 'hidden' } }, mismatches: [{ stage: 'CONSUMPTION', code: 'MISMATCH' }],
+    } },
+    { id: 'blocked', expected: { outcome: { classification: 'FAILED' }, consumption: { status: 'BLOCKED' } }, report: {
+      status: 'PASS', native: { classification: 'BUSINESS_REJECTION', result: allow.result }, consumption: { status: 'BLOCKED' },
+      scenario: { proposal }, mismatches: [],
+    } },
+  ] };
+  const summary = evidenceSummary(proof, []), [mismatch, blocked] = summary.cases;
+  assert.deepEqual(mismatch.expected.consumption, allow);
+  assert.deepEqual(mismatch.actual.consumption, { status: 'DENIED', result: { decision: 'DENY', message: '<b>Add a due date</b>' } });
+  assert.deepEqual(mismatch.scenario, { proposal });
+  assert.deepEqual(blocked.actual.consumption, { status: 'BLOCKED' });
+  assert.deepEqual(blocked.actual.native, { classification: 'BUSINESS_REJECTION' });
+  assert.equal(Object.hasOwn(mismatch.actual, 'observed'), false);
+  assert.equal(Object.hasOwn(mismatch.expected, 'createdTasks'), false);
+  assert.equal(JSON.stringify(summary).includes('hidden'), false);
+  assert.equal(summary.truncated, false);
+  const clipped = structuredClone(proof);
+  clipped.reports[0].report.consumption.result.message = 'x'.repeat(140);
+  const bounded = evidenceSummary(clipped, []);
+  assert.equal(bounded.cases[0].actual.consumption.result.message.length, 128);
+  assert.equal(bounded.truncated, true);
 });

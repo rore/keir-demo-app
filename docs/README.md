@@ -1,6 +1,6 @@
 # Daymark documentation
 
-Daymark shows how a task application uses Keir to let customers customize what happens after a task completes.
+Daymark uses Keir for checks before a new task is saved and actions after tasks are added or completed.
 
 ## Run and use Daymark
 
@@ -13,6 +13,7 @@ Daymark shows how a task application uses Keir to let customers customize what h
 ## Integration reference
 
 - [Native task behavior](native-task-app-design.md) covers task storage, tags, search, and access rules.
+- [Task creation and readback](task-creation.md) explains attempt IDs, lost responses, replay and current project access.
 - [Task completion and effects](task-effects.md) explains how Daymark binds Keir, simulates examples, and records real outcomes.
 - [Studio embedding](studio-embedding.md) describes the boundary between the authoring experience and the host application.
 - [Keir Core documentation](https://github.com/rore/keir-core/tree/main/docs) covers compiler and runtime APIs and the versioned specification.

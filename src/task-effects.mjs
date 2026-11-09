@@ -2,16 +2,16 @@ import { performance } from 'node:perf_hooks';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
 import { AppError, taskService, taskEffectService } from './data.mjs';
-import { hostBindings, json, loadHost, digest, TASK_HOOK, TASK_HOOKS } from './extension-catalog.mjs';
+import { hostBindings, json, loadHost, definitionForPins, digest, TASK_HOOK, TASK_EVENT_HOOKS } from './extension-catalog.mjs';
 import { consumeTaskEffect } from './task-effect-simulation.mjs';
 
 const denied = effect => ({ kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED', ...(effect ? { effect: 'NONE' } : {}) });
 
-export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(performance.now()) }) {
+export function createTaskDispatcher({ db, lifecycle, guard, clock = () => Math.floor(performance.now()) }) {
   const tasks = taskService(db);
-  const effects = taskEffectService(db);
+  const effects = taskEffectService(db, { guard });
   let closing = false, running = null, requested = false, after = 0, preparedSlot;
-  let binding;
+  const bindings = new Map();
   function current(owner, invocation) {
     const captured = effects.contextFor(owner, invocation), now = invocation.deadline.clock.nowMs();
     if (closing || captured.revokedAt !== null || captured.state !== 'STARTED'
@@ -46,24 +46,28 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
   const write = (version, method) => ({ version, mode, keyType, invoke: async (args, protectedArgs, remainingMs, context) => {
       try {
         if (remainingMs <= 0 || !current(protectedArgs.actorId, context)) return denied(true);
-        return effects[method](protectedArgs.actorId, context.requestKey, args, context);
+        return await effects[method](protectedArgs.actorId, context.requestKey, args, context);
       } catch (error) {
         if (['HOST_KEY_INVALID', 'HOST_CONTEXT_INVALID', 'AUTHORITY_DENIED', 'EVENT_NOT_STARTED'].includes(error.code)) return denied(true);
         if (error.status === 400) return { kind: 'BUSINESS_REJECTION', code: 'TASK_INVALID', effect: 'NONE' };
         return { kind: 'UNKNOWN_COMMIT', effect: 'UNKNOWN' };
       }
   } });
-  try {
-    const hosts = new Map(TASK_HOOKS.map(hook => [hook, loadHost(hook)]));
-    const result = bindModel(hosts.get(TASK_HOOK).dcmBytes, {
+  function bindingFor(host) {
+    const key = host.pins.modelDigest;
+    if (bindings.has(key)) return bindings.get(key);
+    const result = bindModel(host.dcmBytes, {
       'tasks.get': readTask, 'tasks.openMatch': openMatch,
       'tasks.create': write('2', 'createTaskOnce'), 'tasks.update': write('1', 'updateTaskOnce'),
     });
-    if (result.boundModel && !result.diagnostic) binding = { hosts, boundModel: result.boundModel };
-  } catch { /* Native tasks remain available without the extension model. */ }
+    if (result.boundModel && !result.diagnostic) bindings.set(key, result.boundModel);
+    return bindings.get(key);
+  }
+  try { bindingFor(loadHost(TASK_HOOK)); }
+  catch { /* Native tasks remain available without the extension model. */ }
   function eventForTask(owner, taskId, hookId) {
     tasks.getTask(owner, taskId);
-    if (!TASK_HOOKS.includes(hookId)) throw new AppError(400, 'Choose a task trigger.');
+    if (!TASK_EVENT_HOOKS.includes(hookId)) throw new AppError(400, 'Choose a task trigger.');
     return db.prepare('SELECT event_id FROM task_events WHERE owner_id=? AND source_task_id=? AND hook_id=?').get(owner, taskId, hookId)?.event_id;
   }
   function publicStatus(owner, taskId, hookId = TASK_HOOK) {
@@ -87,11 +91,14 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
         : value.state === 'PENDING' ? { message: 'This reaction has not started. Its exact execution dependencies may be unavailable. ' + kept } : {}) };
   }
   async function firstAttempt(row) {
-    if (row.revoked_at !== null || !binding) return;
-    const { hosts, boundModel } = binding, host = hosts.get(row.hook_id);
-    if (!host) return;
+    if (row.revoked_at !== null) return;
+    let host, boundModel;
     try {
       const pins = JSON.parse(row.pins);
+      host = definitionForPins(pins);
+      if (host.pins.hook !== row.hook_id) return;
+      boundModel = bindingFor(host);
+      if (!boundModel) return;
       if (!pins || Object.entries(host.pins).some(([name, value]) => json(pins[name]) !== json(value))) return;
     } catch { return; }
     let execution;
@@ -150,7 +157,7 @@ export function createTaskDispatcher({ db, lifecycle, clock = () => Math.floor(p
   }
   return Object.freeze({
     wake,
-    availability() { return binding ? { available: true }
+    availability() { return bindings.size ? { available: true }
       : { available: false, message: 'Task customizations are unavailable. Your tasks still work.' }; },
     dependenciesChanged() { after = 0; return wake(); },
     status: publicStatus,

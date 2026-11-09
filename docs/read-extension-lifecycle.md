@@ -1,12 +1,12 @@
 # Review and use a task customization
 
-Choose **Customizations** to start a rule or reopen a saved item. Each customization has one visible conversation. Use **Load earlier messages** to read more of it without sending a provider request. A matching task creation or completion can create one task in an accessible project or update the triggering task. Real effects require compatible artifacts and current native host permission. Native task management remains available when effects cannot run. See [task effects](task-effects.md).
+Choose **Customizations** to start a rule or reopen a saved item. Each customization has one visible conversation. Use **Load earlier messages** to read more of it without sending a provider request. A check before saving can allow or deny a proposed task. A matching task creation or completion can create one task in an accessible project or update the triggering task. Execution requires compatible artifacts and current native host permission. An unavailable selected before-save check stops creation and retains the draft. See [task customizations](task-effects.md).
 
 1. Choose **New customization** and describe your goal. Opening or typing saves nothing and calls no provider. The first accepted message creates a distinct owner-scoped item. The assistant discovers accessible projects and clarifies the project, created-task title and matching behavior.
 2. Agree on matching and nonmatching examples. The assistant compiles the source and checks synthetic situations, explaining disagreements with the independently wanted results. Source owns the chosen project and title; a hidden task-specific adapter does not choose them.
 3. Open the checked examples in the conversation. They show the situation, expected action and observed effect. Current and proposed behavior come from their own exact proofs. The canvas is available for secondary inspection.
-4. Choose **Approve this change** when eligible evidence matches your intent. Turn on the rule separately for task creation or completion. Studio identifies the current rule for that trigger if turning on the new rule would replace it.
-5. Add or complete a later task normally. Its customization outcome shows the saved reaction separately. A confirmed native receipt and an owner-authorized read are required before an affected task can be opened.
+4. Choose **Approve this change** when eligible evidence matches your intent. Turn on the rule separately for checks before saving or actions after adding or completing. Studio identifies the current rule for that trigger if turning on the new rule would replace it.
+5. Add or complete a later task normally. A denied check keeps the proposal editable. An after-save customization outcome shows the saved reaction separately. A confirmed native receipt and an owner-authorized read are required before an affected task can be opened.
 
 Examples start closed and open from their exchange. Closing restores reading position, focus and unsent text. Background replies do not replace the example being read. Wide screens support resizing; narrow or short screens use Conversation / Preview navigation. Approval stays with its exact proof even when a newer check becomes latest. Explicitly reviewing and approving the newer run changes that binding. History and technical inspection show original source, compiled artifact, cases, pins and saved reports without granting authority over a different draft.
 
@@ -18,6 +18,8 @@ Each evidence response contains independently saved expectations and an actual s
 
 | Field | Meaning |
 | --- | --- |
+| `reports[].report.scenario.proposal` | Synthetic before-save proposal: project, priority, tags, notes presence and due-date presence. It excludes the full title and notes. |
+| `reports[].expected.consumption`, `reports[].report.consumption` | Independent expected consumption and actual consumption: `ALLOWED`, `DENIED` or `BLOCKED`, with the returned decision and message when available. An unavailable example can pass when explicitly expected; it never permits a real save. |
 | `reports[].report.scenario.task` | Synthetic source task: title, status and project when available. It belongs to that exact saved proof. |
 | `reports[].expected.createdTasks` | Expected project/title creations from independent saved expectations; an empty array means none. Null explicitly means an unknown creation result; absent expectations grant no review eligibility. |
 | `reports[].report.observed` | Actual simulated effect and created-task projections from native simulator calls and the effect ledger. `CONFIRMED` supports a creation preview; `NONE` with an empty array means known none; `UNKNOWN` or absent observations remain uncertain. |
@@ -33,7 +35,7 @@ A saved customization has its own owner-scoped identity, draft version, immutabl
 
 Real execution additionally requires compatible runtime binding and current native host permission. The optional `executionAvailability` projection explains when customizations cannot run. A false value disables activation and rollback; discussion, compilation, checks and customer approval remain valid. `selection.eligible` also reflects current execution authority, so a saved selection is not automatically claimed to be working. Simulation success and customer approval do not certify the real adapter or every future task.
 
-The current task workflow uses Keir 0.2.0 with the `keir/2`, `keir-dcm/2`, `keir-artifact/2` and `keir-scenario/2` formats. History retains the exact saved revisions and evidence. Earlier Keir 1 rules remain readable as history after cutover. A Keir 2 replacement requires its own approval.
+Current authoring uses Keir 0.3.0 release packages with source `keir/2`, model `keir-dcm/3`, artifact `keir-artifact/3` and scenario `keir-scenario/3`. Existing `/2` event artifacts retain their exact pins, approvals and evidence and execute through runtime 0.3 compatibility. Editing creates a current-format revision requiring its own checked approval. Earlier Keir 1 rules remain readable as history after cutover.
 
 Starting changes from the version in use requires a confirmation. Cancel preserves the current draft. Confirm copies the observed active revision under exact draft/version/generation checks, retains displaced changes and their discussion in History, and clears approval/evidence for the new draft. An old discussion cannot silently write over that new head. Native tasks, earlier effects and receipts are not undone.
 

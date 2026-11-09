@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mock } from 'node:test';
 import { openData, taskService } from '../../src/data.mjs';
@@ -47,7 +48,7 @@ try {
   dispatcher = createTaskDispatcher({ db, lifecycle, clock: () => now });
   assert.equal(dispatcher.availability().available, true);
   const complete = async (owner, projectId, title) => {
-    const source = native.createTask(owner, { projectId, title });
+    const source = await native.createTask(owner, { projectId, title }, { operationId: randomUUID() });
     native.completeTask(owner, source.id);
     await dispatcher.wake();
     return { source, status: dispatcher.status(owner, source.id) };
@@ -85,7 +86,7 @@ try {
   assert.equal(native.listTasks('sam', project.id).filter(task => task.title === fixture.metadata.title).length, 1);
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
 
-  assert.deepEqual(boundVersions, ['4']); assert.equal(prepares, 1); assert.equal(invocations.length, 4);
+  assert.deepEqual(boundVersions, ['5']); assert.equal(prepares, 1); assert.equal(invocations.length, 4);
   assert.ok(invocations.every(row => row.prepared === invocations[0].prepared));
   assert.deepEqual(invocations.map(row => row.invocation.bindings.actorId), ['sam', 'maya', 'sam', 'sam']);
   assert.deepEqual(invocations.map(row => row.invocation.deadline.expiresAtMs), [1000, 1100, 1200, 1300]);

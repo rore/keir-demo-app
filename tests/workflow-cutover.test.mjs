@@ -26,7 +26,7 @@ function comparison(source) {
       + (after && name === 'extension_selections' ? 'legacy_extension_selections' : name) + ' ORDER BY rowid').all();
   });
 }
-test('Stage A cutover preserves old rows, historical proof, and the definitive receipt', t => {
+test('Stage A cutover preserves old rows, historical proof, and the definitive receipt', async t => {
   const path = disposable(t), old = new DatabaseSync(path, { readOnly: true });
   assert.equal(old.prepare('PRAGMA user_version').get().user_version, 12);
   const queries = comparison(old), prior = queries.map(query => query(old));
@@ -39,13 +39,15 @@ test('Stage A cutover preserves old rows, historical proof, and the definitive r
   for (let attempt = 0; attempt < 2; attempt++) {
     const db = openData(path), lifecycle = createLifecycle(db);
     try {
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
       assert.deepEqual(queries.map(query => query(db, true)), prior);
       assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
       assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-      const current = db.prepare('SELECT * FROM extension_selections ORDER BY rowid').all();
+      const current = db.prepare("SELECT * FROM extension_selections WHERE hook_id!='TaskBeforeCreate' ORDER BY rowid").all();
       assert.deepEqual(current, selections.map(row => Object.assign(Object.create(null), row,
         { revision_id: null, binding_pins: null, generation: row.generation + 1 })));
+      assert.deepEqual(db.prepare("SELECT owner_id,revision_id,generation,binding_pins FROM extension_selections WHERE hook_id='TaskBeforeCreate' ORDER BY owner_id").all().map(Object.values),
+        ['leo', 'maya', 'sam'].map(owner => [owner, null, 0, null]));
       const item = lifecycle.state(selected.owner_id, extensionId);
       assert.equal(item.retired, true);
       assert.equal(item.legacySelection.eligible, false);
@@ -65,7 +67,7 @@ test('Stage A cutover preserves old rows, historical proof, and the definitive r
         const key = effect.keyFor(saved.owner_id, event.event_id), invocation = {
           requestKey: key, event: { id: event.event_id, source: event.source_task_id }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 },
         };
-        assert.deepEqual(effect.createTaskOnce(saved.owner_id, key, JSON.parse(Buffer.from(saved.payload)), invocation), JSON.parse(saved.result));
+        assert.deepEqual(await effect.createTaskOnce(saved.owner_id, key, JSON.parse(Buffer.from(saved.payload)), invocation), JSON.parse(saved.result));
         assert.equal(effect.updateTaskOnce(saved.owner_id, key, { priority: 'high' }, invocation).code, 'KEY_PAYLOAD_MISMATCH');
       }
       assert.deepEqual(queries.map(query => query(db, true)), prior);
@@ -111,7 +113,7 @@ test('cutover rechecks pending work, preserves revoked rows and rolls back after
   try {
     const before = comparison(reference), schema = db => db.prepare('SELECT * FROM sqlite_schema ORDER BY name').all();
     for (const boundary of ['UPDATE extension_selections', 'ALTER TABLE task_effect_receipts', 'INSERT INTO task_effect_receipts',
-      'DROP TABLE previous_workflow_receipts', 'PRAGMA user_version=13']) {
+      'DROP TABLE previous_workflow_receipts', 'PRAGMA user_version=14']) {
       writeFileSync(path, stageA);
       DatabaseSync.prototype.exec = function (sql) {
         if (sql === boundary) {

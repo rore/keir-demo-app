@@ -28,7 +28,7 @@ async function nativeData(page) {
     const headers = { 'X-Session-Context': session.contextToken, 'Content-Type': 'application/json' };
     const projects = await (await fetch('/api/projects', { headers })).json(), project = projects[0];
     const tasks = await (await fetch('/api/projects/' + project.id + '/tasks', { headers })).json();
-    const created = await (await fetch('/api/tasks', { method: 'POST', headers, body: JSON.stringify({ projectId: project.id, title: 'Review the finished task' }) })).json();
+    const created = await (await fetch('/api/tasks', { method: 'POST', headers: { ...headers, 'X-Task-Create-Id': crypto.randomUUID() }, body: JSON.stringify({ projectId: project.id, title: 'Review the finished task' }) })).json();
     return { project, source: tasks.find(task => task.status === 'open'), created };
   });
 }

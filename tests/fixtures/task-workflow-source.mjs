@@ -38,7 +38,7 @@ export function taskWorkflowSource(host, workflow, options) {
 const operation = (step, capability, version, args, response) =>
   ({ step, capability, version, args, protectedArgs: { actorId: 'user1' }, response });
 
-function scenario(input, id, read, write, status = 'NO_OP') {
+function scenario(format, input, id, read, write, status = 'NO_OP') {
   const stubs = write ? [read, write] : [read];
   const calls = stubs.map(({ response, ...call }) => call);
   const effects = write ? [{ step: write.step, capability: write.capability, state: 'CONFIRMED' }] : [];
@@ -75,7 +75,7 @@ function scenario(input, id, read, write, status = 'NO_OP') {
   }
   const consumption = { status: 'REPORTED', ...outcome };
   outcome.trace = trace.map((event, sequence) => ({ sequence, ...event }));
-  return { format: 'keir-scenario/2', id, given: { input, fixture: 'normal' }, stubs, expect: { outcome, calls, consumption } };
+  return { format, id, given: { input, fixture: 'normal' }, stubs, expect: { outcome, calls, consumption } };
 }
 
 export function taskWorkflowCases(host, workflow, options) {
@@ -94,7 +94,8 @@ export function taskWorkflowCases(host, workflow, options) {
     operation('changed', capability, version, args, { kind: 'SUCCESS', value: { id }, effect: 'CONFIRMED' });
   const create = args => write('tasks.create', '2', createdTaskId, args);
   const update = args => write('tasks.update', '1', taskId, args);
-  const example = (...args) => scenario(input, ...args);
+  const format = host.pins.modelRef.format === 'keir-dcm/3' ? 'keir-scenario/3' : 'keir-scenario/2';
+  const example = (...args) => scenario(format, input, ...args);
   const nearMiss = title === title.toLowerCase() ? title.toUpperCase() : title.toLowerCase();
   const cases = {
     intake: [

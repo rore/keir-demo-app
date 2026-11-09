@@ -110,19 +110,20 @@ test('discovery separates exact checked active v1 from a different customer task
     ['evidence', 'maya', active.approvedEvidenceId, extensionId], ['source', 'maya', active.draft.id, extensionId]]);
   assert.deepEqual(lifecycle.state('maya', extensionId).selection, draft.selection);
   assert.deepEqual(lifecycle.evidence('maya', active.approvedEvidenceId, extensionId), activeProof);
-  for (const phrase of ['currentUse.checkedSummary', 'businessContext.navigation', 'Never invent Compare versions, View history or a version comparison view']) assert.ok(requests[0].instructions.includes(phrase));
+  for (const phrase of ['currentUse.checkedSummary', 'businessContext.navigation as the authoritative source']) assert.ok(requests[0].instructions.includes(phrase));
+  assert.match(context.businessContext.navigation, /Never invent Compare versions, View history or a version comparison view/);
   assert.match(context.businessContext.navigation, /View what’s in use.*outside earlier-discussion or stale views/);
   assert.match(context.businessContext.navigation, /View earlier examples opens the exact earlier saved check/);
   assert.match(context.businessContext.navigation, /View checked examples opens a current check that is not eligible for approval/);
   assert.match(context.businessContext.navigation, /Inspect saved source and examples.*not a comparison screen/);
   assert.match(context.businessContext.checking, /example tasks.*your tasks have not changed/);
   assert.match(requests[0].instructions, /After an example check, describe what would happen in that example and say “Your real tasks have not changed”/);
-  for (const guidance of [context.businessContext.navigation, requests[0].instructions]) {
-    for (const label of ['View saved changes', 'About this rule', 'View simulation', 'Show example checks',
+  for (const label of ['View saved changes', 'About this rule', 'View simulation', 'Show example checks',
       'Hide simulation', 'View latest changes', 'Back to conversation',
-      'Approve this change', 'Turn on for tasks added', 'Turn on for tasks completed']) assert.ok(guidance.includes(label));
+      'Approve this change', 'Turn on for tasks added', 'Turn on for tasks completed']) assert.ok(context.businessContext.navigation.includes(label));
+  assert.match(context.businessContext.navigation, /do not open or replace.*automatically|never open or replace.*automatically/);
+  for (const guidance of [context.businessContext.navigation, requests[0].instructions]) {
     assert.doesNotMatch(guidance, /beside Current decision|Show the unfinished task example/);
-    assert.match(guidance, /do not open or replace.*automatically|never open or replace.*automatically/);
     assert.match(guidance, /read-only navigation|without creating or restoring changes/);
     assert.match(guidance, /uncertain outcomes explicit/);
     assert.match(guidance, /chat.*(?:neither approval nor activation|grants neither approval nor activation)/i);

@@ -31,9 +31,9 @@ function integrity(db) {
 function insert(db, table, row) {
   return db.prepare(`INSERT INTO ${table}(${Object.keys(row).join(',')}) VALUES (${Object.keys(row).map(() => '?').join(',')})`).run(...Object.values(row));
 }
-function eventRow(db, changes = {}) {
+async function eventRow(db, changes = {}) {
   const native = taskService(db), project = native.listProjects('maya')[0];
-  const task = native.createTask('maya', { projectId: project.id, title: 'Storage source' });
+  const task = await native.createTask('maya', { projectId: project.id, title: 'Storage source' }, { operationId: randomUUID() });
   return { event_id: randomUUID(), owner_id: 'maya', source_task_id: task.id, hook_id: 'TaskCompleted', original_key: randomUUID(), item_id: null,
     revision_id: null, selection_generation: 0, input: JSON.stringify({ taskId: task.id }), pins: null,
     state: 'NO_BINDING', revoked_at: null, outcome: null, reconciliation: null, created_at: '2026-01-01T00:00:00.000Z', ...changes };
@@ -43,31 +43,31 @@ function receiptRow(event, changes = {}) {
     payload: Buffer.from('{"projectId":"original","title":"Original"}'), result: '{"kind":"BUSINESS_REJECTION","code":"PROJECT_NOT_FOUND","effect":"NONE"}',
     effect: 'NONE', affected_task_id: null, ...changes };
 }
-function populatedEffects(db) {
+async function populatedEffects(db) {
   const native = taskService(db), project = native.listProjects('maya')[0];
   const selected = seedTaskEffectBinding(db);
   db.prepare("UPDATE extension_selections SET revision_id=?,generation=4,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'").run(selected.revisionId, JSON.stringify(selected.pins));
-  const source = native.createTask('maya', { projectId: project.id, title: 'Complete this task' });
+  const source = await native.createTask('maya', { projectId: project.id, title: 'Complete this task' }, { operationId: randomUUID() });
   native.completeTask('maya', source.id);
   const event = db.prepare('SELECT * FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(source.id), service = effects(db);
   service.claim('maya', event.event_id);
   const key = service.keyFor('maya', event.event_id), payload = { projectId: project.id, title: 'Created once' };
-  const result = service.createTaskOnce('maya', key, payload);
+  const result = await service.createTaskOnce('maya', key, payload);
   db.exec('UPDATE authoring_budget SET reserved_micros=321');
   return { event, key, payload, createdId: result.value.id, service };
 }
 
-test('reopen retains exact task, customization and receipt bytes', t => {
+test('reopen retains exact task, customization and receipt bytes', async t => {
   const { path } = fixture(t);
   let db = openData(path);
-  const { event, createdId } = populatedEffects(db);
+  const { event, createdId } = await populatedEffects(db);
   db.prepare('UPDATE tasks SET title=?,notes=? WHERE id=?').run('  kept\u0000title  ', ' original\u0000notes λ ', event.source_task_id);
   const before = snapshot(db);
   assert.equal(before.task_effect_receipts.length, 1);
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
   const { type, notnull, dflt_value } = db.prepare("SELECT * FROM pragma_table_info('tasks') WHERE name='tags'").get();
   assert.deepEqual({ type, notnull, dflt_value }, { type: 'TEXT', notnull: 1, dflt_value: "'[]'" });
   assert.deepEqual(snapshot(db), before);
@@ -75,11 +75,12 @@ test('reopen retains exact task, customization and receipt bytes', t => {
   integrity(db); db.close();
 });
 
-test('current schema rejects duplicate event/key, cross-owner lineage and invalid state, byte and integer bounds', t => {
+test('current schema rejects duplicate event/key, cross-owner lineage and invalid state, byte and integer bounds', async t => {
   let db; const { path } = fixture(t, () => db?.close()); db = openData(path);
-  const event = eventRow(db); insert(db, stores[0], event);
+  const event = await eventRow(db); insert(db, stores[0], event);
   assert.throws(() => insert(db, stores[0], { ...event, event_id: randomUUID(), original_key: randomUUID() }), /UNIQUE/);
-  assert.throws(() => insert(db, stores[0], eventRow(db, { original_key: event.original_key })), /UNIQUE/);
+  const duplicateKey = await eventRow(db, { original_key: event.original_key });
+  assert.throws(() => insert(db, stores[0], duplicateKey), /UNIQUE/);
   const foreign = taskService(db).listTasks('leo', taskService(db).listProjects('leo')[0].id)[0];
   const { revisionId: leoRevision, extensionId: leoItem } = seedTaskEffectBinding(db, 'leo');
   const { revisionId: mayaRevision, extensionId: mayaItem } = seedTaskEffectBinding(db);
@@ -94,10 +95,13 @@ test('current schema rejects duplicate event/key, cross-owner lineage and invali
     [{ state: 'FINISHED', item_id: mayaItem, revision_id: mayaRevision, outcome: jsonBytes(131074) }, /CHECK/],
     [{ input: 'invalid JSON' }, /CHECK/], [{ reconciliation: 'invalid JSON' }, /CHECK/],
   ];
-  for (const [changes, error] of invalidEvents) assert.throws(() => insert(db, stores[0], eventRow(db, changes)), error);
-  const boundary = eventRow(db, { selection_generation: 9007199254740991, input: jsonBytes(4096), pins: jsonBytes(32768), reconciliation: jsonBytes(32768) });
+  for (const [changes, error] of invalidEvents) {
+    const invalid = await eventRow(db, changes);
+    assert.throws(() => insert(db, stores[0], invalid), error);
+  }
+  const boundary = await eventRow(db, { selection_generation: 9007199254740991, input: jsonBytes(4096), pins: jsonBytes(32768), reconciliation: jsonBytes(32768) });
   insert(db, stores[0], boundary);
-  insert(db, stores[0], eventRow(db, { state: 'FINISHED', item_id: mayaItem, revision_id: mayaRevision, outcome: jsonBytes(131072) }));
+  insert(db, stores[0], await eventRow(db, { state: 'FINISHED', item_id: mayaItem, revision_id: mayaRevision, outcome: jsonBytes(131072) }));
   assert.throws(() => insert(db, 'extension_selections', { owner_id: 'maya', hook_id: 'TaskCompleted', revision_id: null, generation: 0 }), /UNIQUE/);
   const selectionChanges = [
     [{ hook_id: 'OtherHook' }, /CHECK/], [{ generation: -1 }, /CHECK/], [{ generation: 9007199254740992 }, /CHECK/],
@@ -110,7 +114,7 @@ test('current schema rejects duplicate event/key, cross-owner lineage and invali
   }
   db.prepare("UPDATE extension_selections SET revision_id=?,generation=?,binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'")
     .run(mayaRevision, 9007199254740991, jsonBytes(32768));
-  const receiptEvent = eventRow(db); insert(db, stores[0], receiptEvent);
+  const receiptEvent = await eventRow(db); insert(db, stores[0], receiptEvent);
   const invalidReceipts = [
     [{ owner_id: 'leo' }, /FOREIGN KEY/], [{ original_key: randomUUID() }, /FOREIGN KEY/],
     [{ capability_id: 'tasks.delete' }, /CHECK/], [{ capability_version: '3' }, /CHECK/],
@@ -129,9 +133,9 @@ test('current schema rejects duplicate event/key, cross-owner lineage and invali
   assert.deepEqual(snapshot(db), before); integrity(db);
 });
 
-test('stored event identity, permanent revocation, settled outcome and receipts cannot be rewritten', t => {
+test('stored event identity, permanent revocation, settled outcome and receipts cannot be rewritten', async t => {
   let db; const { path } = fixture(t, () => db?.close()); db = openData(path);
-  const { event, service } = populatedEffects(db);
+  const { event, service } = await populatedEffects(db);
   const changes = { event_id: randomUUID(), owner_id: 'leo', source_task_id: randomUUID(), original_key: randomUUID(),
     item_id: randomUUID(), revision_id: randomUUID(), selection_generation: 99, input: '{}', pins: '{}', created_at: 'changed', state: 'PENDING' };
   const before = snapshot(db);
@@ -151,7 +155,7 @@ test('cloned databases with identical event and original key cannot authenticate
   let db, copy;
   const { path, directory } = fixture(t, () => { db?.close(); copy?.close(); });
   db = openData(path);
-  const { event, key, payload } = populatedEffects(db), clonePath = join(directory, 'clone.sqlite');
+  const { event, key, payload } = await populatedEffects(db), clonePath = join(directory, 'clone.sqlite');
   await backup(db, clonePath);
   copy = openData(clonePath);
   const service = taskEffectService(copy), saved = service.status('maya', event.event_id);
@@ -159,21 +163,21 @@ test('cloned databases with identical event and original key cannot authenticate
   const context = { requestKey: key, event: { id: saved.eventId, source: saved.sourceTaskId }, deadline: { clock: { nowMs: () => 0 }, expiresAtMs: 1000 } };
   const before = snapshot(copy);
   assert.throws(() => service.contextFor('maya', context), { code: 'HOST_KEY_INVALID' });
-  assert.throws(() => service.createTaskOnce('maya', key, payload, context), { code: 'HOST_KEY_INVALID' });
+  await assert.rejects(() => service.createTaskOnce('maya', key, payload, context), { code: 'HOST_KEY_INVALID' });
   assert.deepEqual(snapshot(copy), before);
   const valid = invocationFor(service, 'maya', saved.eventId);
-  assert.throws(() => service.createTaskOnce('maya', valid.requestKey, payload, { ...valid, event: { ...valid.event, source: 'another task' } }),
+  await assert.rejects(() => service.createTaskOnce('maya', valid.requestKey, payload, { ...valid, event: { ...valid.event, source: 'another task' } }),
     { code: 'HOST_CONTEXT_INVALID' });
-  assert.deepEqual(service.createTaskOnce('maya', valid.requestKey, payload, valid), saved.receipt, 'Authenticated historical receipt is read-only');
+  assert.deepEqual(await service.createTaskOnce('maya', valid.requestKey, payload, valid), saved.receipt, 'Authenticated historical receipt is read-only');
 });
 
-test('failed native revocation is atomic; successful revocation survives reopen without erasing settled receipts', t => {
+test('failed native revocation is atomic; successful revocation survives reopen without erasing settled receipts', async t => {
   let db;
   const { path } = fixture(t, () => db?.close()); db = openData(path);
-  const { event, service } = populatedEffects(db);
+  const { event, service } = await populatedEffects(db);
   service.finish('maya', event.event_id, { classification: 'COMPLETED', effects: [{ state: 'CONFIRMED' }] });
   const settled = service.status('maya', event.event_id);
-  const task = taskService(db).createTask('maya', { projectId: taskService(db).listProjects('maya')[0].id, title: 'Pending revoke' });
+  const task = await taskService(db).createTask('maya', { projectId: taskService(db).listProjects('maya')[0].id, title: 'Pending revoke' }, { operationId: randomUUID() });
   taskService(db).completeTask('maya', task.id);
   const before = snapshot(db);
   db.exec("CREATE TEMP TRIGGER fail_revocation BEFORE UPDATE OF revoked_at ON task_events BEGIN SELECT RAISE(ABORT,'revocation blocked'); END");
@@ -191,7 +195,7 @@ test('failed native revocation is atomic; successful revocation survives reopen 
 
 test('reset verifies both effect stores, rolls failed reseeding back and clears keys only with their tasks after a verified backup', async t => {
   const { path, directory } = fixture(t); let db = openData(path);
-  const { event, key, payload, createdId } = populatedEffects(db), before = snapshot(db); db.close();
+  const { event, key, payload, createdId } = await populatedEffects(db), before = snapshot(db); db.close();
   for (const corrupt of ['DELETE FROM task_effect_receipts', `UPDATE task_events SET reconciliation='{"tampered":true}'`]) {
     await assert.rejects(resetData(directory, true, async (source, destination) => {
       await backup(source, destination);
@@ -212,9 +216,10 @@ test('reset verifies both effect stores, rolls failed reseeding back and clears 
   assert.equal(db.prepare('SELECT count(*) n FROM tasks WHERE id IN (?,?)').get(event.source_task_id, createdId).n, 0);
   assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, 321);
   assert.equal(db.prepare("SELECT count(*) n FROM extension_selections WHERE hook_id='TaskCompleted' AND revision_id IS NULL AND generation=0 AND binding_pins IS NULL").get().n, 3);
+  assert.equal(db.prepare("SELECT count(*) n FROM extension_selections WHERE hook_id='TaskBeforeCreate' AND revision_id IS NULL AND generation=0 AND binding_pins IS NULL").get().n, 3);
   const current = effects(db);
   assert.throws(() => current.keyFor('maya', event.event_id), error => error.status === 404);
-  assert.throws(() => current.createTaskOnce('maya', key, payload), error => error.code === 'HOST_KEY_INVALID');
+  await assert.rejects(() => current.createTaskOnce('maya', key, payload), error => error.code === 'HOST_KEY_INVALID');
   assert.equal(db.prepare('SELECT count(*) n FROM tasks').get().n, 9);
   integrity(db); db.close();
 });

@@ -1,15 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { taskEffectService } from '../../src/data.mjs';
-import { digest, json, loadHost, TASK_HOOK } from '../../src/extension-catalog.mjs';
-import { taskEffectSyntax, taskEffectScenarioExamples, TASK_EFFECT_VERSIONS as versions } from '../../src/task-effect-simulation.mjs';
+import { digest, json, definitionForPins, TASK_HOOK, TASK_DEFINITION } from '../../src/extension-catalog.mjs';
+import { taskEffectSyntax, taskEffectScenarioExamples, taskEffectVersions } from '../../src/task-effect-simulation.mjs';
 
-// Compiled from taskEffectSyntax with the pinned CLI so storage checks can admit the exact proof without launching Java.
+// Retain the original Keir 2 source, artifact and proof when qualifying the new runtime.
 const artifact = readFileSync(new URL('./current-task-workflow-artifact.json', import.meta.url));
 const reports = JSON.parse(readFileSync(new URL('./current-task-workflow-reports.json', import.meta.url), 'utf8'));
+const original = JSON.parse(artifact), priorPackage = JSON.parse(readFileSync(new URL('../../vendor/keir-0.2.0-provenance.json', import.meta.url)));
 export function seedTaskEffectBinding(db, owner = 'maya') {
   const extensionId = randomUUID(), revisionId = randomUUID(), evidenceId = randomUUID();
-  const host = loadHost(TASK_HOOK), source = Buffer.from(taskEffectSyntax(host));
+  const host = definitionForPins({ modelDigest: original.modelRef.digest, modelRef: original.modelRef, definitionId: TASK_DEFINITION,
+    compiler: original.compiler, environment: original.environment, packageIntegrity: priorPackage.integrity,
+    hook: TASK_HOOK, consumer: { id: 'demo.task.completion', kind: 'EVENT_REPORT', version: '1' }, adapter: 'native-task-effect/2' });
+  const versions = taskEffectVersions(host), source = Buffer.from(taskEffectSyntax(host));
   const scenarios = taskEffectScenarioExamples(host), suite = json(scenarios), compiledSourceDigest = JSON.parse(artifact).sourceDigest;
   const identity = { ...host.pins, artifactDigest: digest(artifact), rawSourceDigest: digest(source), compiledSourceDigest,
     suiteDigest: digest(suite), fixture: versions.fixtureVersion };

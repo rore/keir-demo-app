@@ -30,12 +30,16 @@ async function compile(source) {
   return JSON.parse(Buffer.from(result.artifact).toString());
 }
 
-test('exact captured YAML and equivalent JSON produce the same artifact and follow-up facts', async () => {
+test('captured YAML retains its original proof while current YAML and JSON produce the same follow-up facts', async () => {
   assert.equal(digest(fixture.source), fixture.pins.rawSourceDigest);
   assert.equal(digest(fixture.artifact), fixture.pins.artifactDigest);
-  const artifact = await compile(fixture.source);
-  assert.deepEqual(artifact, JSON.parse(fixture.artifact));
-  assert.equal(artifact.sourceDigest, fixture.pins.compiledSourceDigest);
+  const captured = JSON.parse(fixture.artifact);
+  assert.equal(captured.sourceDigest, fixture.pins.compiledSourceDigest);
+  assert.deepEqual(taskFollowUpSummary(captured), expected);
+  const currentSource = fixture.source.replace("version: '4'", "version: '5'")
+    .replace(captured.modelRef.digest, host.pins.modelDigest);
+  const artifact = await compile(currentSource);
+  assert.equal(artifact.format, 'keir-artifact/3');
   assert.deepEqual(await compile(jsonRule()), artifact);
   assert.deepEqual(taskFollowUpSummary(artifact), expected);
 });

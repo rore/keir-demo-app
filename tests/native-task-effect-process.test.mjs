@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
@@ -66,10 +67,10 @@ function worker(t, config) {
   };
 }
 
-function setup(t, selected = false) {
+async function setup(t, selected = false) {
   const fixture = sandbox(t), db = fixture.open(), native = taskService(db);
   const project = native.listProjects(owner)[0];
-  const task = native.createTask(owner, { projectId: project.id, title: 'Source task' });
+  const task = await native.createTask(owner, { projectId: project.id, title: 'Source task' }, { operationId: randomUUID() });
   const selection = binding(db);
   if (selected) db.prepare("UPDATE extension_selections SET revision_id=?,generation=1,binding_pins=? WHERE owner_id=? AND hook_id='TaskCompleted'")
     .run(selection.revisionId, JSON.stringify(selection.pins), owner);
@@ -100,7 +101,7 @@ async function race(t, config) {
 }
 
 test('separate processes complete one task with one original event/key', options, async t => {
-  const fixture = setup(t);
+  const fixture = await setup(t);
   const results = await race(t, { ...fixture, operation: 'complete' });
   assert.equal(results[0].completedAt, results[1].completedAt);
   const db = fixture.open();
@@ -114,7 +115,7 @@ test('separate processes complete one task with one original event/key', options
 });
 
 test('separate processes claim once and create one stable receipt for the original key', options, async t => {
-  const fixture = setup(t, true), event = complete(fixture);
+  const fixture = await setup(t, true), event = complete(fixture);
   const config = { ...fixture, eventId: event.event_id };
   const claims = await race(t, { ...config, operation: 'claim' });
   assert.equal(claims.filter(Boolean).length, 1);
@@ -133,7 +134,7 @@ test('separate processes claim once and create one stable receipt for the origin
 });
 
 test('selection committed in one process is captured by later completion in another process', options, async t => {
-  const fixture = setup(t);
+  const fixture = await setup(t);
   const selecting = worker(t, { ...fixture, operation: 'select', boundary: 'after' });
   await selecting.wait('ready');
   selecting.go();
@@ -157,7 +158,7 @@ test('selection committed in one process is captured by later completion in anot
 });
 
 test('selection committed after completion cannot replace NO_BINDING or mint another event', options, async t => {
-  const fixture = setup(t);
+  const fixture = await setup(t);
   const completing = worker(t, { ...fixture, operation: 'complete', boundary: 'after' });
   await completing.wait('ready');
   completing.go();
@@ -194,7 +195,7 @@ test('selection committed after completion cannot replace NO_BINDING or mint ano
 for (const operation of ['complete', 'claim', 'create', 'finish']) {
   for (const boundary of ['before', 'after']) {
     test(`abrupt process termination ${boundary} ${operation} commit preserves atomic state on reopen`, options, async t => {
-      const fixture = setup(t, operation !== 'complete');
+      const fixture = await setup(t, operation !== 'complete');
       let event;
       if (operation !== 'complete') event = complete(fixture);
       if (operation === 'create' || operation === 'finish') {
@@ -234,7 +235,7 @@ for (const operation of ['complete', 'claim', 'create', 'finish']) {
             assert.equal(effects.claim(owner, event.event_id), null);
             if (committed) {
               assert.equal(receipt.effect, 'CONFIRMED');
-              assert.equal(effects.createTaskOnce(owner, effects.keyFor(owner, event.event_id), fixture.payload).value.id, receipt.affected_task_id);
+              assert.equal((await effects.createTaskOnce(owner, effects.keyFor(owner, event.event_id), fixture.payload)).value.id, receipt.affected_task_id);
               assert.equal(db.prepare('SELECT count(*) n FROM tasks WHERE owner_id=? AND title=?').get(owner, fixture.payload.title).n, 1);
             }
           } else {

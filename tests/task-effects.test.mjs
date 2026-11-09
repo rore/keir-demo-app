@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openData, taskService, transaction, revokeTaskAdmissions } from '../src/data.mjs';
@@ -16,8 +17,8 @@ function fixture(t) {
     .run(revision.id, JSON.stringify(pins));
   const projectId = tasks.listProjects('maya')[0].id;
   const effects = nativeEffectService(db);
-  function complete() {
-    const task = tasks.createTask('maya', { projectId, title: 'Dispatcher source' });
+  async function complete() {
+    const task = await tasks.createTask('maya', { projectId, title: 'Dispatcher source' }, { operationId: randomUUID() });
     tasks.completeTask('maya', task.id);
     return effects.status('maya', db.prepare('SELECT event_id FROM task_events WHERE hook_id=\'TaskCompleted\' AND source_task_id=?').get(task.id).event_id);
   }
@@ -25,10 +26,11 @@ function fixture(t) {
 }
 
 test('PENDING scan crosses blocked pages, skips revoked/STARTED, and retries dependencies only on explicit change', async t => {
-  const f = fixture(t), events = Array.from({ length: 191 }, () => f.complete());
+  const f = fixture(t), events = [];
+  for (let index = 0; index < 191; index++) events.push(await f.complete());
   const revoked = new Set(events.slice(140, 165).map(event => event.eventId));
   for (const eventId of revoked) f.db.prepare('UPDATE task_events SET revoked_at=1 WHERE event_id=?').run(eventId);
-  const started = f.complete();
+  const started = await f.complete();
   assert.ok(f.effects.claim('maya', started.eventId));
   const visits = [];
   const dispatcher = createTaskDispatcher({ db: f.db, lifecycle: {
@@ -45,7 +47,7 @@ test('PENDING scan crosses blocked pages, skips revoked/STARTED, and retries dep
   assert.equal(visits.length, events.length - revoked.size);
   await Promise.all([dispatcher.wake(), dispatcher.wake()]);
   assert.equal(visits.length, 166, 'unchanged dependencies must not retry even after the 128-entry cache bound');
-  const later = f.complete();
+  const later = await f.complete();
   await dispatcher.wake();
   assert.equal(visits.length, 167, 'new work beyond the old cursor is discovered');
   await dispatcher.dependenciesChanged();
@@ -60,7 +62,7 @@ test('PENDING scan crosses blocked pages, skips revoked/STARTED, and retries dep
 
 test('execution discovery failures do not starve later PENDING work or spin on the next wake', async t => {
   const f = fixture(t);
-  for (let i = 0; i < 65; ++i) f.complete();
+  for (let i = 0; i < 65; ++i) await f.complete();
   let visits = 0, later = 0;
   const dispatcher = createTaskDispatcher({ db: f.db,
     lifecycle: { execution() { if (++visits <= 45) throw new Error('TEST unavailable dependency'); ++later; return null; } } });
@@ -74,9 +76,9 @@ test('execution discovery failures do not starve later PENDING work or spin on t
 });
 
 test('status is owner-scoped and read-only, and retained CONFIRMED audit survives unavailable dependencies and revocation', async t => {
-  const f = fixture(t), event = f.complete();
+  const f = fixture(t), event = await f.complete();
   assert.ok(f.effects.claim('maya', event.eventId));
-  const receipt = f.effects.createTaskOnce('maya', f.effects.keyFor('maya', event.eventId), { projectId: f.projectId, title: 'Saved native result' });
+  const receipt = await f.effects.createTaskOnce('maya', f.effects.keyFor('maya', event.eventId), { projectId: f.projectId, title: 'Saved native result' });
   const outcome = { classification: 'FAILED', error: { code: 'OUTPUT_INVALID' }, effects: [{ effect: 'CONFIRMED' }] };
   f.effects.finish('maya', event.eventId, outcome);
   transaction(f.db, () => revokeTaskAdmissions(f.db, 'maya', f.revision.extension_id));
@@ -99,7 +101,7 @@ test('status is owner-scoped and read-only, and retained CONFIRMED audit survive
 });
 
 test('native CRUD remains usable with unavailable dependencies and status cannot schedule execution', async t => {
-  const f = fixture(t), event = f.complete();
+  const f = fixture(t), event = await f.complete();
   let executions = 0;
   const dispatcher = createTaskDispatcher({ db: f.db, lifecycle: { execution() { ++executions; return null; } } });
   t.after(() => dispatcher.close());
@@ -107,7 +109,7 @@ test('native CRUD remains usable with unavailable dependencies and status cannot
   assert.equal(executions, 0);
   await dispatcher.wake(); assert.equal(executions, 1);
   assert.equal(f.tasks.editTask('maya', event.sourceTaskId, { title: 'Native edit', notes: 'Kept' }).notes, 'Kept');
-  assert.equal(f.tasks.createTask('maya', { projectId: f.projectId, title: 'Independent CRUD' }).status, 'open');
+  assert.equal((await f.tasks.createTask('maya', { projectId: f.projectId, title: 'Independent CRUD' }, { operationId: randomUUID() })).status, 'open');
   assert.equal(dispatcher.status('maya', event.sourceTaskId).state, 'PENDING');
   assert.equal(executions, 1);
   assert.equal(f.db.prepare('SELECT count(*) n FROM task_effect_receipts').get().n, 0);
@@ -117,7 +119,7 @@ test('old contract PENDING stays held before discovery and STARTED, revocation a
   const f = fixture(t), oldPins = { ...f.pins, definitionId: 'daymark.task-completed/3',
     modelRef: { ...f.pins.modelRef, format: 'keir-dcm/1', descriptorRecipe: 'keir-record-descriptors/1' } };
   f.db.prepare("UPDATE extension_selections SET binding_pins=? WHERE owner_id='maya' AND hook_id='TaskCompleted'").run(JSON.stringify(oldPins));
-  const pending = f.complete(), started = f.complete(), revoked = f.complete(), finished = f.complete();
+  const pending = await f.complete(), started = await f.complete(), revoked = await f.complete(), finished = await f.complete();
   f.db.prepare("UPDATE task_events SET state='STARTED' WHERE event_id IN (?,?)").run(started.eventId, finished.eventId);
   f.effects.finish('maya', finished.eventId, { classification: 'UNCERTAIN', effects: [] });
   f.db.prepare('UPDATE task_events SET revoked_at=1 WHERE event_id=?').run(revoked.eventId);

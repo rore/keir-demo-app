@@ -1,8 +1,8 @@
 # Optional AI authoring
 
-Studio helps you describe a customization and check examples before deciding whether to use it. Live AI needs a configured provider and can incur charges. Native tasks and saved history work without AI setup. A workflow can create one task or update the triggering task after a matching creation or completion. Real execution requires a compatible approved revision, activation and current native host permission. See [task effects](task-effects.md).
+Studio helps you describe a customization and check examples before deciding whether to use it. Live AI needs a configured provider and can incur charges. Native tasks and saved history work without AI setup. A check can allow or deny a proposed task before saving. A workflow can create one task or update the triggering task after a matching creation or completion. Real execution requires a compatible approved revision, activation and current native host permission. See [task customizations](task-effects.md).
 
-The app uses released Core 0.2.0 packages and the authoring companion v4 guide. Compiling new customizations requires Java 21 and the independently pinned Keir compiler. App startup needs only the documented Node runtime. The app does not install or upgrade Java, and a working compiler does not qualify native effects.
+Daymark pins Core 0.3.0 release packages and the exact authoring companion v5 guide. Compiling new customizations requires Java 21 and the independently pinned Keir compiler. App startup needs only the documented Node runtime. Existing `/2` event artifacts retain their original execution pins; new authoring uses the `/3` model and artifact formats. The app does not install or upgrade Java, and a working compiler does not qualify native effects.
 
 ## Configure a provider
 
@@ -19,7 +19,7 @@ When set, the allowance is shared across all demo owners in the database. Daymar
 
 The provider can receive your authoring text, bounded recent conversation, the published host contract, format examples, current draft and cases, and bounded synthetic check summaries. Daymark offers owner-scoped project discovery for named project choices. The provider does not receive session cookies or protected runtime bindings. Avoid unrelated private information in messages.
 
-AI authoring requires valid settings. Native tasks and saved history work before provider setup. For tool authors learning the current contract, use the [bundled v4 authoring guide](../vendor/customer-authoring-guide-v4.md).
+AI authoring requires valid settings. Native tasks and saved history work before provider setup. For tool authors learning the current contract, use the [v5 authoring companion](https://github.com/rore/keir-core/releases/download/v0.3.0/keir-authoring-v5.zip), which includes the guide, schemas and examples. Daymark loads its pinned guide text locally. The discovered catalog includes read-only checks before adding a task and actions after adding or completing. A before-save ALLOW is permission to continue normal native checks, not evidence that a task was saved.
 
 Changing the provider, model, key or allowance requires fresh authoring context for future requests. The saved conversation stays with the customization. Continue explicitly in Studio when ready. If a save response is lost, resubmit the complete settings only if you want to retry the save. Wait for ongoing authoring or cancellation to settle before saving again.
 
@@ -27,7 +27,7 @@ Changing the provider, model, key or allowance requires fresh authoring context 
 
 The model can suggest source and help prepare examples. It cannot approve, activate, complete a native task or grant native authority. Treat model-written examples as proposals; agree on wanted behavior independently of observed results.
 
-The assistant asks about missing business choices and uses the owner's project catalog to resolve named projects. It compiles the proposed rule and checks it without changing native tasks. Source can use `tasks.get`, `tasks.openMatch`, `tasks.create`, and `tasks.update` under either task trigger. Daymark supplies session-bound authority. If the assistant cannot express the requested behavior, it asks before drafting an alternative.
+The assistant asks about missing business choices and uses the owner's project catalog to resolve named projects. It compiles the proposed rule and checks it without changing native tasks. All three triggers can read through `tasks.get` and `tasks.openMatch`; only the after-added and after-completed triggers can use `tasks.create` and `tasks.update`. Daymark supplies session-bound authority. If the assistant cannot express the requested behavior, it asks before drafting an alternative.
 
 ### How Daymark runs the assistant
 
