@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { TASK_HOOK } from '../../src/extension-catalog.mjs';
@@ -52,6 +52,7 @@ async function openActive(page) {
 async function openProof(page, id) {
   const ui = studio(page);
   await ui.getByRole('button', { name: 'More', exact: true }).click();
+  await openDeveloperTools(page);
   const lookup = ui.getByText('Open a saved sample run by ID', { exact: true });
   if (!await lookup.evaluate(node => node.parentElement.open)) await lookup.click();
   await ui.getByLabel('Evidence ID for this person', { exact: true }).fill(id);

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { TASK_HOOK } from '../../src/extension-catalog.mjs';
@@ -319,6 +320,7 @@ test('an earlier run stays read-only when it becomes the approved decision until
     await scriptTurns(page, () => api(page, path));
     await openItem(page, first.extension.id);
     await studio(page).getByRole('button', { name: 'More', exact: true }).click();
+    await openDeveloperTools(page);
     await studio(page).getByText('Open a saved sample run by ID', { exact: true }).click();
     await studio(page).getByLabel('Evidence ID for this person', { exact: true }).fill(first.evidence.id);
     await studio(page).getByRole('button', { name: 'Open saved sample run', exact: true }).click();

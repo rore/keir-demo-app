@@ -1,5 +1,5 @@
 import { test as base, expect } from '@playwright/test';
-import { openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { createCompiler } from '../../src/compiler.mjs';
@@ -69,7 +69,7 @@ async function openItem(page, extensionId) {
 }
 async function details(page) {
   await studio(page).getByRole('button', { name: 'More', exact: true }).click();
-  await expect(studio(page).locator('.rs-tools')).toHaveJSProperty('open', true);
+  await openDeveloperTools(page);
 }
 
 test('ordinary edits exceed eight turns in one discussion and settings recovery has no discussion-count gate', async ({ page, demo }) => {
@@ -212,7 +212,7 @@ test('Details discovers displaced history, sample runs, all revisions and only e
   await openItem(page, demo.extensionId);
   const ui = studio(page);
   await details(page);
-  await ui.getByText('Manage saved customization', { exact: true }).click();
+  await ui.getByText('Restore an earlier version', { exact: true }).click();
   await ui.getByText('Selection history and exact identities', { exact: true }).click();
   await ui.getByRole('button', { name: 'Load earlier selections', exact: true }).click();
   await expect(ui.getByRole('region', { name: 'Earlier versions', exact: true })).toContainText('Earlier unchecked changes');
@@ -272,7 +272,7 @@ test('a failed earlier page retries locally at the same cursor without disturbin
   expect(pages).toEqual(['retry-exact-page', 'retry-exact-page']);
   expect(Math.abs((await currentMessage.boundingBox()).y - readingTop)).toBeLessThan(3);
   await expect(composer).toHaveValue('Keep this unsent correction');
-  await expect(ui.locator('.rs-tools')).toHaveJSProperty('open', true);
+  await expect(ui.locator('.rs-tools')).toBeVisible();
   await expect(ui.locator('.rs-preview')).toBeVisible();
   await expect(ui.locator('.sr-only[role="status"]')).toHaveText('Earlier messages loaded.');
   expect(new URL(page.url()).hash).toBe('#customization=' + demo.extensionId);

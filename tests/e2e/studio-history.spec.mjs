@@ -82,12 +82,11 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       await expect(ui.getByRole('heading', { name: 'History integration', exact: true })).toBeVisible();
       await ui.getByRole('button', { name: 'More', exact: true }).click();
       const details = ui.locator('.rs-tools');
-      if (!await details.evaluate(element => element.open)) await details.getByText('Earlier versions and details', { exact: true }).click();
-      await expect(details).toHaveJSProperty('open', true);
+      await expect(details).toBeVisible();
       await expect(ui.getByRole('region', { name: 'Earlier versions', exact: true })).toContainText('Saved before restart');
-      await expect(ui.getByRole('region', { name: 'Earlier versions', exact: true })).toContainText('“History integration” is in use.');
+      await expect(ui.getByRole('region', { name: 'What’s in use', exact: true })).toContainText('“History integration” is in use.');
       await expect(ui.getByRole('region', { name: 'Earlier versions', exact: true })).toContainText('Not in use');
-      const inspection = ui.getByRole('button', { name: 'Inspect earlier saved changes', exact: true });
+      const inspection = ui.getByRole('button', { name: 'View technical details', exact: true });
       await expect(inspection).toHaveCount(1);
       await inspection.click();
       await expect(ui.getByRole('heading', { name: 'Earlier versions · read-only', exact: true })).toBeVisible();

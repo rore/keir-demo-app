@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { expandCheckedExamples, openSavedChanges } from '../fixtures/studio-review.mjs';
+import { expandCheckedExamples, openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
@@ -43,7 +43,7 @@ const send = async (page, text) => {
 };
 async function openDetails(page) {
   await studio(page).getByRole('button', { name: 'More', exact: true }).click();
-  await expect(studio(page).locator('.rs-tools')).toHaveJSProperty('open', true);
+  await openDeveloperTools(page);
 }
 
 test('offline semantic mismatch stays visible and unapproved until an explicit source correction passes the same examples', async ({ page }) => {
@@ -299,9 +299,8 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.locator('.rs-chat')).not.toContainText(provider);
       const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get();
       await openDetails(page);
-      const connection = ui.getByRole('region', { name: 'Assistant connection details', exact: true });
-      await expect(connection.getByText(`Provider: ${provider}`, { exact: true })).toBeVisible();
-      await expect(connection.getByText(`Model: ${provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5'}`, { exact: true })).toBeVisible();
+      await expect(ui.locator('.rs-tools')).not.toContainText(provider);
+      await expect(ui.getByRole('heading', { name: 'Assistant setup', exact: true })).toBeVisible();
       await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
       await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
 

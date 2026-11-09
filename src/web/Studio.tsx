@@ -544,6 +544,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const chatLog = useRef<HTMLDivElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLElement>(null);
+  const developerTools = useRef<HTMLDetailsElement>(null);
   const canvasScroll = useRef(0);
   const managementReturn = useRef<{ view: typeof canvasView; position: number } | null>(null);
   const readingAnchor = useRef<{ scroller: HTMLElement; element: HTMLElement; top: number; revision: number } | null>(null);
@@ -1038,6 +1039,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
 
   function openPane(next?: typeof canvasView, invoker = document.activeElement) {
+    developerTools.current?.removeAttribute("open");
     const intent = ++viewIntent.current, focus = ++focusIntent.current;
     currentPane.current = { open: true, view: next ?? canvasView };
     if (next) setReviewLoading(false);
@@ -1062,6 +1064,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     return intent;
   }
   function closeReview() {
+    developerTools.current?.removeAttribute("open");
     const intent = ++viewIntent.current, focus = ++focusIntent.current;
     currentPane.current = { ...currentPane.current, open: false };
     ++reviewLoad.current; setReviewLoading(false);
@@ -1118,13 +1121,20 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   }
   function openTools() {
     managementReturn.current ??= { view: canvasView, position: canvasScroll.current };
-    const intent = openPane("details"), focus = focusIntent.current;
+    const navigation = { intent: openPane("details"), focus: focusIntent.current };
     requestAnimationFrame(() => {
-      if (!mounted.current || viewIntent.current !== intent || !currentPane.current.open || currentPane.current.view !== "details") return;
-      const details = room.current?.querySelector<HTMLDetailsElement>(".rs-tools");
-      if (details) { details.open = true; if (focusIntent.current === focus) details.querySelector("summary")?.focus({ preventScroll: true }); }
+      if (!mounted.current || viewIntent.current !== navigation.intent || !currentPane.current.open || currentPane.current.view !== "details") return;
+      if (focusIntent.current === navigation.focus) {
+        room.current?.querySelector<HTMLElement>("#studio-more-heading")?.focus();
+        navigation.focus = focusIntent.current;
+      }
     });
+    return navigation;
   }
+  useEffect(() => {
+    developerTools.current?.removeAttribute("open");
+    setInspection(null);
+  }, [ownerId, target.extensionId]);
 
   function say(text: string, who: Message["who"] = "Studio", evidenceId?: string, exampleCount?: number) {
     const id = ++messageId.current;
@@ -1251,6 +1261,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setReview("");
     setReviewError(""); setReviewLoading(true);
     if (currentPane.current.open) {
+      developerTools.current?.removeAttribute("open");
       currentPane.current = { ...currentPane.current, open: false };
       setReviewOpen(false); setPane("conversation");
     }
@@ -1746,15 +1757,22 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const revision = earlierRevisionId ?? inspectionRevision!.id;
     const identity = historical ? `${ownerId}/${extensionId.current}/history/${revision}` : inspectionKey;
     const suite = historical ? undefined : inspectionRevision!.suiteDigest ?? null;
+    const itemId = extensionId.current, navigation = openTools(), reading = readingRevision.current;
     setBusy("Inspecting saved source and examples…"); setError(""); setInspection(null);
     try {
       const next = await callbacks.current.request<SavedSource>(`${extensionPath()}/revisions/${encodeURIComponent(revision)}`, "GET", undefined, authoringLifetime.current.signal);
-      if (!mounted.current || serial.current !== turn) return;
+      if (!mounted.current || serial.current !== turn || extensionId.current !== itemId || viewIntent.current !== navigation.intent
+        || !currentPane.current.open || currentPane.current.view !== "details") return;
       if (next.revisionId !== revision || suite !== undefined && next.suiteDigest !== suite || typeof next.source !== "string" || !next.source.trim()
         || typeof next.artifact !== "string" || !next.artifact.trim() || !next.pins || typeof next.pins !== "object"
         || !Array.isArray(next.cases) || next.cases.some(item => typeof item !== "string" || !item.trim())) throw new Error("Saved inspection mismatch");
       setInspection({ ...next, key: identity, historical });
-      if (historical) requestAnimationFrame(() => { if (mounted.current && serial.current === turn) document.getElementById("studio-inspected-history")?.focus(); });
+      requestAnimationFrame(() => {
+        if (!mounted.current || serial.current !== turn || viewIntent.current !== navigation.intent || !currentPane.current.open || currentPane.current.view !== "details"
+          || readingRevision.current !== reading || focusIntent.current !== navigation.focus) return;
+        if (developerTools.current) developerTools.current.open = true;
+        document.getElementById(historical ? "studio-inspected-history" : "studio-inspected-source")?.focus();
+      });
     } catch { if (mounted.current && serial.current === turn) setError("Exact saved source and examples could not be checked. No proposal or approval was changed."); }
     finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
@@ -1887,6 +1905,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     document.getElementById("studio-message")?.focus({ preventScroll: true });
   }
   const restoreTarget = state?.restoreTargets.find(item => item.id === restore);
+  const earlierVersions = history.filter(item => item.operation === "draft-superseded" && item.revisionId);
   const selectedDraft = !!state?.selection.eligible && state.selection.revision?.id === state.draft?.id;
   function openSetup() {
     ++setupGeneration.current;
@@ -2147,7 +2166,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               : <p role="status">{activeSummaryError || "Checking the saved examples for this version…"}</p>}
             <button disabled={retired || disabled || !activeSelectionMatches || !state.selection.eligible} onClick={() => { setRestart({ draftVersion: state.draftVersion, revisionId: activeSnapshot.revision.id, generation: activeSnapshot.generation, activeLabel: checkedActiveSummary || "current setup; no verified checked description is available", draftLabel: checkedDraftSummary || `saved version ${state.draftVersion}; no verified checked description is available` }); closeReview(); }}>Start changes from this version</button>
             <button onClick={() => { setActiveView(false); closeReview(); }}>Return to proposal</button>
-            <button className="rs-link" disabled={disabled} onClick={() => { void inspectSource(activeSelectionMatches ? undefined : activeSnapshot.revision.id); openTools(); }}>Inspect this version’s source</button>
+            <button className="rs-link" disabled={disabled} onClick={() => void inspectSource(activeSelectionMatches ? undefined : activeSnapshot.revision.id)}>Inspect this version’s source</button>
             <details><summary>Saved version details</summary><p>Label: {activeSnapshot.revision.label}</p><p>Revision: {activeSnapshot.revision.id}</p><p>Saved draft version: {state.draftVersion}</p></details>
           </article>}
           {evidence && <article hidden={canvasView !== "results"} className="rs-sheet rs-results" aria-label="Sample results">
@@ -2169,10 +2188,25 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           </article>}
 
         </>}
-        <details hidden={canvasView !== "details"} className="rs-sheet rs-tools"><summary>Earlier versions and details</summary>
-          {history.some(item => item.operation === "draft-superseded") && <section aria-label="Earlier versions"><h3>Earlier versions</h3><p>{currentUse}</p>
-            {history.filter(item => item.operation === "draft-superseded" && item.revisionId).map(item => <p key={item.id}>{item.label ?? "Saved draft"} · {item.revisionId === state?.selection.revision?.id ? "Saved selection" : "Not in use"} · read-only <button disabled={disabled} onClick={() => void inspectSource(item.revisionId!)}>Inspect earlier saved changes</button></p>)}
+        <section hidden={canvasView !== "details"} className="rs-sheet rs-tools" aria-label="Versions and settings">
+          <h3 id="studio-more-heading" tabIndex={-1}>Versions and settings</h3>
+          <section aria-label="What’s in use"><h3>What’s in use</h3><p>{currentUse}</p></section>
+          <section aria-label="Earlier versions"><h3>Earlier versions</h3>
+            {earlierVersions.map(item => <p key={item.id}>{item.label ?? "Saved draft"} · {item.revisionId === state?.selection.revision?.id
+              ? state.selection.eligible ? "In use" : "Use could not be checked" : "Not in use"} · Read-only <button disabled={disabled} onClick={() => void inspectSource(item.revisionId!)}>View technical details</button></p>)}
+            {!earlierVersions.length && <p>{historyNext !== null ? "No earlier versions are shown on this page." : "No earlier versions yet."}</p>}
+            {historyNext !== null && <button disabled={!!busy} onClick={() => void earlierHistory()}>Load earlier versions</button>}
+          </section>
+          {state && !retired && <section aria-label="Restore an earlier version"><h3>Restore an earlier version</h3>
+            <p>Restoring changes which version is used from now on. It does not undo tasks or earlier actions.</p>
+            <label htmlFor="studio-restore">Previously in use</label><select id="studio-restore" value={restore} disabled={disabled} onChange={e => setRestore(e.target.value)}>
+              <option value="">Choose an earlier version…</option>{state.restoreTargets.map((item, index) => <option key={item.id} value={item.id}>{item.label} · option {index + 1}</option>)}</select>
+            {state.restoreTargetsNext && <button disabled={!!busy} onClick={() => void earlierSaved("restore-targets")}>Load earlier restore choices</button>}
+            {restoreTarget && <div className="rs-restore-confirm"><p>Restore <strong>{restoreTarget.label}</strong> for future use? No task or earlier action is undone.</p>
+              <button disabled={disabled || executionUnavailable} onClick={() => void mutate("rollback", { revisionId: restoreTarget.id, generation: state.selection.generation }, `Restored ${restoreTarget.label} for your tasks.`, true)}>Restore {restoreTarget.label} for me</button></div>}
           </section>}
+          <details className="rs-developer-tools" ref={developerTools}><summary>Developer tools</summary>
+          <p>Technical information for setup and troubleshooting.</p>
           <details><summary>Published host model and supported hooks</summary>
             {catalogError && <p role="status">The published host model could not be checked. <button onClick={() => void readHostCatalog()}>Try again</button></p>}
             {hostCatalog && <>
@@ -2187,7 +2221,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {conversation && <p role="status">{authoringStatus[conversation.status]} {authoringReason(conversation.code)}</p>}
             {!authoringError && !observationPaused && !pendingTurn && <button disabled={!!busy} onClick={() => void loadAuthoring()}>Check authoring status</button>}
           </section>
-          {authoring?.availability.provider && <section aria-label="Assistant connection details"><h3>Assistant connection</h3><p>Provider: {authoring.availability.provider}</p><p>Model: {authoring.availability.model}</p><button onClick={openSetup}>Configure</button></section>}
+          <section aria-label="Assistant setup"><h3>Assistant setup</h3><button onClick={openSetup}>Configure</button></section>
           {state && <>
           {state.selection.revision && <p>Current choice provenance: {state.selection.revision.provenance === "operator" ? "Operator-provided starting choice" : "Your approved choice"}</p>}
           {(inspectionRevision || inspection?.historical) && <section aria-label="Saved program">
@@ -2196,7 +2230,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               {inspection.historical && <h3 id="studio-inspected-history" tabIndex={-1}>Earlier versions · read-only</h3>}
               {inspection.historical && <p>{inspection.revisionId === state.selection.revision?.id ? "This is the saved selection." : "These earlier changes are not in use."} {currentUse} Opening this history does not change what runs.</p>}
               <p>Exact saved revision: {inspection.revisionId}. {inspection.historical ? "These earlier changes stay in History. They cannot approve, activate or replace your current changes." : "Inspection is read-only."}</p>
-              <h3>Saved source</h3><pre aria-label="Saved source for inspection">{inspection.source}</pre>
+              <h3 id="studio-inspected-source" tabIndex={-1}>Saved source</h3><pre aria-label="Saved source for inspection">{inspection.source}</pre>
               <h3>Exact compiled artifact</h3><pre aria-label="Compiled artifact for inspection">{inspection.artifact}</pre>
               <h3>Exact artifact pins</h3><pre aria-label="Artifact pins for inspection">{JSON.stringify(inspection.pins, null, 2)}</pre>
               <h3>Saved independent examples</h3>
@@ -2213,33 +2247,24 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {state.evidenceHistoryNext && <button disabled={!!busy} onClick={() => void earlierSaved("evidence")}>Load earlier sample runs</button>}
           </details>}
           <details className="rs-sheet rs-secondary"><summary>All versions</summary>
-            <p>Saved versions are read-only. Only eligible previously used choices can be restored below.</p>
+            <p>Saved versions are read-only. Eligible previously used versions can be restored above.</p>
             <ol>{revisions.map(item => <li key={item.id}>{item.label} · {item.id} · read-only <button disabled={!!busy} onClick={() => void inspectSource(item.id)}>Inspect saved version</button></li>)}</ol>
             {revisionsNext !== null && <button disabled={!!busy} onClick={() => void earlierSaved("revisions")}>{revisionsNext === undefined ? "Load saved versions" : "Load earlier saved versions"}</button>}
           </details>
-          <details className="rs-sheet rs-secondary" aria-label="Manage saved customization"><summary>Manage saved customization</summary>
-          {!retired && <>
-          <h3>Return to an earlier choice</h3>
-            <label htmlFor="studio-restore">Previously in use</label><select id="studio-restore" value={restore} disabled={disabled} onChange={e => setRestore(e.target.value)}>
-              <option value="">Choose a saved choice…</option>{state.restoreTargets.map((item, index) => <option key={item.id} value={item.id}>{item.label} · {item.provenance === "operator" ? "operator starting choice" : "customer approved"} · choice {index + 1}</option>)}</select>
-            {state.restoreTargetsNext && <button disabled={!!busy} onClick={() => void earlierSaved("restore-targets")}>Load earlier restore choices</button>}
-            {restoreTarget && <div className="rs-restore-confirm"><p>Restore <strong>{restoreTarget.label}</strong>{restoreTarget.kind === "authored" ? " with its exact reviewed source and examples." : " with its saved checked behavior."} {restoreTarget.provenance === "operator" ? "This was an operator-provided starting choice." : "This choice was approved for you."} No task or earlier action is undone.</p>
-              <details><summary>Exact choice to restore</summary><p>Revision: {restoreTarget.id}</p><pre>{JSON.stringify(restoreTarget.pins, null, 2)}</pre></details>
-              <button disabled={disabled || executionUnavailable} onClick={() => void mutate("rollback", { revisionId: restoreTarget.id, generation: state.selection.generation }, `Restored ${restoreTarget.label} for your tasks.`, true)}>Restore {restoreTarget.label} for me</button></div>}
-          </>}
+            {restoreTarget && <details><summary>Exact choice to restore</summary><p>Revision: {restoreTarget.id}</p><p>Provenance: {restoreTarget.provenance}</p><pre>{JSON.stringify(restoreTarget.pins, null, 2)}</pre></details>}
             <details><summary>Selection history and exact identities</summary><p>Current generation: {state.selection.generation}</p>
               <ol>{history.map(item => <li key={item.id}>{item.operation === "draft-superseded" ? "Earlier versions" : item.operation} · {item.label ?? ""} · generation {item.generation} · {item.revisionId ?? "Off"}</li>)}</ol>
               {historyNext !== null && <button disabled={!!busy} onClick={() => void earlierHistory()}>Load earlier selections</button>}
               <h4>Saved selection identity</h4><pre>{JSON.stringify(state.selection.revision?.pins ?? {}, null, 2)}</pre>
               <h4>Proposed identity</h4><pre>{JSON.stringify(state.draft?.pins ?? {}, null, 2)}</pre>
             </details>
-          </details>
         </>}
         <details className="rs-lookup"><summary>Open a saved sample run by ID</summary><form onSubmit={event => { event.preventDefault(); void showEvidence(lookup); }}>
           <label htmlFor="studio-evidence">Evidence ID for this person</label><input id="studio-evidence" maxLength={160} value={lookup} onChange={e => setLookup(e.target.value)} />
           <button disabled={!!busy || !lookup.trim()}>Open saved sample run</button></form></details>
         <button className="rs-reload" onClick={() => void refresh(true)} disabled={!!busy}>Reload saved state</button>
-        </details>
+          </details>
+        </section>
       </section>
       </section>
     </div>

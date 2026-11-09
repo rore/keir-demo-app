@@ -1,6 +1,6 @@
 import { test as base, expect } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import { openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -46,7 +46,7 @@ const test = base.extend({
 });
 async function openDetails(page) {
   await studio(page).getByRole('button', { name: 'More', exact: true }).click();
-  await expect(studio(page).locator('.rs-tools')).toHaveJSProperty('open', true);
+  await openDeveloperTools(page);
 }
 async function tasks(page) {
   await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
@@ -271,7 +271,7 @@ test('narrow Studio inspects current saved source and keeps a restored task choi
   await expect(ui.getByLabel('Artifact pins for inspection', { exact: true })).toContainText('keir-dcm/3');
   await closeDetails(page);
   await ui.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
-  await openDetails(page); await ui.getByText('Manage saved customization', { exact: true }).click();
+  await openDetails(page); await ui.getByText('Restore an earlier version', { exact: true }).click();
   const option = ui.getByLabel('Previously in use').locator('option').filter({ hasText: 'Original follow-up · customer approved' });
   await ui.getByLabel('Previously in use').selectOption(await option.getAttribute('value'));
   await expect(ui.getByText('This choice was approved for you.', { exact: false })).toBeVisible();

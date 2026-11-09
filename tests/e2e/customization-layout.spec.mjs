@@ -1,5 +1,5 @@
 import { test as base, expect } from '@playwright/test';
-import { openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -82,7 +82,7 @@ async function appLockup(page) {
 }
 async function openDetails(page) {
   await ui(page).getByRole('button', { name: 'More', exact: true }).click();
-  await expect(ui(page).locator('.rs-tools')).toHaveJSProperty('open', true);
+  await openDeveloperTools(page);
 }
 async function openExampleDetails(results) {
   const summary = results.locator('.rs-example-details > summary');
@@ -526,7 +526,7 @@ test('transcript and canvas own wheel and PageDown; arrivals preserve earlier re
   await wheel(page, log, 400); await expect.poll(() => scrollTop(log)).toBeGreaterThan(100); expect(await scrollTop(canvas)).toBe(0); await pageDown(page, log);
   await log.evaluate(node => node.scrollTop = 0); await ui(page).getByLabel('Message to Daymark assistant').fill('A new message while reading earlier replies'); await ui(page).getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui(page).getByRole('button', { name: 'New messages ↓', exact: true })).toBeVisible(); await expect.poll(() => fixture.turns.length).toBe(14); expect(await scrollTop(log)).toBe(0);
-  await openDetails(page); await ui(page).getByText('Manage saved customization', { exact: true }).click(); await ui(page).getByText('Selection history and exact identities', { exact: true }).click();
+  await openDetails(page); await ui(page).getByText('Restore an earlier version', { exact: true }).click(); await ui(page).getByText('Selection history and exact identities', { exact: true }).click();
   await wheel(page, canvas, 120); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(50); expect(await scrollTop(log)).toBe(0); await pageDown(page, canvas);
   await canvas.evaluate(node => node.scrollTop = node.scrollHeight); await wheel(page, canvas, 600); expect(await scrollTop(log)).toBe(0);
   expect(await composer.boundingBox()).toEqual(geometry.composer); expect(await header.boundingBox()).toEqual(geometry.header); expect(await rail.boundingBox()).toEqual(geometry.rail);
@@ -561,7 +561,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
     await expect.poll(() => scrollTop(studio)).toBeGreaterThan(0); const logPosition = await scrollTop(studio);
     expect(await scrollTop(log)).toBe(0); await picture(page, `studio-conversation-${viewport.width}x${viewport.height}`);
     await openDetails(page); await expect(studio.locator('.rs-chat')).toBeHidden(); await expect(disable).toBeInViewport({ ratio: 1 });
-    await studio.getByText('Manage saved customization', { exact: true }).click(); await studio.getByText('Selection history and exact identities', { exact: true }).click();
+    await studio.getByText('Restore an earlier version', { exact: true }).click(); await studio.getByText('Selection history and exact identities', { exact: true }).click();
     const canvas = studio.locator('.rs-canvas'); await expect(canvas).toHaveCSS('overflow-y', 'auto');
     await wheel(page, canvas, 300); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(0); const canvasPosition = await scrollTop(canvas);
     await studio.getByRole('button', { name: 'Back to conversation', exact: true }).click(); await expect(composer).toHaveValue('Keep this unsent message');

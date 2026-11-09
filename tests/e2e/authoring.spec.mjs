@@ -1,5 +1,5 @@
 import { test as base, expect } from '@playwright/test';
-import { openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -134,7 +134,7 @@ async function prepareTask(page, demo) {
 async function openDetails(page) {
   const ui = studio(page);
   await ui.getByRole('button', { name: 'More', exact: true }).click();
-  await expect(ui.locator('.rs-tools')).toHaveJSProperty('open', true);
+  await openDeveloperTools(page);
 }
 
 test('missing setup offers Configure and saved task source without a generation or manual fallback', async ({ page, demo }) => {
@@ -407,9 +407,9 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     await expect(offerButton).toBeEnabled();
   }
   await openDetails(page);
-  const disclosure = ui.getByRole('region', { name: 'Assistant connection details', exact: true });
-  await expect(disclosure).toContainText(`Provider: ${available.provider}`);
-  await expect(disclosure).toContainText(`Model: ${available.model}`);
+  await expect(ui.getByRole('heading', { name: 'Assistant setup', exact: true })).toBeVisible();
+  await expect(ui.locator('.rs-tools')).not.toContainText(available.provider);
+  await expect(ui.locator('.rs-tools')).not.toContainText(available.model);
   await openDetails(page);
   await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
   await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep this unsent conversation draft');

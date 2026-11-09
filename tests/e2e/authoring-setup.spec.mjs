@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -99,8 +100,7 @@ async function openConfigure(page) {
   const ui = studio(page), configure = ui.getByRole('button', { name: 'Configure', exact: true });
   if (!await configure.isVisible()) {
     await ui.getByRole('button', { name: 'More', exact: true }).click();
-    const tools = ui.locator('details.rs-tools');
-    await expect(tools).toHaveJSProperty('open', true);
+    await openDeveloperTools(page);
   }
   await configure.click();
   return page.getByRole('dialog', { name: 'Set up the assistant', exact: true });

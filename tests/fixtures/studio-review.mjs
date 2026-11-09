@@ -1,5 +1,15 @@
 import { expect } from '@playwright/test';
 
+export async function openDeveloperTools(page) {
+  const tools = page.getByRole('region', { name: 'Customization Studio', exact: true }).locator('.rs-tools');
+  await expect(tools).toBeVisible();
+  const summary = tools.getByText('Developer tools', { exact: true });
+  const disclosure = summary.locator('..');
+  if (!await disclosure.evaluate(node => node.open)) await summary.click();
+  await expect(disclosure).toHaveJSProperty('open', true);
+  return disclosure;
+}
+
 export async function openSavedChanges(page) {
   const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
   const heading = studio.getByRole('heading', { name: 'Simulation', exact: true });
