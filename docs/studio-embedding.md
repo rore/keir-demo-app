@@ -10,7 +10,7 @@ For the current integration, start with the [source map](../src/README.md): [nat
 
 | Boundary | Studio owns | Host owns |
 | --- | --- | --- |
-| Entry and navigation | Library, conversational start and discovery, optional review canvas, accessible focus and reading position | Mount point, session changes, available customization opportunities, return to the original application context |
+| Entry and navigation | Library, conversational start and discovery, saved rule and simulation views, accessible focus and reading position | Mount point, session changes, available customization opportunities, return to the original application context |
 | Authoring | Messages, clarification choices, proposal presentation, draft versus active status | Agent or manual workflow, model credentials, approved hooks and catalog, candidate generation, validation, supported actions and reasons for unavailability |
 | Evidence | Opening a specific run, expected and observed results side by side, history and separate Approve and Use controls | Simulation, exact revision and evidence storage, redaction, approval policy, selection generation, rollback eligibility |
 | Domain content | Placement and interaction conventions for a behavior sketch, scenario or result detail | Trusted local components and labels for domain facts, interpretation of a consumer receipt, navigation to actual application behavior |
