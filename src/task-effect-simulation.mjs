@@ -325,6 +325,14 @@ function scenarioDetails(input, calls, responses, outcome) {
     .map(({ call, response }) => ({ ...call.args, matches: response.value.matches }));
   return { task: read?.response.value ?? { id: input.taskId, title: 'Example task' }, occurredAt: input.occurredAt, openMatches };
 }
+export function taskEffectObservationMatches(scenario, report) {
+  try {
+    const { given, stubs, expect } = scenario;
+    const responses = stubs.map(call => call.response);
+    return same(report.observed, observations(expect.calls, responses, expect.outcome))
+      && same(report.scenario, scenarioDetails(given.input, expect.calls, responses, expect.outcome));
+  } catch { return false; }
+}
 async function runCase(artifactBytes, host, row, signal) {
   const captures = [], responses = [], violations = [], fixture = row.given.fixture;
   let task;
@@ -437,14 +445,12 @@ export function taskEffectProofMatches(revision, authored, proof, host) {
       && json(payload.identity) === json({ dependencies: pins, ...versions, suiteDigest: suiteIdentity })
       && payload.reports.length === scenarios.length && payload.reports.every((item, index) => {
         const scenario = scenarios[index], expected = scenario.expect.outcome, report = item.report;
-        const responses = scenario.stubs.map(call => call.response);
         return item.id === scenario.id && item.label === scenario.id
           && same(item.expected, taskEffectExpected(scenario))
           && report.status === 'PASS' && Array.isArray(report.mismatches) && report.mismatches.length === 0
           && same(report.native, expected) && same(report.calls, scenario.expect.calls)
           && same(report.consumption, scenario.expect.consumption)
-          && same(report.observed, observations(scenario.expect.calls, responses, expected))
-          && same(report.scenario, scenarioDetails(scenario.given.input, scenario.expect.calls, responses, expected));
+          && taskEffectObservationMatches(scenario, report);
       });
   } catch { return false; }
 }

@@ -34,8 +34,11 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }
       expect(geometry.height).toBeLessThanOrEqual(geometry.line + 1);
       expect(geometry.width).toBeGreaterThan(0);
       await expect(heading).toHaveAttribute('title', name);
-      await expect(page.getByRole('button', { name: 'History and details', exact: true })).toBeInViewport({ ratio: 1 });
+      await page.getByRole('button', { name: 'More', exact: true }).scrollIntoViewIfNeeded();
+      await expect(page.getByRole('button', { name: 'More', exact: true })).toBeInViewport({ ratio: 1 });
+      await page.getByRole('button', { name: 'Back to Customizations', exact: true }).scrollIntoViewIfNeeded();
       await expect(page.getByRole('button', { name: 'Back to Customizations', exact: true })).toBeInViewport({ ratio: 1 });
+      await page.getByLabel('Message to Daymark assistant', { exact: true }).scrollIntoViewIfNeeded();
       await expect(page.getByLabel('Message to Daymark assistant', { exact: true })).toBeInViewport({ ratio: 1 });
       mkdirSync(resolve('build/studio-title'), { recursive: true });
       await page.screenshot({ path: resolve(`build/studio-title/${viewport.width}x${viewport.height}.png`) });

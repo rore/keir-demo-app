@@ -81,7 +81,7 @@ async function appLockup(page) {
   await expect(page.getByText('Powered by Keir', { exact: true })).toHaveCount(0);
 }
 async function openDetails(page) {
-  await ui(page).getByRole('button', { name: 'History and details', exact: true }).click();
+  await ui(page).getByRole('button', { name: 'More', exact: true }).click();
   await expect(ui(page).locator('.rs-tools')).toHaveJSProperty('open', true);
 }
 async function openExampleDetails(results) {
@@ -126,7 +126,7 @@ async function prepareChoice(page, label) {
     state = await api(page, 'extensions/' + extensionId);
     targets.set(page, { owner: state.owner.id, id: state.extension.id });
     await page.evaluate(id => { location.hash = new URLSearchParams({ customization: id }).toString(); }, state.extension.id);
-    await expect(ui(page).getByRole('heading', { level: 1 })).toHaveText(state.extension.name);
+    await expect(ui(page).getByRole('heading', { level: 2, name: state.extension.name, exact: true })).toBeVisible();
   }
   const projects = await api(page, 'projects');
   const project = projects[label === originalLabel ? 0 : Math.min(1, projects.length - 1)];
@@ -144,7 +144,7 @@ async function checkChoice(page) {
   const state = await savedState(page);
   const result = await api(page, `extensions/${state.extension.id}/simulate`, { revisionId: state.draft.id, draftVersion: state.draftVersion });
   await refresh(page);
-  await expect(ui(page).getByRole('button', { name: 'View saved changes', exact: true }).first()).toBeEnabled();
+  await expect(ui(page).getByRole('button', { name: 'See proposed change', exact: true }).first()).toBeEnabled();
   return result;
 }
 async function openRun(page, id) {
@@ -236,7 +236,7 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await openStudio(page);
   await expect(page.locator('.project-link.selected')).toHaveCount(0);
   await appLockup(page);
-  await expect(ui(page).getByRole('heading', { level: 1 })).toHaveText((await savedState(page)).extension.name);
+  await expect(ui(page).getByRole('heading', { level: 2, name: (await savedState(page)).extension.name, exact: true })).toBeVisible();
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   await expect(await editSaved(page)).toBeFocused();
   await destination(page, 'Tasks');
@@ -311,7 +311,7 @@ test('general start offers editable requests and distinguishes untouched from of
   expect(off.selection.revision).toBeNull(); expect(off.draft.id).toBe(beforeOff.draft.id);
   expect(off.approvedEvidenceId).toBe(beforeOff.approvedEvidenceId); expect(off.history.length).toBeGreaterThan(0);
   await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
-  await expect(await card(page)).toContainText('Not in use'); await picture(page, 'general-off');
+  await expect(await card(page)).toContainText('Approved · Not on yet'); await picture(page, 'general-off');
   const beforeNew = await collection(page);
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
   await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect(await collection(page)).toEqual(beforeNew);
@@ -390,6 +390,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);
     await prepareChoice(page, proposedLabel); await composer.fill('Keep this unsent thought');
     const log = studio.getByRole('log');
+    const flowing = viewport.width <= 600 || viewport.height <= 500;
+    const scroller = flowing ? studio : log;
+    await expect(scroller).toHaveCSS('overflow-y', 'auto');
+    if (flowing) await expect(log).toHaveCSS('overflow-y', 'visible');
     if (viewport.height === 384) {
       const fetched = Promise.withResolvers(), release = Promise.withResolvers();
       const path = `**/api/extensions/${(await savedState(page)).extension.id}/simulate`;
@@ -402,48 +406,52 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       try {
         await studio.getByRole('button', { name: 'Check this revised change', exact: true }).click();
         await fetched.promise;
-        await wheel(page, log, -100_000);
+        await wheel(page, scroller, -100_000);
       } finally { release.resolve(); }
       await expect(studio.getByRole('button', { name: 'New messages ↓', exact: true })).toBeVisible();
       await page.unroute(path);
     } else await checkChoice(page);
-    const named = studio.getByRole('button', { name: 'View saved changes', exact: true }).first();
+    const named = studio.getByRole('button', { name: 'See proposed change', exact: true }).first();
     await named.click(); const heading = studio.getByRole('heading', { name: 'Simulation', exact: true });
     await expect(heading).toBeFocused();
     const results = studio.getByRole('article', { name: 'Current decision' });
     const action = results.getByRole('button', { name: 'Approve this change', exact: true });
     await expect(action).toBeEnabled();
-    await expect(log.getByRole('heading', { name: 'About this rule', exact: true })).toBeVisible();
+    await expect(log.getByRole('article', { name: 'About this rule', exact: true }).getByRole('heading')).toHaveText('Summary');
+    await expect(studio.getByRole('heading', { level: 1 })).toHaveText(`Create “${proposedLabel}” tasks`);
     await expect(log.getByRole('article', { name: 'Current decision' })).toHaveCount(1);
-    await expect(composer).toBeInViewport();
+    if (!flowing) await expect(composer).toBeInViewport();
     const rows = results.getByRole('article', { name: /^Example:/ });
     await expect(rows).toHaveCount(6);
-    await expect(results.getByText('These results cover only the recorded examples. Other situations remain untested.', { exact: true })).toBeVisible();
+    await expect(results.locator('.rs-coverage')).toContainText('Not covered by this simulation');
+    await expect(results.locator('.rs-coverage')).toContainText(/These examples do not cover|Only the situations listed here were simulated/);
+    await expect(results.locator('.rs-coverage')).not.toContainText('An unconfirmed change may have happened');
     await expect(rows.nth(1)).toBeVisible();
     if (viewport.width === 1440 || viewport.width === 390) {
       const summary = log.getByRole('article', { name: 'About this rule', exact: true });
-      await expect(summary).toContainText('Create a task titled');
+      await expect(summary.locator('.rs-rule-summary')).toContainText(`create a new task titled “${proposedLabel}”`);
       await summary.evaluate(node => node.scrollIntoView({ block: 'start' }));
       await picture(page, `studio-saved-rule-${viewport.width}x${viewport.height}`);
       const simulation = results.getByRole('heading', { name: 'Simulation', exact: true });
       await simulation.evaluate(node => node.scrollIntoView({ block: 'start' }));
       await picture(page, `studio-simulation-rows-${viewport.width}x${viewport.height}`);
     }
-    await expect(log.getByRole('article', { name: 'About this rule', exact: true })).toContainText('Create a task titled');
+    await expect(log.getByRole('article', { name: 'About this rule', exact: true }).locator('.rs-rule-summary')).toContainText(`create a new task titled “${proposedLabel}”`);
     if (viewport.height === 384) {
       await expect(studio.getByRole('button', { name: 'New messages ↓', exact: true })).toBeVisible();
       await expect(studio.locator('.rs-setup-notice')).toContainText('Set up the assistant');
       await expect.poll(async () => {
-        const available = await log.boundingBox(), button = await action.boundingBox();
+        const available = await scroller.boundingBox(), button = await action.boundingBox();
         return available.height - button.height;
       }).toBeGreaterThanOrEqual(0);
     }
-    await action.evaluate(button => {
-      const scroller = button.closest('[role="log"]');
+    await action.evaluate((button, flowing) => {
+      const scroller = button.closest(flowing ? '.read-studio' : '[role="log"]');
       const target = button.getBoundingClientRect(), bounds = scroller.getBoundingClientRect();
       scroller.scrollTop += (target.top + target.bottom - bounds.top - bounds.bottom) / 2;
-    });
+    }, flowing);
     await expect(action).toBeInViewport({ ratio: 0.99 });
+    if (flowing) await composer.scrollIntoViewIfNeeded();
     await expect(composer).toBeInViewport({ ratio: 0.99 });
     if (viewport.height === 384) await picture(page, 'short-inline-unread-action-visible');
     const id = (await savedState(page)).evidence.id;
@@ -454,10 +462,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(action).toBeEnabled();
     await expect(rows.nth(1)).toBeVisible();
     await expect(composer).toHaveValue('Keep this unsent thought');
-    await results.getByText('Exact saved change and checks', { exact: true }).click();
+    await results.getByText('Technical details for this version', { exact: true }).click();
     await expect(results).toContainText(`Evidence: ${id}`);
     await expect(results.getByLabel('Exact checked examples', { exact: true })).toContainText(id);
-    await expect(results).toContainText('Sample tasks only · your tasks have not changed');
+    await expect(results).toContainText('Example tasks; your tasks are unchanged.');
     await bounded(page); await picture(page, `on-demand-results-${viewport.width}x${viewport.height}`);
     if (viewport.width === 1440 || viewport.width === 390) {
       const inspect = results.getByRole('button', { name: 'Inspect examples and what’s in use', exact: true });
@@ -538,18 +546,26 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
   test(`narrow/short ${viewport.width}x${viewport.height} has direct entry, retained panes/composer and keyboard-reachable actions`, async ({ page, demo }) => {
     await page.setViewportSize(viewport); await enter(page, demo); const fixture = await scriptLayoutAuthoring(page); await openStudio(page); await appLockup(page);
     const studio = ui(page), log = studio.getByRole('log'), composer = studio.getByLabel('Message to Daymark assistant'); await composer.fill('Keep this unsent message');
+    await expect(studio).toHaveCSS('overflow-y', 'auto');
+    await expect(log).toHaveCSS('overflow-y', 'visible');
     const disable = studio.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true });
     await expect(disable).toBeEnabled();
     await expect(disable).toBeInViewport({ ratio: 1 });
-    const box = await studio.locator('.rs-composer').boundingBox(); expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    await studio.locator('.rs-composer').scrollIntoViewIfNeeded();
+    const box = await studio.locator('.rs-composer').boundingBox();
+    // Scroll offsets round to whole pixels while form bounds can remain fractional.
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
     for (let i = 0; i < 5; i++) { await composer.fill(`Long example ${i} ${'explain this task '.repeat(14)}`); await studio.getByRole('button', { name: 'Send', exact: true }).click(); }
     await expect.poll(() => fixture.turns.length).toBe(5); await expect(studio.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
-    await composer.fill('Keep this unsent message'); await log.evaluate(node => node.scrollTop = 0); await wheel(page, log, 300);
-    await expect.poll(() => scrollTop(log)).toBeGreaterThan(0); const logPosition = await scrollTop(log); await picture(page, `studio-conversation-${viewport.width}x${viewport.height}`);
+    await composer.fill('Keep this unsent message'); await studio.evaluate(node => node.scrollTop = 0); await wheel(page, studio, 300);
+    await expect.poll(() => scrollTop(studio)).toBeGreaterThan(0); const logPosition = await scrollTop(studio);
+    expect(await scrollTop(log)).toBe(0); await picture(page, `studio-conversation-${viewport.width}x${viewport.height}`);
     await openDetails(page); await expect(studio.locator('.rs-chat')).toBeHidden(); await expect(disable).toBeInViewport({ ratio: 1 });
     await studio.getByText('Manage saved customization', { exact: true }).click(); await studio.getByText('Selection history and exact identities', { exact: true }).click();
-    const canvas = studio.locator('.rs-canvas'); await wheel(page, canvas, 300); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(0); const canvasPosition = await scrollTop(canvas);
-    await studio.getByRole('button', { name: 'Back to conversation', exact: true }).click(); await expect(composer).toHaveValue('Keep this unsent message'); expect(await scrollTop(log)).toBe(logPosition);
+    const canvas = studio.locator('.rs-canvas'); await expect(canvas).toHaveCSS('overflow-y', 'auto');
+    await wheel(page, canvas, 300); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(0); const canvasPosition = await scrollTop(canvas);
+    await studio.getByRole('button', { name: 'Back to conversation', exact: true }).click(); await expect(composer).toHaveValue('Keep this unsent message');
+    await expect(studio).toHaveCSS('overflow-y', 'auto'); expect(await scrollTop(studio)).toBe(logPosition); expect(await scrollTop(log)).toBe(0);
     await openDetails(page); await expect.poll(() => scrollTop(canvas)).toBe(canvasPosition); await canvas.focus(); await page.keyboard.press('PageDown');
     await studio.getByRole('button', { name: 'Reload saved state', exact: true }).focus(); await page.keyboard.press('Tab'); await bounded(page); await picture(page, `studio-${viewport.width}x${viewport.height}`);
     await studio.getByRole('button', { name: 'Back to Customizations', exact: true }).click(); await expect(await editSaved(page)).toBeFocused();
@@ -565,13 +581,13 @@ test('late overview and Studio reads cannot repopulate an abandoned destination 
     await expect(page.getByRole('heading', { name: 'Neighbourhood workshop', exact: true })).toBeVisible(); await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('maya');
     release(); await finished; await page.unroute('**/api/extensions'); await expect(page.locator('.customization-card')).toHaveCount(0);
     await overview(page); const maya = await savedState(page); await expect(await card(page)).toContainText(maya.extension.name); await (await editSaved(page)).click();
-    await expect(ui(page).getByRole('heading', { level: 1 })).toHaveText(maya.extension.name); expect((await savedState(page)).owner.id).toBe('maya');
+    await expect(ui(page).getByRole('heading', { level: 2, name: maya.extension.name, exact: true })).toBeVisible(); expect((await savedState(page)).owner.id).toBe('maya');
     let releaseStudio, arrivedStudio; const studioStarted = new Promise(done => { arrivedStudio = done; }); const exact = `**/api/extensions/${maya.extension.id}`;
     await page.route(exact, async route => { const response = await route.fetch(); arrivedStudio(); await new Promise(done => { releaseStudio = done; }); try { await route.fulfill({ response }); } catch {} });
     await openDetails(page); await ui(page).getByRole('button', { name: 'Reload saved state', exact: true }).click(); await studioStarted;
     await destination(page, 'Tasks'); await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo'); releaseStudio(); await page.unroute(exact);
     await openStudio(page); const leo = await savedState(page); expect(leo.owner.id).toBe('leo'); expect(leo.extension.id).not.toBe(maya.extension.id);
-    await expect(ui(page).getByRole('heading', { level: 1 })).toHaveText(leo.extension.name); await expect(ui(page).getByLabel('Customization status')).not.toContainText('Maya');
+    await expect(ui(page).getByRole('heading', { level: 2, name: leo.extension.name, exact: true })).toBeVisible(); await expect(ui(page).getByLabel('Customization status')).not.toContainText('Maya');
   } finally { release?.(); }
 });
 
@@ -607,7 +623,7 @@ test('a newly produced real sample run does not replace historical evidence bein
     await results.locator('.rs-example-details > summary').click(); await expect(results).toContainText(`Evidence: ${original.evidence.id}`);
     const canvas = studio.locator('.rs-canvas'); await wheel(page, canvas, 180); const position = await scrollTop(canvas);
     await expect(studio.getByRole('button', { name: 'Send', exact: true })).toBeDisabled(); await studio.getByRole('button', { name: 'Send', exact: true }).click({ force: true }); expect(requests).toBe(1);
-    release(); await finished; await expect.poll(() => fixture.turns.length).toBe(1); await expect(studio.getByRole('button', { name: 'View saved changes', exact: true }).first()).toBeEnabled();
+    release(); await finished; await expect.poll(() => fixture.turns.length).toBe(1); await expect(studio.getByRole('button', { name: 'See proposed change', exact: true }).first()).toBeEnabled();
     await expect(studio.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
     expect(await results.locator('[aria-label="Expected and actual sample results"]').textContent()).toBe(content); await expect(results).toContainText(`Evidence: ${original.evidence.id}`); expect(await scrollTop(canvas)).toBe(position);
     const latest = await savedState(page); await openRun(page, latest.evidence.id); await expect(results).toContainText('Saved sample run · Current proposal');
@@ -620,7 +636,9 @@ for (const operation of ['simulate', 'approve', 'activate']) {
   test(`an already-produced ${operation} response preserves explicitly selected sample reading`, async ({ page, demo }) => {
     await enter(page, demo); await openStudio(page, false); const { original, fixture } = await preparePendingRun(page); const studio = ui(page);
     const checked = await api(page, `extensions/${original.extension.id}/evidence/${original.evidence.id}`);
-    const nonmatch = checked.reports.find(item => item.id === 'other-project').report.scenario.task;
+    const nonmatching = checked.reports.find(item => item.id === 'other-project').report;
+    expect(nonmatching.observed).toEqual({ effect: 'NONE', createdTasks: [], updatedTasks: [] });
+    const nonmatch = nonmatching.scenario.task;
     const nonmatchLabel = `Example: Task completed in ${nonmatch.projectName}`;
     if (operation === 'activate') { await approve(page); await openRun(page, original.evidence.id); }
     let release, arrived, delivered; const started = new Promise(done => { arrived = done; }), finished = new Promise(done => { delivered = done; });
@@ -644,12 +662,15 @@ for (const operation of ['simulate', 'approve', 'activate']) {
       } else {
         results = studio.getByRole('article', { name: 'Current decision', exact: true });
         await expect(results.getByRole('article', { name: /^Example:/ }).first()).toBeVisible();
-        await results.getByText('Exact saved change and checks', { exact: true }).click();
+        await results.getByText('Technical details for this version', { exact: true }).click();
         proof = await results.getByLabel('Exact checked examples', { exact: true }).textContent();
       }
       const anchor = operation === 'simulate'
         ? results.getByRole('region', { name: 'Saved proposed example', exact: true }).getByRole('article', { name: nonmatchLabel, exact: true })
-        : results.getByRole('article', { name: nonmatchLabel, exact: true });
+        : results.getByRole('article', { name: /^Example:/ }).filter({ has: page.locator('dd').filter({ hasText: `“${nonmatch.projectName}”` }) });
+      if (operation !== 'simulate' && !await anchor.locator('.rs-case-disclosure').evaluate(element => element.open))
+        await anchor.locator('.rs-case-disclosure > summary').click();
+      await expect(anchor.locator('dd').nth(2)).toBeVisible();
       const content = await anchor.locator('dd').allTextContents();
       const scroller = operation === 'simulate' ? studio.locator('.rs-canvas') : studio.getByRole('log');
       await scroller.focus(); await anchor.evaluate(node => node.scrollIntoView({ block: 'start' }));
@@ -662,7 +683,8 @@ for (const operation of ['simulate', 'approve', 'activate']) {
       if (operation !== 'simulate') {
         await openRun(page, original.evidence.id);
         results = await selectOtherExample(page);
-        await expect(results.getByRole('region', { name: 'Saved proposed example', exact: true }).getByRole('article', { name: nonmatchLabel, exact: true }).locator('dd').nth(2)).toHaveText(content[2].trim());
+        // Inline review adds the draft’s condition; saved inspection keeps the recorded no-change observation.
+        await expect(results.getByRole('region', { name: 'Saved proposed example', exact: true }).getByRole('article', { name: nonmatchLabel, exact: true }).locator('dd').nth(2)).toHaveText('No change.');
       }
       await openExampleDetails(results);
       if (proof) expect(await results.getByLabel('Saved synthetic simulation report', { exact: true }).textContent()).toBe(proof);

@@ -68,7 +68,7 @@ async function openItem(page, extensionId) {
   await expect(studio(page)).toBeVisible();
 }
 async function details(page) {
-  await studio(page).getByRole('button', { name: 'History and details', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'More', exact: true }).click();
   await expect(studio(page).locator('.rs-tools')).toHaveJSProperty('open', true);
 }
 
@@ -130,7 +130,14 @@ test('collection pages merge summaries, keep global selection and expose more th
     selection: saved.selection, items: [newer, another], next: 'collection-older' }) : route.continue());
   await collection(page);
   await expect(page.getByRole('button', { name: /^Check submitted request / })).toHaveCount(10);
-  await expect(page.locator('.customization-request')).toHaveCount(2);
+  const excerpts = page.locator('details.customization-discussion');
+  await expect(excerpts).toHaveCount(2);
+  for (const [index, excerpt] of (await excerpts.all()).entries()) {
+    await expect(excerpt).toHaveJSProperty('open', false);
+    await excerpt.getByText('Discussion started with', { exact: true }).click();
+    await expect(excerpt.locator('p')).toHaveText(index ? 'Second exact original request' : 'First exact original request');
+    await expect(excerpt.locator('p')).toBeVisible();
+  }
   const load = page.getByRole('button', { name: 'Load more customizations', exact: true });
   await load.click();
   await expect(page.locator('.customization-card')).toHaveCount(3);
@@ -208,11 +215,11 @@ test('Details discovers displaced history, sample runs, all revisions and only e
   await ui.getByText('Manage saved customization', { exact: true }).click();
   await ui.getByText('Selection history and exact identities', { exact: true }).click();
   await ui.getByRole('button', { name: 'Load earlier selections', exact: true }).click();
-  await expect(ui.getByRole('region', { name: 'Earlier saved changes', exact: true })).toContainText('Earlier unchecked changes');
+  await expect(ui.getByRole('region', { name: 'Earlier versions', exact: true })).toContainText('Earlier unchecked changes');
   await ui.getByRole('button', { name: 'Load earlier restore choices', exact: true }).click();
   await expect(ui.getByLabel('Previously in use', { exact: true }).locator('option')).toHaveCount(2);
   await expect(ui.getByLabel('Previously in use', { exact: true })).not.toContainText('Earlier unchecked changes');
-  await ui.getByText('All saved versions', { exact: true }).click();
+  await ui.getByText('All versions', { exact: true }).click();
   await ui.getByRole('button', { name: 'Load saved versions', exact: true }).click();
   await expect(ui.getByRole('button', { name: 'Inspect saved version', exact: true })).toHaveCount(2);
   await ui.getByText('Saved sample runs', { exact: true }).click();
@@ -388,7 +395,7 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
     await page.goto(`${demo.origin}/#customization=${extensionId}&conversation=archived-context-boundary`);
     await expect(recovery).toHaveCount(0);
     await expect(decision).toHaveCount(0);
-    await expect(ui.getByText('Earlier discussion · read-only. These messages and examples cannot change or approve your current saved changes.', { exact: true })).toBeVisible();
+    await expect(ui.getByText('Earlier discussion · read-only. These messages and examples cannot change or approve your current proposal.', { exact: true })).toBeVisible();
   } finally { releaseSettled?.(); }
 });
 
@@ -429,7 +436,7 @@ test('reloading an accepted context continuation keeps the prior decision hidden
   await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
   await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
   await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-  await expect(ui.getByText('Approved · Still off', { exact: true })).toBeVisible();
+  await expect(ui.getByLabel('Customization status', { exact: true }).getByText('Approved · Not on yet', { exact: true })).toBeVisible();
   // Compiled UI with a synthetic accepted run; reload reads status without repeating the paid request.
   await page.screenshot({ path: testInfo.outputPath('context-continuation-running-after-reload.png'), fullPage: true });
   expect(turns).toHaveLength(1);

@@ -3,14 +3,14 @@ import { taskEffectSyntax } from '../../src/task-effect-simulation.mjs';
 const literal = value => ({ literal: value });
 const cel = value => ({ cel: value });
 const project = value => ({ literal: value, type: 'ProjectId' });
-const elapsedDue = cel('input.occurredAt + duration("604800s")');
 const defaults = {
   projectId: 'project1', destinationProjectId: 'project2', title: 'Quote for spring launch',
   reviewTitle: '  Review  ', tagsText: ' Review, REVIEW, Next ', followUpTitle: 'Follow-up',
 };
 
 export function taskWorkflowSource(host, workflow, options) {
-  const { projectId, destinationProjectId, title, reviewTitle, tagsText, followUpTitle } = { ...defaults, ...options };
+  const { projectId, destinationProjectId, title, reviewTitle, tagsText, followUpTitle, elapsedSeconds = 604800 } = { ...defaults, ...options };
+  const elapsedDue = cel(`input.occurredAt + duration("${elapsedSeconds}s")`);
   const source = JSON.parse(taskEffectSyntax(host));
   const inProject = 'source.projectId == projectId';
   const rules = {
@@ -21,11 +21,12 @@ export function taskWorkflowSource(host, workflow, options) {
     'follow-up': ['!source.matches', 'tasks.create',
       { projectId: project(destinationProjectId), title: literal(followUpTitle) }, 'CREATED'],
     onboarding: [`${inProject} && !has(source.dueAt)`, 'tasks.update', { dueAt: elapsedDue }, 'UPDATED'],
+    'missing-due': ['!has(source.dueAt)', 'tasks.update', { dueAt: elapsedDue }, 'UPDATED'],
   };
   const [condition, write, writeArgs, status] = rules[workflow];
   const lookup = workflow === 'follow-up';
   source.steps = [
-    ...(lookup ? [] : [{ id: 'projectId', let: project(projectId) }]),
+    ...(lookup || workflow === 'missing-due' ? [] : [{ id: 'projectId', let: project(projectId) }]),
     lookup ? { id: 'source', call: 'tasks.openMatch', args: { projectId: project(destinationProjectId), title: literal(followUpTitle) } }
       : { id: 'source', call: 'tasks.get', args: { taskId: cel('input.taskId') } },
     { id: 'eligible', let: cel(condition) },
@@ -38,7 +39,7 @@ export function taskWorkflowSource(host, workflow, options) {
 const operation = (step, capability, version, args, response) =>
   ({ step, capability, version, args, protectedArgs: { actorId: 'user1' }, response });
 
-function scenario(format, input, id, read, write, status = 'NO_OP') {
+function scenario(format, input, id, read, write, status = 'NO_OP', projectBinding = true) {
   const stubs = write ? [read, write] : [read];
   const calls = stubs.map(({ response, ...call }) => call);
   const effects = write ? [{ step: write.step, capability: write.capability, state: 'CONFIRMED' }] : [];
@@ -46,7 +47,7 @@ function scenario(format, input, id, read, write, status = 'NO_OP') {
   const step = (event, step, more) => trace.push({ event, step, ...more });
   const call = (event, { step: id, capability }, more) => step(event, id, { capability, ...more });
   const readsTask = read.capability === 'tasks.get';
-  if (readsTask) {
+  if (readsTask && projectBinding) {
     step('STEP_START', 'projectId');
     step('VALUE_BOUND', 'projectId');
   }
@@ -70,7 +71,7 @@ function scenario(format, input, id, read, write, status = 'NO_OP') {
     trace.push({ event: 'TERMINATED' });
   } else {
     outcome.classification = 'FAILED';
-    outcome.error = { code: 'ADAPTER_TRANSIENT', path: readsTask ? '/steps/1' : '/steps/0' };
+    outcome.error = { code: 'ADAPTER_TRANSIENT', path: readsTask && projectBinding ? '/steps/1' : '/steps/0' };
     trace.push({ event: 'TERMINATED', code: outcome.error.code });
   }
   const consumption = { status: 'REPORTED', ...outcome };
@@ -80,10 +81,10 @@ function scenario(format, input, id, read, write, status = 'NO_OP') {
 
 export function taskWorkflowCases(host, workflow, options) {
   const { projectId, destinationProjectId, title, reviewTitle, tagsText, followUpTitle,
-    taskId = 'task1', occurredAt = '2026-03-07T16:00:00.417Z', createdTaskId = 'task2',
+    taskId = 'task1', occurredAt = '2026-03-07T16:00:00.417Z', createdTaskId = 'task2', elapsedSeconds = 604800,
   } = { ...defaults, ...options };
   const input = { taskId, occurredAt };
-  const dueAt = new Date(Date.parse(occurredAt) + 168 * 60 * 60 * 1000).toISOString();
+  const dueAt = new Date(Date.parse(occurredAt) + elapsedSeconds * 1000).toISOString();
   const task = { id: taskId, projectId, title, status: host.pins.hook === 'TaskCreated' ? 'OPEN' : 'COMPLETED',
     tags: ['client', 'review'], priority: 'normal' };
   const read = changes => operation('source', 'tasks.get', '3', { taskId }, { kind: 'SUCCESS', value: { ...task, ...changes } });
@@ -95,7 +96,7 @@ export function taskWorkflowCases(host, workflow, options) {
   const create = args => write('tasks.create', '2', createdTaskId, args);
   const update = args => write('tasks.update', '1', taskId, args);
   const format = host.pins.modelRef.format === 'keir-dcm/3' ? 'keir-scenario/3' : 'keir-scenario/2';
-  const example = (...args) => scenario(format, input, ...args);
+  const example = (id, read, write, status) => scenario(format, input, id, read, write, status, workflow !== 'missing-due');
   const nearMiss = title === title.toLowerCase() ? title.toUpperCase() : title.toLowerCase();
   const cases = {
     intake: [
@@ -115,6 +116,12 @@ export function taskWorkflowCases(host, workflow, options) {
     onboarding: [
       example('missing-due', read(), update({ dueAt }), 'UPDATED'),
       example('existing-due', read({ dueAt: occurredAt })),
+    ],
+    'missing-due': [
+      example('missing-due', read({ title: 'Plan launch' }), update({ dueAt }), 'UPDATED'),
+      example('another-project', read({ projectId: destinationProjectId, title: 'Send invoice' }), update({ dueAt }), 'UPDATED'),
+      example('existing-due', read({ title: 'Already scheduled', dueAt: occurredAt })),
+      example('task-read-fails', operation('source', 'tasks.get', '3', { taskId }, { kind: 'TRANSIENT_FAILURE' })),
     ],
   };
   return cases[workflow].map(row => JSON.stringify(row));

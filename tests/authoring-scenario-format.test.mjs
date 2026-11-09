@@ -328,7 +328,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       assert.equal(types[read.result].fields.id, 'TaskId');
       assert.deepEqual(create.parameters.projectId, { type: 'ProjectId', binding: 'agent' });
       assert.deepEqual(create.parameters.actorId, { type: 'UserId', binding: 'host' });
-      assert.match(discovery.businessContext.supported, /same.project/);
+      assert.match(discovery.businessContext.supported, /same.project/i);
       assert.match(discovery.businessContext.supported, /source\.projectId/);
 
       const program = JSON.parse(sourceExample);

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { start } from '../../src/server.mjs';
+import { expandCheckedExamples, openSavedChanges } from '../fixtures/studio-review.mjs';
 
 // Public projection checks only: these fixtures do not qualify a runtime or create tasks through an extension.
 const test = base.extend({
@@ -35,9 +36,17 @@ async function nativeData(page) {
 async function publicStudio(page, { mismatch = false, unavailable = false, unavailableRead = false, unknownEffect = false, noActive = false } = {}) {
   const task = { id: 'example-task', title: 'Finish packaging sketches', status: 'COMPLETED', projectId: 'example-project', projectName: 'Launch' };
   const effect = title => ({ projectId: task.projectId, projectName: task.projectName, title });
-  const report = (id, revisionId, title, failed = false) => ({ id, revisionId, kind: 'authored', identity: {}, passed: !failed, reports: [{
+  const report = (id, revisionId, title, failed = false) => ({ id, revisionId, kind: 'authored', identity: {}, passed: !failed,
+    summary: { statuses: [failed ? 'FAIL' : 'PASS'], totalCases: 1, returnedCases: 1, truncated: false,
+      cases: [{ id: 'completed-in-launch', verification: failed ? 'mismatched' : 'matched',
+        availability: unknownEffect ? 'unknown' : unavailableRead ? 'unavailable' : 'available',
+        outcome: unknownEffect ? 'uncertain' : failed ? 'mismatch' : unavailableRead ? 'handled-problem' : 'changed' }],
+      counts: { verification: { matched: failed ? 0 : 1, mismatched: failed ? 1 : 0, unchecked: 0 },
+        outcome: { changed: !unknownEffect && !failed && !unavailableRead ? 1 : 0, unchanged: 0,
+          'handled-problem': !unknownEffect && !failed && unavailableRead ? 1 : 0,
+          uncertain: unknownEffect ? 1 : 0, unchecked: 0, mismatch: failed && !unknownEffect ? 1 : 0 } } }, reports: [{
     id: 'completed-in-launch', label: 'A label does not prove a task was created', expected: { classification: unknownEffect ? 'UNCERTAIN' : unavailableRead ? 'BUSINESS_REJECTION' : 'COMPLETED', createdTasks: unknownEffect ? null : unavailableRead ? [] : [effect(title)], updatedTasks: unknownEffect ? null : [] },
-    report: { status: failed ? 'MISMATCH' : 'PASS', scenario: { task: unavailableRead ? { id: task.id, title: 'Example task' } : task },
+    report: { status: failed ? 'FAIL' : 'PASS', scenario: { task: unavailableRead ? { id: task.id, title: 'Example task' } : task },
       ...(unavailableRead ? { calls: [{ capability: 'tasks.get' }], native: { error: { code: 'TASK_NOT_FOUND' } } } : {}),
       observed: { effect: unknownEffect ? 'UNKNOWN' : failed || unavailableRead ? 'NONE' : 'CONFIRMED',
         createdTasks: unknownEffect ? null : failed || unavailableRead ? [] : [effect(title)], updatedTasks: unknownEffect ? null : [] },
@@ -75,7 +84,7 @@ async function publicStudio(page, { mismatch = false, unavailable = false, unava
 
 test('inline review and secondary comparison retain their exact task proofs and separate decisions', async ({ page, demo }) => {
   await enter(page, demo); const { mutations } = await publicStudio(page);
-  await studio(page).locator('#studio-view-saved').click();
+  await openSavedChanges(page);
   const decision = studio(page).getByRole('article', { name: 'Current decision', exact: true });
   const proposed = studio(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
   await expect(proposed).toContainText('Prepare next step'); await expect(proposed).toContainText('Launch');
@@ -99,18 +108,18 @@ test('inline review and secondary comparison retain their exact task proofs and 
 test('an unavailable installation keeps review and approval usable but disables turning on', async ({ page, demo }) => {
   await enter(page, demo); const { mutations } = await publicStudio(page, { unavailable: true });
   await expect(studio(page)).toContainText('Task customizations cannot run in this installation yet. Your tasks still work.');
-  await studio(page).locator('#studio-view-saved').click();
+  await openSavedChanges(page);
   await studio(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
   await expect(studio(page).getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeDisabled();
   await expect(studio(page).getByRole('log', { name: 'Studio conversation' })).toContainText('This change is approved and saved. Task customizations cannot run in this installation yet.');
   await expect(studio(page)).not.toContainText('ready to turn on');
-  await expect(studio(page).locator('.rs-review-status')).toHaveText('Approved · Still off');
+  await expect(studio(page).locator('.rs-review-status')).toHaveText('Approved · Not on yet');
   expect(mutations.map(item => item.path)).toEqual(['/api/extensions/task-customization/approve']);
 });
 
 test('without a current version the proposed proof uses the conversation width', async ({ page, demo }, testInfo) => {
   await enter(page, demo); await publicStudio(page, { noActive: true, unavailable: true });
-  await studio(page).locator('#studio-view-saved').click();
+  await openSavedChanges(page);
   const proposed = studio(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
   await expect(proposed).toContainText('Prepare next step');
   await expect(studio(page).getByRole('region', { name: 'Checked behavior currently in use', exact: true })).toHaveCount(0);
@@ -132,14 +141,15 @@ test('mismatching task creation remains an inspectable example without an approv
   await enter(page, demo); const { mutations } = await publicStudio(page, { mismatch: true });
   await studio(page).getByText('The saved examples compare the current follow-up with your proposed next step.', { exact: true }).locator('..').getByRole('button', { name: 'View checked examples', exact: true }).click();
   const results = studio(page).getByRole('article', { name: 'Current decision', exact: true });
+  await expandCheckedExamples(results);
   await expect(results).toContainText('Create “Prepare next step”'); await expect(results).toContainText('No change.');
-  await expect(results).toContainText('Needs correction'); await expect(studio(page).getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
+  await expect(results).toContainText('Different from what we wanted'); await expect(studio(page).getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
   expect(mutations).toEqual([]);
 });
 
 test('a checked unavailable-source case can prove no effect without inventing task details', async ({ page, demo }) => {
   await enter(page, demo); await publicStudio(page, { unavailableRead: true });
-  await studio(page).locator('#studio-view-saved').click();
+  await openSavedChanges(page);
   const proposed = studio(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
   await expect(proposed).toContainText('The task could not be found.');
   await expect(proposed).not.toContainText('Finish packaging sketches');
@@ -149,12 +159,12 @@ test('a checked unavailable-source case can prove no effect without inventing ta
 
 test('an independently expected UNKNOWN stays reviewable without claiming a task or no effect', async ({ page, demo }) => {
   await enter(page, demo); await publicStudio(page, { unknownEffect: true });
-  await studio(page).locator('#studio-view-saved').click();
+  await openSavedChanges(page);
   const proposed = studio(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
   await expect(proposed).toContainText('The change may or may not happen.');
   await expect(proposed).toContainText('We could not confirm whether the change happened.');
-  await expect(proposed.getByText('Change not confirmed', { exact: true })).toBeVisible();
-  await expect(proposed.getByText('Handled as expected', { exact: true })).toBeVisible();
+  await expect(proposed.getByText('Change not confirmed', { exact: true }).first()).toBeVisible();
+  await expect(proposed.getByText('Matched this example', { exact: true })).toHaveCount(0);
   await expect(proposed.locator('.rs-created-example')).toHaveCount(0);
   await expect(proposed).not.toContainText('No change.');
   await expect(studio(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();

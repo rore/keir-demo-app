@@ -45,7 +45,7 @@ const test = base.extend({
   },
 });
 async function openDetails(page) {
-  await studio(page).getByRole('button', { name: 'History and details', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'More', exact: true }).click();
   await expect(studio(page).locator('.rs-tools')).toHaveJSProperty('open', true);
 }
 async function tasks(page) {
@@ -63,8 +63,15 @@ async function enter(page, origin) {
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 async function open(page) {
   await page.locator('#open-customizations').click();
-  await expect(studio(page).getByRole('button', { name: 'History and details', exact: true })).toBeEnabled();
+  await expect(studio(page).getByRole('button', { name: 'More', exact: true })).toBeEnabled();
   expect(await studio(page).locator('.rs-composer').evaluate(form => form.getBoundingClientRect().height)).toBeLessThan(180);
+  if (page.viewportSize().width <= 760) {
+    expect(await studio(page).evaluate(node => getComputedStyle(node).overflowY)).toBe('auto');
+    await studio(page).locator('.rs-header').scrollIntoViewIfNeeded();
+    const manage = studio(page).getByRole('button', { name: 'More', exact: true });
+    await expect(manage).toBeInViewport({ ratio: 1 });
+    await manage.focus(); await expect(manage).toBeFocused();
+  }
   expect(await studio(page).locator('.rs-header').evaluate(header => header.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
 }
 const decision = page => studio(page).getByRole('article', { name: 'Current decision', exact: true });
@@ -81,11 +88,17 @@ async function latestExamples(page, historical = false) {
   const project = (await nativeRequest(page, 'projects'))[0];
   await expect(studio(page).getByRole('heading', { name: historical ? 'Earlier examples' : `Saved example: Completed task in “${project.name}”`, exact: true })).toBeVisible();
 }
-async function checkSaved(page) {
+async function checkSaved(page, waitForReview = true) {
   const saved = await savedLifecycle(page, page.url());
   const checked = await lifecyclePost(page, 'simulate', { revisionId: saved.revisionId, draftVersion: saved.draftVersion });
   await reloadStudio(page);
-  if (checked.evidence.passed || checked.approved) await openSavedChanges(page);
+  if (checked.evidence.passed || checked.approved) {
+    if (waitForReview) await openSavedChanges(page);
+    else {
+      await studio(page).getByRole('button', { name: 'See proposed change', exact: true }).first().click();
+      await expect(studio(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
+    }
+  }
   return checked;
 }
 async function prepare(page, label = 'Customer follow-up') {
@@ -99,15 +112,14 @@ async function prepare(page, label = 'Customer follow-up') {
   await latestExamples(page);
   const proposed = studio(page).getByRole('region', { name: 'Saved proposed example', exact: true });
   await expect(proposed.locator('.rs-example:visible')).toHaveCount(1);
-  await expect(proposed.getByText('Matches', { exact: true })).toHaveCount(1);
+  await expect(proposed.getByText('Task created as intended', { exact: true })).toHaveCount(1);
   const otherExamples = studio(page).getByText('Other checked examples', { exact: true });
   if (!await otherExamples.locator('..').evaluate(node => node.open)) await otherExamples.click();
   const alternatives = otherExamples.locator('..').getByRole('button', { name: /^Saved example:/ });
   await expect(alternatives).toHaveCount(fixture.cases.length - 1);
   for (let index = 0; index < fixture.cases.length - 1; index++) {
     await alternatives.nth(index).click();
-    await expect(proposed.getByText(index < 2 ? 'Matches' : 'Could not check', { exact: true })).toHaveCount(1);
-    if (index >= 2) await expect(proposed.getByText('Handled as expected', { exact: true })).toBeVisible();
+    await expect(proposed.getByText(index < 2 ? 'Left unchanged as intended' : 'No change when task details were unavailable—as intended', { exact: true })).toHaveCount(1);
   }
   await closeDetails(page);
   await openSavedChanges(page);
@@ -383,7 +395,7 @@ for (const width of [1440, 390]) test(`real authored source, independent example
   await lifecyclePost(page, 'scenarios', { revisionId: compiled.draft.id, cases: [await expectedExample(page, false)], draftVersion: compiled.draftVersion });
   const failed = await checkSaved(page); expect(failed.evidence.passed).toBe(false);
   await latestExamples(page);
-  await expect(ui.getByText(/^Needs correction/)).toBeVisible();
+  await expect(ui.getByRole('region', { name: 'Saved proposed example', exact: true }).getByText('Different from what we wanted', { exact: true })).toBeVisible();
   await expect(approval(page)).toHaveCount(0);
   const mismatch = await savedLifecycle(page, demo.origin);
   await lifecyclePost(page, 'scenarios', { revisionId: mismatch.draft.id, cases: [await expectedExample(page)], draftVersion: mismatch.draftVersion });
@@ -391,7 +403,7 @@ for (const width of [1440, 390]) test(`real authored source, independent example
   await expect(approval(page)).toBeEnabled();
   const proposed = decision(page).getByRole('region', { name: 'Checked proposed behavior', exact: true });
   await expect(proposed.locator('.rs-example:visible')).toHaveCount(1);
-  await expect(proposed.getByText('Matches', { exact: true })).toBeVisible();
+  await expect(proposed.locator('.rs-case-disclosure > summary').getByText('Task created as intended', { exact: true })).toBeVisible();
   await approve(page);
   expect((await savedLifecycle(page, demo.origin)).selection.revision.label).toBe('Original follow-up');
   await ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
@@ -439,7 +451,7 @@ test('exact authored review shows saved A, preserves unsent conversation B, and 
   const saved = await savedLifecycle(page, demo.origin);
   const conversationB = 'Unsaved conversation B: explain this proposal before changing it.';
   await ui.getByLabel('Message to Daymark assistant').fill(conversationB);
-  await ui.getByText('Exact saved change and checks', { exact: true }).click();
+  await ui.getByText('Technical details for this version', { exact: true }).click();
   await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
   await expect(ui.getByLabel('Saved example 1 for approval', { exact: true })).toHaveText(await expectedExample(page));
   await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue(conversationB);
@@ -453,7 +465,7 @@ test('exact authored review shows saved A, preserves unsent conversation B, and 
   await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue('');
   await openSavedChanges(page);
   await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
-  await ui.getByText('Exact saved change and checks', { exact: true }).click();
+  await ui.getByText('Technical details for this version', { exact: true }).click();
   await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
   await expect(ui.getByLabel('Saved example 1 for approval', { exact: true })).toHaveText(await expectedExample(page));
   await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue('');
@@ -475,7 +487,7 @@ test('exact authored review fails closed on unavailable or mismatched saved docu
     mode = next; await ui.getByRole('button', { name: 'Check saved results again', exact: true }).click();
   }
   await expect(approval(page)).toBeEnabled();
-  await ui.getByText('Exact saved change and checks', { exact: true }).click();
+  await ui.getByText('Technical details for this version', { exact: true }).click();
   await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
   expect((await savedLifecycle(page, demo.origin)).approved).toBe(false);
 });
@@ -495,8 +507,9 @@ test('a held exact-source review cannot enter a different owner or a re-entered 
   });
   const ui = studio(page), other = await context.newPage();
   try {
-    expect((await checkSaved(page)).evidence.passed).toBe(true);
-    await started; await expect(approval(page)).toHaveCount(0);
+    expect((await checkSaved(page, false)).evidence.passed).toBe(true);
+    await started; await expect(decision(page).locator('.rs-review-status')).toHaveText('Checking saved results…');
+    await expect(approval(page)).toHaveCount(0);
     await other.goto(demo.origin); await other.getByLabel('Demo person', { exact: true }).selectOption('leo');
     await expect(page.getByRole('button', { name: 'Continue as Leo' })).toBeVisible();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveCount(0);
@@ -510,7 +523,7 @@ test('a held exact-source review cannot enter a different owner or a re-entered 
     await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
     await openSavedChanges(page);
     await expect(approval(page)).toBeEnabled();
-    await ui.getByText('Exact saved change and checks', { exact: true }).click();
+    await ui.getByText('Technical details for this version', { exact: true }).click();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
     expect((await savedLifecycle(page, demo.origin)).approvedEvidenceId).toBe(null);
   } finally { release?.(); await other.close(); }

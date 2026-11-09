@@ -3,14 +3,22 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createCompiler } from '../src/compiler.mjs';
-import { loadHost } from '../src/extension-catalog.mjs';
+import { loadHost, readDefinitionForPins } from '../src/extension-catalog.mjs';
 import { taskEffectSyntax } from '../src/task-effect-simulation.mjs';
-import { taskFollowUpSummary } from '../src/web/task-follow-up-summary.ts';
+import { taskRuleDescription } from '../src/task-rule-description.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/task-follow-up-summary.json', import.meta.url)));
 const host = loadHost('TaskCompleted'), compiler = createCompiler();
-const expected = { titleSuffix: ' - follow up', sameProject: true,
-  conditions: [{ field: 'status', value: 'COMPLETED', step: 'source' }] };
+const expected = { coverage: 'complete', hook: 'TaskCompleted',
+  conditions: [{ field: 'status', value: 'COMPLETED', step: 'source' }],
+  action: { capability: 'tasks.create', step: 'created', target: 'newTask', fields: {
+    projectId: { kind: 'taskField', step: 'source', field: 'projectId' },
+    title: { kind: 'title', step: 'source', suffix: ' - follow up' },
+  } } };
+const capturedArtifact = JSON.parse(fixture.artifact);
+const capturedHost = readDefinitionForPins({ ...host.pins, compiler: capturedArtifact.compiler,
+  modelDigest: capturedArtifact.modelRef.digest, modelRef: capturedArtifact.modelRef, adapter: 'native-task-effect/2',
+  packageIntegrity: 'sha512-4Rxkk3sbguL7B8e438xEAZiQhmIYul2wvn3ZAAPaKtZsm/6Bpom9UhQGW9IA/zu4VHrtMaX5fM/kWNNeKx6nJg==' });
 const digest = value => 'sha256:' + createHash('sha256').update(value).digest('hex');
 function jsonRule() {
   const source = JSON.parse(taskEffectSyntax(host));
@@ -35,29 +43,27 @@ test('captured YAML retains its original proof while current YAML and JSON produ
   assert.equal(digest(fixture.artifact), fixture.pins.artifactDigest);
   const captured = JSON.parse(fixture.artifact);
   assert.equal(captured.sourceDigest, fixture.pins.compiledSourceDigest);
-  assert.deepEqual(taskFollowUpSummary(captured), expected);
+  assert.deepEqual(taskRuleDescription(captured, capturedHost), expected);
   const currentSource = fixture.source.replace("version: '4'", "version: '5'")
     .replace(captured.modelRef.digest, host.pins.modelDigest);
   const artifact = await compile(currentSource);
   assert.equal(artifact.format, 'keir-artifact/3');
   assert.deepEqual(await compile(jsonRule()), artifact);
-  assert.deepEqual(taskFollowUpSummary(artifact), expected);
+  assert.deepEqual(taskRuleDescription(artifact, host), expected);
 });
 
 test('the follow-up recognizer resolves prior let aliases and rejects unsupported dataflow', async () => {
   const aliased = jsonRule();
   aliased.steps.splice(2, 0, { id: 'allowed', let: { cel: 'eligible' } });
   aliased.steps.at(-1).when = 'allowed';
-  assert.deepEqual(taskFollowUpSummary(await compile(aliased)), expected);
+  assert.deepEqual(taskRuleDescription(await compile(aliased), host), expected);
   for (const change of [
-    source => { source.steps[1].let.cel = 'source.status == "OPEN"'; },
     source => { source.steps[1].let.cel = 'source.status != "COMPLETED"'; },
-    source => { source.steps[2].args.title.cel = '"follow up " + source.title'; },
-    source => { source.steps[2].args.projectId = { literal: 'another-project', type: 'ProjectId' }; },
+    source => { source.steps[1].let.cel = 'source.status == "COMPLETED" || source.priority == "high"'; },
   ]) {
     const source = jsonRule();
     change(source);
-    assert.equal(taskFollowUpSummary(await compile(source)), null);
+    assert.notEqual(taskRuleDescription(await compile(source), host).coverage, 'complete');
   }
   for (const change of [
     artifact => { artifact.steps[0].when = 'eligible'; },
@@ -67,6 +73,6 @@ test('the follow-up recognizer resolves prior let aliases and rejects unsupporte
   ]) {
     const artifact = JSON.parse(fixture.artifact);
     change(artifact);
-    assert.equal(taskFollowUpSummary(artifact), null);
+    assert.notEqual(taskRuleDescription(artifact, capturedHost).coverage, 'complete');
   }
 });

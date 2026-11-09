@@ -7,6 +7,14 @@ import { loadHost } from '../../src/extension-catalog.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 import { taskWorkflowCases, taskWorkflowSource } from '../fixtures/task-workflow-source.mjs';
 
+async function expandExamples(review) {
+  const disclosures = review.locator('.rs-case-disclosure');
+  await expect(disclosures.first()).toBeVisible();
+  for (const disclosure of await disclosures.all()) {
+    if (await disclosure.getAttribute('open') === null) await disclosure.locator('summary').click();
+  }
+}
+
 test('workflow starters are capability gated and preserve the mounted composer at 320px', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   const turns = [];
@@ -67,9 +75,9 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
     const { projectId, otherProjectId: destinationProjectId, projectName, otherProjectName } = fixture.metadata;
     const rows = [
       ['intake', 'TaskCreated', 1440, [`All of these apply: this task is in “${projectName}”`, 'titled exactly “Quote for spring launch”', 'tag “client”', 'Priority High.'], 'No change. This task’s title isn’t exactly “Quote for spring launch”.'],
-      ['review', 'TaskCompleted', 1440, ['this task has High priority', 'tag “review”', `Create a task titled “Review” in “${otherProjectName}”`, 'Tags review, next.', 'Due 168 hours after completion.'], 'No change. The rule requires High priority.'],
+      ['review', 'TaskCompleted', 1440, ['this task has High priority', 'tag “review”', `Create a task titled “Review” in “${otherProjectName}”`, 'Tags review, next.', 'Due 7 days (168 elapsed hours) after the task was completed.'], 'No change. The rule requires High priority.'],
       ['follow-up', 'TaskCompleted', 390, [`“${otherProjectName}” has no open task titled exactly “Follow-up”`], 'No task was created because an open task matched.'],
-      ['onboarding', 'TaskCreated', 320, ['this task has no due date', 'Due 168 hours after addition.'], 'No change. This task already has a due date.'],
+      ['onboarding', 'TaskCreated', 320, ['this task has no due date', 'Due 7 days (168 elapsed hours) after the task was added.'], 'No change. This task already has a due date.'],
     ];
     for (const [workflow, hookId, width, facts, noChangeReason] of rows) {
       await page.setViewportSize({ width, height: 844 });
@@ -88,10 +96,26 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       const checked = await write('simulate', { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
       expect(checked.evidence.passed).toBe(true);
       await page.goto(`${fixture.origin}/#customization=${extensionId}`);
+      await expect(rule.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
+      const summary = rule.locator('.rs-rule-summary');
+      await expect(summary).toBeVisible();
+      await expect(summary).toContainText(hookId === 'TaskCreated' ? 'When a new task is added' : 'When a task is completed');
+      const naturalFacts = {
+        intake: ['set its priority to High', `it is in “${projectName}”`, 'it is titled exactly “Quote for spring launch”', 'it has the tag “client”'],
+        review: [`create a new task titled “Review” in “${otherProjectName}”`, 'tags “review” and “next”', 'exactly 7 days after the triggering task was completed', `the triggering task is in “${projectName}”`, 'the triggering task has High priority', 'the triggering task has the tag “review”'],
+        'follow-up': ['in any project', `“${otherProjectName}” has no open task titled exactly “Follow-up” when checked`],
+        onboarding: ['give it a due date exactly 7 days after it was added', `it is in “${projectName}”`, 'it still has no due date when its details are read', 'A due date already present when the task is read is kept.'],
+      };
+      for (const fact of naturalFacts[workflow]) await expect(summary).toContainText(fact);
+      const details = rule.locator('.rs-rule-details');
+      await expect(details).toHaveJSProperty('open', false);
+      await details.getByText('Rule details', { exact: true }).click();
       for (const fact of facts) await expect(rule).toContainText(fact);
+      await details.getByText('Rule details', { exact: true }).click();
       await expect(rule).not.toContainText('A full summary isn’t available');
       await rule.getByRole('button', { name: 'View simulation', exact: true }).click();
       const review = studio.getByRole('article', { name: 'Current decision' });
+      await expandExamples(review);
       if (noChangeReason) await expect(review).toContainText(noChangeReason);
       if (workflow === 'follow-up') {
         await expect(review).not.toContainText('A matching open task was found.');
@@ -143,11 +167,13 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
     for (const width of [1440, 320]) {
       await page.setViewportSize({ width, height: 844 });
       await page.goto(`${fixture.origin}/#customization=${extensionId}`);
-      await expect(rule.getByText('this task is completed.', { exact: true })).toBeVisible();
-      await expect(rule).toContainText('Create a task with this task’s title followed by “ - follow up” in this task’s project.');
+      await expect(rule.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
+      await expect(rule.locator('.rs-rule-summary')).toContainText('create a new task with the triggering task’s title followed by “ - follow up” in the triggering task’s project');
+      await expect(rule.locator('.rs-rule-summary')).toContainText('only if the triggering task is completed');
       await expect(rule).not.toContainText('A full summary isn’t available');
       expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      await expect(studio.getByLabel('Message to Daymark assistant', { exact: true })).toBeInViewport();
+      const composer = studio.getByLabel('Message to Daymark assistant', { exact: true });
+      await composer.scrollIntoViewIfNeeded(); await expect(composer).toBeInViewport();
       await rule.screenshot({ path: testInfo.outputPath(`same-project-follow-up-${width}.png`) });
     }
     const path = `**/api/extensions/${extensionId}/revisions/${state.draft.id}`;
@@ -171,8 +197,11 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
     });
     expect(unsupported.ok(), await unsupported.text()).toBe(true);
     await page.reload();
-    await expect(rule).toContainText('The saved conditions can’t be summarized here.');
+    await expect(rule).toContainText('The full conditions could not be described.');
     await expect(rule).not.toContainText('this task is completed');
+    await expect(rule).toContainText('A full summary isn’t available for this version.');
+    await expect(rule.locator('.rs-rule-summary')).toContainText('The full behavior could not be described.');
+    await expect(rule.locator('.rs-rule-summary')).toContainText('create a new task with the triggering task’s title followed by “ - follow up” in the triggering task’s project');
   } finally { await fixture.close(); }
 });
 
@@ -189,16 +218,22 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     const extension = { id: 'new-rule', name: 'Intake priority', hookId: 'TaskCreated' };
     const artifact = JSON.stringify({ format: 'keir-artifact/2', entrypoint: extension.hookId,
       steps: [{ id: 'set-priority', op: 'CALL', capability: 'tasks.update', when: 'eligible', args: { priority: { literal: 'high' } } }] });
-    const pins = { artifactDigest: `sha256:${createHash('sha256').update(artifact).digest('hex')}` };
-    const draft = { id: 'intake-revision', label: extension.name, kind: 'authored', suiteDigest: 'suite', pins, provenance: 'customer' };
+    const source = 'Synthetic source for a host-projected rule';
+    const pins = { artifactDigest: `sha256:${createHash('sha256').update(artifact).digest('hex')}`,
+      rawSourceDigest: `sha256:${createHash('sha256').update(source).digest('hex')}` };
+    const ruleDescription = { coverage: 'complete', hook: extension.hookId,
+      conditions: [{ field: 'title', value: 'Quote for spring launch', step: 'read-task' }],
+      action: { capability: 'tasks.update', step: 'set-priority', target: 'triggeringTask', fields: { priority: { kind: 'literal', value: 'high' } } } };
+    const draft = { id: 'intake-revision', label: extension.name, kind: 'authored', suiteDigest: 'suite', pins, ruleDescription, provenance: 'customer' };
     const prior = { ...draft, id: 'prior-intake-revision', extensionId: 'prior-intake', extensionName: 'Existing intake rule' };
-    const completion = { ...prior, extensionId: 'review-rule', extensionName: 'Completion review rule' };
+    const completion = { ...prior, extensionId: 'review-rule', extensionName: 'Completion review rule',
+      ruleDescription: { ...ruleDescription, hook: 'TaskCompleted' } };
     const picked = (revision, generation) => ({ revision, generation, eligible: true, approvedEvidenceId: 'prior-proof' });
     const evidence = { id: 'proof', revisionId: draft.id, passed: true };
     let state = { owner, extension, draft, draftVersion: 2, selection: picked(prior, 7), evidence, approved: false, approvedEvidenceId: null,
       catalog: [], restoreTargets: [], history: [], evidenceHistory: [] };
     const baseTask = { id: 'example', title: 'Quote for spring launch', status: 'OPEN', priority: 'normal', projectId: fixture.metadata.projectId };
-    const read = { capability: 'tasks.get' }, update = { capability: 'tasks.update', step: 'set-priority' };
+    const read = { capability: 'tasks.get', step: 'read-task', args: { taskId: baseTask.id } }, update = { capability: 'tasks.update', step: 'set-priority' };
     const dueAt = '2026-03-07T16:00:00.417Z';
     const unchanged = { id: baseTask.id, priority: 'high', dueAt, addTag: 'client' };
     const cases = [
@@ -210,23 +245,37 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
       ['uncertain', { ...baseTask, title: 'Priority change unconfirmed' }, 'UNKNOWN', null, [read, update]],
     ].map(([id, task, effect, updatedTasks, calls, error]) => {
       const changes = { createdTasks: effect === 'UNKNOWN' ? null : [], updatedTasks };
-      return { id, expected: changes, report: { status: 'PASS', scenario: { task }, native: { error }, calls, observed: { effect, ...changes } } };
+      return { id, expected: changes, report: { status: 'PASS', scenario: { task }, native: {
+        classification: effect === 'UNKNOWN' ? 'UNCERTAIN' : error ? 'FAILED' : 'COMPLETED', ...(error && { error }),
+      }, calls, observed: { effect, ...changes } } };
     });
     const check = (step, title) => ({ step, capability: 'tasks.openMatch', args: { title, projectId: fixture.metadata.projectId } });
     const checks = [check('first', 'Follow-up'), check('second', 'Other follow-up'), check('third', 'Follow-up')];
     const noWrite = { createdTasks: [], updatedTasks: [] };
     cases.push({ id: 'three-checks', expected: noWrite, report: { status: 'PASS', calls: checks,
-      native: { error: { code: 'ADAPTER_TRANSIENT' }, trace: checks.slice(0, 2).map(({ step, capability }) => ({ event: 'CALL_SUCCEEDED', step, capability })) },
+      native: { classification: 'FAILED', error: { code: 'ADAPTER_TRANSIENT' }, trace: checks.slice(0, 2).map(({ step, capability }) => ({ event: 'CALL_SUCCEEDED', step, capability })) },
       scenario: { task: { ...baseTask, title: 'Three lookup results' }, openMatches: [
         { ...checks[0].args, matches: true }, { ...checks[1].args, matches: false },
       ] }, observed: { effect: 'NONE', ...noWrite } } });
+    // Explicit host projection: these browser fixtures test rendering, not rule or evidence derivation.
+    const summary = { cases: [
+      { id: 'updated', verification: 'matched', availability: 'available', outcome: 'changed' },
+      { id: 'unchanged-write', verification: 'matched', availability: 'available', outcome: 'changed' },
+      { id: 'unknown-before', verification: 'matched', availability: 'available', outcome: 'changed' },
+      { id: 'untouched', verification: 'matched', availability: 'available', outcome: 'unchanged' },
+      { id: 'read-failed', verification: 'matched', availability: 'unavailable', outcome: 'handled-problem' },
+      { id: 'uncertain', verification: 'matched', availability: 'unknown', outcome: 'uncertain' },
+      { id: 'three-checks', verification: 'matched', availability: 'unavailable', outcome: 'handled-problem' },
+    ], totalCases: 7, returnedCases: 7, truncated: false,
+    counts: { verification: { matched: 7, mismatched: 0, unchecked: 0 },
+      outcome: { changed: 3, unchanged: 1, 'handled-problem': 2, uncertain: 1, unchecked: 0, mismatch: 0 } } };
     await page.route('**/api/extensions', route => route.fulfill({ json: { owner, items: [state, { ...state, draft: completion,
       extension: { id: completion.extensionId, name: completion.extensionName, hookId: 'TaskCompleted' } }], selection: picked(completion, 10),
       selections: { TaskCreated: state.selection, TaskCompleted: picked(completion, 10) }, catalog: [], next: null } }));
     await page.route('**/api/extensions/new-rule', route => route.fulfill({ json: state }));
-    await page.route('**/api/extensions/new-rule/evidence/proof', route => route.fulfill({ json: { ...evidence, identity: {}, reports: cases } }));
+    await page.route('**/api/extensions/new-rule/evidence/proof', route => route.fulfill({ json: { ...evidence, identity: {}, reports: cases, summary } }));
     await page.route('**/api/extensions/new-rule/revisions/intake-revision', route => route.fulfill({ json: {
-      extensionId: extension.id, revisionId: draft.id, suiteDigest: draft.suiteDigest, artifact, pins, source: 'sample source', cases: ['sample case'],
+      extensionId: extension.id, revisionId: draft.id, suiteDigest: draft.suiteDigest, artifact, pins, source, ruleDescription, cases: ['sample case'],
     } }));
     await page.route('**/api/authoring?extensionId=new-rule', route => route.fulfill({ json: { current: null,
       availability: { available: true, code: null, provider: null, model: null } } }));
@@ -246,9 +295,10 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await page.getByRole('article', { name: extension.name }).getByRole('button', { name: 'Continue changes' }).click();
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
     await expect(studio.getByLabel('Customization status')).toContainText('For tasks added · Currently on: Existing intake rule');
-    await expect(studio.getByRole('article', { name: 'About this rule' })).toContainText('Update this task. Priority High.');
+    await expect(studio.getByRole('article', { name: 'About this rule' }).locator('.rs-rule-summary')).toContainText('set its priority to High');
     await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
     const review = studio.getByRole('article', { name: 'Current decision' });
+    await expandExamples(review);
     await expect(review.getByText('Updated this task. Priority Normal → High.')).toBeVisible();
     const idempotent = review.getByRole('article', { name: /Already current/ });
     await expect(idempotent).toContainText('Update confirmed. The task fields stayed the same.');
@@ -262,15 +312,18 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await expect(results.nth(0)).toContainText(/exact title “Follow-up”.*\. A matching open task was found\./);
     await expect(results.nth(1)).toContainText(/exact title “Other follow-up”.*No matching open task was found\./);
     await expect(results.nth(2)).toContainText(/exact title “Follow-up”.*Could not check for a matching open task\./);
-    await expect(lookups.getByText('Could not check', { exact: true })).toBeVisible();
-    await expect(lookups.getByText('Handled as expected', { exact: true })).toBeVisible();
+    await expect(lookups.locator('.rs-case-disclosure > summary')).toContainText('No change when task details were unavailable—as intended');
+    await expect(lookups.getByText('What we wanted', { exact: true })).toBeVisible();
+    await expect(lookups.getByText('What happened', { exact: true })).toBeVisible();
     await expect(lookups).not.toContainText('because an open task matched');
     await expect(review.getByRole('article', { name: /autumn launch/ })).toContainText('No change.');
-    await expect(review.getByText('The task could not be checked because access was denied.')).toBeVisible();
+    await expect(review.getByRole('paragraph').filter({ hasText: /^The task could not be checked because access was denied\.$/ })).toBeVisible();
     const uncertain = review.getByRole('article', { name: /Priority change unconfirmed/ });
-    await expect(uncertain.getByText('Change not confirmed', { exact: true })).toBeVisible();
-    await expect(uncertain.getByText('Handled as expected', { exact: true })).toBeVisible();
+    await expect(uncertain.locator('.rs-case-disclosure > summary')).toContainText('Change not confirmed');
+    await expect(uncertain.getByText('What we wanted', { exact: true })).toBeVisible();
+    await expect(uncertain.getByText('What happened', { exact: true })).toBeVisible();
     await expect(uncertain).toContainText('We could not confirm whether the priority changed.');
+    await expect(uncertain.getByText(/^No change\./)).toHaveCount(0);
     await lookups.screenshot({ path: testInfo.outputPath('unavailable-workflow-row.png') });
     await uncertain.screenshot({ path: testInfo.outputPath('uncertain-workflow-row.png') });
     const use = review.getByRole('button', { name: 'Turn on for tasks added', exact: true });

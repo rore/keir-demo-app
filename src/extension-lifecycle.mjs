@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { AppError, notFound, transaction, revokeTaskAdmissions } from './data.mjs';
 import { loadHost, readCurrentDefinition, readDefinitionForPins, definitionForPins, admitArtifact, digest, json, TASK_HOOK, TASK_HOOKS, TASK_DEFINITION } from './extension-catalog.mjs';
 import { runTaskEffectSimulation, taskEffectProofMatches, preflightTaskEffectScenarios, taskEffectExpected, taskEffectVersions } from './task-effect-simulation.mjs';
+import { taskRuleDescription } from './task-rule-description.mjs';
+import { evidenceSummary } from './authoring-example.mjs';
 
 const conflict = () => { throw new AppError(409, 'This extension changed. Review the current version before trying again.'); };
 const deleted = () => { const error = new AppError(410, 'This customization was deleted. Return to your customizations.'); error.code = 'CUSTOMIZATION_DELETED'; throw error; };
@@ -75,6 +77,13 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     try { const item = stored(row); return !!item && !item.legacy && availableDefinitions.has(definitionKey(item.pins)); }
     catch { return false; }
   }
+  function description(row, item) {
+    if (item?.legacy) return undefined;
+    try {
+      if (item) return taskRuleDescription(JSON.parse(item.artifactBytes.toString('utf8')), definition(row));
+    } catch { /* Unverified descriptions never borrow another revision's facts. */ }
+    return { coverage: 'unavailable', reason: 'IDENTITY_UNAVAILABLE' };
+  }
   function view(row) {
     if (!row) return null;
     let pins = {};
@@ -83,7 +92,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     const extension = db.prepare('SELECT e.id,CAST(e.name AS BLOB) AS name FROM extensions e JOIN extension_revision_links l ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=?').get(row.owner_id, row.id);
     return { id: row.id, extensionId: extension?.id ?? null, extensionName: extension ? Buffer.from(extension.name).toString('utf8') : null, templateId: row.template_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
       label: item?.label ?? 'Unavailable saved change', pins, provenance: row.provenance,
-      suiteDigest: item?.pins.suiteDigest ?? null };
+      suiteDigest: item?.pins.suiteDigest ?? null, ruleDescription: description(row, item) };
   }
   function draft(owner, extensionId, terminal = false) {
     if (typeof extensionId !== 'string' || !extensionId) throw notFound();
@@ -463,7 +472,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       const row = revision(owner, id, extensionId), item = stored(row);
       if (!item || item.identity !== row.identity) throw notFound();
       return { extensionId, revisionId: id, source: item.source, artifact: item.artifactBytes.toString('utf8'), pins: JSON.parse(row.identity),
-        cases: item.suite ? JSON.parse(item.suite) : [], suiteDigest: item.pins.suiteDigest, hostCases: [] };
+        cases: item.suite ? JSON.parse(item.suite) : [], suiteDigest: item.pins.suiteDigest, hostCases: [], ruleDescription: description(row, item) };
     },
     async simulate(owner, input, authorize, { signal } = {}) {
       authorize(); abort(signal); const row = currentDraft(owner, input), item = stored(row);
@@ -531,8 +540,14 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       draft(owner, extensionId);
       const proof = evidence(owner, id, extensionId), row = revision(owner, proof.revision_id, extensionId);
       const payload = JSON.parse(proof.payload);
-      let originals = [];
-      try { if (proof.suite_identity === suiteIdentity(row)) originals = cases(row); }
+      let originals = [], associated = false;
+      try {
+        const item = stored(row);
+        if (item && !item.legacy && proof.identity === row.identity && proof.suite_identity === suiteIdentity(row)
+            && json(payload.identity) === json({ dependencies: item.pins, ...taskEffectVersions(definition(row)), suiteDigest: proof.suite_identity })) {
+          originals = cases(row); associated = true;
+        }
+      }
       catch { /* Historical proof remains readable without borrowing current scenario metadata. */ }
       const reports = payload.reports.map(item => {
         const original = originals.find(example => example.id === item.id);
@@ -548,7 +563,8 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       });
       const historical = stored(row)?.legacy === true;
       return { id: proof.id, revisionId: proof.revision_id, kind: row.template_id === 'authored' ? 'authored' : 'prepared',
-        ...payload, reports, passed: historical ? proof.passed === 1 : passing(row, proof), ...(historical ? { historical: true } : {}) };
+        ...payload, reports, summary: associated ? evidenceSummary({ reports }, originals.map(item => item.bytes.toString('utf8'))) : null,
+        passed: historical ? proof.passed === 1 : passing(row, proof), ...(historical ? { historical: true } : {}) };
     },
     history(owner, before, extensionId) {
       ownerView(owner);

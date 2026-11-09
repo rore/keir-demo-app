@@ -29,7 +29,11 @@ Relevant files include `data.test.mjs`, `api.test.mjs`, `session-race.test.mjs`,
 
 Provider configuration/setup tests use temporary synthetic credentials and settings. They cover local persistence, precedence, validation and fresh-conversation behavior without contacting providers. The allowance ledger preserves reservations across cancellation, reset and settings changes. Authoring boundary tests distinguish exact saved proof from latest evidence, exclude protected host authority, and retain exact current operation recovery after deletion. History pagination and continuity tests preserve older work without sending it automatically to a provider.
 
+`task-rule-description.test.mjs`, `task-follow-up-summary.test.mjs` and `task-rule-projection.test.mjs` cover checked-artifact descriptions, old/current JSON/YAML compatibility, aliases, elapsed offsets, unsupported constructs and exact read-only lifecycle associations. `evidence-summary.test.mjs` separates verification, availability and effect certainty; `rule-description-view.test.mjs` checks human wording without interpreting executable source.
+
 ## Browser checks
+
+`studio-business-understanding.spec.mjs` exercises an offline due-date conversation through clarification, the inline behavior/before-after/simulation brief, separate approval and activation, a real effect on isolated native task rows, reopening and an edit while the earlier version stays on. It asserts complete supported scope, conditional uncertainty, situation labels and decision order, and captures desktop, narrow and short layouts with retained unsent text. A second behavior checks an exact supplied name across reload. The provider transport is scripted; this does not establish live-model adherence. Parallel browser commands must use separate `--output` directories so traces and screenshots do not overwrite each other.
 
 From a checkout with the documented Node/npm runtime:
 

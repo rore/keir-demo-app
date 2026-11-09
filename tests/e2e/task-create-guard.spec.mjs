@@ -91,11 +91,11 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         await expect(studio.getByLabel('Customization status')).toContainText('Checks before adding');
         await expect(about).toContainText('Before a new task is saved.');
         await expect(about).toContainText('This rule can stop a new task from being added.');
-        await expect(about).toContainText('See the checked examples and exact saved rule for its requirements.');
+        await expect(about).toContainText('See the example tasks and exact rule for its requirements.');
         await about.getByRole('button', { name: 'View simulation', exact: true }).click();
         const review = studio.getByRole('article', { name: 'Current decision', exact: true });
         await expect(review.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
-        await expect(review).toContainText('Sample tasks only · no tasks are saved');
+        await expect(review).toContainText('Example tasks; your tasks are unchanged.');
         const example = id => review.getByRole('article', { name: `Example: New task example ${evidence.reports.findIndex(item => item.id === id) + 1}`, exact: true });
         await expect(example(`${rule}-matching-deny`)).toContainText(program.metadata.message);
         await expect(review.getByRole('heading', { name: `${rule}-matching-deny`, exact: true })).toHaveCount(0);
@@ -111,7 +111,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         await expect(use).toHaveCount(0);
         await review.getByRole('button', { name: 'Approve this change', exact: true }).click();
         await expect(use).toBeFocused();
-        await expect(review).toContainText('Approved · Still off');
+        await expect(review).toContainText('Approved · Not on yet');
         expect(selected()).toEqual(originalSelection);
         expect(afterEvents()).toEqual(originalEvents);
         expect(fixture.db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, checked.draft.id).evidence_id).toBe(checked.evidence.id);

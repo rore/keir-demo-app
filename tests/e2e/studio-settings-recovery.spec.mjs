@@ -110,7 +110,7 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     const oldConversationId = index.current.id;
     expect(index.current.status).toBe('AWAITING_USER');
 
-    await studio(page).getByRole('button', { name: 'History and details', exact: true }).click();
+    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
     await studio(page).getByText('Saved sample runs', { exact: true }).click();
     await studio(page).getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     await expect(studio(page).locator('.rs-preview')).toBeVisible();

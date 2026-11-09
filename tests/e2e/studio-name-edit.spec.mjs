@@ -36,7 +36,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       await expect(heading).toHaveAttribute('title', name);
       const geometry = await heading.evaluate(node => ({ height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight) }));
       expect(geometry.height).toBeLessThanOrEqual(geometry.line + 1);
-      await expect(ui.getByRole('button', { name: 'History and details', exact: true })).toBeInViewport({ ratio: 1 });
+      await expect(ui.getByRole('button', { name: 'More', exact: true })).toBeInViewport({ ratio: 1 });
+      await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).scrollIntoViewIfNeeded();
       await expect(ui.getByRole('button', { name: 'Back to Customizations', exact: true })).toBeInViewport({ ratio: 1 });
       await rename.click();
       const form = ui.getByRole('form', { name: 'Rename customization', exact: true }), input = form.getByLabel('Name', { exact: true });
@@ -72,7 +73,7 @@ test('a stale rename keeps typed text and refreshes the expected name before a f
   try {
     await page.setViewportSize({ width: 390, height: 844 });
     await openSaved(page, fixture, item.name);
-    const ui = studio(page), name = ui.getByRole('button', { name: 'Add name', exact: true });
+    const ui = studio(page), name = ui.getByRole('button', { name: 'Rename', exact: true });
     await expect(name).toBeInViewport({ ratio: 1 });
     await name.click();
     const form = ui.getByRole('form', { name: 'Rename customization', exact: true }), input = form.getByLabel('Name', { exact: true });
@@ -138,7 +139,7 @@ test('saved behavior illustrates task creation and checked examples keep authore
     fixture.db.prepare('UPDATE authoring_conversations SET state=? WHERE id=?').run(JSON.stringify(state), conversation.id);
     await page.goto(fixture.origin + '/#customization=' + id);
     const ui = studio(page), decision = ui.getByRole('article', { name: 'Current decision', exact: true });
-    const invitation = ui.getByRole('button', { name: 'View saved changes', exact: true }).first();
+    const invitation = ui.getByRole('button', { name: 'See proposed change', exact: true }).first();
     await openSavedChanges(page);
     await expect(ui.getByRole('article', { name: 'About this rule', exact: true })).toContainText(task.metadata.title);
     const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
@@ -148,10 +149,10 @@ test('saved behavior illustrates task creation and checked examples keep authore
     const example = proposed.getByRole('article', { name: `Example: Task completed in ${project.name}`, exact: true });
     await expect(example).toHaveCount(1);
     await expect(example.locator('dd').nth(2)).toContainText(task.metadata.title);
-    await expect(example.getByText('Matches', { exact: true })).toBeVisible();
+    await expect(example.getByText('Task created as intended', { exact: true })).toBeVisible();
     const exact = decision.getByLabel('Exact checked examples', { exact: true });
     await expect(exact).toBeHidden();
-    await decision.getByText('Exact saved change and checks', { exact: true }).click();
+    await decision.getByText('Technical details for this version', { exact: true }).click();
     await expect(exact).toContainText(saved.evidence.id);
     await decision.getByRole('button', { name: 'Hide simulation', exact: true }).click();
     await expect(invitation).toBeFocused();

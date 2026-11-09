@@ -389,7 +389,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       }
     });
     const reviewFor = (current, proof) => ({ ...current, evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest, eligible: proof.passed,
-      summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases) });
+      summary: Object.hasOwn(proof, 'summary') && !proof.summary ? null
+        : evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases, { presentation: false }) });
     const proofFor = handle => {
       authorize();
       if (!handle) {
@@ -438,8 +439,10 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           || !['createdTasks', 'updatedTasks'].every(key => item.report.observed[key] === null || Array.isArray(item.report.observed[key])))) return unavailable('APPROVED_PROOF_UNUSABLE');
         const source = lifecycle.source(ctx.owner, revision.id, ctx.extensionId);
         if (source.extensionId !== ctx.extensionId || source.revisionId !== revision.id || !Array.isArray(source.cases) || !source.cases.length) return unavailable('APPROVED_SOURCE_MISMATCH');
+        source.cases.forEach(text => JSON.parse(text));
+        if (Object.hasOwn(proof, 'summary') && !proof.summary) return unavailable('APPROVED_PROOF_UNAVAILABLE');
         result.checkedSummary = { scope: 'synthetic examples, not live task observations', evidenceId: proof.id,
-          ...evidenceSummary(proof, source.cases) };
+          ...evidenceSummary(proof, source.cases, { presentation: false }) };
         if (length(result) > 16384) { result.checkedSummary = null; return unavailable('CHECKED_SUMMARY_TOO_LARGE'); }
         return result;
       } catch { return unavailable('APPROVED_PROOF_UNAVAILABLE'); }
@@ -492,7 +495,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         const proof = lifecycle.evidence(ctx.owner, value.evidence.id, ctx.extensionId);
         if (proof.revisionId !== revisionId) stop('HOST_RESULT_INVALID');
         return { ...draftHandles(value), evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest,
-          summary: evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases) };
+          summary: Object.hasOwn(proof, 'summary') && !proof.summary ? null
+            : evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases, { presentation: false }) };
       }),
       readEvidence: () => proofFor(ctx.state.evidenceHandle),
     };

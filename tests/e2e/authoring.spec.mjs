@@ -133,7 +133,7 @@ async function prepareTask(page, demo) {
 
 async function openDetails(page) {
   const ui = studio(page);
-  await ui.getByRole('button', { name: 'History and details', exact: true }).click();
+  await ui.getByRole('button', { name: 'More', exact: true }).click();
   await expect(ui.locator('.rs-tools')).toHaveJSProperty('open', true);
 }
 
@@ -394,10 +394,10 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   const ui = studio(page);
   await expect(ui.getByText('Inspect the exact offered run.', { exact: true })).toBeVisible();
   const heading = ui.locator('.rs-chat-note');
-  await expect(heading).toContainText('Messages use your configured assistant');
+  await expect(heading).toContainText('Ask about this proposal or describe a change.');
   await expect(heading).not.toContainText(available.provider);
   await expect(heading).not.toContainText(available.model);
-  const offerButton = authoring(page).getByRole('button', { name: eligible ? 'View saved changes' : 'View earlier examples', exact: true }).first();
+  const offerButton = authoring(page).getByRole('button', { name: eligible ? 'See proposed change' : 'View earlier examples', exact: true }).first();
   await expect(offerButton).toBeInViewport();
   await expect(offerButton).toBeEnabled();
   if (width === 683) {
@@ -421,7 +421,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   expect((await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json()).approved).toBe(false);
   if (eligible) {
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
-    await ui.getByText('Exact saved change and checks', { exact: true }).click();
+    await ui.getByText('Technical details for this version', { exact: true }).click();
     const savedSource = ui.getByLabel('Saved source for approval', { exact: true });
     await expect(savedSource).toBeVisible(); expect(await savedSource.textContent()).toBe(source);
     await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
@@ -436,7 +436,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     await openSavedChanges(page);
     const currentDecision = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(currentDecision).toBeVisible();
-    await currentDecision.getByText('Exact saved change and checks', { exact: true }).click();
+    await currentDecision.getByText('Technical details for this version', { exact: true }).click();
     await expect(currentDecision).toContainText('Evidence: ' + latest.evidence.id);
     expect((await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json()).approvedEvidenceId).toBe(null);
   }

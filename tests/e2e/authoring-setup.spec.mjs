@@ -98,7 +98,7 @@ async function enterStudio(page, origin, user = 'Maya', beforeNew = () => {}) {
 async function openConfigure(page) {
   const ui = studio(page), configure = ui.getByRole('button', { name: 'Configure', exact: true });
   if (!await configure.isVisible()) {
-    await ui.getByRole('button', { name: 'History and details', exact: true }).click();
+    await ui.getByRole('button', { name: 'More', exact: true }).click();
     const tools = ui.locator('details.rs-tools');
     await expect(tools).toHaveJSProperty('open', true);
   }
@@ -414,12 +414,12 @@ test('a held old setup recovery read cannot overwrite a reopened successful save
     await next.getByRole('button', { name: 'Save settings', exact: true }).click();
     const saved = ui.getByRole('status').filter({ hasText: 'Settings saved. Send a message when you’re ready.' });
     await expect(saved).toBeVisible();
-    await expect(ui.locator('.rs-chat-note')).toContainText('Messages use your configured assistant');
+    await expect(ui.locator('.rs-chat-note')).toContainText('Ask about this proposal or describe a change.');
     const delivered = page.waitForResponse(response => new URL(response.url()).pathname === '/api/authoring/setup' && response.request().method() === 'GET');
     releaseRead(); await (await delivered).finished();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect(saved).toBeVisible();
-    await expect(ui.locator('.rs-chat-note')).toContainText('Messages use your configured assistant');
+    await expect(ui.locator('.rs-chat-note')).toContainText('Ask about this proposal or describe a change.');
     expect(calls.setupPosts).toHaveLength(2); expect(calls.turns).toHaveLength(0);
   } finally { releaseSave?.(); releaseRead?.(); }
 });

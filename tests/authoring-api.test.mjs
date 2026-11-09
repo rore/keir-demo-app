@@ -348,7 +348,10 @@ test('a missing companion at app startup leaves native tasks available and rejec
 
 for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs real pinned-JAR diagnostics, saves original cases and offers exact simulator evidence without approval`,
   { skip: !qualifiedJava && !process.env.CI }, async t => {
-    assert.ok(qualifiedJava, 'Qualified Java 21 is required in CI.');
+    assert.ok(qualifiedJava, 'Qualified Java 21 is required in CI. Probe: ' + JSON.stringify({
+      status: checkedJava.status, signal: checkedJava.signal, error: checkedJava.error?.code,
+      stdout: checkedJava.stdout?.slice(0, 2048), stderr: checkedJava.stderr?.slice(0, 2048),
+    }));
     const cases = taskCases().map(item => '\n ' + item.bytes.toString() + '\n');
     let compiledId, scenarioId, exactEvidenceId, latestEvidenceId, callApi, providers = 0;
     const fake = wire(provider, async (body, index) => {
@@ -754,7 +757,7 @@ test(`${provider} repairs ${defect} native scenario rejection without changing o
       saved = prior.result; assert.equal(saved.draftVersion, 2); assert.notEqual(saved.revisionId, compiled.revisionId);
       return { name: 'simulate_draft', arguments: { revisionId: saved.revisionId, expectedDraftVersion: 2 } };
     }
-    assert.equal(index, 4); assert.ok(prior.result.summary.statuses.every(status => status === 'PASS'));
+    assert.equal(index, 4); assert.ok(prior.result.summary.cases.every(row => row.status === 'PASS'));
     return { name: 'offer_review', arguments: { summary: 'Review the independently expected examples.' } };
   });
   ({ db, service, lifecycle } = direct(t, { config: configFor(provider), fetchImpl: fake.fetchImpl }));

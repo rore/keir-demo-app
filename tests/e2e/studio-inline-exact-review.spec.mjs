@@ -10,7 +10,7 @@ const review = page => studio(page).getByRole('article', { name: 'Current decisi
 const behavior = page => studio(page).getByRole('article', { name: 'About this rule', exact: true });
 const composer = page => studio(page).getByLabel('Message to Daymark assistant', { exact: true });
 const turnOn = page => review(page).getByRole('button', { name: 'Turn on for tasks completed', exact: true });
-const reviewLink = page => studio(page).getByRole('button', { name: /^(View saved changes|View latest changes)$/ }).first();
+const reviewLink = page => studio(page).getByRole('button', { name: /^(See proposed change|See current proposal)$/ }).first();
 const decisions = page => review(page).getByRole('button', {
   name: /^(Approve this change|Turn on for tasks completed)$/, disabled: false,
 });
@@ -54,14 +54,14 @@ async function openItem(page, id) {
 
 async function expectProof(page, id) {
   const proofId = review(page).getByText('Evidence: ' + id, { exact: true });
-  if (!await proofId.isVisible()) await review(page).getByText('Exact saved change and checks', { exact: true }).click();
+  if (!await proofId.isVisible()) await review(page).getByText('Technical details for this version', { exact: true }).click();
   await expect(proofId).toBeVisible();
 }
 
 async function expectIllustration(page, expectedTitle) {
-  await expect(behavior(page)).toContainText('About this rule');
+  await expect(behavior(page).getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
   await expect(behavior(page)).toContainText(`Create a task titled “${expectedTitle}”`);
-  await expect(behavior(page)).toContainText('A full summary isn’t available for this version.');
+  await expect(behavior(page)).not.toContainText('A full summary isn’t available for this version.');
   await expect(behavior(page)).not.toContainText('Completed example task');
 }
 
@@ -232,7 +232,7 @@ test('scrolling while a turn-off response is held leaves conversation focus in p
     await page.setViewportSize({ width: 390, height: 844 });
     await reviewLink(page).click();
     await expect(review(page).getByText('On for my tasks', { exact: true })).toBeVisible();
-    const log = studio(page).getByRole('log', { name: 'Studio conversation', exact: true });
+    const log = studio(page);
     const disable = studio(page).getByRole('button', { name: 'Turn off this customization', exact: true });
     const url = `${origin}/api/${path}/disable`;
     await expect(disable).toBeEnabled();
@@ -279,11 +279,23 @@ test('a confirmed project mismatch distinguishes the expected and actual project
       expected.projectId = 'unknown-expected-project';
       observed.projectId = 'unknown-observed-project';
       example.report.status = 'FAIL';
+      example.report.mismatches = [{ stage: 'CALLS', code: 'MISMATCH' }];
+      const facts = proof.summary.cases.find(item => item.id === example.id);
+      facts.status = 'FAIL'; facts.verification = 'mismatched'; facts.outcome = 'mismatch';
+      facts.expected.createdTasks = structuredClone(example.expected.createdTasks);
+      facts.actual.observed = structuredClone(example.report.observed);
+      facts.mismatches = structuredClone(example.report.mismatches);
+      proof.summary.statuses[0] = 'FAIL';
+      proof.summary.counts.verification.matched--; proof.summary.counts.verification.mismatched++;
+      proof.summary.counts.outcome.changed--; proof.summary.counts.outcome.mismatch++;
       proof.passed = false;
       await route.fulfill({ response, json: proof });
     }, { times: 1 });
 
     await reviewLink(page).click();
+    const disclosure = review(page).locator('.rs-case-disclosure').first();
+    if (!await disclosure.evaluate(element => element.open)) await disclosure.locator('summary').click();
+    await expect(disclosure).toHaveJSProperty('open', true);
     const outcomes = review(page).locator('dd');
     await expect(outcomes.filter({ hasText: /the expected example project/i })).toBeVisible();
     await expect(outcomes.filter({ hasText: /the different example project/i })).toBeVisible();

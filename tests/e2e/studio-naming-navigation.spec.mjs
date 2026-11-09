@@ -46,7 +46,10 @@ test('untitled items show their request and returning from sample history resets
     await navigate(page, 'Customizations');
     const cards = page.locator('.customization-card').filter({ hasText: 'Untitled customization' });
     await expect(cards).toHaveCount(1);
-    await expect(cards.locator('.customization-request')).toHaveText('Request: ' + firstRequest);
+    const discussion = cards.locator('details.customization-discussion');
+    await expect(discussion).toHaveCount(1);
+    await discussion.getByText('Discussion started with', { exact: true }).click();
+    await expect(discussion.locator('p')).toHaveText(firstRequest);
     await navigate(page, 'Tasks');
     const secondId = await createRequest(page, secondRequest);
     let saved = await api(page, `extensions/${secondId}/compile`, {
@@ -72,8 +75,9 @@ test('untitled items show their request and returning from sample history resets
     await collection.evaluate(node => { node.scrollTop = node.scrollHeight; });
     expect(await collection.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
     await page.locator(`#edit-${secondId}`).click();
-    await expect(studio(page).getByRole('button', { name: 'Add name', exact: true })).toBeInViewport({ ratio: 1 });
-    await studio(page).getByRole('button', { name: 'History and details', exact: true }).click();
+    await studio(page).getByRole('button', { name: 'Rename', exact: true }).scrollIntoViewIfNeeded();
+    await expect(studio(page).getByRole('button', { name: 'Rename', exact: true })).toBeInViewport({ ratio: 1 });
+    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
     const savedRuns = studio(page).getByText('Saved sample runs', { exact: true });
     await savedRuns.click();
     const openRun = studio(page).getByRole('button', { name: 'Open saved sample run 1', exact: true });
@@ -82,7 +86,7 @@ test('untitled items show their request and returning from sample history resets
     await results.locator('.rs-example-details summary').click();
     await expect(results.getByText(`Evidence: ${saved.evidence.id}`, { exact: true })).toBeVisible();
     await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();
-    await expect(studio(page).getByRole('button', { name: 'History and details', exact: true })).toBeFocused();
+    await expect(studio(page).getByRole('button', { name: 'More', exact: true })).toBeFocused();
 
     await studio(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
@@ -100,7 +104,7 @@ test('untitled items show their request and returning from sample history resets
     expect(routePosition.workspaceTop).toBeGreaterThanOrEqual(routePosition.workspaceBodyTop);
 
     await page.locator(`#edit-${secondId}`).click();
-    await studio(page).getByRole('button', { name: 'History and details', exact: true }).click();
+    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
     await studio(page).getByText('Saved sample runs', { exact: true }).click();
     await studio(page).getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     const restoredResults = studio(page).getByRole('article', { name: 'Sample results', exact: true });

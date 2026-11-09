@@ -105,7 +105,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         await decision.getByRole('button', { name: 'Check saved results again', exact: true }).click();
       }
       await expect(decision).toContainText(fixture.metadata.title);
-      await expect(decision).toContainText('Sample tasks only · your tasks have not changed');
+      await expect(decision).toContainText('Example tasks; your tasks are unchanged.');
       const prepared = await saved(page, newId), documents = await source(page, newId, prepared.draft.id);
       expect(prepared.draft.kind).toBe('authored'); expect(prepared.evidence.passed).toBe(true); expect(prepared.approved).toBe(false);
       expect(prepared.selection).toEqual(before.selection);
@@ -121,7 +121,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
       await expect(decision.getByRole('article', { name: /^Example:/ }).first()).toBeVisible();
       await expect(proposed.getByRole('article', { name: /^Example:/ }).nth(1)).toContainText('No change.');
-      await ui.getByText('Exact saved change and checks', { exact: true }).click();
+      await ui.getByText('Technical details for this version', { exact: true }).click();
       await expect(decision.getByLabel('Saved source for approval', { exact: true })).toHaveText(documents.source);
       for (let index = 0; index < documents.cases.length; index++)
         await expect(decision.getByLabel(`Saved example ${index + 1} for approval`, { exact: true })).toHaveText(documents.cases[index]);
@@ -162,6 +162,7 @@ test('an exact review without verified situation metadata keeps generic labels',
     await page.route(`**/api/extensions/${id}/evidence/${state.evidence.id}`, async route => {
       const response = await route.fetch(), proof = await response.json();
       for (const item of proof.reports) { delete item.report.scenario; delete item.report.observed; item.label = 'untrusted-case-label'; }
+      proof.summary = null;
       await route.fulfill({ status: 200, json: proof });
     });
     const ui = await openItem(page, id);
@@ -169,13 +170,16 @@ test('an exact review without verified situation metadata keeps generic labels',
     const decision = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(decision).toContainText('The exact saved change and its examples could not be confirmed');
     expect(await saved(page, id)).toEqual(state);
-    await ui.getByRole('button', { name: 'History and details', exact: true }).click();
+    await ui.getByRole('button', { name: 'More', exact: true }).click();
     const tools = ui.locator('.rs-tools');
     await tools.getByText('Saved sample runs', { exact: true }).click();
     await tools.getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     const earlier = ui.getByRole('article', { name: 'Sample results', exact: true });
     await expect(earlier.locator('.rs-example')).toHaveCount(1);
-    await expect(earlier.getByRole('article', { name: 'Example: Earlier saved example 1', exact: true })).toBeVisible();
+    const example = earlier.locator('.rs-example');
+    await expect(example).toHaveAccessibleName(/Earlier saved example 1$/);
+    await expect(example.locator('dd').first()).toHaveText('Earlier saved example 1');
+    await expect(example).not.toHaveAccessibleName(/untrusted-case-label/);
     await expect(earlier.locator('.rs-example')).not.toContainText('untrusted-case-label');
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     expect((await saved(page, id)).approved).toBe(false); expect(fixture.requests).toHaveLength(0);
@@ -225,26 +229,34 @@ test('ordinary examples retain independent task expectations and observed mismat
     const originals = cases.map(value => JSON.stringify(value, null, 2));
     const { id, state: prepared } = await createCandidate(page, fixture, { label: 'Independent task expectation', cases: originals });
     expect(prepared.evidence.passed).toBe(false);
+    const proof = await api(page, `${extPath(id)}/evidence/${prepared.evidence.id}`);
+    expect(proof.summary.cases[0].verification).toBe('mismatched');
+    expect(proof.reports[0].report.mismatches.length).toBeGreaterThan(0);
+    expect(proof.reports[0].expected.createdTasks).toEqual([]);
+    expect(proof.reports[0].report.observed.createdTasks[0].title).toBe(fixture.metadata.title);
+    expect((await source(page, id, prepared.draft.id)).cases).toEqual(originals);
     const ui = await openItem(page, id);
-    await ui.getByRole('button', { name: 'History and details', exact: true }).click();
+    await ui.getByRole('button', { name: 'More', exact: true }).click();
     const tools = ui.locator('.rs-tools');
     await tools.getByText('Saved sample runs', { exact: true }).click();
     await tools.getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     const first = ui.locator('.rs-example').first();
     await expect(first.locator('dd').nth(1)).toHaveText('No change.');
     await expect(first.locator('dd').nth(2)).toContainText(fixture.metadata.title);
-    await expect(first).toContainText('Needs correction');
+    await expect(first).toContainText('Different from what we wanted');
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     const edited = await api(page, `${extPath(id)}/compile`, { hookId: TASK_HOOK, source: fixture.metadata.source + '\n', label: 'A different saved proposal', draftVersion: prepared.draftVersion });
     await api(page, `${extPath(id)}/scenarios`, { ...input(edited), cases: fixture.metadata.cases });
-    await ui.getByRole('button', { name: 'History and details', exact: true }).click();
+    await ui.getByRole('button', { name: 'More', exact: true }).click();
     await ui.getByRole('button', { name: 'Reload saved state', exact: true }).click();
     await ui.getByText('Open a saved sample run by ID', { exact: true }).click();
     await ui.getByLabel('Evidence ID for this person', { exact: true }).fill(prepared.evidence.id);
     await ui.getByRole('button', { name: 'Open saved sample run', exact: true }).click();
     await expect(first.locator('dd').nth(1)).toHaveText('No change.');
     await expect(first.locator('dd').nth(2)).toContainText(fixture.metadata.title);
-    expect((await api(page, `${extPath(id)}/evidence/${prepared.evidence.id}`)).reports[0].expected.createdTasks).toEqual([]);
+    const historical = await api(page, `${extPath(id)}/evidence/${prepared.evidence.id}`);
+    expect(historical.reports[0].expected.createdTasks).toEqual([]);
+    expect(historical.reports).toEqual(proof.reports);
     expect((await saved(page, id)).approved).toBe(false); expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });

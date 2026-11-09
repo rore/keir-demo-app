@@ -51,7 +51,7 @@ async function openActive(page) {
 }
 async function openProof(page, id) {
   const ui = studio(page);
-  await ui.getByRole('button', { name: 'History and details', exact: true }).click();
+  await ui.getByRole('button', { name: 'More', exact: true }).click();
   const lookup = ui.getByText('Open a saved sample run by ID', { exact: true });
   if (!await lookup.evaluate(node => node.parentElement.open)) await lookup.click();
   await ui.getByLabel('Evidence ID for this person', { exact: true }).fill(id);
@@ -79,14 +79,14 @@ test('active behavior uses its approved proof and a failed reread cannot show ca
     expect(summary.match(/No change\./g)).toHaveLength(1);
     expect(reads.at(-1)).toBe(active.approvedEvidenceId);
     expect(await api(page, path)).toEqual(state);
-    await activeView(page).getByRole('button', { name: 'Continue saved changes', exact: true }).click();
+    await activeView(page).getByRole('button', { name: 'Return to proposal', exact: true }).click();
     const beforeReview = reads.length;
     await openSavedChanges(page);
     const decision = studio(page).getByRole('article', { name: 'Current decision', exact: true });
     await expect(decision.getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
     const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
     await expect(proposed.getByRole('article', { name: /^Example:/ })).toHaveCount(6);
-    await expect(decision).toContainText('Sample tasks only · your tasks have not changed');
+    await expect(decision).toContainText('Example tasks; your tasks are unchanged.');
     await expect(proposed.getByRole('article', { name: `Example: Task completed in ${fixture.metadata.projectName}`, exact: true })).toBeVisible();
     await expect(proposed.getByRole('article', { name: /^Example:/ }).first()).toContainText(draftTitle);
     expect(reads.slice(beforeReview)).toContain(draftProof);
@@ -182,7 +182,7 @@ test('an earlier revision, approved current run and newer current run retain dis
   try {
     const { path, active, state, draftProof } = await seed(page, fixture);
     const ui = studio(page);
-    await ui.getByRole('button', { name: 'History and details', exact: true }).click();
+    await ui.getByRole('button', { name: 'More', exact: true }).click();
     const history = ui.getByText('Saved sample runs', { exact: true });
     await history.click();
     const entries = history.locator('..').locator('ol > li');
@@ -222,6 +222,8 @@ test('case display uses scenario facts and observed results despite misleading a
       for (const [index, report] of proof.reports.entries()) {
         report.id = `completed-in-fabricated-project-${index}`;
         report.label = 'No task was created in the fabricated project';
+        proof.summary.cases[index].id = report.id;
+        proof.summary.cases[index].label = report.label;
       }
       await route.fulfill({ status: 200, json: proof });
     });
@@ -241,9 +243,9 @@ test('case display uses scenario facts and observed results despite misleading a
     await expect(missing).not.toContainText('fabricated project');
     const denied = decision.getByRole('article', { name: 'Example: The task could not be checked because access was denied.', exact: true });
     await expect(denied).toContainText('No change.');
-    const unavailable = decision.getByRole('article', { name: 'Example: The task was temporarily unavailable.', exact: true });
+    const unavailable = decision.getByRole('article', { name: 'Example: Task details temporarily unavailable', exact: true });
     await expect(unavailable).toContainText('No change.');
-    const unfinished = decision.getByRole('article', { name: 'Example: Task is still unfinished', exact: true });
+    const unfinished = decision.getByRole('article', { name: 'Example: This task isn’t completed', exact: true });
     await expect(unfinished).toContainText('No change.');
     expect(await api(page, path)).toEqual(state);
     expect(await api(page, path + '/evidence/' + draftProof)).toEqual(original);

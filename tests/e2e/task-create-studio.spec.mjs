@@ -119,7 +119,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await composer(page).fill('Keep this unsent correction.');
     await studio(page).locator('#studio-view-saved').click();
     await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
-    await expect(review(page)).toContainText('Sample tasks only · no tasks are saved');
+    await expect(review(page)).toContainText('Example tasks; your tasks are unchanged.');
     const examples = review(page).getByRole('article', { name: /^Example:/ });
     await expect(examples).toHaveCount(4);
     await expect(examples.nth(0)).toContainText('Allowed by this rule');
@@ -130,6 +130,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(examples.nth(3)).toContainText('Handled as expected');
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await expect(studio(page).locator('.rs-setup-notice')).toBeVisible();
+    await composer(page).scrollIntoViewIfNeeded();
     await expect(composer(page)).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await examples.nth(1).evaluate(node => node.scrollIntoView({ block: 'start' }));
@@ -189,10 +190,10 @@ test('a delayed approval preserves short-screen reading, unread reply and compos
   const held = mock.holdApproval();
   await review(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
   await held.entered.promise;
-  const log = studio(page).getByRole('log', { name: 'Studio conversation', exact: true });
+  const log = studio(page);
   try {
-    await log.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
     await composer(page).fill('Keep the newer unsent correction.');
+    await log.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
   } finally { held.release.resolve(); }
   await expect(studio(page).getByRole('button', { name: 'New messages ↓', exact: true })).toBeVisible();
   expect(await log.evaluate(node => node.scrollTop)).toBe(0);

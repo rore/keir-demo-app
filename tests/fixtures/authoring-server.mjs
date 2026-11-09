@@ -7,9 +7,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { acquireDataLock, openData, taskService } from '../../src/data.mjs';
 import { createApp } from '../../src/app.mjs';
 import { createCompiler } from '../../src/compiler.mjs';
-import { TASK_HOOK } from '../../src/extension-catalog.mjs';
+import { loadHost, TASK_HOOK } from '../../src/extension-catalog.mjs';
 import { readAuthoringConfig } from '../../src/authoring-config.mjs';
 import { taskCustomizationFixture } from './task-customization.mjs';
+import { taskWorkflowCases, taskWorkflowSource } from './task-workflow-source.mjs';
 
 const mismatchText = 'The other-project example tried to create a task when none was expected. Its outcome could not be confirmed. This did not pass. Keep the original expectations and explicitly ask to correct this change here.';
 
@@ -44,7 +45,9 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch, resum
     const projects = discovery?.projects?.projects;
     const project = projects?.find(project => project.id === metadata.projectId);
     if (projects) assert.ok(project, 'The requested customer project must be discovered; never substitute the first project.');
-    const journey = project ? taskCustomizationFixture({ projectId: project.id, title: metadata.title,
+    const editing = metadata.missingDue && discovery?.conversationContext.messages.at(-1)?.text === metadata.editRequest;
+    const journey = metadata.missingDue ? { ...metadata, ...(editing && { source: metadata.editedSource, cases: metadata.editedCases }) }
+      : project ? taskCustomizationFixture({ projectId: project.id, title: metadata.title,
       otherProjectId: metadata.otherProjectId }) : metadata;
     const { source, cases, wrongSource, projectId } = journey.metadata ?? journey;
     let name, args, text;
@@ -77,7 +80,7 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch, resum
         const currentText = messages.at(-1).text;
         assert.equal(providerText === currentText ? providerText : JSON.parse(providerText).currentUserMessage, currentText);
         if (/^(?:confirmed|yes)\b/i.test(messages.at(-1).text)) {
-          name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
+          name = 'compile_draft'; args = { hookId: metadata.hookId ?? TASK_HOOK, sourceJson: metadata.missingDue ? source : '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
         } else if (resumeRequest && currentText === resumeRequest) {
           assert.equal(discovered.currentProposal.source, source);
           assert.deepEqual(discovered.currentProposal.cases, cases);
@@ -107,7 +110,7 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch, resum
         assert.equal(nonmatch.status, wrong ? 'FAIL' : 'PASS');
         assert.equal(nonmatch.mismatches.length > 0, wrong);
         name = 'offer_review'; args = { summary: wrong ? mismatchText : offerText };
-      } else { name = 'offer_review'; args = { summary: offerText }; }
+      } else { name = 'offer_review'; args = { summary: editing ? metadata.editedOfferText : offerText }; }
     } else throw new Error('The synthetic fixture supports one review journey per explicit turn.');
     const id = 'synthetic-call-' + (history.calls.length + 1);
     requests.push(Object.freeze({ callId: id, name: name ?? 'text' }));
@@ -130,13 +133,13 @@ async function unusedLoopbackPort() {
 }
 
 // Synthetic offline transport only; app, compiler, lifecycle and simulator are real.
-export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, resumeRequest, projectName, title = 'Review completed work', staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
+export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, missingDue = false, resumeRequest, projectName, title = 'Review completed work', staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
   const config = readAuthoringConfig(unconfigured ? {} : { KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     // Ten offline OpenAI reservations total 3.19488 USD across the mismatch and explicit same-discussion repair.
-    KEIR_AI_MAX_USD: semanticMismatch ? '3.2' : '3', OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
+    KEIR_AI_MAX_USD: missingDue ? '6' : semanticMismatch ? '3.2' : '3', OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
   assert.equal(config.status, unconfigured ? 'unavailable' : 'ready');
   const prefix = join(resolve(tmpdir()), 'keir-authoring-offline-');
   const directory = await mkdtemp(prefix), origin = `http://127.0.0.1:${port}`, requests = [];
@@ -160,15 +163,26 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
     db = openData(join(directory, 'app.sqlite'));
     const native = taskService(db), project = projectName ? native.createProject('maya', { name: projectName }) : native.listProjects('maya')[0];
     const other = native.createProject('maya', { name: 'Other project' });
-    const task = taskCustomizationFixture({ projectId: project.id, otherProjectId: other.id, title });
-    const question = `Should completing a task in ${project.name} create ${task.metadata.title}, while other projects create nothing?`;
-    const offerText = `I checked ${task.cases.length} example tasks. A completed task in ${project.name} creates ${task.metadata.title}; other projects create nothing. Your tasks have not changed. Review the saved changes when you are ready.`;
+    const host = missingDue ? loadHost('TaskCreated') : null;
+    const options = { projectId: project.id, destinationProjectId: other.id, occurredAt: '2026-12-31T16:00:00.417Z' };
+    const source = missingDue ? taskWorkflowSource(host, 'missing-due', options).toString() : null;
+    const cases = missingDue ? taskWorkflowCases(host, 'missing-due', options) : null;
+    const task = missingDue ? { cases, metadata: { synthetic: true, offline: true, missingDue, hookId: 'TaskCreated', projectId: project.id, otherProjectId: other.id, title,
+      source, cases, editedSource: taskWorkflowSource(host, 'missing-due', { ...options, elapsedSeconds: 432000 }).toString(),
+      editedCases: taskWorkflowCases(host, 'missing-due', { ...options, elapsedSeconds: 432000 }),
+      editRequest: 'Confirmed: change the delay to 120 hours after addition, for tasks without a due date in every project.',
+      editedOfferText: 'I checked the revised delay of 120 hours. The earlier version is still on. Your tasks have not changed.' } }
+      : taskCustomizationFixture({ projectId: project.id, otherProjectId: other.id, title });
+    const question = missingDue ? 'Should every new task without a due date get one 168 hours after addition, in every project?'
+      : `Should completing a task in ${project.name} create ${task.metadata.title}, while other projects create nothing?`;
+    const offerText = missingDue ? 'I checked four examples: two missing dates, an existing date and an unavailable task read. Your tasks have not changed.'
+      : `I checked ${task.cases.length} example tasks. A completed task in ${project.name} creates ${task.metadata.title}; other projects create nothing. Your tasks have not changed. Review the saved changes when you are ready.`;
     const metadata = Object.freeze({ ...task.metadata, provider, question, offerText, mismatchText, projectName: project.name,
       otherProjectName: other.name, cases: Object.freeze(task.cases),
       explanation: resumeRequest ? 'The matching example created the follow-up task. The example from another project produced no task.' :
         'Your saved changes are kept. Review them when you are ready, or continue discussing the request.',
       resumedOffer: 'The earlier check passed and the change is ready to turn on.' });
-    assert.notEqual(metadata.wrongSource, metadata.source, 'The semantic mismatch variant must change compiled behavior.');
+    if (!missingDue) assert.notEqual(metadata.wrongSource, metadata.source, 'The semantic mismatch variant must change compiled behavior.');
     const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
     app = await createApp({ db, origin, staticRoot: resolve(staticRoot), compiler,
       authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest) } });

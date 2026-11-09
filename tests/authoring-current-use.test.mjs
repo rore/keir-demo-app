@@ -118,8 +118,8 @@ test('discovery separates exact checked active v1 from a different customer task
   assert.match(context.businessContext.navigation, /Inspect saved source and examples.*not a comparison screen/);
   assert.match(context.businessContext.checking, /example tasks.*your tasks have not changed/);
   assert.match(requests[0].instructions, /After an example check, describe what would happen in that example and say “Your real tasks have not changed”/);
-  for (const label of ['View saved changes', 'About this rule', 'View simulation', 'Show example checks',
-      'Hide simulation', 'View latest changes', 'Back to conversation',
+  for (const label of ['See proposed change', 'About this rule', 'View simulation', 'Show example checks',
+      'Hide simulation', 'See current proposal', 'Back to conversation',
       'Approve this change', 'Turn on for tasks added', 'Turn on for tasks completed']) assert.ok(context.businessContext.navigation.includes(label));
   assert.match(context.businessContext.navigation, /do not open or replace.*automatically|never open or replace.*automatically/);
   for (const guidance of [context.businessContext.navigation, requests[0].instructions]) {
@@ -180,6 +180,16 @@ for (const [name, transform, reason] of [
   assert.equal(context.currentUse.checkedSummary, null);
   assert.equal(context.currentUse.unavailableReason, reason);
   assert.deepEqual(reads, [['evidence', 'maya', 'approved-proof', f.extensionId]]);
+});
+
+test('a host-declared unavailable summary never rebuilds checked active behavior from raw reports', async t => {
+  const f = fixture(t);
+  const { context } = await discover(t, f, { selection: id => selected(id), evidence: () => ({ ...proof(), summary: null }),
+    source: (_owner, _revision, id) => selectedSource(id) });
+  assert.equal(context.currentUse.selected.revisionId, 'selected-v1');
+  assert.equal(context.currentUse.selected.approvedEvidenceId, 'approved-proof');
+  assert.equal(context.currentUse.checkedSummary, null);
+  assert.equal(context.currentUse.unavailableReason, 'APPROVED_PROOF_UNAVAILABLE');
 });
 
 for (const [name, source, reason] of [

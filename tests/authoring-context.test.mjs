@@ -228,7 +228,8 @@ test('agent discovery sends static supported context and worked source/scenario 
   assert.equal(requests.length, 2);
   assert.match(requests[0].instructions, /plain text, without Markdown, tool names, UUIDs/);
   assert.match(requests[0].instructions, /two or three concise sentences/);
-  assert.match(requests[0].instructions, /Name this customization \(Add name on narrow screens\) for an untitled customization, or Rename for a named one/);
+  assert.match(requests[0].instructions, /Rename for any saved name, including a deliberately chosen literal default/);
+  assert.match(requests[0].instructions, /Never infer name origin from its spelling/);
   assert.match(requests[0].instructions, /Naming is optional and the person saves it explicitly/);
   assert.match(requests[0].instructions, /Turn off this customization \(Turn off on narrow screens\) is in the customization status strip/);
   assert.match(requests[0].instructions, /Authoring tools do not rename it/);
