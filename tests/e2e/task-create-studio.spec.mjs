@@ -128,6 +128,8 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(behavior).not.toContainText('arbitraryExpressionThatMustNotBecomeASummary');
     await composer(page).fill('Keep this unsent correction.');
     await studio(page).locator('#studio-view-saved').click();
+    await expect(studio(page).getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
+    await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
     await expect(review(page)).toContainText('Example tasks; your tasks are unchanged.');
     const examples = review(page).getByRole('article', { name: /^Example:/ });
