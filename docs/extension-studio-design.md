@@ -1,256 +1,64 @@
-# Extension Studio: conversation and canvas
+# Customization Studio: understand a change through conversation
 
-## Product direction
+## Current direction
 
-Daymark is a task app with customization as a normal workspace destination. Use the stacked host identity **Daymark** with **A KEIR Demo** immediately below it. A person can open **Customizations** to see their saved setups, start a new change, or return to review and manage an existing one.
+The conversation is the workspace. Application-owned explanations, task previews and example results appear inside it when they help the person understand a decision. Do not restore the old split canvas, a permanent decision dashboard, or a technical workflow toolbar.
 
-**Product direction.** A business user develops a customization through an agent that carries the application context and guides the process in everyday language. The earlier single-item interaction and [guided-example proposal](studio-guided-example.md) are historical. The working design below defines how a person creates and keeps distinct customizations.
+This specification supersedes the [preserved canvas-era design](historical/extension-studio-canvas-design.md). The [old scripted prototype](extension-studio/README.md) is historical; its files and tests remain intact. Earlier visual passes establish only their recorded scope, not acceptance of the whole experience.
 
-## Interaction requirements after the reset
+The current comparison is the [business-understanding design study](studio-business-understanding/concepts.md), with [results and recommendation](studio-business-understanding/recommendation.md). **A is selected: one decision brief inside the conversation**, after ordinary conversation develops the idea. Ordinary question-led clarification comes beforehand. B is retained only as a historical comparison, not an extra production flow. Two proxy readers understood the semantics but preferred different layouts; the user subsequently selected A. This is a design choice, not a measured usability win. Neither alternative is production implementation yet.
 
-- The customer describes what they want, answers necessary business questions and judges concrete outcomes. The agent knows the scoped application context, available capabilities and process; it explains what is possible and what to do next. Do not ask the customer to operate discovery, compilation or simulation tools.
-- Keep one ordinary conversation and a contextual canvas. The canvas shows a recognizable application object, a proposed effect or a useful example when needed. It supports the conversation; it is not a permanent results dashboard or a second workflow to manage.
-- Explain checking in everyday language: “Let's try a few examples without changing your tasks, to check this does what you want.” Introduce each relevant situation and explain why it matters. Ask about expected outcomes where intent is unclear, then compare them with actual observations. Cover when the customization should act and when it should do nothing; never silently change expectations to make a check pass.
-- The agent handles authoring, bounded repair and check orchestration. No Start/Try/Review carousel, technical stage navigation or toolbar of pipeline operations. Failures and mismatches lead to a brief explanation and a meaningful choice, not an unexplained technical status.
-- Summarize the exact checked behavior for explicit human approval and a separate decision to turn it on. Keep these protections without requiring customers to learn revisions, artifacts or evidence identifiers. A changed proposal requires the applicable renewed review.
-- Apply the same interaction to live AI and one clearly labeled scripted example. Do not ask for secrets in chat or imply that scripted replies are generated. Preserve existing customizations and unsaved work. Unsupported actions remain honestly unavailable; illustrative task creation is not implemented native execution.
+## What the person is doing
 
-Keep the [customer assistant guidance](https://github.com/rore/keir-core/blob/main/docs/agents/extension-assistant.md) aligned with the implemented conversation and tool behavior.
+A person describes a change to how Daymark handles their work. The assistant discovers supported capabilities, resolves missing intent, prepares the proposal and checks agreed examples. The person does not operate a compiler, select evidence identifiers, or manage a save pipeline.
 
-## Working design for creating and editing extensions
+A customization is a named behavior with its own continuing conversation. Its proposed behavior, simulation and version currently in use are distinct. Keep that distinction visible in ordinary language, without requiring knowledge of revisions or storage.
 
-This is the target for the next application slice. The user-facing name is **Customizations**. Each saved customization belongs to one person and has its own conversation, proposed changes, checked examples and history. Maya can create B while A is in use, leave, and open either by name. A customization keeps its identity when its wording, draft or active version changes. Two items can have similar names.
+- **Conversation:** ask questions, clarify intent, return to earlier messages. Opening it sends no new request.
+- **Proposed change:** the exact behavior being considered. Show trigger, all known conditions, effect and what remains unchanged.
+- **Simulation:** example tasks showing intended and observed outcomes. Explain “Example tasks; your tasks are unchanged.” They do not change the person's tasks or establish untested behavior.
+- **Approved, not on yet:** the person agreed to the checked proposal; actual use has not changed.
+- **On:** the exact selected behavior is in use for the named trigger. Later edits do not replace it automatically.
+- **Earlier versions:** secondary inspection for understanding changes or starting a new proposal from eligible earlier work. Reading an earlier version changes nothing.
 
-Opening a saved customization shows its conversation by default. **Load earlier messages** continues through that item's history. The same composer stays available when the assistant needs a fresh internal run for a draft, model or settings change. Opening the item makes no assistant request. Earlier messages and checked examples remain readable. Approval and turning on a change still require the exact current proposal and its checked evidence.
+Do not offer a main action called Save history or ask the person to decide what an internal saved run means. Confirmed progress is kept automatically. Unknown results must use truthful recovery wording, never an invented saved indicator. Keep unsent messages as unsent drafts.
 
-### Where Maya starts
+## Explain before asking for approval
 
-| Surface | What Maya sees | What her action means |
-| --- | --- | --- |
-| **Customizations** | A heading, **New customization**, then one row per saved item. Each row has a recognizable name and one line about its current state, such as *In use*, *Draft*, or *In use · Changes in progress*. Empty copy: “Your customizations will appear here.” | **New customization** always opens a blank conversation. Selecting a row opens only that item. While loading, show “Loading your customizations…”. If loading fails, offer **Try again**. An unsuccessful read cannot establish an empty collection. |
-| **New customization** | A slim header with **Back to customizations**, the question “What would you like to change about your work?”, and a focused message field. At most one secondary **Try a guided example**. | Opening, typing and leaving an untouched start never adds an item or calls the assistant. The first accepted request creates one owner-scoped item and conversation. Give it a short name grounded in the request, with a neutral fallback. Subsequent turns and retries stay with it. A blank start must never hydrate the last chat. |
-| **A saved customization** | The item’s name identifies the conversation. One state line distinguishes current use, saved changes and uncertainty. A quiet **History and details** entry in Studio holds earlier checks, approvals and changes in use. | **Open** enters the item; **Continue changes** resumes its exact saved draft and discussion when changes exist. Opening either view is read-only. Editing or approving A leaves the active version working until Maya turns on the exact reviewed change. Delete remains secondary, with its own explicit confirmation. |
-| **A checked proposal** | The latest exchange summarizes the behavior, affected person and where it will appear. **View saved changes** opens **Your saved changes** in the optional canvas, combining behavior, checked examples and the current-use consequence. | Maya can correct the request in chat or deliberately review and **Approve this change** in the canvas. Approval belongs only to the checked item, draft and evidence. Once approved, show the separate **Turn on for my tasks** or **Switch to this customization** decision. Older examples open as history with no activation control for a different or stale draft. |
+Use **Summary** for the proposed behavior and **Simulation** for its example outcomes. Explain the latter as “Example tasks; your tasks are unchanged.” Describe outcomes in task language: “Due date added as intended,” “Existing date kept,” or “No change when details were unavailable—as intended.” Do not label the customer surface “checked examples” or lead with “matches” and pass totals. Keep independent “What we wanted” and “What happened” details accessible. “Could not finish the simulation,” “Different from what we wanted,” “Could not confirm whether the task changed,” and “Not covered by this simulation” describe different states and must not be collapsed into success.
 
-Keep the existing Daymark shell, readable transcript and resizable desktop divider. Keep the status and **View saved changes** compact; the full review belongs in the contextual canvas. With the canvas closed, the conversation must answer “What happens next?” on its own. On a phone, opening review takes the available workspace and **Back to conversation** restores the invoking turn and focus. Entering Studio from a task carries its saved context and a return destination. Preserve unsaved task fields through the round trip.
+Lead with what will happen in recognizable task language. A description is derived from the exact source and verified bindings, not a remembered chat message, generated name, or a handful of passing examples. Unknown conditions remain unknown; they cannot be omitted to make a confident sentence.
 
-Name a collection row for the person’s goal, for example *Flag unfinished work*. Put what runs today before pending work: “In use · Changes in progress” means an earlier version still runs. “Approved · Ready to turn on” means the reviewed change is saved and awaits a decision. “Off” keeps a previously used item available to open again. When current behavior cannot be verified, say “Couldn’t check what’s in use” and offer a read-only retry. Names and badges never identify the backing item.
+Show one concrete before/after task before detailed results. Preserve the actual rule's time meaning, trigger and read-time conditions. Explain whether the value is based on the event time, current time, calendar date or elapsed duration; these are not interchangeable. Use ordinary dates in the preview, and put precise time-zone or daylight-saving explanation beside it when material.
 
-### What belongs in the conversation, and when a sample opens
+Then distinguish changes as intended, intentional no-changes, an intentionally simulated problem handled as intended, a wrong outcome, an unfinished check and situations not checked. A match total alone is not a decision explanation. Name the simulated problem and actual observed result; do not pair a generic failure headline with an unexplained passing badge.
 
-Maya should be able to finish in the conversation. Studio asks about her work, explains what it tried, and leaves the one decision that needs her. A sample is something Studio shows her to answer a specific question. Its title should make sense when spoken aloud, for example **What a completed task would show**. The customer need not learn the term “canvas”.
+Keep independent expected results inspectable. A mismatch shows what was wanted and what happened, with a clear correction path. Never rewrite expectations to make a check pass. Approval remains unavailable when required evidence is absent, stale, mismatched or untrustworthy. A known limitation is not silently converted into either success or total failure.
 
-| Moment | What happens in the conversation | What happens to the sample |
-| --- | --- | --- |
-| Understanding the request | Ask only for the missing business choice. If Maya already supplied it, carry it forward. She can type a correction at any time. | Start closed. Knowing the current task or starting a check is no reason to open a panel. |
-| Explaining a result | Use a single reply. For example, “I tried a completed task because you wanted its advice to stay ‘Done’. It showed ‘Pending’. I’ll correct that and try the same example again.” A compact task excerpt can sit beneath this sentence. | If seeing the task would help, offer **Show the completed example** on that reply. Clicking it, or explicitly asking “Show me that task,” opens that exact saved example. Show task status, wanted advice and observed advice. Other cases are a secondary list inside this same view. No decision to approve a failing or unknown result. |
-| Deciding on checked behavior | After a verified match, summarize scope and consequence briefly and offer **View saved changes**. Maya can keep chatting, correct the request or review later. | **Your saved changes** combines checked behavior, a representative example, the other checked examples and the current-use consequence. Keep exact details expandable. Show **Approve this change** only when the exact proposal and its saved evidence are eligible and available. Looking at examples never approves anything. |
-| Putting it into use | After confirmed activation, show a concise confirmed status and a task return action. The composer remains usable for the next request. | After confirmed approval, offer the separate **Switch to this customization** when another item is active, otherwise **Turn on for my tasks**. Approval alone leaves current use unchanged. Earlier or stale evidence remains readable without authorizing a current decision. |
+## Decisions and authority
 
-**One route back.** On a wide screen the canvas sits beside the conversation with a draggable divider. On a phone it takes the workspace with **Back to conversation**. Closing restores the invoking turn, focus, scroll position and any unsent text. New messages, reruns and delayed results never open or replace the canvas automatically. An older view stays readable with **View latest changes** to deliberately open the current review. Changing owner or customization clears the previous item's canvas.
+“Approve this change” records agreement to the exact proposal and its checked evidence. Explain that it does not turn the change on. After approval, offer a separate “Turn on” action. Before replacing an existing selection, name the behavior that will stop and the one that will start. Other triggers keep their current selections.
 
-**One review surface.** Examples and the exact current decision share the same canvas rather than sending Maya between separate sample and approval surfaces. Remove the persistent decision and completion slabs from the conversation. The explicit approval button records the exact decision; turning it on remains a separate action. Keep history and technical inspection secondary. A user opening an ordinary sample should see the task before any report header, tabs, identifiers or explanatory boilerplate.
+Report confirmed activation separately from a submitted request. Unknown completion is not success; use the existing explicit readback/recovery operation. A changed proposal requires the applicable renewed checks and approval. The assistant cannot approve or activate for the person.
 
-### From a request to a decision
+When the person asks a follow-up, keep the composer, reading position and unsent text. A late reply offers new information without replacing the example being read. Earlier evidence stays tied to its original proposal and is visibly read-only when it cannot support the current decision.
 
-- **Discover the intent.** If Maya says “Help me notice work that needs attention,” use the available app context and ask the one question that changes the behavior, for example “What makes a task need attention for you?” The assistant discovers what this host can actually do. Only after Maya asks about checking an unfinished task should Studio explain where task advice appears. A guided example is labeled as scripted, keeps personal text separate, and never borrows or overwrites an unrelated saved item.
-- **Explain a limit where it matters.** For “Create a review task when I finish the packaging sketches,” say “Daymark can’t create a follow-up task from here yet.” If relevant, offer “I can change the advice you see when you check a task. Would that help?” Wait for her answer. An unsupported request can remain a conversation with no executable proposal, approval or activation.
-- **Check the behavior.** Use Maya’s answer to state what should happen *before* checking. For example, “I’ll try an unfinished task and a completed one. You asked for ‘Needs attention’ on the unfinished one and ‘Done’ on the completed one.” If the completed sample shows Pending, name the disagreement and retain the original expectation through repair. Only confirmed observations support approval. Show technical details on demand.
-- **Explain the one-active limitation at the decision.** Multiple saved customizations can use task advice. Only one can supply that advice for a person at a time. When B is ready and A is in use, name both before activation: “Use ‘Flag unfinished work’ for task advice? ‘My usual advice’ will turn off and stay saved.” Primary action **Switch to this customization**. Leaving keeps A in use and B approved. For an edit of A, say “Turn on these changes to ‘My usual advice’?” Once confirmed, show which item is on and a direct route to see its effect. No implicit activation on Send, approval or return.
-- **Avoid replacing work by surprise.** A second tab may have changed this item or which advice is on. Withhold the stale action, preserve Maya’s unsent text, read the latest state and say what changed. If the item that would be turned off has changed, name it and obtain a fresh explicit switch decision. An old confirmation never authorizes a new replacement.
-- **Edit when there are already saved changes.** Open A by identity and show the two behaviors. For example, “In use: unfinished tasks show ‘Pending’. Your saved changes would show ‘Needs attention’.” **Continue saved changes** reopens that draft and its conversation. **View what’s in use** opens the active version read-only. Neither choice creates or replaces a draft. For a separate idea, **New customization** remains available in the collection. This design needs one editable draft per item.
-- **Start from the version in use.** In the active view, **Start changes from this version** explains the consequence: “You’ll start with ‘Pending’. Your unfinished ‘Needs attention’ changes and their discussion will stay in History. Your tasks will keep using ‘Pending’.” Offer **Start from this version** and **Cancel**. On confirmation, verify the owner and item, the displayed active revision and selection generation, and the expected draft version together. Only a match creates the new editable draft from the active version within A. Keep the previous draft, its discussion and its checked examples readable in History. The new draft needs its own checks and approval. Cancel or a stale confirmation writes nothing.
+## Collection and returning to work
 
-### Typing, leaving and coming back
+Customizations lists recognizable goals, current use and work in progress. Preserve explicit names. If there is no explicit name, a suggested name may describe verified current behavior; until then, describe current intent as a discussion. An exploratory first question must not become the permanent identity of a completed proposal.
 
-**Enter** sends one nonblank message from the composer. **Shift+Enter** inserts a newline. During input-method composition, Enter commits the character or candidate without sending the message. Keep a labeled **Send** button for touch and keyboard use. Repeated keys, a slow response or a double-click cannot submit a second turn. Keep unsent text when sending is temporarily unavailable. In the guided example, hide the personal composer and its setup prompt, then restore its text on return.
+Opening an item restores its own discussion. Use “See proposed change,” “What is on now,” and “Earlier versions” only when those destinations exist and have a clear purpose. Keep earlier conversations and version history distinguishable: one explains the discussion; the other explains what behavior changed. Restoring eligible earlier work makes a new proposal and must disclose the effect on current use before an action.
 
-On reload, reopen the named saved item and reconcile accepted messages, draft, checked evidence, approval and active choice from the server. Reloading a blank start stays blank. If the first send loses its response, check whether that request already created an item before offering retry. If the outcome is still unknown, say so and keep the same request identity. Never create a second item, repeat a paid turn or activate by replaying it. If the assistant stops after saving partial work, show what is actually saved and offer **Continue from saved work** only when it can safely continue. If another item is explicitly requested but unavailable, return to the collection with an explanation. Never substitute the owner’s most recent conversation.
+Owner switches never expose another person's messages, draft or late result. Back navigation restores the invoking task or collection control and any retained native task draft. No navigation action silently resends a message or repeats a mutation.
 
-A person switch clears the visible item, transcript, canvas, task context and pending decisions before loading the next person. Late responses cannot repopulate the new view. Returning to the original person loads only their saved work. Earlier single-item data must remain accessible to its original owner, with its active choice and review history intact. Never fabricate an item from an empty state.
+## Responsive and accessible behavior
 
-If several conversations belong to one item, returning to a specifically opened discussion restores that discussion. Recovery checks the signed-in owner, item, conversation and pending operation together. A read during an ongoing check can report progress without resubmitting the work. An older conversation with a known owner but no proven item link remains readable to that owner in history. It grants no edit, approval or activation action on an item. Never attach it by matching names or timestamps.
+One reading column on phone and desktop; app-owned content remains in the conversation. Before/after task cards may sit side by side at wide widths and stack on a phone. Phones and short windows use normal page scrolling so headers and the composer do not crowd out the discussion. Larger windows give the conversation its own scroll area with the composer in a separate row. Provide a named route to the simulation and next steps. Keep current-use context easy to find without consuming most of the viewport.
 
-### Acceptance journeys for the working app
+Use semantic headings, field labels, visible keyboard focus and text outcomes that do not depend on color. Expand evidence under a named example, returning focus and reading position when it closes. Approval and activation completion must be perceivable without stealing focus from a newer edit. Test 320-pixel width and short landscape with real content, including long names and uncertainty.
 
-| Start and action | Observable result to verify |
-| --- | --- |
-| Fresh owner, empty collection. Open New twice, type without sending, back out. Then send a first request. | No phantom item or reused transcript. Exactly one owned item after accepted send. Its first message is the request actually entered. |
-| Existing owner with A in use. Open New, send B, reload, then reopen A and B separately. | B starts empty. Both items remain in the collection with their own names, chats and results. Checking a native task still uses A. |
-| With A v1 in use and v2 drafted, continue v2, then inspect v1. Try starting from v1 with Cancel, with a stale confirmation from another tab, and with fresh confirmation. | Continue opens v2 and its conversation. Inspection, Cancel and a stale confirmation write nothing. Fresh confirmation makes a draft based on v1 under A. V1 still runs. V2, its discussion and evidence remain readable in History. Only the new draft’s own checks can support its approval. |
-| Approve B and leave. Return, explicitly switch from A to B, then check a native task. | Approval alone leaves A active. The switch names both items. After confirmed activation B is in use, A is still saved and eligible history is accessible. |
-| Delay, double-send or drop the first response. Race two tabs editing or switching. Refresh after uncertain activation. | One item and one accepted turn per original request. A stale tab cannot overwrite a newer choice. UI reports confirmed state or uncertainty without silently retrying or switching. |
-| Ask for an ambiguous or unavailable behavior. Correct a failing sample. Inspect an older run. | Studio asks about intent, states actual limits, and checks only the agreed behavior. An unsupported request never becomes task advice without consent. Missing, mismatching and historical evidence grant no new approval. |
-| Switch from Maya to Sam while B has a pending request. Open Maya’s saved link as Sam. Switch back to Maya, reopen B’s specific conversation during the job and after completion. | Sam never sees Maya’s text or late result. Maya recovers the original accepted operation and its eventual result without resending. Previously saved single-item work and its checked history remain reachable to the original owner. |
-| Desktop, phone and short landscape. Type with Enter, Shift+Enter and an input method. Open a sample, return, approve, turn on and go back to an unsaved native task. | Exactly one intentional send, newline and composition preserved. Focus follows the decision. Completion and return are visible together. Native edits survive. |
+## Design evidence and production boundary
 
-Use isolated synthetic owners and a deliberately delayed or lost response for these checks. Judge the actual interaction as well as the stored state. A screenshot alone cannot establish which item received a turn or which version ran.
+The business-understanding prototypes are scripted and use synthetic names, dates and tasks. They do not invoke an assistant, compiler, provider, lifecycle endpoint or task service. Their state transitions demonstrate the intended experience, not runtime correctness. The current application retains host-owned identity, evidence freshness, approval and activation controls.
 
-For usability, give a fresh reviewer a goal in everyday language and a starting account, without naming controls. Ask them to change one behavior, find out what happened with a completed task, correct a wrong result, and decide when their old behavior should stop. Observe their first action and any backtracking. Can they say what the last reply established, why the sample opened, whether they are looking at old or current work, and whether anything is on yet? Repeat on a narrow screen and with a newer message arriving while they inspect an earlier sample. Record the specific hesitation, change the responsible interaction, and repeat that task on the corrected build.
-
-## Historical single-item baseline
-
-Persistent Tasks and Customizations destinations share the owner context, sans-serif controls, mineral backgrounds and blue-black actions. The delivered Customizations overview distinguishes an untouched empty state from saved items and their In use, Off or Unavailable status, and exposes working Task advice discovery, setup/continue draft and open-existing paths. **New customization** starts a nonmutating conversation; description-based creation and its composer remain disabled with a visible accessible **To be implemented** explanation. A selected item's conversation presents choices and consequences inline. A separate status summary distinguishes In use, Off or Unavailable from Proposed and Approved states. Prepared read-only alternatives apply across the owner's projects.
-
-Studio is a destination in that shell, identified by Customizations / Task advice and a workspace bar. The conversation asks how an open task should appear; a separate review panel starts closed and opens only through **View proposal**, **Latest run**, **Approved run** or **Manage**. Closing review returns to the conversation. Simulation reports its actual case count without opening the run view. Approval binds to its exact saved evidence independently of the latest run: a later run does not replace the approved evidence, and only explicit reapproval changes that binding. Explicit approval and subsequent Use remain separate. Saved-run provenance, technical details, reload and eligible recovery are grouped under management. Off or unavailable selection never invents a current Done result.
-
-The signed-in shell is bounded to the viewport. Project navigation, main tasks/overview, conversation and review panel own their scroll regions; rail, owner controls and composer stay outside unrelated scrolling. Wide screens support resizing the workspace; phone-sized screens use a full-workspace view. View changes retain input, reading position and workspace width/focus. A quiet Manage task advice shortcut suspends the native dialog, retains title/notes, and returns to its exact invoking control; general entry returns to overview. Owner changes discard prior-owner state and pending responses. New replies preserve earlier reading position.
-
-The current customer flow uses the task-advice conversation assistant, with existing compiled rules and actual simulator results. AI drafting requires locally configured provider settings; approval and Use remain explicit human actions. The customer app does not expose arbitrary source editing, multiple active advice rules or task effects. Approved evidence readback is tied to the current eligible customer draft's saved approval proof, not whichever run is latest. The sections below describe the earlier scripted future-authoring prototype; they do not expand current capabilities. Current iteration evidence belongs to the core-owned `agent-workflow:studio-on-demand-review` record; delivered design and rendered acceptance remain separate.
-
-## Earlier prototype reference
-
-Working design baseline: the user accepted the revised chat-led, resizable canvas as a good starting point. Refine visuals and interactions as real functionality lands; no further standalone prototype pass is requested. This accepts the direction, not a finished production interaction contract.
-
-Run `node docs/extension-studio/serve.mjs` from the repository root and open `http://localhost:4179/`. No dependencies, Python or AI key are needed for this scripted prototype. Stop its task-owned loopback server with Ctrl+C. It serves only the HTML and state module; opening HTML directly may fail because it uses browser modules. `PORT` may select another available port without persistent environment changes.
-
-The [core design feature](https://github.com/rore/keir-core/blob/main/roadmap/features/extension-studio-design.md) owns progress. Core record `agent-workflow:extension-studio-preview-clarity` tracks the historical scripted prototype. The prototype uses scripted conversation and sample tasks.
-
-## Business-user design direction
-
-The user is changing how their work gets done. Assume knowledge of their work and no software knowledge. The agent leads the conversation, handles the technical authoring/checking process and asks the person only for missing intent or a meaningful decision. The canvas supports that conversation with familiar application objects and concrete outcomes. A polished appearance alone does not meet this requirement.
-
-Read the [customer extension assistant guide](https://github.com/rore/keir-core/blob/main/docs/agents/extension-assistant.md) before designing the interaction. Its discovery, authoring, bounded repair, simulation and approval responsibilities belong behind the customer experience. The [host integration assistant](https://github.com/rore/keir-core/blob/main/docs/agents/host-integration-assistant.md) serves developers; its vocabulary and configuration tasks must not leak into Studio. Historical authoring diagrams explain the internal pipeline, not a mandatory user journey.
-
-- Lead with a useful question about the person's work. Do not require them to know the next technical step, write a complete prompt or choose from a workflow dashboard. Ask one focused question when its answer matters; let them change their mind in the same conversation.
-- Use the canvas when showing something is easier than describing it: a familiar task before and after, a choice between concrete outcomes, a short example or a summary of what will change. A flowchart is useful only when it improves understanding. Do not make the person operate a technical editor alongside the agent.
-- Show the proposed effect, who it affects and what remains unchanged. Explain exceptions through recognizable situations, such as a task from another project or a task that no longer exists.
-- Keep exact versions, evidence identities, compiler diagnostics and execution traces in secondary inspection. Their protections remain enforced even when their identifiers are absent from the main screen.
-- Use clear, respectful everyday language. Avoid engineering nouns, lengthy explanatory paragraphs and arbitrary status badges. Simplify the question before adding help text. Preserve distinctions between a preview, a change currently in use and a result that actually happened.
-- The agent proposes examples, checks the change and explains discrepancies. The person decides what should happen; the agent must not quietly change those expectations to make a check pass. Approval and turning on the change remain separate human decisions with understandable consequences.
-- Make failure useful: explain what happened, what is still safe and the next available action. For an uncertain result, say that the task may have been created and must be checked before trying again. Never turn uncertainty into success merely to simplify the wording.
-
-### Translate decisions, not just labels
-
-The following are proposed customer-facing expressions, not changes to the underlying lifecycle contract.
-
-| Internal concept | What the person should see or hear |
-| --- | --- |
-| Define trigger and scope | “Should this happen only for tasks in Launch?” |
-| Proposed behavior | A familiar completed task next to the follow-up that would be added: “When you finish a task in Launch, add ‘Review completion’.” |
-| Simulation | “Let's try a few examples without changing your tasks.” |
-| Scenario expectation | “If you finish a task in Operations, should anything happen?” |
-| Mismatch | “You wanted a follow-up here, but this change would leave the task list as it is. Which result do you want?” |
-| Draft versus active revision | “Your current setup is still on. These changes aren't in use yet.” |
-| Historical evidence | “Earlier example” with the original task and result; opening it does not apply it to the current proposal. |
-| Exact review | “Here's what will change” with the effect, affected people/projects, exceptions and any unchecked situations. |
-| Approval, then activation | “This is what I want,” followed by the separate decision “Turn this on.” |
-| Unsupported request | “The app can't do that yet,” followed by a supported alternative only if it preserves a useful part of the person's goal. |
-
-A representative exchange starts with “When I finish a task in Launch, add a task to review it.” The agent asks about any missing choice, then shows a recognizable task and its proposed follow-up. It asks whether a task in another project should behave differently, works through the answer, and explains the checked examples. The final decision summarizes the effect in the same language used in the original request. The person can inspect, correct or ask why throughout; these are conversational turns, not compulsory stages.
-
-### Visual decisions
-
-Describe features and designs in Daymark and Keir terms. Keep external product and company names, comparisons and source links in separate research notes.
-
-- Give the current task and the person's next decision the most space. Keep navigation quiet.
-- Use readable type, alignment and spacing to distinguish a question, its answer and the proposed change.
-- Keep common decisions visible. Put history and technical details within reach when someone needs them.
-- Ask one clear question. Let people correct a choice and see how it changes the result.
-
-Acceptance for the next prototype: a person without technical knowledge can explain what will change, recognize who is affected, correct an example, tell whether it is currently in use and stop or revise it. They should not need to learn Keir terminology or ask which engineering step comes next. Test this through an actual interaction, not a screenshot alone.
-
-The conversation opens on the current question. Earlier turns and their saved previews are available under Earlier messages. A single header identifies Studio and the sample user. The canvas shows a completed task and the follow-up it would add together on one task sheet. Example results state what happened, and expanding a result reveals what the user wanted.
-
-The agent asks about project scope and offers ordinary replies: “Only Launch,” “Try a few examples” and “Change the task title.” Examples compare “You wanted” with “In this example.” “This is what I want” confirms the exact reviewed change; “Turn this on” remains a separate action. Chat requests cannot bypass those controls. Requests for all projects explain the one-project prototype limit without silently changing intent.
-
-The current setup and proposed changes remain visibly distinct. Earlier examples preserve their original contents, unsent preview fields survive arriving results, and pause/continue retains the conversation. Narrow screens stack chat and preview with direct links between them. This is a design proposal ready for interaction review, not evidence of user acceptance or a live agent implementation.
-
-## The interaction model
-
-**The user talks to an agent. The agent uses a canvas when UI helps the conversation.** The conversation stays continuous: explain a goal, answer a clarification, ask why, change a choice, explore examples, inspect outcomes and decide what to activate. The canvas is not a separate workflow to navigate or a sequence the user must complete.
-
-The agent selects a useful application-owned view for the current question: a behavior sketch, clarification controls, scenario editor, expected/observed comparison, trace, revision comparison or review card. Some questions need only a chat answer. Do not redraw or fill the canvas merely because another message arrived.
-
-Canvas interactions are also user inputs. Changing a project, editing an expectation or confirming a revision produces a visible receipt in the conversation, followed by the agent's explanation or next question. Chat and canvas operate on the same scoped draft/evidence; neither has a hidden second version of the customization.
-
-The agent controls presentation, not authority. Application-owned components render typed, validated content; a model does not execute arbitrary generated UI/code, bypass scope, rewrite expected outcomes or self-approve. The host still enforces exact compilation, simulation, human approval and activation boundaries.
-
-## Representative conversation
-
-1. Maya describes a task-completion follow-up in chat. The agent clarifies the project and new task title, bringing a behavior sketch and useful choice controls onto the canvas.
-2. Maya answers in chat or changes the canvas choices. Her input is reflected in the conversation; the sketch updates while previous discussion remains visible.
-3. Maya asks for examples. The agent presents editable scenario expectations. She can ask why a case matters, add/change an expectation or ask to run the examples without leaving the conversation.
-4. The agent shows the comparison on the canvas and explains the results in chat. If a scenario disagrees with the draft, they discuss whether intent, behavior or expectation needs changing. The agent does not silently fix the oracle.
-5. Maya asks to review. The agent brings the current revision and its evidence onto the canvas. Human approval and activation are explicit separate decisions, recorded back into chat. A request to activate never lets the model approve on her behalf.
-6. After activation, the conversation can bring actual task-app evidence onto the canvas. They can inspect an outcome, discuss an uncertain write, revise a draft, disable it or restore a previous selection. Earlier effects are not undone by changing selection.
-
-These are example exchanges, not mandatory navigation stages. A user can ask to revisit the diagram, compare alternatives or inspect a scenario at any point; current evidence gates control consequential actions.
-
-## Example semantics and ownership
-
-The scripted pattern is: when a task is completed in Launch, create a task titled Review completion. The host supplies event facts, protected user scope and generic `tasks.get`/`tasks.create`; the extension owns the project/title and conditional logic. Another project causes no change; a missing source causes business rejection without a write. No special follow-up capability or customer-specific hook input is introduced.
-
-Leo's initial draft instead uses Operations and Plan next step. Sam has no selected customization. The prototype retains separate conversation, draft and selection per example user in tab-local session storage. That illustrates the desired experience, not implemented identity isolation. Real effects still need separately qualified core/native admission evidence; simulation alone cannot certify them.
-
-## Layout and visual direction
-
-- Keep a substantial conversation pane with persistent composer, readable agent/user turns and contextual suggested prompts. The chat is the starting point and remains available while canvas content changes.
-- Give the canvas enough space to explain behavior and compare examples. Its heading states what is being shown; the current setup and proposed change stay distinct. Technical identities are available in optional detail.
-- Use a charcoal app frame, a white conversation, and an ivory task sheet on a slate-grey work surface. Reserve oxblood for actions and mustard for the proposed new task. Text labels and task marks convey the same meaning as color.
-- On desktop, drag the divider to set the conversation width. Keyboard users can focus the separator, adjust with the left and right arrows, or jump to a limit with Home or End. Each pane retains at least 320 pixels. This tab remembers the width after refresh. At 820 pixels and below, the conversation and preview stack with links between them.
-- Keep technical IR/artifact details in optional inspection. Business users should understand conditions, effects, expectations and consequences without reading implementation details.
-
-## Working-experience proposal
-
-Two assumptions are deliberately open for user review: keep one continuing conversation per named customization; let the canvas follow new evidence while idle and offer new evidence while someone is inspecting or editing. These are runnable design choices, not accepted requirements.
-
-The prototype opens on Maya's existing completion follow-up. Active r1 creates **Review completion**; draft r2 proposes **Prepare next step**. The conversation is populated with fictional earlier work and a current scope clarification. Leo has an Operations example; Sam demonstrates first use. Seeded approvals and activity are sample history, not actions by the visitor.
-
-| Surface or state | Proposed behavior |
-| --- | --- |
-| Persistent identity | Header names the customization, example user and project. Current setup and changes not yet in use remain visible while either pane scrolls. |
-| Conversation receipt | Behavior, scenario and review messages have evidence buttons. A button opens its saved draft, expectation, result and selection snapshot, not whatever is latest. |
-| Inspecting old evidence | Saved evidence is marked read-only. Earlier results cannot approve or activate the current draft. Return to the current proposal explicitly. |
-| Canvas attention | Keep this view pins its example. Focusing an editable canvas field also holds it, preserving unsent values. A new result appears as an offer; Show latest or Follow chat changes the view. Sending canvas choices intentionally updates the draft and returns to its current view. |
-| Scenario mismatch | The default r2 example expects a task in another project, while behavior only applies to Launch. User explicitly chooses no change or discusses different behavior. The correction appears in chat; the script never silently repairs the expectation. |
-| Exact review | Show change from active, trigger, owner, reads/writes, scenario evidence and remaining limits. Human approval and activation are separate controls. A stale review cannot apply to a changed proposal. |
-| Running / paused | Try a few examples takes a short scripted delay. Pause retains changes and earlier examples. Continue starts a new operation identity; completion from the paused run is ignored. |
-| Reload during work | Running work becomes interrupted. Continue is explicit; no background side effects resume. Changed drafts supersede the old run. Results cannot cross example users. |
-| Narrow layout | Conversation and canvas stack, with direct links between them; the composer remains part of the conversation. No stage navigation is introduced. |
-
-This increment uses tab-local example storage, under a new key that leaves the earlier prototype's data intact. It demonstrates recovery of submitted work and paused operations; it does not provide durable server history, cross-device sync or production cancellation. Unsubmitted composer and canvas text is not durable across reloads. A production design must distinguish cancellation requested from confirmed stop and reconcile operations that may have completed externally.
-
-## Canvas and conversation contracts
-
-| Context | Canvas contribution | Conversation and state rules |
-| --- | --- | --- |
-| Initial request | Calm empty canvas or a relevant starting illustration | Invite the user's goal in chat; no preconfigured rule is presented as already understood or active. |
-| Clarification | Choice/form only when it improves the question | Both chat answers and canvas edits enter the same conversation. Explain proposed assumptions before accepting them. |
-| Proposed behavior | Trigger/condition/action sketch and boundaries | Preserve original intent alongside the current proposal; explain unsupported requirements rather than quietly narrowing them. |
-| Scenario design | Inputs and independently reviewed expectations | Canvas edits are explicit user changes, never an agent's silent rewrite of expected results. |
-| Simulation result | Expected/observed comparison, mismatch detail or trace | Explain findings in chat; retain the evidence's exact draft/scenario identity. Simulation is not an actual mutation or proof of native guarantees. |
-| Draft revision | Current behavior or difference from active revision | Edits invalidate affected validation/tests/approval, not the active snapshot. Old conversation references must not imply old evidence applies to the new revision. |
-| Review request | Exact-revision evidence and human confirmation controls | Agent may request review; human actions bind the host-selected exact identity. Approval alone is not activation. |
-| Outcome discussion | Actual native result, trace or explicitly illustrative prototype feed | Distinguish completed, no-op, business rejection, failed, limited and uncertain outcomes. Unknown effect is not safe to retry blindly. |
-| Disable/rollback | Selected version and future-admission consequences | Preserve prior effects and admitted snapshots; neither operation undoes earlier changes. |
-| Provider setup/failure | Configuration help or recoverable error when useful | Never ask for secrets in chat. Keep credentials server-side; preserve drafts/history while setup or budget problems are resolved. |
-| Interrupted work | Last valid draft/evidence and pending-operation status | Explain what stopped versus what may still have completed. Retain conversation and avoid silently resuming side effects. |
-| User switch | New user's own conversation/canvas/selection | Clear drafts in the composer; host enforces scope and rejects stale results. Do not reuse another customer's conversation or approval. |
-
-## Prototype review tour
-
-Start from **Restart example**. Read the current clarification and inspect the behavior: active r1 and draft r2 are distinct. Use the project/title controls to send an explicit choice to chat, or describe a change there. Choose **Run scenarios**, then **Pause run** and **Resume run** to inspect interruption without losing the active version.
-
-The scripted result contains an other-project mismatch. Choose **Expect no change in other projects**; inspect the explicit correction in chat and the new matching results. Ask **Review this revision**. Review the change, scope, evidence and limits, check both confirmations, approve, then separately activate the prototype revision.
-
-Reopen an earlier evidence receipt in the conversation. Its revision and result remain intact. Hold that view and ask for a new result; the canvas offers it without replacing what you are reading. To test unsent edits, edit a canvas title while a run is pending; the arriving result leaves the field value intact until you deliberately switch views or submit it.
-
-After activation, choose **Edit a new draft**: the selected version stays active. Ask **Try a completed task** or **Explore a lost response** for illustrative outcomes, or **Disable it** / **Roll back** for selection changes. Switch to Leo and Sam to inspect separate sample conversations and first use. Reload while a run is in progress to see the interrupted state and explicit resume.
-
-Everything is scripted. The small route set supports one representative pattern, not arbitrary natural-language interpretation. Suggested prompts expose that limitation. The real agent must clarify a visitor's actual request through host-owned tools rather than rely on these routes. No provider, compiler, real approval or native task mutation runs here.
-
-## What needs detailed design next
-
-- Clarification turns, interruptions and alternatives: how the agent checks its understanding and makes assumptions visible without over-questioning.
-- User decisions on the proposed conversation lifetime, held-canvas behavior, density and visual direction; the runnable proposal does not settle those questions.
-- Production progress/cancellation/provider errors: use actual host operation states, explain what can still finish, and distinguish late external completion from a confirmed stop. The prototype only delays a scripted result.
-- Recovery and persistence: durable conversations/drafts across devices, unsent text recovery, host reconciliation after reload, retrying safe authoring operations and preserving independent scenario expectations.
-- Exact approval interaction: resolve how conversational requests and explicit canvas confirmations identify the precise current proposal, especially after intervening edits or user switches.
-- Refine density, palette, adjustable layout, mobile presentation and task evidence alongside each real workflow, using user feedback on that functionality.
-
-## Verification and production seams
-
-`node --test docs/extension-studio/studio.test.mjs` checks the bounded prototype model, including continuous chat/canvas state, user scope, approval prerequisites, edit invalidation, mismatch recovery, rollback, provider absence and uncertainty; it also checks the allowlisted local launcher. Inspect actual browser behavior and desktop/narrow layouts, not only source or screenshots. Previous staged-prototype checks remain historical evidence only.
-
-Production host services own scoped discovery, compilation, simulation, immutable evidence/approval, selection, revocation and native outcomes. The agent uses bounded authoring tools; a canvas renderer does not add new runtime capabilities. The complete demo uses operator-supplied server-side provider/model credentials and qualified multi-provider support. Real acceptance also requires native persistence/isolation, exact core artifacts, fast regression/UI journeys and separate opt-in live-provider checks.
+Compare both alternatives with the same semantic inputs. A fresh reviewer should explain when the rule acts, every relevant condition, the actual change, when nothing changes, what was not checked and whether the behavior is currently on. Record confusion and revise. An agent proxy review helps find ambiguity; it does not stand in for human usability research or user acceptance.
