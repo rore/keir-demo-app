@@ -1,3 +1,5 @@
 # Authoring Keir extensions
 
-The customer demo creates task advice through its conversation assistant. It does not expose a manual source or scenario editor. For tool authors who want to learn Keir, see the [core manual authoring guide](https://github.com/rore/keir-core/blob/main/docs/manual-authoring.md).
+Use [AI authoring](ai-authoring.md) to describe, compile and check a task customization, then [review and activate it](read-extension-lifecycle.md). Daymark supports checks before saving and actions after adding or completing a task. It does not expose a manual source or scenario editor.
+
+To write and compile an example directly, start with [Keir's quickstart](https://github.com/rore/keir-core/blob/main/docs/quickstart.md) and [language reference](https://github.com/rore/keir-core/blob/main/docs/specs/language.md). For building an assistant, use the [assistant guides](https://github.com/rore/keir-core/blob/main/docs/agents/README.md) and the pinned authoring companion described in Daymark's AI guide.

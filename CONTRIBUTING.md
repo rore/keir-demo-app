@@ -21,4 +21,4 @@ The full authored-source suite also uses Java 21 and the compiler packaged in th
 - Use the pinned Keir packages. Test a proposed dependency update against Daymark before changing its pins.
 - Maintainers use the [shared development workflow](https://github.com/rore/keir-core/blob/main/docs/internal/workflow/current-process.md) for review, records and integration. The shared record lives in Core when required.
 
-License choice is pending. Resolve it before inviting public contributions or publishing the application.
+Daymark is licensed under the [Apache License 2.0](LICENSE). Preserve the bundled third-party licenses and notices under `vendor/` when updating or redistributing dependencies.

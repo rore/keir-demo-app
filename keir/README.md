@@ -1,5 +1,7 @@
 # Task-domain integration assets
 
-This directory will own the maintained task DCM, extension sources and customer-reviewed business scenarios. Add them with the first real integration; the historical fictional fixtures remain in the core design baseline.
+The maintained model and compiler selection live in [extensions/task-effect/current/](../extensions/task-effect/current/). [extension-catalog.mjs](../src/extension-catalog.mjs) loads those exact bytes and binds their identity to the pinned Keir packages. The [authoring examples](../src/authoring-example.mjs) supply source and scenario format examples; each customer's saved source, artifacts, reviewed scenarios and evidence live in the local database.
 
-Capabilities wrap native task services. Domain types and host-bound fields must remain consistent with real adapters. Pending certifications block production activation. Framework schemas and artifact semantics are owned by `keir-core`, not copied here.
+The earlier `extensions/task-effect/workflow/` and `title/` assets support compatibility and retained history; they are not the current authoring model. Preserve their exact bytes and pins. See the [lifecycle guide](../docs/read-extension-lifecycle.md) for existing selections and the [source map](../src/README.md) for real adapters.
+
+Capabilities wrap native task services. Domain types and host-bound fields must remain consistent with those adapters. Approval, activation and current native permission remain separate requirements. Framework schemas and artifact semantics belong to [Keir Core](https://github.com/rore/keir-core), rather than this directory.

@@ -1,8 +1,10 @@
 # Embedding Extension Studio in a host application
 
-Proposed design. Daymark is the reference host. The goal is for another application with scoped authoring and lifecycle services to embed the same conversation and review experience, supply its own domain views, and keep control of what can run.
+**Proposal, not an integration API or released package.** Daymark is the reference host. The goal is for another application with scoped authoring and lifecycle services to embed the same conversation and review experience, supply its own domain views, and keep control of what can run.
 
 Define this boundary now; a second host is not a prerequisite for design. Implementation, the alternate-domain fixture and independent packaging are separate delivery decisions. This proposal does not expand the active general-Studio implementation scope or claim that today's component already meets the boundary.
+
+For the current integration, start with the [source map](../src/README.md): [native binding and dispatch](../src/task-effects.mjs), [authoring tools](../src/authoring-service.mjs), [lifecycle service](../src/extension-lifecycle.mjs) and [Daymark's Studio view](../src/web/Studio.tsx). The [usage guide](read-extension-lifecycle.md) describes today's human decisions. The boundaries and qualification journeys below are design goals.
 
 ## What the host supplies
 
@@ -19,7 +21,7 @@ The host application mounts Studio within its authenticated UI. Its integration 
 
 | User action | Studio behavior | Daymark integration |
 | --- | --- | --- |
-| Open Customizations or New | Show known items and available starting points. Opening the conversational start is side-effect free. Resume a draft if one exists. | Read the signed-in owner's lifecycle state and expose the available `TaskCompleted` opportunity. Preserve the originating task and unsaved edits on return. |
+| Open Customizations or New | Show known items and available starting points. Opening the conversational start is side-effect free. Resume a draft if one exists. | Read the signed-in owner's lifecycle state and published opportunities: `TaskBeforeCreate`, `TaskCreated` and `TaskCompleted`. Preserve the originating task and unsaved edits on return. |
 | Describe or choose behavior | Render conversation and trusted choice controls. Show a visible reason for unsupported actions. | Accept the first explicit message as an owner-scoped customization. The authoring service uses the approved host model and returns bounded proposal and review data. Text and generated markup cannot register code or invoke lifecycle actions. |
 | Test and review | Offer the saved run when ready. Keep the user's place until they open it. Compare the recorded expectation with the recorded outcome. | Simulate the exact revision with host-owned fixtures. Resolve evidence by ID. Identify simulated effects separately from outcomes on saved tasks. |
 | Approve | Submit the current draft version, revision and the exact evidence the person reviewed. Refresh from the server. | Verify session, owner, current draft, evidence and dependencies. Approval leaves the active selection intact. Expose the evidence bound to approval separately from the latest run. |
@@ -33,7 +35,7 @@ Treat identifiers as opaque. A template, hook, customization, revision, evidence
 - Studio controls the transcript, split width, keyboard navigation, focus return and which evidence is open. A changed owner clears owner-specific state and invalidates outstanding responses. Remount reads persisted lifecycle state. Keep transient reading position separate from durable approval.
 - Prefer a small set of built-in review surfaces with locally registered domain views where needed. An unavailable or unknown view falls back to a safe description. Raw HTML, executable strings, arbitrary URLs and model-chosen callbacks are outside the rendering contract.
 - Treat action availability as presentation. The host reauthorizes every operation. On a stale version or uncertain mutation, refresh from the server before offering another attempt. Keep historical receipts inspectable without enabling approval or activation of the current draft from an old receipt.
-- Explicitly distinguish the latest run from the approved run. At the inspected Daymark baseline, the state response returns the latest evidence and an approval boolean. If A was approved and B was run later on the same revision, reopening A requires a server-supplied approval-to-evidence reference. This narrow readback correction is already included in the active Daymark plan. A host lacking the reference can label B as the latest run, but cannot claim exact approved-run reopening. Never infer that link from result equality or history order, or silently weaken Daymark's required reopening behavior.
+- Explicitly distinguish the latest run from the approved run. Daymark exposes `approvedEvidenceId` separately from the latest evidence; see the [lifecycle projection](read-extension-lifecycle.md#expected-observed-and-real-effects). If A was approved and B was run later on the same revision, resolve A through its exact reference. Never infer that link from result equality or history order. A future embedding API must preserve this distinction.
 
 ## Building toward this in Daymark
 
@@ -43,4 +45,4 @@ Treat identifiers as opaque. A template, hook, customization, revision, evidence
 
 Use these journeys to plan the boundary, then qualify its implementation without Studio interpreting a task receipt or the host reimplementing review interactions. Keep the reusable portion in the application initially. Independent packaging, version compatibility across hosts and measured integration effort are separate delivery decisions.
 
-See the [Studio interactions](studio-on-demand-review.md), [extension lifecycle](read-extension-lifecycle.md) and [task effects](task-effects.md) contracts.
+See the [current Studio design](extension-studio-design.md), [extension lifecycle](read-extension-lifecycle.md) and [task effects](task-effects.md). The [earlier Studio interactions](studio-on-demand-review.md) are historical.
