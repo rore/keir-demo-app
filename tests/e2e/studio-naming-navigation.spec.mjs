@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -78,6 +79,7 @@ test('untitled items show their request and returning from sample history resets
     await studio(page).getByRole('button', { name: 'Rename', exact: true }).scrollIntoViewIfNeeded();
     await expect(studio(page).getByRole('button', { name: 'Rename', exact: true })).toBeInViewport({ ratio: 1 });
     await studio(page).getByRole('button', { name: 'More', exact: true }).click();
+    await openDeveloperTools(page);
     const savedRuns = studio(page).getByText('Saved sample runs', { exact: true });
     await savedRuns.click();
     const openRun = studio(page).getByRole('button', { name: 'Open saved sample run 1', exact: true });
@@ -105,6 +107,7 @@ test('untitled items show their request and returning from sample history resets
 
     await page.locator(`#edit-${secondId}`).click();
     await studio(page).getByRole('button', { name: 'More', exact: true }).click();
+    await openDeveloperTools(page);
     await studio(page).getByText('Saved sample runs', { exact: true }).click();
     await studio(page).getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     const restoredResults = studio(page).getByRole('article', { name: 'Sample results', exact: true });

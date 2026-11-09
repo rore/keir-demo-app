@@ -105,6 +105,7 @@ test('switching owners discards the prior owner rename text and fences its late 
     await ui.getByRole('form', { name: 'Rename customization', exact: true }).getByRole('button', { name: 'Save', exact: true }).click();
     await requestStarted;
     await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam');
+    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam');
     release();
     await expect(page.getByText('Private Maya name', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('form', { name: 'Rename customization', exact: true })).toHaveCount(0);

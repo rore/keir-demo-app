@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
@@ -111,6 +112,7 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     expect(index.current.status).toBe('AWAITING_USER');
 
     await studio(page).getByRole('button', { name: 'More', exact: true }).click();
+    await openDeveloperTools(page);
     await studio(page).getByText('Saved sample runs', { exact: true }).click();
     await studio(page).getByRole('button', { name: 'Open saved sample run 1', exact: true }).click();
     await expect(studio(page).locator('.rs-preview')).toBeVisible();

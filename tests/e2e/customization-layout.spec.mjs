@@ -563,10 +563,14 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
     await openDetails(page); await expect(studio.locator('.rs-chat')).toBeHidden(); await expect(disable).toBeInViewport({ ratio: 1 });
     await studio.getByText('Restore an earlier version', { exact: true }).click(); await studio.getByText('Selection history and exact identities', { exact: true }).click();
     const canvas = studio.locator('.rs-canvas'); await expect(canvas).toHaveCSS('overflow-y', 'auto');
-    await wheel(page, canvas, 300); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(0); const canvasPosition = await scrollTop(canvas);
+    await wheel(page, canvas, 300); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(0);
     await studio.getByRole('button', { name: 'Back to conversation', exact: true }).click(); await expect(composer).toHaveValue('Keep this unsent message');
     await expect(studio).toHaveCSS('overflow-y', 'auto'); expect(await scrollTop(studio)).toBe(logPosition); expect(await scrollTop(log)).toBe(0);
-    await openDetails(page); await expect.poll(() => scrollTop(canvas)).toBe(canvasPosition); await canvas.focus(); await page.keyboard.press('PageDown');
+    await studio.getByRole('button', { name: 'More', exact: true }).click();
+    await expect(studio.getByRole('heading', { name: 'Versions and settings', exact: true })).toBeFocused();
+    await expect(studio.getByRole('heading', { name: 'Versions and settings', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(studio.locator('.rs-developer-tools')).toHaveJSProperty('open', false);
+    await openDeveloperTools(page); await canvas.focus(); await page.keyboard.press('PageDown');
     await studio.getByRole('button', { name: 'Reload saved state', exact: true }).focus(); await page.keyboard.press('Tab'); await bounded(page); await picture(page, `studio-${viewport.width}x${viewport.height}`);
     await studio.getByRole('button', { name: 'Back to Customizations', exact: true }).click(); await expect(await editSaved(page)).toBeFocused();
   });

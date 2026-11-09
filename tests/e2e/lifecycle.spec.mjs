@@ -272,9 +272,10 @@ test('narrow Studio inspects current saved source and keeps a restored task choi
   await closeDetails(page);
   await ui.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
   await openDetails(page); await ui.getByText('Restore an earlier version', { exact: true }).click();
-  const option = ui.getByLabel('Previously in use').locator('option').filter({ hasText: 'Original follow-up · customer approved' });
-  await ui.getByLabel('Previously in use').selectOption(await option.getAttribute('value'));
-  await expect(ui.getByText('This choice was approved for you.', { exact: false })).toBeVisible();
+  await ui.getByLabel('Previously in use').selectOption(saved.selection.revision.id);
+  await expect(ui.locator('.rs-restore-confirm')).toContainText('Restore Original follow-up for future use?');
+  await ui.getByText('Exact choice to restore', { exact: true }).click();
+  await expect(ui.getByText('Exact choice to restore', { exact: true }).locator('..')).toContainText('Provenance: ' + saved.selection.revision.provenance);
   expect((await savedLifecycle(page, demo.origin)).selection.revision).toBeNull();
   await ui.getByRole('button', { name: 'Restore Original follow-up for me', exact: true }).click();
   await inspectActive(page, 'Original follow-up'); await picture(page, 'task-lifecycle-narrow');

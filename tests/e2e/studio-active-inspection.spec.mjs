@@ -184,6 +184,7 @@ test('an earlier revision, approved current run and newer current run retain dis
     const { path, active, state, draftProof } = await seed(page, fixture);
     const ui = studio(page);
     await ui.getByRole('button', { name: 'More', exact: true }).click();
+    await openDeveloperTools(page);
     const history = ui.getByText('Saved sample runs', { exact: true });
     await history.click();
     const entries = history.locator('..').locator('ol > li');
