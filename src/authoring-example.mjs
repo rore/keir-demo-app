@@ -1,4 +1,4 @@
-import { taskEffectSyntax, taskEffectScenarioExamples, taskEffectObservationMatches } from './task-effect-simulation.mjs';
+import { taskEffectSyntax, taskEffectScenarioExamples, taskEffectObservationMatches, taskEffectExpected } from './task-effect-simulation.mjs';
 import { decodeKeirScenario } from './keir-scenario.mjs';
 
 export const businessContext = Object.freeze({
@@ -77,9 +77,14 @@ export function evidenceSummary(proof, originals, { presentation = true } = {}) 
     const matches = examples.filter(example => typeof item.id === 'string' && item.id.length && example?.id === item.id);
     const example = matches.length === 1 ? matches[0] : null;
     const mismatches = Array.isArray(report.mismatches) ? report.mismatches : [];
-    const associated = typeof example?.expect?.outcome?.classification === 'string'
-      && typeof example.expect.consumption?.status === 'string' && reports.filter(row => row?.id === item.id).length === 1
-      && ['outcome', 'consumption', 'calls'].every(key => same(example.expect[key], item.expected?.[key]));
+    let independentExpected;
+    try { if (example) independentExpected = taskEffectExpected(example); }
+    catch { /* Unusable original expectations cannot verify a report. */ }
+    const recordedExpected = item.expected && { ...item.expected, ...(Array.isArray(item.expected.createdTasks)
+      && { createdTasks: item.expected.createdTasks.map(withoutProjectName) }) };
+    const expectedMatches = !!independentExpected && same(independentExpected, recordedExpected);
+    const associated = expectedMatches && reports.filter(row => row?.id === item.id).length === 1;
+    const expected = expectedMatches ? item.expected : independentExpected ?? item.expected;
     const native = report.native, effect = report.observed?.effect, decision = report.consumption?.status;
     const guard = !!report.scenario?.proposal && (decision === 'BLOCKED'
       || native?.classification === 'COMPLETED' && (decision === 'ALLOWED' && report.consumption.result?.decision === 'ALLOW'
@@ -111,11 +116,12 @@ export function evidenceSummary(proof, originals, { presentation = true } = {}) 
     if (mismatches.length > 8) truncated = true;
     return {
       id: text(item.id), ...((presentation || item.label !== item.id) && { label: text(item.label) }),
-      status: text(report.status), ...(presentation && { verification, availability, outcome }),
+      status: text(report.status), ...((presentation || verification !== 'matched') && { verification }),
+      ...(presentation && { availability, outcome }),
       ...((presentation || typeof item.taskStatus === 'string') && { taskStatus: text(item.taskStatus) ?? null }),
       ...((presentation || typeof item.readFailure === 'string') && { readFailure: text(item.readFailure) ?? null }),
-      expected: { ...fields(item.expected?.outcome ?? item.expected, ['classification', 'code']), consumption: consumption(example?.expect?.consumption ?? item.expected?.consumption),
-        ...(observed && changes(item.expected)) },
+      expected: { ...fields(expected?.outcome ?? expected, ['classification', 'code']), consumption: consumption(expected?.consumption),
+        ...(observed && changes(expected)) },
       actual: { native: { ...fields(native, ['classification', 'code']),
         ...(typeof native?.error?.code === 'string' && { error: fields(native.error, ['code']) }) }, consumption: consumption(report.consumption),
         ...(observed && { observed: { effect: text(effect), ...changes(observed) } }) },

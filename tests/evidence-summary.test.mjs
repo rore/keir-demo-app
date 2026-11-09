@@ -62,6 +62,10 @@ test('compact authoring evidence preserves all bounded facts and coverage while 
   assert.equal(retained.label, 'A distinct supplied label');
   assert.equal(retained.taskStatus, 'OPEN');
   assert.equal(retained.readFailure, 'ADAPTER_TRANSIENT');
+  labeled.row.report.status = 'FAIL'; labeled.row.report.mismatches = [{ stage: 'OUTCOME', code: 'MISMATCH' }];
+  const [unverified] = evidenceSummary({ reports: [labeled.row] }, [labeled.original], { presentation: false }).cases;
+  assert.equal(unverified.status, 'FAIL'); assert.equal(unverified.verification, 'mismatched');
+  assert.equal(Object.hasOwn(unverified, 'availability'), false); assert.equal(Object.hasOwn(unverified, 'outcome'), false);
 });
 
 test('observed update, no-op and expected unavailable read have separate verification and effect facts', () => {
@@ -182,7 +186,37 @@ test('real simulation observations and situations must match the independent exa
     const row = evidenceSummary(corrupt, originals).cases[index];
     assert.equal(row.status, 'PASS', 'Raw reported status remains inspectable.');
     assert.equal(row.verification, 'mismatched'); assert.equal(row.outcome, 'mismatch');
+    const compact = evidenceSummary(corrupt, originals, { presentation: false }).cases[index];
+    assert.equal(compact.status, 'PASS'); assert.equal(compact.verification, 'mismatched');
     assert.equal(taskEffectObservationMatches(JSON.parse(originals[index]), corrupt.reports[index].report), false);
+  }
+});
+
+test('the complete independent expected result must match before any intended-effect claim', () => {
+  const update = example('expected-update', { effect: 'CONFIRMED', updatedTasks: [{ id: 'example-task', dueAt: '2027-01-07T23:00:00.000Z' }] });
+  const [created] = JSON.parse(readFileSync(new URL('./fixtures/current-task-workflow-reports.json', import.meta.url), 'utf8'));
+  const [original] = taskEffectScenarioExamples(loadHost('TaskCompleted')).map(text => text.replace('keir-scenario/3', 'keir-scenario/2'));
+  const creation = { row: created, original };
+  for (const [sample, mutate] of [
+    [update, expected => { expected.updatedTasks[0].dueAt = '2030-01-01T00:00:00.000Z'; }],
+    [creation, expected => { expected.createdTasks[0].title = 'A corrupted expected title'; }],
+    [update, expected => { delete expected.updatedTasks; }],
+    [creation, expected => { delete expected.createdTasks; }],
+    [update, expected => { expected.extra = 'not an independent expectation'; }],
+    [update, expected => { expected.updatedTasks[0].projectName = 'not a host display annotation'; }],
+  ]) {
+    const clean = summarize(sample).cases[0], corrupt = structuredClone(sample); mutate(corrupt.row.expected);
+    const before = JSON.stringify(corrupt), summary = summarize(corrupt), projected = summary.cases[0];
+    assert.equal(clean.verification, 'matched');
+    assert.equal(projected.status, 'PASS', 'Raw reported status remains inspectable.');
+    assert.equal(projected.verification, 'unchecked'); assert.equal(projected.outcome, 'unchecked');
+    assert.equal(summary.counts.verification.matched, 0); assert.equal(summary.counts.outcome.changed, 0);
+    assert.deepEqual(projected.expected, clean.expected, 'The original example owns the expected facts.');
+    assert.deepEqual(projected.actual, clean.actual);
+    const compact = evidenceSummary({ reports: [corrupt.row] }, [corrupt.original], { presentation: false }).cases[0];
+    assert.equal(compact.status, 'PASS'); assert.equal(compact.verification, 'unchecked');
+    assert.deepEqual(compact.expected, clean.expected);
+    assert.equal(JSON.stringify(corrupt), before, 'Projection never rewrites raw evidence.');
   }
 });
 
@@ -192,11 +226,13 @@ test('display project names stay in projected facts without weakening strict nat
   assert.equal(taskEffectObservationMatches(JSON.parse(original), item.report), true);
   item.report.scenario.task.projectName = 'Example source project';
   item.report.observed.createdTasks[0].projectName = 'Example destination project';
+  item.expected.createdTasks[0].projectName = 'Example destination project';
   assert.equal(taskEffectObservationMatches(JSON.parse(original), item.report), false);
   const projected = evidenceSummary({ reports: [item] }, [original]).cases[0];
   assert.equal(projected.verification, 'matched');
   assert.equal(projected.scenario.task.projectName, 'Example source project');
   assert.equal(projected.actual.observed.createdTasks[0].projectName, 'Example destination project');
+  assert.equal(projected.expected.createdTasks[0].projectName, 'Example destination project');
   item.report.observed.createdTasks[0].extra = 'not a display annotation';
   assert.equal(evidenceSummary({ reports: [item] }, [original]).cases[0].verification, 'mismatched');
 });
