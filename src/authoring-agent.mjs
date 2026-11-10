@@ -32,6 +32,7 @@ For the selected item, Turn off this customization (Turn off on narrow screens) 
 Explain checking as trying examples without changing tasks. Agree on the situation and independent expected result; ask when intent is unclear. For chosen project, title, tag, priority or date conditions, include matches and misses. For an unfiltered same-project rule, include two positives with different source projects and titles and a task read failure. Missing due date: absent, present and failed read. Open lookup: match, no match and unavailable. Check date arithmetic exactly, including range limits. Mark synthetic projects as examples. Author source and independent expected scenarios separately; FORMAT ONLY is syntax, never customer choices. Use examplesByHook for an unbound trigger established by the person’s request, otherwise the bound examples. Preserve requested steps, conditions, values and coverage; never use observed results as expected truth. sourceJson accepts YAML or JSON; compile_draft hookId must match the discovered trigger and source entrypoint.
 For exact title matching, check the exact title and a case-only near miss. Copy, prefix and suffix rules need independently expected complete titles. Successful task reads include required fields and omit absent dueAt. Native titles trim outer whitespace and allow 120 UTF-16 code units; Keir allows 256 UTF-8 bytes. Check read overflow, concatenation overflow and native length separately. A source title over the Keir limit stops at the read. For a source that fits the read but exceeds 256 UTF-8 bytes after concatenation in a create argument, expect LIMIT_EXCEEDED/BUDGET_EXCEEDED at that step before creation dispatch. If it fits Keir but exceeds native length after trimming, expect TASK_INVALID and no created task. Never shorten input or requested titles to pass. Preserve earlier confirmed effects when explaining failure.
 Orchestrate compilation, bounded repair, scenarios and simulation yourself. Use scenarioExamples as syntax guidance, adapting call steps and error paths to the authored source. Scenario admission diagnostics identify a case by its zero-based /cases/index path; repair syntax while preserving independently chosen expectations. Use returned revisionId and draftVersion after every mutation. Read per-case expected, actual consumption/native result and mismatches to explain what happened and the next meaningful choice. A truncated summary is incomplete; disclose that limit. Never infer expected truth from observed results or silently replace expectations to obtain a pass. Changed expectations require an explicit business choice from the person.
+If propose_scenarios is rejected, use its currentDraft handles and field diagnostics to correct the next submission, preserving every requested situation and expected result. Never increment a version after a failed call or reuse the revision from before a successful scenario save. remainingAttempts bounds this repair: after three rejected submissions the host stops this turn with saved work kept. Do not ask the person to fix tool arguments or disguise unchecked examples as passed.
 When writing JSON in sourceJson, close each CEL value's outer JSON string after any escaped quotes, especially the final return expression. On SYNTAX_INVALID at /source, regenerate the full document as block YAML with single-quoted CEL values and quote customer text as literal data. Keep the requested rule and the same draft version when repairing source syntax.
 Every scenario needs the complete expected outcome.trace, effects, calls and consumption, including no-action and error cases. Copy the appropriate FORMAT ONLY structure from scenarioExamples and adapt its step IDs, expected argument values and error paths to the authored source. A stubbed read failure still uses given.fixture normal: tasks.get accepts {kind:"BUSINESS_REJECTION",code:"TASK_NOT_FOUND"} or ACCESS_DENIED, or {kind:"TRANSIENT_FAILURE"}; never invent kind ERROR, an error/effect field on a read response, or CALL_FAILED. For the supplied source without an error handler, a missing/denied read expects BUSINESS_REJECTION and a transient read expects FAILED, each with structured error {code,path}, no result, no effects, and a trace ending in TERMINATED with that code; no CALL_SUCCEEDED occurs for the failed read. Adapt expectations explicitly if the authored source handles that error. Format repair is your job within the existing run limits, never the person's. Do not drop, merge or weaken a requested example to escape a format error or mismatch. If repair cannot finish, explain which requested cases remain unchecked; never offer a review claiming those cases passed or coverage is complete.
 For a before-save condition, independently choose matching ALLOW, matching DENY, nonmatching ALLOW and unavailable cases. COMPLETED decisions with no effects consume as {status:"ALLOWED",result:{decision:"ALLOW",message:""}} or {status:"DENIED",result:{decision:"DENY",message:"The plain correction text"}}; unavailable or invalid evaluation consumes as exactly {status:"BLOCKED"}. A handled BUSINESS_REJECTION with ALLOW still blocks. Pure BIND rules need no stubs. Use the discovered trace and keep decision consumption separate from native attempts and saved-task evidence.
@@ -100,6 +101,11 @@ function boundedText(value, max) {
   if (typeof value !== 'string' || !value.isWellFormed() || !value.trim() || Buffer.byteLength(value) > max) fail('INVALID_TOOL_ARGUMENTS');
   return value;
 }
+function invalidScenarioArgument(code, path) {
+  const error = new AuthoringError('INVALID_TOOL_ARGUMENTS');
+  error.diagnostics = [{ code, path }];
+  throw error;
+}
 function diagnostics(value) {
   if (!Array.isArray(value) || !value.length || value.length > 16) fail('HOST_RESULT_INVALID');
   return value.map(item => {
@@ -120,7 +126,7 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
   if (state.status === 'RUNNING') return { status: 'BLOCKED', code: 'RUN_INTERRUPTED' };
   const start = performance.now();
   const elapsed = () => Math.max(0, Math.ceil(performance.now() - start));
-  let admitted = false, registered = false, journalOpen = false, checkpointFailed = false, recordedMs = 0;
+  let admitted = false, registered = false, journalOpen = false, checkpointFailed = false, recordedMs = 0, scenarioRejections = 0;
   const identity = Object.fromEntries(['ownerId', 'sessionId', 'conversationId', 'runId'].map(key => [key, state[key]]));
   const ownState = () => Object.entries(identity).every(([key, value]) => state[key] === value);
   const recordTime = () => {
@@ -278,14 +284,20 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
           } else output = await changed(result, false);
         } else if (call.name === 'propose_scenarios') {
           const cases = args.cases;
-          if (!cases.length || cases.length > 8
-              || args.revisionId !== state.handles.revisionId || args.expectedDraftVersion !== state.handles.draftVersion) fail('INVALID_TOOL_ARGUMENTS');
-          for (const value of cases) boundedText(value, 65536);
-          if (size(cases) > 49152) fail('INVALID_TOOL_ARGUMENTS');
+          if (!cases.length || cases.length > 8) invalidScenarioArgument('SCENARIO_COUNT_INVALID', '/cases');
+          if (args.revisionId !== state.handles.revisionId) invalidScenarioArgument('DRAFT_HANDLE_MISMATCH', '/revisionId');
+          if (args.expectedDraftVersion !== state.handles.draftVersion) invalidScenarioArgument('DRAFT_HANDLE_MISMATCH', '/expectedDraftVersion');
+          for (const [index, value] of cases.entries()) {
+            if (typeof value !== 'string' || !value.isWellFormed() || !value.trim() || Buffer.byteLength(value) > 65536)
+              invalidScenarioArgument('SCENARIO_TEXT_INVALID', `/cases/${index}`);
+          }
+          if (size(cases) > 49152) invalidScenarioArgument('SCENARIO_BYTES_LIMIT', '/cases');
           const result = await wait(() => host.proposeScenarios(args.revisionId, [...cases], args.expectedDraftVersion));
           if (object(result) && Object.hasOwn(result, 'diagnostics')) {
-            output = { diagnostics: diagnostics(result.diagnostics) }; await currentDraft();
-          } else output = await changed(result, true);
+            const error = new AuthoringError('INVALID_TOOL_ARGUMENTS');
+            error.diagnostics = diagnostics(result.diagnostics);
+            await currentDraft(); throw error;
+          } else { output = await changed(result, true); scenarioRejections = 0; }
         } else if (call.name === 'simulate_draft') {
           if (args.revisionId !== state.handles.revisionId || args.expectedDraftVersion !== state.handles.draftVersion || !state.handles.suiteDigest) fail('INVALID_TOOL_ARGUMENTS');
           const result = await wait(() => host.simulate(args.revisionId, args.expectedDraftVersion, combined));
@@ -320,7 +332,12 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
         } else if (size(event) > 131072) fail('BYTE_LIMIT');
       } catch (error) {
         if (!(error instanceof AuthoringError) || error.code !== 'INVALID_TOOL_ARGUMENTS') throw error;
-        state.pending = { id: call.id, output: JSON.stringify({ ok: false, code: error.code }) };
+        const scenario = call.name === 'propose_scenarios';
+        if (scenario) scenarioRejections++;
+        state.pending = { id: call.id, output: JSON.stringify({ ok: false, code: error.code,
+          ...(scenario && { diagnostics: error.diagnostics ?? [{ code: 'INVALID_TOOL_ARGUMENTS', path: '/arguments' }],
+            currentDraft: { ...state.handles }, remainingAttempts: 3 - scenarioRejections }) }) };
+        if (scenario && scenarioRejections >= 3) event = { status: 'BLOCKED', code: 'INVALID_TOOL_ARGUMENTS' };
         outcome = 'REJECTED';
       }
       const contextFull = size({ continuation: state.continuation, pending: state.pending }) > 262144;

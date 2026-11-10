@@ -138,8 +138,8 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
   const config = readAuthoringConfig(unconfigured ? {} : { KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
-    // Ten offline OpenAI reservations total 3.19488 USD across the mismatch and explicit same-discussion repair.
-    KEIR_AI_MAX_USD: missingDue ? '6' : semanticMismatch ? '3.2' : '3', OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
+    // Ten offline OpenAI reservations now total 3.87072 USD across mismatch and explicit repair.
+    KEIR_AI_MAX_USD: missingDue ? '7.5' : semanticMismatch ? '3.9' : '3', OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
   assert.equal(config.status, unconfigured ? 'unavailable' : 'ready');
   const prefix = join(resolve(tmpdir()), 'keir-authoring-offline-');
   const directory = await mkdtemp(prefix), origin = `http://127.0.0.1:${port}`, requests = [];

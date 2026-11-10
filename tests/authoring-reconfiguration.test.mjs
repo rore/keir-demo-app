@@ -18,6 +18,90 @@ const reply = { calls: [], text: 'Ready to continue.', continuation: { opaque: '
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const held = db => db.prepare('SELECT reserved_micros n FROM authoring_budget WHERE id=1').get().n;
 
+test('old OpenAI reservations retain a conservative surcharge across restart, owner and configuration changes', async t => {
+  const db = openData(':memory:'), lifecycle = createLifecycle(db);
+  let service, calls = 0;
+  const create = config => createAuthoringService({ db, lifecycle, config,
+    providerFactory: value => ({ ...value, complete: async () => { calls++; return reply; } }) });
+  t.after(async () => { await service?.close(); db.close(); });
+  service = create({ ...readSetupConfig(settingsInput()), reserveMicros: 319488 });
+  const first = await service.turn('maya', input('old-reservation'), lease);
+  await service.wait('maya', first.conversation.id); await service.close();
+  const receipt = db.prepare('SELECT * FROM authoring_dispatches').all();
+  assert.equal(held(db), 319488);
+  service = create(readSetupConfig(settingsInput('synthetic-key', '0.706560')));
+  let persisted = 0;
+  assert.throws(() => service.configure(readSetupConfig(settingsInput('synthetic-key', '0.387071')), () => persisted++), { code: 'SPEND_LIMIT' });
+  assert.equal(persisted, 0);
+  const rejected = await service.turn('leo', input('old-hold-blocks-owner'), lease);
+  assert.equal((await service.wait('leo', rejected.conversation.id)).code, 'SPEND_LIMIT');
+  assert.equal(calls, 1, 'raw old hold plus new reservation is insufficient once its missing surcharge is retained');
+  assert.deepEqual(db.prepare('SELECT * FROM authoring_dispatches').all(), receipt, 'historical receipts are not rewritten');
+  service.configure(readSetupConfig(settingsInput('synthetic-key', '0.774144')), () => {});
+  const exact = await service.turn('leo', input('exact-corrected-allowance'), lease);
+  assert.equal((await service.wait('leo', exact.conversation.id)).status, 'IDLE');
+  assert.equal(calls, 2); assert.equal(held(db), 319488 + 387072, 'raw reservations stay immutable and do not compound the surcharge');
+  const stopped = await service.turn('sam', input('no-third-owner-credit'), lease);
+  assert.equal((await service.wait('sam', stopped.conversation.id)).code, 'SPEND_LIMIT');
+  assert.equal(calls, 2);
+});
+
+test('reset keeps unjournaled old allowance charged, and startup/configuration never dispatches or rewrites it', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'keir-legacy-allowance-')), path = join(directory, 'app.sqlite');
+  let db = openData(path), service, calls = 0;
+  const create = config => createAuthoringService({ db, lifecycle: createLifecycle(db), config,
+    providerFactory: value => ({ ...value, complete: async () => { calls++; return reply; } }) });
+  t.after(async () => { await service?.close(); db?.close(); rmSync(directory, { recursive: true, force: true }); });
+  service = create({ ...readSetupConfig(settingsInput()), reserveMicros: 319488 });
+  const first = await service.turn('maya', input('legacy-before-reset'), lease);
+  await service.wait('maya', first.conversation.id); await service.close(); db.close();
+  await resetData(directory, true); db = openData(path);
+  assert.equal(held(db), 319488); assert.equal(db.prepare('SELECT COUNT(*) n FROM authoring_dispatches').get().n, 0);
+  service = create(readSetupConfig(settingsInput('synthetic-key', '0.706560')));
+  assert.equal(calls, 1); assert.equal(held(db), 319488);
+  const blocked = await service.turn('maya', input('after-reset-blocked'), lease);
+  assert.equal((await service.wait('maya', blocked.conversation.id)).code, 'SPEND_LIMIT'); assert.equal(calls, 1);
+  service.configure(readSetupConfig(settingsInput('synthetic-key', '0.774144')), () => {});
+  const exact = await service.turn('maya', input('after-reset-exact'), lease);
+  assert.equal((await service.wait('maya', exact.conversation.id)).status, 'IDLE');
+  assert.equal(calls, 2); assert.equal(held(db), 706560);
+});
+
+test('unattributed allowance rounding and overflow fail closed before any provider dispatch', async t => {
+  for (const raw of [1, Number.MAX_SAFE_INTEGER]) {
+    const db = openData(':memory:'); let calls = 0;
+    db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(raw);
+    const service = createAuthoringService({ db, lifecycle: createLifecycle(db),
+      config: readSetupConfig(settingsInput('synthetic-key', raw === 1 ? '0.387073' : '')),
+      providerFactory: value => ({ ...value, complete: async () => { calls++; return reply; } }) });
+    t.after(async () => { await service.close(); db.close(); });
+    if (raw === 1) {
+      const accepted = await service.turn('maya', input('rounded-unknown-credit'), lease);
+      assert.equal((await service.wait('maya', accepted.conversation.id)).code, 'SPEND_LIMIT');
+    } else await assert.rejects(service.turn('maya', input('overflow-credit'), lease), { code: 'CHECKPOINT_UNCERTAIN' });
+    assert.equal(calls, 0); assert.equal(held(db), raw);
+  }
+});
+
+test('known other-provider and corrected OpenAI receipts are not given the legacy surcharge', async t => {
+  const db = openData(':memory:'), lifecycle = createLifecycle(db); let service, calls = 0;
+  const create = config => createAuthoringService({ db, lifecycle, config,
+    providerFactory: value => ({ ...value, complete: async () => { calls++; return reply; } }) });
+  t.after(async () => { await service?.close(); db.close(); });
+  service = create(readSetupConfig({ ...settingsInput(), provider: 'anthropic', model: 'claude-haiku-5-5' }));
+  const first = await service.turn('maya', input('known-other-provider'), lease);
+  await service.wait('maya', first.conversation.id); await service.close();
+  assert.equal(held(db), 77824);
+  service = create(readSetupConfig(settingsInput('synthetic-key', '0.464896')));
+  const exact = await service.turn('leo', input('corrected-exact-fit'), lease);
+  assert.equal((await service.wait('leo', exact.conversation.id)).status, 'IDLE');
+  assert.equal(held(db), 77824 + 387072); assert.equal(calls, 2);
+  service.configure(readSetupConfig(settingsInput('synthetic-key', '0.464896')), () => {});
+  db.prepare('UPDATE authoring_budget SET reserved_micros=reserved_micros-1').run();
+  await assert.rejects(service.turn('maya', input('inconsistent-held-total'), lease), { code: 'CHECKPOINT_UNCERTAIN' });
+  assert.equal(calls, 2);
+});
+
 test('replacement cannot persist while a cancelled provider is settling and never refunds reservations', async t => {
   const db = openData(':memory:'), entered = gate(), release = gate();
   const original = readSetupConfig(settingsInput(), randomUUID());

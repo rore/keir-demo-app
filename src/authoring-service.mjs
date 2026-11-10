@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, transaction } from './data.mjs';
 import { loadHost, TASK_HOOKS, TASK_DEFINITION, digest, json } from './extension-catalog.mjs';
-import { readAuthoringConfig } from './authoring-config.mjs';
+import { readAuthoringConfig, LEGACY_OPENAI_RESERVE_MICROS, OPENAI_RESERVE_MICROS } from './authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
 import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './authoring-agent.mjs';
 import { authoringExample, businessContext, evidenceSummary } from './authoring-example.mjs';
@@ -26,6 +26,7 @@ const safeMessage = code => ({
   CONTEXT_LIMIT: 'Progress is saved. Continue this discussion to work from the current draft and recent context.',
   CONVERSATION_LIMIT: 'The owner conversation limit has been reached.', CONFIG_CHANGED: 'The AI configuration changed. Check saved state before sending again.',
   BUDGET_EXHAUSTED: 'This authoring run reached its resource limit.', REVIEW_NOT_READY: 'Run the current independent examples before offering review.',
+  INVALID_TOOL_ARGUMENTS: 'The assistant could not finish preparing the example checks. Saved work is kept. Continue explicitly to try again.',
 }[code] ?? 'Authoring could not finish safely. Check saved state before continuing.');
 const error = (status, code) => { const value = new AppError(status, safeMessage(code)); value.code = codeFor(code); return value; };
 const stop = code => { throw new AuthoringError(code); };
@@ -53,6 +54,20 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   const held = () => {
     const value = db.prepare('SELECT reserved_micros FROM authoring_budget WHERE id=1').get()?.reserved_micros;
     if (!integer(value)) stop('CHECKPOINT_UNCERTAIN'); return value;
+  };
+  const effectiveHeld = () => {
+    const raw = held();
+    const { tracked, legacy } = db.prepare(`SELECT COALESCE(SUM(reserved_micros),0) AS tracked,
+      COALESCE(SUM(CASE WHEN reserved_micros=? THEN 1 ELSE 0 END),0) AS legacy
+      FROM authoring_dispatches WHERE kind='provider'`).get(LEGACY_OPENAI_RESERVE_MICROS);
+    if (!integer(tracked) || tracked > raw || !integer(legacy)) stop('CHECKPOINT_UNCERTAIN');
+    const old = BigInt(LEGACY_OPENAI_RESERVE_MICROS), delta = BigInt(OPENAI_RESERVE_MICROS - LEGACY_OPENAI_RESERVE_MICROS);
+    // Reset keeps credit held but removes dispatch history. Treat unaccounted holds as
+    // legacy OpenAI at worst, without rewriting immutable receipts or refunding credit.
+    const untracked = BigInt(raw - tracked);
+    const total = BigInt(raw) + BigInt(legacy) * delta + (untracked * delta + old - 1n) / old;
+    if (total > BigInt(Number.MAX_SAFE_INTEGER)) stop('CHECKPOINT_UNCERTAIN');
+    return Number(total);
   };
   const decode = row => {
     try { return { state: JSON.parse(row.state), operations: JSON.parse(row.operations), view: JSON.parse(row.view) }; }
@@ -319,7 +334,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         if (cp.phase === 'RESULT' && (!prior.state.inFlight || cp.ordinal !== prior.state.inFlight.ordinal
             || cp.kind !== prior.state.inFlight.kind || cp.callId !== prior.state.inFlight.callId)) stop('HOST_RESULT_INVALID');
         const nextHeld = held() + delta;
-        if (!integer(nextHeld) || nextHeld > config.maxMicros) stop('SPEND_LIMIT');
+        if (!integer(nextHeld) || effectiveHeld() + delta > config.maxMicros) stop('SPEND_LIMIT');
         if (cp.phase === 'DISPATCH') db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,NULL)')
           .run(ctx.id, ctx.owner, ctx.runId, cp.ordinal, cp.kind, cp.callId ?? null, delta);
         if (cp.phase === 'RESULT') {
@@ -361,7 +376,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         for (const message of messages) appendMessage(ctx.owner, ctx.id, message);
       });
       committed = true; ctx.admitted = true; ctx.state = state;
-      ctx.context.budget.remainingMicros = Math.max(0, config.maxMicros - held());
+      ctx.context.budget.remainingMicros = Math.max(0, config.maxMicros - effectiveHeld());
       checkpointFault({ stage: 'afterCommit', phase: cp.phase, runId: ctx.runId, ordinal: cp.ordinal });
     } catch (cause) {
       const failure = cause instanceof AuthoringError ? cause : new AuthoringError('CHECKPOINT_UNCERTAIN');
@@ -553,7 +568,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       baseGeneration: link?.base_generation ?? (input.target.kind === 'revise' ? input.target.selectionGeneration : null),
       tracked: new Set(), admitted: false };
     ctx.context = { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId,
-      budget: { remainingMicros: Math.max(0, config.maxMicros - held()) },
+      budget: { remainingMicros: Math.max(0, config.maxMicros - effectiveHeld()) },
       current: () => {
         if (closing || controller.signal.aborted || lease.current() !== true) return false;
         if (ctx.admitted || input.target.kind !== 'create') {
@@ -652,7 +667,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     configure(next, persist) {
       if (closing || live.size) throw error(409, 'AI_BUSY');
       if (next.status !== 'ready') throw error(400, 'AI_CONFIG_INVALID');
-      if (next.maxMicros < held()) throw error(409, 'SPEND_LIMIT');
+      if (next.maxMicros < effectiveHeld()) throw error(409, 'SPEND_LIMIT');
       // No await: admission, persistence and installation share one event-loop turn.
       persist(); config = next;
     },

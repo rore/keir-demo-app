@@ -150,7 +150,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect(mutations).toHaveLength(2);
     expect(fixture.requests.map(item => item.name)).toEqual(Array.from({ length: 2 }, () => ['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']).flat());
-    expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(3_194_880);
+    expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(3_870_720);
   } finally { await fixture.close(); }
 });
 
@@ -344,7 +344,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(conversation.status).toBe('REVIEW_AVAILABLE'); expect(conversation.review.eligible).toBe(true);
       expect(conversation.version).toBe(2); expect(conversation.draft.draftVersion).toBe(2);
       expect(transcript.messages.filter(message => message.role === 'assistant' && message.text === fixture.metadata.question)).toHaveLength(1);
-      expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(8 * (provider === 'openai' ? 319488 : 77824));
+      expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(8 * (provider === 'openai' ? 387072 : 77824));
       const state = await read('extensions');
       const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
       expect(state.selection.revision?.id ?? null).toBe(selectedA.revision_id);

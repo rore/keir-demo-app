@@ -1,9 +1,13 @@
 const tariffs = {
-  openai: { model: 'gpt-5.6-terra', input: 2, output: 12, key: 'OPENAI_API_KEY' },
+  // 30-minute cache writes cost 1.25x ordinary input; reserve the highest reachable rate.
+  openai: { model: 'gpt-5.6-terra', input: 2.50, output: 12, key: 'OPENAI_API_KEY' },
   anthropic: { model: 'claude-haiku-5-5', input: 0.50, output: 2.50, key: 'ANTHROPIC_API_KEY' }
 };
 
 const unavailable = code => Object.freeze({ status: 'unavailable', code });
+
+export const LEGACY_OPENAI_RESERVE_MICROS = 319488;
+export const OPENAI_RESERVE_MICROS = Math.ceil(135168 * tariffs.openai.input + 4096 * tariffs.openai.output);
 
 export const authoringChoices = Object.freeze(Object.entries(tariffs).map(([provider, { model }]) => Object.freeze({ provider, model })));
 
