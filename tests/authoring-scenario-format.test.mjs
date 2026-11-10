@@ -199,7 +199,9 @@ for (const extra of ['', ' Please show the checked results before asking for my 
       const cases = structuredClone(desired.cases); delete cases[0].expect.outcome.trace;
       name = 'propose_scenarios'; args = { revisionId: compiled.revisionId, cases: serialize(cases), expectedDraftVersion: compiled.draftVersion };
     } else if (index === 3 || index === 4) {
-      assert.deepEqual(result, { ok: true, result: { diagnostics: [{ code: 'INVALID_SCENARIO', path: index === 3 ? '/cases/0' : '/cases/3' }] } });
+      assert.deepEqual(result, { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
+        diagnostics: [{ code: 'INVALID_SCENARIO', path: index === 3 ? '/cases/0' : '/cases/3' }],
+        currentDraft: compiled, remainingAttempts: index === 3 ? 2 : 1 });
       const state = lifecycle.state('maya', extensionId);
       assert.equal(state.draft.id, compiled.revisionId); assert.equal(state.draftVersion, compiled.draftVersion);
       assert.equal(state.draft.suiteDigest, null); assert.equal(state.approved, false);
@@ -280,7 +282,8 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const before = rows(db, nativeTables);
   const openai = provider === 'openai';
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: openai ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
-    KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
+    // Eight scripted requests include read-only reopening; OpenAI reserves 3.096576 USD.
+    KEIR_AI_MAX_USD: '3.1', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
   const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v5.md', import.meta.url), 'utf8');
   const calls = [], requestBytes = [];
   function respond(openaiContent, anthropicContent, stopReason) {

@@ -10,7 +10,7 @@ const valid = (provider, model, cap, keyName, key = 'secret-value') => ({
 test('accepts supported tariffs with exact microdollar caps and hidden credentials', () => {
   const original = process.env.KEIR_AI_PROVIDER;
   const cases = [
-    [valid('openai', 'gpt-5.6-terra', '1.234567', 'OPENAI_API_KEY'), 1_234_567, 319488],
+    [valid('openai', 'gpt-5.6-terra', '1.234567', 'OPENAI_API_KEY'), 1_234_567, 387072],
     [valid('anthropic', 'claude-haiku-5-5', '0.01', 'ANTHROPIC_API_KEY'), 10_000, 77_824]
   ];
   for (const [env, maxMicros, reserveMicros] of cases) {
@@ -35,6 +35,15 @@ test('Haiku reservation covers reachable input tariff tiers', () => {
   }
 });
 
+test('Terra reservation covers all reachable ordinary, cache-read and 30-minute cache-write input mixes', () => {
+  const config = readAuthoringConfig(valid('openai', 'gpt-5.6-terra', '1', 'OPENAI_API_KEY'));
+  for (const [ordinary, cached, written] of [[135168, 0, 0], [0, 135168, 0], [0, 0, 135168], [1000, 100000, 34168]]) {
+    const cost = Math.ceil(ordinary * 2 + cached * 0.2 + written * 2.5 + 4096 * 12);
+    assert.ok(config.reserveMicros >= cost);
+  }
+  assert.equal(config.reserveMicros, 387072, 'reserve the all-cache-write worst case, without refunding discounted requests');
+});
+
 test('missing provider does not read credential getters', () => {
   const env = { get OPENAI_API_KEY() { throw Error('read key'); } };
   assert.deepEqual(readAuthoringConfig(env), { status: 'unavailable', code: 'AI_NOT_CONFIGURED' });
@@ -45,7 +54,7 @@ test('missing or blank environment allowance leaves cost accounting enabled with
     const config = readAuthoringConfig(valid('openai', 'gpt-5.6-terra', cap, 'OPENAI_API_KEY'));
     assert.equal(config.status, 'ready');
     assert.equal(config.uncapped, true);
-    assert.equal(config.reserveMicros, 319488);
+    assert.equal(config.reserveMicros, 387072);
   }
 });
 

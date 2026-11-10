@@ -483,7 +483,7 @@ for (const stage of ['beforeCommit', 'afterCommit']) test(`${stage} DISPATCH fau
   if (stage === 'afterCommit') assert.equal(dispatches(db, current.id)[0].outcome, 'UNKNOWN');
 });
 
-for (const [provider, cap] of [['openai', '0.319488'], ['anthropic', '0.077824']]) test(`${provider} concurrent owners share the durable operator allowance rather than per-conversation credit`, async t => {
+for (const [provider, cap] of [['openai', '0.387072'], ['anthropic', '0.077824']]) test(`${provider} concurrent owners share the durable operator allowance rather than per-conversation credit`, async t => {
   const hold = deferred(), entered = deferred();
   t.after(() => hold.resolve());
   const fake = wire(provider, async () => { entered.resolve(); await hold.promise; return { text: 'Finished.' }; });
@@ -743,8 +743,9 @@ test(`${provider} repairs ${defect} native scenario rejection without changing o
       return { name: 'propose_scenarios', arguments: { revisionId: compiled.revisionId, cases: invalid, expectedDraftVersion: 1 } };
     }
     if (index === 2) {
-      assert.deepEqual(prior, { ok: true, result: { diagnostics: [{ code: defect === 'duplicate-id' ? 'DUPLICATE_SCENARIO_ID' : 'INVALID_SCENARIO',
-        path: defect === 'duplicate-key' ? '/cases/0' : '/cases/1' }] } });
+      assert.deepEqual(prior, { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
+        diagnostics: [{ code: defect === 'duplicate-id' ? 'DUPLICATE_SCENARIO_ID' : 'INVALID_SCENARIO',
+          path: defect === 'duplicate-key' ? '/cases/0' : '/cases/1' }], currentDraft: compiled, remainingAttempts: 2 });
       assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draft.id, compiled.revisionId);
       assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draftVersion, 1); assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).suiteDigest, null);
       assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 1);

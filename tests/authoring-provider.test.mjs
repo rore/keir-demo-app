@@ -49,6 +49,7 @@ test('OpenAI uses native strict tools and preserves reasoning, call IDs and tool
   assert.equal(new Headers(init.headers).get('authorization'), `Bearer ${secret}`);
   assert.equal(init.redirect, 'error');
   assert.equal(body.store, false);
+  assert.deepEqual(body.prompt_cache_options, { ttl: "30m" });
   assert.equal(body.parallel_tool_calls, false);
   assert.equal(body.reasoning.effort, 'low');
   assert.equal(body.max_output_tokens, 4096);
@@ -179,7 +180,7 @@ for (const name of ['openai', 'anthropic']) test(`${name} preflight checks the e
   const expected = JSON.stringify(name === 'openai' ? {
     model: config(name).model, instructions: full.instructions,
     input: [...native, { type: 'function_call_output', call_id: full.toolResult.id, output: full.toolResult.output },
-      { role: 'user', content: full.input }], store: false, reasoning: { effort: 'low' }, max_output_tokens: 4096,
+      { role: 'user', content: full.input }], store: false, prompt_cache_options: { ttl: '30m' }, reasoning: { effort: 'low' }, max_output_tokens: 4096,
     parallel_tool_calls: false, tools: tools.map(tool => ({ type: 'function', name: tool.name,
       description: tool.description, parameters: tool.parameters, strict: true })),
   } : {

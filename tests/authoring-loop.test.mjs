@@ -125,7 +125,9 @@ test('qualification accepts more than eight explicit inputs while preserving eac
     name: 'ask_clarification', call_id: `clarify-${++calls}`, arguments: JSON.stringify({ question: 'What else should change?' }) }],
   usage: { input_tokens: 1, output_tokens: 1 } }), { headers: { 'content-type': 'application/json' } });
   const inputs = Array.from({ length: 9 }, (_, index) => ({ id: `request-${index}`, text: `Explicit request ${index}` }));
-  const result = await checkAuthoringProvider({ live: true, env: env('openai'), ...f, inputs, fetchImpl });
+  // Nine explicit turns reserve 3.483648 USD at the cache-write worst case.
+  f.context.budget.remainingMicros = 3_500_000;
+  const result = await checkAuthoringProvider({ live: true, env: { ...env('openai'), KEIR_AI_MAX_USD: '3.5' }, ...f, inputs, fetchImpl });
   assert.equal(result.status, 'AWAITING_USER');
   assert.equal(result.counts.inputs, 9); assert.equal(calls, 9);
   const invalid = await checkAuthoringProvider({ live: true, env: env('openai'), ...scenario('openai'), fetchImpl,
@@ -147,7 +149,7 @@ test('project qualification fixture uses isolated durable service and remains in
   assert.equal(requests, 0);
   const result = await checkAuthoringProvider({ ...options, live: true });
   assert.equal(result.status, 'IDLE'); assert.equal(result.counts.calls, 1);
-  assert.equal(result.usage.reservedMicros, 319488); assert.equal(requests, 1);
+  assert.equal(result.usage.reservedMicros, 387072); assert.equal(requests, 1);
   assert.equal(Object.hasOwn(result, 'review'), false);
   assert.equal(JSON.stringify(result).includes('synthetic-openai-key'), false);
 });

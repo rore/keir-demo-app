@@ -43,6 +43,7 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
         if (toolResult) items.push({ type: 'function_call_output', call_id: toolResult.id, output: toolResult.output });
         if (input !== undefined) items.push({ role: 'user', content: input });
         body = { model: config.model, instructions, input: items, store: false,
+          prompt_cache_options: { ttl: '30m' },
           reasoning: { effort: 'low' }, max_output_tokens: maxOutputTokens, parallel_tool_calls: false,
           tools: tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters, strict: true })) };
       } else {

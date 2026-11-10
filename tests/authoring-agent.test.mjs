@@ -162,8 +162,69 @@ test('forbidden tools, extra authority and fake evidence arguments never reach h
     const f = fixture([item]);
     assert.equal((await f.run()).status, 'IDLE');
     assert.deepEqual(f.events, []);
-    assert.deepEqual(JSON.parse(f.requests[1].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
+    const rejected = JSON.parse(f.requests[1].toolResult.output);
+    assert.equal(rejected.ok, false); assert.equal(rejected.code, 'INVALID_TOOL_ARGUMENTS');
+    if (item.name === 'propose_scenarios') {
+      assert.deepEqual(rejected.currentDraft, { revisionId: null, draftVersion: 0, suiteDigest: null });
+      assert.equal(rejected.remainingAttempts, 2);
+      assert.deepEqual(rejected.diagnostics, [{ code: 'SCENARIO_COUNT_INVALID', path: '/cases' }]);
+    } else assert.deepEqual(rejected, { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
   }
+});
+
+test('scenario handle feedback permits exact correction without silently rebasing the rejected request', async () => {
+  const cases = ['{"id":"client-without-due","expect":"DENY"}', '{"id":"client-with-due","expect":"ALLOW"}'];
+  const f = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 }),
+    call('propose_scenarios', { revisionId: 'older', cases, expectedDraftVersion: 2 }),
+    call('propose_scenarios', { revisionId: 'revision1', cases, expectedDraftVersion: 2 }),
+    call('propose_scenarios', { revisionId: 'revision1', cases, expectedDraftVersion: 1 }),
+    call('simulate_draft', { revisionId: 'revision2', expectedDraftVersion: 2 }),
+    call('offer_review', { summary: 'The independently requested examples passed.' })]);
+  assert.equal((await f.run()).status, 'REVIEW_AVAILABLE');
+  for (const [index, path, remaining] of [[2, '/revisionId', 2], [3, '/expectedDraftVersion', 1]]) {
+    assert.deepEqual(JSON.parse(f.requests[index].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
+      diagnostics: [{ code: 'DRAFT_HANDLE_MISMATCH', path }],
+      currentDraft: { revisionId: 'revision1', draftVersion: 1, suiteDigest: null }, remainingAttempts: remaining });
+  }
+  assert.deepEqual(f.events.filter(x => Array.isArray(x) && x[0] === 'scenarios'), [['scenarios', 'revision1', cases, 1]]);
+  assert.equal(f.events.some(x => /approve|activate/.test(String(x))), false);
+});
+
+for (const hostDiagnostics of [false, true]) test(`scenario repair stops after three ${hostDiagnostics ? 'host diagnostics' : 'argument errors'} despite interleaved discovery`, async () => {
+  const scenarios = () => call('propose_scenarios', { revisionId: 'revision1', cases: hostDiagnostics ? ['{}'] : [], expectedDraftVersion: 1 });
+  const f = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 }),
+    scenarios(), call('discover_catalog'), scenarios(), call('discover_catalog'), scenarios(),
+    call('offer_review', { summary: 'Must never be reached.' })]);
+  if (hostDiagnostics) f.host.proposeScenarios = () => ({ diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }] });
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'INVALID_TOOL_ARGUMENTS' });
+  assert.equal(f.requests.length, 6);
+  assert.equal(f.state.pending && JSON.parse(f.state.pending.output).remainingAttempts, 0);
+  assert.deepEqual(f.state.handles, { revisionId: 'revision1', draftVersion: 1, suiteDigest: null });
+  assert.equal(f.events.includes('readEvidence'), false);
+  assert.equal(f.events.some(x => Array.isArray(x) && x[0] === 'simulate'), false);
+  assert.equal(f.state.usage.reservedMicros, 60, 'every dispatched provider request stays charged');
+});
+
+test('successful scenario acceptance resets its repair streak for later explicit scenario work', async () => {
+  const f = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 }),
+    call('propose_scenarios', { revisionId: 'old', cases: ['{}'], expectedDraftVersion: 1 }),
+    call('propose_scenarios', { revisionId: 'revision1', cases: ['{}'], expectedDraftVersion: 1 }),
+    call('propose_scenarios', { revisionId: 'old', cases: ['{}'], expectedDraftVersion: 1 }),
+    call('propose_scenarios', { revisionId: 'revision2', cases: ['{}'], expectedDraftVersion: 2 })]);
+  assert.equal((await f.run()).status, 'IDLE');
+  assert.equal(JSON.parse(f.requests[4].toolResult.output).remainingAttempts, 2);
+  assert.equal(f.state.handles.draftVersion, 3);
+});
+
+for (const [cases, diagnostic] of [[[], 'SCENARIO_COUNT_INVALID'], [[{}], 'SCENARIO_TEXT_INVALID'],
+  [['x'.repeat(49153)], 'SCENARIO_BYTES_LIMIT']]) test(`scenario ${diagnostic} feedback never dispatches malformed examples`, async () => {
+  const f = fixture([call('propose_scenarios', { revisionId: 'compiled', cases, expectedDraftVersion: 1 })],
+    { revisionId: 'compiled', draftVersion: 1 });
+  assert.equal((await f.run()).status, 'IDLE');
+  assert.deepEqual(f.events, []);
+  const result = JSON.parse(f.requests[1].toolResult.output);
+  assert.equal(result.diagnostics[0].code, diagnostic);
+  assert.equal(result.remainingAttempts, 2);
 });
 
 test('old source ID after suite replacement is rejected; absent suite cannot simulate', async () => {
@@ -398,7 +459,9 @@ test('case schema is closed and original malformed JSON strings reach native adm
   };
   assert.equal((await f.run()).status, 'IDLE');
   assert.equal(cases.length, 3, 'host receives an independent array of the exact original strings');
-  assert.deepEqual(JSON.parse(f.requests[1].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
+  assert.deepEqual(JSON.parse(f.requests[1].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
+    diagnostics: [{ code: 'INVALID_TOOL_ARGUMENTS', path: '/arguments' }],
+    currentDraft: { revisionId: 'compiled', draftVersion: 1, suiteDigest: null }, remainingAttempts: 2 });
 });
 
 test('scenario diagnostics preserve current handles, enforce the draft fence and consume the existing budget', async () => {
@@ -414,7 +477,8 @@ test('scenario diagnostics preserve current handles, enforce the draft fence and
     assert.equal(result.code, stale ? 'STALE_DRAFT' : 'SPEND_LIMIT');
     assert.deepEqual(f.state.handles, ready); assert.equal(f.state.counts.tools, 1); assert.equal(f.state.counts.calls, stale ? 1 : 2);
     assert.equal(f.context.budget.remainingMicros, 0); assert.equal(f.requests.length, 1); assert.deepEqual(f.events, []);
-    if (!stale) assert.deepEqual(JSON.parse(f.state.pending.output), { ok: true, result: { diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }] } });
+    if (!stale) assert.deepEqual(JSON.parse(f.state.pending.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
+      diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }], currentDraft: ready, remainingAttempts: 2 });
   }
 });
 

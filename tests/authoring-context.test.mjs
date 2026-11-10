@@ -173,7 +173,8 @@ function authoringTarget(db, conversationId) {
     : { kind: 'revise', extensionId: extension.id, baseRevisionId: extension.draft_revision_id ?? selected.revision_id, selectionGeneration: selected.generation };
 }
 const input = state => ({ extensionId: state.extension.id, revisionId: state.draft.id, draftVersion: state.draftVersion });
-const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '1', OPENAI_API_KEY: 'synthetic-key' });
+// Three scripted context requests reserve 1.161216 USD; retain a finite allowance.
+const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '1.2', OPENAI_API_KEY: 'synthetic-key' });
 
 async function api(t, options = {}) {
   const db = openData(':memory:'), origin = 'http://127.0.0.1:32124';
