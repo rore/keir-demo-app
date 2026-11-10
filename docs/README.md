@@ -4,6 +4,7 @@ Daymark uses Keir for checks before a new task is saved and actions after tasks 
 
 ## Run and use Daymark
 
+- [Screenshot walkthrough](customization-walkthrough.md) follows a project follow-up customization from request to its real saved result; no installation needed to read it.
 - [Run locally](../README.md#run-locally) to try the task workspace and its three demo accounts.
 - [Try a customization](../README.md#try-a-customization) to draft a rule, check examples, approve it, and turn it on.
 - [Configure an AI provider](ai-authoring.md#configure-a-provider) for conversational authoring.

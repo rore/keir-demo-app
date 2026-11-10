@@ -18,6 +18,8 @@ Open the exact address printed in the terminal (by default `http://127.0.0.1:300
 
 ## Try a customization
 
+[Follow the screenshot walkthrough](docs/customization-walkthrough.md) to see a project follow-up rule go from request to a saved task, without running the app.
+
 A before-save rule can require a due date for client-tagged tasks, notes for high-priority tasks, or a review tag in a chosen project. Use **Details** beside quick-add to enter these fields before adding the task. A denied or unavailable check keeps the draft editable. Rules after adding or completing can read tasks and create one task or update the triggering task; their outcomes remain separate from the original save. See the [task customization contract](docs/task-effects.md).
 
 1. With **Java 21** available, open **Customizations** → **New customization**. Use **Configure** to set up a provider, API key and an optional spending allowance. Sending a request to the provider can incur charges. See [AI authoring setup](docs/ai-authoring.md#configure-a-provider).
