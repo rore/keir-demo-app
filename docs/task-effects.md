@@ -1,4 +1,4 @@
-# Task customizations
+# Keir host binding in Daymark
 
 ## Checks before adding
 
@@ -10,7 +10,7 @@ The read-only program returns required `decision` (`ALLOW` or `DENY`) and bounde
 
 Both human/API and automation creation use this check. Successful local READ projections are captured privately, then reread under the native transaction before insertion. Postwrite checks retain authority and deadlines without rejecting the operation for changing its own prewrite predicate. No asynchronous guard work holds the write transaction, and no guard WRITE or recursive READ hook is available.
 
-Human attempts use [native creation identity and readback](task-creation.md). Automation retains its original key and exact immutable receipts: a settled receipt replays before a new guard check; a concurrent saved winner beats a later denial. Confirmed denial maps to the existing `TASK_INVALID`/NONE capability result, while unavailable-before-write maps to `TRANSIENT_FAILURE`/NONE, with separate host diagnostic detail. Unknown write results remain unknown until native readback.
+Human attempts use [native creation identity and readback](native-task-app-design.md#creation-attempts-and-readback). Automation retains its original key and exact immutable receipts: a settled receipt replays before a new guard check; a concurrent saved winner beats a later denial. Confirmed denial maps to the existing `TASK_INVALID`/NONE capability result, while unavailable-before-write maps to `TRANSIENT_FAILURE`/NONE, with separate host diagnostic detail. Unknown write results remain unknown until native readback.
 
 ## Actions after adding or completing
 

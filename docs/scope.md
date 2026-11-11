@@ -1,10 +1,9 @@
 # Application scope
 
-Daymark is a local task manager and reference consumer of Keir. It uses a React/TypeScript UI, Fastify and SQLite. Native tasks and saved history need Node.js, without AI or Java; conversational authoring uses an operator-configured provider and Java 21. See [setup](../README.md#run-locally) and [AI configuration](ai-authoring.md).
+Daymark demonstrates Keir authoring, simulation, approval and execution through a small task-domain host. The basic workspace and saved history need Node.js, without AI or Java; conversational authoring uses an operator-configured provider and Java 21. See [setup](../README.md#run-locally) and [AI configuration](ai-authoring.md).
 
 ## Capabilities
 
-- Projects and tasks support tags, priority, due times and project search, with data retained across restarts.
 - Three fictional demo accounts have separate tasks, customizations, discussions, approvals and active selections. Sign-in is local demo impersonation; production identity integration is outside this app's scope.
 - A selected check can allow or deny a new task before saving. An unavailable selected check blocks the save and preserves the entered fields. ALLOW still requires native permission, validation and transaction checks.
 - Rules after task creation or completion can read scoped data and create one task or update the triggering task. They run after native commit; dates on tasks do not schedule rule execution.
