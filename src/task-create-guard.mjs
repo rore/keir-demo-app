@@ -34,7 +34,7 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
         || json(selection(context.owner)) !== context.selectionIdentity || !lifecycle.current(context.captured)
         || !lifecycle.admissionCurrent(context.admission)) return false;
     const execution = lifecycle.execution(context.owner, context.captured.revisionId, context.extensionId);
-    return json(execution.host.pins) === json(binding.host.pins) && json(execution.pins) === context.pinsIdentity
+    return json(execution.host.pins) === context.hostPinsIdentity && json(execution.pins) === context.pinsIdentity
       && digest(execution.artifactBytes) === context.artifactDigest && withinDeadline(context, deadline);
   }
 
@@ -74,7 +74,7 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
       'tasks.update': { version: '1', mode: 'real', keyType, invoke: async () => ({ ...denied(), effect: 'NONE' }) },
     });
     if (!result.diagnostic && result.boundModel)
-      binding = { host, boundModel: result.boundModel, consume: createTaskDecisionConsumer(host), keyType };
+      binding = { modelDigest: host.pins.modelDigest, boundModel: result.boundModel, keyType };
   } catch { /* A missing or incompatible selected model blocks; it never means no binding. */ }
 
   async function check({ owner, input, selection: selected, deadline, operationDeadline, signal, requestKey }) {
@@ -96,16 +96,16 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
       const execution = lifecycle.execution(owner, captured.revisionId, link.extension_id);
       const artifactDigest = digest(execution.artifactBytes), pins = execution.pins;
       const selectedPins = JSON.parse(selected.binding_pins);
-      if (json(execution.host.pins) !== json(binding.host.pins)
-          || Object.entries(binding.host.pins).some(([name, value]) => json(pins[name]) !== json(value))
+      if (execution.host.pins.modelDigest !== binding.modelDigest
+          || Object.entries(execution.host.pins).some(([name, value]) => json(pins[name]) !== json(value))
           || artifactDigest !== pins.artifactDigest
           || typeof selectedPins.approvedEvidenceId !== 'string'
           || json(selectedPins) !== json({ ...pins, approvedEvidenceId: selectedPins.approvedEvidenceId })) return blocked;
       context = { owner, projectId: input.projectId, captured, extensionId: link.extension_id, signal, deadline, operationDeadline,
         admission: { owner, itemId: link.extension_id, revisionId: captured.revisionId, hookId: hook, pins: selectedPins },
-        selectionIdentity: json(selected), pinsIdentity: json(pins), artifactDigest, lastNow: -1, reads: [], calls: 0 };
+        selectionIdentity: json(selected), pinsIdentity: json(pins), hostPinsIdentity: json(execution.host.pins), artifactDigest, lastNow: -1, reads: [], calls: 0 };
       if (!authority(context, deadline)) return blocked;
-      const modelDigest = binding.host.pins.modelDigest;
+      const modelDigest = binding.modelDigest;
       if (preparedSlot?.artifactDigest !== artifactDigest || preparedSlot.modelDigest !== modelDigest) {
         const prepared = prepareProgram(execution.artifactBytes, binding.boundModel);
         if (prepared.diagnostic || !prepared.prepared) return blocked;
@@ -119,7 +119,7 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
         bindings: hostBindings(execution.artifactBytes, owner), requestKey,
         event: { id: eventId, source: input.projectId }, deadline,
       });
-      const consumed = binding.consume(outcome);
+      const consumed = createTaskDecisionConsumer(execution.host)(outcome);
       if (!['ALLOWED', 'DENIED'].includes(consumed.status) || !authority(context, deadline)) return blocked;
       const decision = Object.freeze({ status: consumed.status, message: consumed.result.message });
       decisions.set(decision, context);

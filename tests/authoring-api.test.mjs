@@ -59,7 +59,7 @@ const rowState = db => JSON.parse(db.prepare('SELECT state FROM authoring_conver
 const dispatches = (db, id = db.prepare('SELECT id FROM authoring_conversations ORDER BY rowid DESC LIMIT 1').get().id) =>
   db.prepare('SELECT * FROM authoring_dispatches WHERE conversation_id=? ORDER BY rowid').all(id);
 const reserved = db => db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
-const guideFile = new URL('../vendor/customer-authoring-guide-v5.md', import.meta.url);
+const guideFile = new URL('../vendor/customer-authoring-guide-v7.md', import.meta.url);
 function substituteGuide(t, path) {
   const open = fs.openSync;
   return t.mock.method(fs, 'openSync', (file, ...options) =>

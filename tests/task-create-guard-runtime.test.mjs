@@ -45,7 +45,7 @@ async function activate(f, fixture) {
   let state = await f.lifecycle.compile(owner, { extensionId, hookId: 'TaskBeforeCreate', draftVersion: 0, source: fixture.source }, () => {});
   const artifact = JSON.parse(f.lifecycle.execution(owner, state.draft.id, extensionId).artifactBytes);
   assert.equal(artifact.format, 'keir-artifact/3');
-  assert.equal(artifact.compiler, 'keir-compiler-java/0.3.0');
+  assert.equal(artifact.compiler, 'keir-compiler-java/0.3.1');
   const input = value => ({ extensionId, revisionId: value.draft.id, draftVersion: value.draftVersion });
   state = await f.lifecycle.proposeScenarios(owner, { ...input(state), cases: fixture.cases }, () => {});
   state = await f.lifecycle.simulate(owner, input(state), () => {});

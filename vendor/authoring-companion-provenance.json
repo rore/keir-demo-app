@@ -23,6 +23,19 @@
       "source": null,
       "bytes": 2920,
       "sha256": "sha256:aeece1c28713ba945743dca47ad4fc6242f3f94cfda4fac9005b5b9df7afb5f7"
+    },
+    "customer-authoring-guide-v7.md": {
+      "edition": 7,
+      "status": "verified-candidate",
+      "release": null,
+      "revision": "bdd273112c7a86d255082c1de545a943cc2d87e6",
+      "source": "docs/agents/customer-authoring-guide-v7.md",
+      "bytes": 6481,
+      "sha256": "sha256:81a8c46630ab63f643b396f55d06b67d792236ac79584760a64d1721c602721f",
+      "distribution": {
+        "file": "keir-authoring-v7-candidate.zip",
+        "sha256": "sha256:8a4101a64fbbf4d09b59f936083a48df39256fcba8386cee66bd5f7bcad2c4a7"
+      }
     }
   }
 }

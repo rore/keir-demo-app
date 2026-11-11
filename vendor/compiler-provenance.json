@@ -1,20 +1,20 @@
 {
   "schema": "keir-demo-compiler-distribution/1",
-  "compiler": "keir-compiler-java/0.3.0",
-  "status": "verified-release",
-  "release": "v0.3.0",
+  "compiler": "keir-compiler-java/0.3.1",
+  "status": "verified-candidate",
+  "release": null,
   "artifact": {
-    "file": "keir-compiler-java-0.3.0-cli.jar",
-    "sha256": "sha256:368ce1fc3e7ba54fb5e3c9880dc1c17f9dc9fc03cd6fe7a0df55fcc025e1c7a3",
-    "bytes": 8819384
+    "file": "keir-compiler-java-0.3.1-cli.jar",
+    "sha256": "sha256:2abc650ac1c6b2a697cfee61aa71fe14d653f4cda1efa44f1cd2dd33292ad94b",
+    "bytes": 8819519
   },
   "distribution": {
-    "file": "keir-compiler-cli-0.3.0.zip",
-    "sha256": "sha256:596ef85cbec91d9e459fcd67aff83e05099df9b7610fd0fca643e573d27d090c"
+    "file": "keir-compiler-cli-0.3.1.zip",
+    "sha256": "sha256:0e9265688572cdd0dc219744882f788dcc20d5f68076297b9ba0fa10e5750096"
   },
   "source": {
     "repository": "https://github.com/rore/keir-core",
-    "revision": "b2329440dd2a25acc547f3ebfea214748d912022"
+    "revision": "5c772d02b4dc92bb28ea8aedabd34498ff6d9391"
   },
   "environment": {
     "celJava": "0.14.0",
@@ -25,7 +25,7 @@
   "java": {
     "bytecode_minimum": 21,
     "class_major": 65,
-    "qualified_runtime": "SapMachine 21.0.12+8-LTS"
+    "qualified_runtime": "Temurin 21.0.13+9-LTS"
   },
-  "notices": "compiler-notices/THIRD-PARTY.txt"
+  "notices": "compiler-0.3.1-notices/THIRD-PARTY.txt"
 }

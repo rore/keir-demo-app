@@ -35,7 +35,7 @@ A business request becomes a Keir program using only the capabilities Daymark ex
 
 Daymark owns the task data, permissions, capability implementations, conversations, evidence and activation policy. Keir supplies the language, compiler, runtime and simulation contracts. The [authoring guide](docs/ai-authoring.md#how-daymark-runs-the-assistant) follows that boundary; the [source map](src/README.md) links its implementation.
 
-Daymark pins the compiler, runtime and authoring companion from [Keir Core 0.3.0](https://github.com/rore/keir-core/releases/tag/v0.3.0). Provenance records their exact source revisions and archive checksums; [package provenance](docs/package-provenance.md) explains source lookup after the history cleanup. See the [documentation](docs/README.md) for setup, usage, and integration details, or [Contributing](CONTRIBUTING.md) for development and testing.
+This checkout pins the locally qualified [Keir Core 0.3.1 candidate](https://github.com/rore/keir-core/blob/main/docs/releases/core-0.3.1-candidate.md) and licensed authoring companion 7. These candidate packages are not published releases; adoption here does not mean the running demo has been updated. Provenance records their exact source revisions and archive checksums; [package provenance](docs/package-provenance.md) explains source lookup after the history cleanup. See the [documentation](docs/README.md) for setup, usage, and integration details, or [Contributing](CONTRIBUTING.md) for development and testing.
 
 [Keir Core](https://github.com/rore/keir-core) provides the compiler, runtimes and embedding guides.
 
