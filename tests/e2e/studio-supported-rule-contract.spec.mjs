@@ -83,8 +83,24 @@ for (const hook of ['TaskBeforeCreate', 'TaskCreated', 'TaskCompleted']) {
       await expect(card.getByRole('heading', { name, exact: true })).toBeVisible();
       await page.locator('#edit-' + extensionId).click();
       await assertFacts(summary(page), facts);
+      const primaryFacts = summary(page).getByRole('definition');
+      await expect(primaryFacts).toHaveCount(3);
+      for (const fact of await primaryFacts.all()) await expect(fact).toBeVisible();
+      if (hook === 'TaskBeforeCreate') await expect(summary(page).getByText('Stops saving when', { exact: true })).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath(`${hook}-summary.png`) });
       await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
       await expect(review(page)).toContainText('Example tasks; your tasks are unchanged.');
+      const nextStep = review(page).getByRole('button', { name: 'Go to approval', exact: true });
+      await expect(nextStep).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath(`${hook}-simulation.png`) });
+      for (const [width, height] of [[1440, 1000], [390, 844], [683, 384]]) {
+        await page.setViewportSize({ width, height });
+        await nextStep.click();
+        await expect(review(page).locator('#studio-decision-step')).toBeFocused();
+        await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeInViewport();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
       if (hook === 'TaskBeforeCreate') {
         await expect(review(page)).toContainText('Allowed by this rule');
         await expect(review(page)).toContainText('Choose a priority for this task.');
@@ -110,6 +126,99 @@ for (const hook of ['TaskBeforeCreate', 'TaskCreated', 'TaskCompleted']) {
     } finally { await fixture.close(); }
   });
 }
+
+test('created task values are separate from the trigger and naming requires an explicit save', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  const fixture = await startAuthoringFixture({ unconfigured: true, title: 'Follow up' });
+  try {
+    const headers = await signIn(page, fixture);
+    const name = 'My chosen business name';
+    const { extensionId } = await save(page, fixture, headers, 'TaskCompleted', {
+      source: fixture.metadata.source, cases: fixture.metadata.cases,
+    }, name);
+    await collection(page); await page.locator('#edit-' + extensionId).click();
+    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    const example = review(page).getByRole('region', { name: 'Triggering task and created example', exact: true });
+    await expect(example.getByText('Triggering example task', { exact: true })).toBeVisible();
+    const created = example.locator('.rs-task-after');
+    await expect(created).toContainText('Follow up');
+    await expect(created).toContainText('Tags: None');
+    await expect(created).toContainText('Other task details were not checked here.');
+    await expect(created).not.toContainText('Not recorded');
+    await expect(created.locator('.rs-changed-field')).toHaveCount(1);
+    await expect(example).not.toContainText('Before this change');
+
+    const rename = studio(page).getByRole('button', { name: 'Rename', exact: true });
+    await rename.click();
+    const form = studio(page).getByRole('form', { name: 'Rename customization', exact: true });
+    await expect(form.getByLabel('Name', { exact: true })).toHaveValue(name);
+    for (const [width, height] of [[390, 844], [683, 384]]) {
+      await page.setViewportSize({ width, height });
+      await expect(form.getByLabel('Name', { exact: true })).toBeInViewport();
+      await expect(form.getByRole('button', { name: 'Save', exact: true })).toBeInViewport();
+      await expect(form.getByRole('button', { name: 'Use suggested name', exact: true })).toBeInViewport();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`explicit-name-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await form.getByRole('button', { name: 'Use suggested name', exact: true }).click();
+    const suggestion = 'Create “Follow up” tasks';
+    await expect(form.getByLabel('Name', { exact: true })).toHaveValue(suggestion);
+    const currentName = async () => (await (await page.request.get(`${fixture.origin}/api/extensions/${extensionId}`, { headers })).json()).extension.name;
+    expect(await currentName()).toBe(name);
+    await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+    expect(await currentName()).toBe(name);
+    await rename.click();
+    await expect(form.getByLabel('Name', { exact: true })).toHaveValue(name);
+    await form.getByRole('button', { name: 'Use suggested name', exact: true }).click();
+    await form.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(studio(page).locator('#studio-title')).toHaveText(suggestion);
+    expect(await currentName()).toBe(suggestion);
+    await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+    expect(fixture.requests).toHaveLength(0);
+  } finally { await fixture.close(); }
+});
+
+test('tag updates distinguish a recorded empty starting list from an unrecorded list', async ({ page }) => {
+  test.setTimeout(60_000);
+  const fixture = await startAuthoringFixture({ unconfigured: true });
+  try {
+    const headers = await signIn(page, fixture), host = loadHost('TaskCreated');
+    const options = { projectId: fixture.metadata.projectId, destinationProjectId: fixture.metadata.otherProjectId };
+    const source = JSON.parse(taskWorkflowSource(host, 'missing-due', options));
+    source.steps.find(step => step.call === 'tasks.update').args = { addTag: { literal: 'next' } };
+    const cases = taskWorkflowCases(host, 'missing-due', options).map(text => {
+      const row = JSON.parse(text);
+      for (const call of [...row.stubs, ...row.expect.calls]) {
+        if (call.capability === 'tasks.get' && call.response?.kind === 'SUCCESS') call.response.value.tags = [];
+        if (call.capability === 'tasks.update') call.args = { addTag: 'next' };
+      }
+      return JSON.stringify(row);
+    });
+    const { extensionId } = await save(page, fixture, headers, 'TaskCreated', { source: JSON.stringify(source), cases }, 'Tag new tasks');
+    await collection(page); await page.locator('#edit-' + extensionId).click();
+    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    const after = review(page).locator('.rs-before-after .rs-task-after');
+    await expect(after).toContainText('Tags: next');
+    await expect(after).not.toContainText('complete resulting tag list is unknown');
+
+    // A presentation-only compatibility fixture: the real checked run above has
+    // tags, but an older/incomplete projection may omit that starting field.
+    await page.route('**/api/extensions/*/evidence/*', async route => {
+      const response = await route.fetch(), body = await response.json();
+      for (const row of body.reports) if (row.report.scenario?.task) delete row.report.scenario.task.tags;
+      await route.fulfill({ response, json: body });
+    });
+    await page.reload();
+    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    await expect(after).toContainText('Added tag: next');
+    await expect(after).toContainText('Starting tags were not recorded; the complete resulting tag list is unknown.');
+    await expect(after).not.toContainText('Tags: next');
+    await after.getByText('All example task details', { exact: true }).click();
+    await expect(after).not.toContainText('Tags next');
+    expect(fixture.requests).toHaveLength(0);
+  } finally { await fixture.close(); }
+});
 
 test('collection keeps selected A separate from proposed B and resolves names only for the current owner', async ({ page }) => {
   test.setTimeout(60_000);

@@ -7,6 +7,20 @@ const update = (fields, conditions = [], hook = 'TaskCreated') => ({ coverage: '
   action: { capability: 'tasks.update', step: 'write', target: 'triggeringTask', fields } });
 const projectName = id => ({ inbox: 'Inbox & Co', reviews: 'Reviews' })[id];
 
+test('primary action facts retain explicit empty notes and empty tags', () => {
+  const result = describeRule({ coverage: 'complete', hook: 'TaskCompleted', conditions: [],
+    action: { capability: 'tasks.create', target: 'newTask', step: 'write', fields: {
+      title: literal('Follow up'), projectId: literal('reviews'), notes: literal(''), tags: literal([]),
+    } } }, projectName);
+  assert.equal(result.complete, true);
+  assert.match(result.then, /Empty notes\./);
+  assert.match(result.then, /No tags\./);
+  assert.match(result.summary, /leave the new task’s notes empty/);
+  const omitted = describeRule({ coverage: 'complete', hook: 'TaskCompleted', conditions: [],
+    action: { capability: 'tasks.create', target: 'newTask', step: 'write', fields: { title: literal('Follow up') } } }, projectName);
+  assert.doesNotMatch(omitted.then, /Empty notes|No tags/);
+});
+
 test('elapsed rule wording follows the supplied offset and never invents calendar days', () => {
   const rule = seconds => ({ coverage: 'complete', hook: 'TaskCreated', conditions: [{ field: 'dueAbsent', step: 'read' }],
     action: { capability: 'tasks.update', step: 'write', target: 'triggeringTask', fields: { dueAt: { kind: 'eventOffset', seconds } } } });
