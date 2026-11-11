@@ -1,4 +1,4 @@
-# Show Maya what her customization does
+# Historical: rejected guided example
 
 **Rejected design — retained for reference.** The user found the interaction and visual design unclear and not self-explanatory. This proposal is not an implementation baseline; its production handoff below is superseded. The core Studio design roadmap owns the reset.
 

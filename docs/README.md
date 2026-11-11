@@ -8,11 +8,12 @@ Daymark uses Keir for checks before a new task is saved and actions after tasks 
 - [Run locally](../README.md#run-locally) to try the task workspace and its three demo accounts.
 - [Try a customization](../README.md#try-a-customization) to draft a rule, check examples, approve it, and turn it on.
 - [Configure an AI provider](ai-authoring.md#configure-a-provider) for conversational authoring.
-- [Manage saved customizations and outcomes](read-extension-lifecycle.md) explains approval, activation, and what happens when an outcome needs reconciliation.
 - [Local data and recovery](running.md) covers data directories, restart, backup, and reset.
 
 ## Integration reference
 
+- [Customization lifecycle reference](read-extension-lifecycle.md) covers authoring operations, saved evidence, identity and recovery.
+- [Application scope](scope.md) lists implemented capabilities and boundaries.
 - [Native task behavior](native-task-app-design.md) covers task storage, tags, search, and access rules.
 - [Task creation and readback](task-creation.md) explains attempt IDs, lost responses, replay and current project access.
 - [Task completion and effects](task-effects.md) explains how Daymark binds Keir, simulates examples, and records real outcomes.
@@ -21,6 +22,10 @@ Daymark uses Keir for checks before a new task is saved and actions after tasks 
 
 For development, see [Contributing](../CONTRIBUTING.md) and the [test guide](../tests/README.md).
 
-## Proposals and history
+## Design research and history
 
-[Studio embedding](studio-embedding.md) proposes a reusable authoring UI boundary. It is not an independently packaged or qualified Studio integration. The [historical canvas design](historical/extension-studio-canvas-design.md) preserves the earlier interaction direction; use the current usage guides above for today's app.
+These materials document design work rather than instructions for using the current app:
+
+- [Studio embedding](studio-embedding.md): a proposed reusable UI boundary, not an independently packaged integration.
+- [Business-understanding study](studio-business-understanding/concepts.md) and [recommendation](studio-business-understanding/recommendation.md): scripted design research with synthetic examples.
+- [Rejected guided example](studio-guided-example.md), [superseded on-demand proposal](studio-on-demand-review.md) and [canvas-era design](historical/extension-studio-canvas-design.md): retained history.

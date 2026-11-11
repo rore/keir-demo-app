@@ -62,4 +62,10 @@ Choose **Open task** in the outcome. The new **Follow up** opens in the ordinary
 
 Completing a task in **Other project** leaves it completed and creates no follow-up. This simple rule does not check for an existing open **Follow up**: each later matching completion can create another, including completing a follow-up itself. Merely creating the follow-up does not trigger this completion rule.
 
-For saved versions, changes and recovery, see [Review and use a task customization](read-extension-lifecycle.md). For the integration boundary and native effect guarantees, see [Task completion and effects](task-effects.md).
+## Changes and recovery
+
+Opening a saved customization or earlier messages sends no AI request. A changed proposal needs fresh checks and approval; the version already on keeps running until you explicitly replace it. Approval alone never turns it on.
+
+An unknown effect means a task may already have changed. Use **Check result** and the available readback before another action; do not repeat task completion to retry a reaction. Cancellation cannot undo a committed write. After a lost authoring response, inspect the original saved request and use its offered recovery rather than sending a replacement paid turn.
+
+For version, evidence and recovery contracts, see the [lifecycle reference](read-extension-lifecycle.md). For native effect guarantees, see [task customizations](task-effects.md).

@@ -33,7 +33,7 @@ If a creation response is lost, **Check result** reads the original attempt. An 
 
 A business request becomes a Keir program using only the capabilities Daymark exposes. Daymark's assistant clarifies the request, compiles the program and simulates examples against the exact artifact. You review the expected and observed behavior, approve that revision and separately turn it on. Daymark then executes the approved artifact when the chosen trigger occurs; execution needs no further AI request.
 
-Daymark owns the task data, permissions, capability implementations, conversations, evidence and activation policy. Keir supplies the language, compiler, runtime and simulation contracts. The [authoring guide](docs/ai-authoring.md#how-daymark-runs-the-assistant) follows that boundary; the [source map](src/README.md) links its implementation.
+Daymark owns the task data, permissions, capability implementations, conversations, evidence and activation policy. Keir supplies the language, compiler, runtime and simulation contracts. The [authoring service reference](docs/read-extension-lifecycle.md#authoring-service) follows that boundary; the [source map](src/README.md) links its implementation.
 
 This checkout vendors pinned Keir compiler/runtime packages and an authoring guide. [Package provenance](docs/package-provenance.md) records their versions, hashes and compatibility. See the [documentation](docs/README.md) for setup and integration, or [Contributing](CONTRIBUTING.md) for development and testing.
 
