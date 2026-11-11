@@ -1,26 +1,83 @@
 name: Native app
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  # PR updates supersede earlier runs; each main commit keeps its integration check.
+  group: native-app-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select verification
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          docs_only=false
+          changes_file="$RUNNER_TEMP/native-changes.z"
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && ! "$BASE_SHA" =~ ^0+$ ]] &&
+             git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null &&
+             git diff --raw --no-abbrev --no-renames -z "$BASE_SHA" HEAD > "$changes_file"; then
+            mapfile -d '' -t changes < "$changes_file"
+            if (( ${#changes[@]} > 0 && ${#changes[@]} % 2 == 0 )); then
+              docs_only=true
+              for (( i=0; i<${#changes[@]}; i+=2 )); do
+                read -r old_mode new_mode old_oid new_oid status <<< "${changes[i]}"
+                old_mode=${old_mode#:}
+                if [[ ! "$old_mode" =~ ^(000000|100644)$ ||
+                      ! "$new_mode" =~ ^(000000|100644)$ ]]; then
+                  docs_only=false
+                  break
+                fi
+                case "${changes[i+1]}" in
+                  README.md|CONTRIBUTING.md|docs/*.md|docs/images/*.png|docs/images/*.jpg|docs/images/*.jpeg|docs/images/*.webp) ;;
+                  *) docs_only=false; break ;;
+                esac
+              done
+            fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          if [[ "$docs_only" == true ]]; then
+            git diff --check "$BASE_SHA" HEAD
+            echo 'Documentation-only change: git diff --check passed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Full build, Node and browser verification selected.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/setup-node@v4
+        if: steps.changes.outputs.docs_only != 'true'
         with:
           node-version: 24.14.1
           cache: npm
       - uses: actions/setup-java@v6
+        if: steps.changes.outputs.docs_only != 'true'
         with:
           distribution: temurin
           java-version: '21'
       - run: npm ci
+        if: steps.changes.outputs.docs_only != 'true'
       - run: npm run build
+        if: steps.changes.outputs.docs_only != 'true'
       - run: npm test
+        if: steps.changes.outputs.docs_only != 'true'
       # This installs OS libraries only on the disposable CI runner.
       - run: npx playwright install-deps chromium
+        if: steps.changes.outputs.docs_only != 'true'
       - run: npm run test:browser:install
+        if: steps.changes.outputs.docs_only != 'true'
       - run: npm run test:e2e
+        if: steps.changes.outputs.docs_only != 'true'
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
