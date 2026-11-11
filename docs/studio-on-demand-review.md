@@ -1,4 +1,4 @@
-# Designing and managing customizations in Daymark
+# Historical Studio interaction proposal
 
 This is a historical interaction proposal. The [current Studio design](extension-studio-design.md) supersedes its single-item entry, pipeline controls and approval flow.
 
