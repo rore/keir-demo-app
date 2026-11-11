@@ -13,8 +13,8 @@ import { loadHost, TASK_HOOK } from '../src/extension-catalog.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const model = readFileSync(join(root, 'extensions/task-effect/current/dcm.json'));
 const vendor = join(root, 'vendor');
-const jarName = 'keir-compiler-java-0.3.0-cli.jar';
-const jarDigest = '368ce1fc3e7ba54fb5e3c9880dc1c17f9dc9fc03cd6fe7a0df55fcc025e1c7a3';
+const jarName = 'keir-compiler-java-0.3.1-cli.jar';
+const jarDigest = '2abc650ac1c6b2a697cfee61aa71fe14d653f4cda1efa44f1cd2dd33292ad94b';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const source = Buffer.from(JSON.stringify({
   language: 'keir/2', domain: { ...JSON.parse(model).domain, fingerprint: 'sha256:' + sha(model) },
@@ -83,17 +83,17 @@ test('distribution is the pinned independent compiler and notice metadata resolv
   assert.equal(sha(await readFile(join(vendor, jarName))), info.artifact.sha256.slice(7));
   assert.equal(info.artifact.file, jarName);
   assert.equal(info.artifact.sha256, 'sha256:' + jarDigest);
-  assert.equal(info.artifact.bytes, 8_819_384);
-  assert.equal(info.compiler, 'keir-compiler-java/0.3.0');
-  assert.equal(info.status, 'verified-release');
-  assert.equal(info.release, 'v0.3.0');
-  assert.equal(info.source.revision, 'b2329440dd2a25acc547f3ebfea214748d912022');
-  assert.deepEqual(info.distribution, { file: 'keir-compiler-cli-0.3.0.zip',
-    sha256: 'sha256:596ef85cbec91d9e459fcd67aff83e05099df9b7610fd0fca643e573d27d090c' });
+  assert.equal(info.artifact.bytes, 8_819_519);
+  assert.equal(info.compiler, 'keir-compiler-java/0.3.1');
+  assert.equal(info.status, 'verified-candidate');
+  assert.equal(info.release, null);
+  assert.equal(info.source.revision, '5c772d02b4dc92bb28ea8aedabd34498ff6d9391');
+  assert.deepEqual(info.distribution, { file: 'keir-compiler-cli-0.3.1.zip',
+    sha256: 'sha256:0e9265688572cdd0dc219744882f788dcc20d5f68076297b9ba0fa10e5750096' });
   const notices = await readFile(join(vendor, info.notices), 'utf8');
   assert.equal((notices.match(/ sha256:[a-f0-9]{64}/g) ?? []).length, 19);
-  assert.match(await readFile(join(vendor, 'compiler-notices/LICENSE'), 'utf8'), /Apache License/);
-  assert.match(await readFile(join(vendor, 'compiler-notices/third-party/protobuf-java-4.35.1-LICENSE'), 'utf8'), /Redistribution/);
+  assert.match(await readFile(join(vendor, 'compiler-0.3.1-notices/LICENSE'), 'utf8'), /Apache License/);
+  assert.match(await readFile(join(vendor, 'compiler-0.3.1-notices/third-party/protobuf-java-4.35.1-LICENSE'), 'utf8'), /Redistribution/);
 });
 
 test('safe direct argv, immutable byte snapshots and minimal JVM environment', async t => {
@@ -378,10 +378,10 @@ test('actual pinned compiler works from a standalone directory and preserves raw
   const first = await compiler.compile(source);
   assert.deepEqual(first.diagnostics, []);
   assert.ok(first.artifact instanceof Uint8Array);
-  assert.equal(sha(first.artifact), '7912462c90a5cde42101975fe0403a40fef86afa6a298067fdc0621eba1854bd');
+  assert.equal(sha(first.artifact), 'f778a2cc077dcd8516cb9c19a671eab515aa71821d058df2bf07264c67f081d4');
   const artifact = JSON.parse(first.artifact);
   assert.equal(artifact.format, 'keir-artifact/3');
-  assert.equal(artifact.compiler, 'keir-compiler-java/0.3.0');
+  assert.equal(artifact.compiler, 'keir-compiler-java/0.3.1');
   assert.equal(Object.hasOwn(artifact, 'profile'), false);
   const changed = Buffer.concat([source, Buffer.from('\n  \n')]);
   const second = await compiler.compile(changed);

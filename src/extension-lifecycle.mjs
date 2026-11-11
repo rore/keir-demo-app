@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, notFound, transaction, revokeTaskAdmissions } from './data.mjs';
-import { loadHost, readCurrentDefinition, readDefinitionForPins, definitionForPins, admitArtifact, digest, json, TASK_HOOK, TASK_HOOKS, TASK_DEFINITION } from './extension-catalog.mjs';
+import { loadHost, readCurrentDefinition, readDefinitionForPins, definitionForPins, admitArtifact, digest, json, definitionKey, TASK_HOOK, TASK_HOOKS, TASK_DEFINITION } from './extension-catalog.mjs';
 import { runTaskEffectSimulation, taskEffectProofMatches, preflightTaskEffectScenarios, taskEffectExpected, taskEffectVersions } from './task-effect-simulation.mjs';
 import { taskRuleDescription } from './task-rule-description.mjs';
 import { evidenceSummary } from './authoring-example.mjs';
@@ -11,7 +11,6 @@ const retired = () => { throw Object.assign(new AppError(410, 'This earlier cust
 const abort = signal => { if (signal?.aborted) throw new AppError(499, 'Preparation stopped. Check saved state before trying again.'); };
 export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulation, compiler } = {}) {
   const hosts = new Map(), savedDefinitions = new Map(), availableDefinitions = new Set();
-  const definitionKey = pins => json({ model: pins.modelDigest, hook: pins.hook });
   for (const hook of TASK_HOOKS) {
     try {
       const definition = loadHost(hook);

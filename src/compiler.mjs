@@ -6,10 +6,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
-const JAR = 'keir-compiler-java-0.3.0-cli.jar';
-const JAR_BYTES = 8_819_384;
-const JAR_HASH = '368ce1fc3e7ba54fb5e3c9880dc1c17f9dc9fc03cd6fe7a0df55fcc025e1c7a3';
-const IDENTITY = 'keir-compiler-java/0.3.0';
+const JAR = 'keir-compiler-java-0.3.1-cli.jar';
+const JAR_BYTES = 8_819_519;
+const JAR_HASH = '2abc650ac1c6b2a697cfee61aa71fe14d653f4cda1efa44f1cd2dd33292ad94b';
+const IDENTITY = 'keir-compiler-java/0.3.1';
 const SOURCE_LIMIT = 65_536, OUTPUT_LIMIT = 1_048_576, ERROR_LIMIT = 16_384;
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const failures = {

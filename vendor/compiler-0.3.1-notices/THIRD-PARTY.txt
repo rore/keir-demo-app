@@ -1,0 +1,29 @@
+Bundled compiler dependencies
+
+dev.cel:cel:0.14.0  sha256:fb097817053766580f74ea6ef1ee345570a44aee84bf0d49a2d3ff5d84b9a910
+com.google.auto.value:auto-value-annotations:1.11.1  sha256:6c61a11420a5cddf3313888e9d335d5eedfbeb9a8da26591470fbfe61f5bf859
+com.google.guava:guava:33.6.0-jre  sha256:dc573e1fca4fd5454f4a5fd3d7da2df03002876a4175bafc14a95980dd7713b3
+com.google.guava:failureaccess:1.0.3  sha256:cbfc3906b19b8f55dd7cfd6dfe0aa4532e834250d7f080bd8d211a3e246b59cb
+com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava  sha256:b372a037d4230aa57fbeffdef30fd6123f9c0c2db85d0aced00c91b974f33f99
+com.google.errorprone:error_prone_annotations:2.47.0  sha256:5364bc6f22e72e98195e406a58d3ba1c09ffa11dea0729592cb870dc2de4056d
+com.google.j2objc:j2objc-annotations:3.1  sha256:84d3a150518485f8140ea99b8a985656749629f6433c92b80c75b36aba3b099b
+com.google.re2j:re2j:1.8  sha256:7b52c72156dd7f98b3237a5b35c1d34fba381b21048c89208913ad80a45dfbd7
+dev.cel:common:0.14.0  sha256:e6095487af0d67178b570805397dac180527bbf0c2514c04a8e7511aaecc6597
+dev.cel:compiler:0.14.0  sha256:53a17e1b5216843c0d20105eeb31b3eff6304e260d5d021e169fb8b37e3472c3
+dev.cel:protobuf:0.14.0  sha256:d2c314946539351e433e3ffc39ba578a5d1f0eb350ab047c58b87241adaeed1b
+dev.cel:runtime:0.14.0  sha256:3e2e4267d2c83a5323a6724147082564a18965c19e4a3cbbb4a832821780f26b
+dev.cel:v1alpha1:0.14.0  sha256:429a705bc974d06c63fc14f4d7be7d23e5e7825d6fe76ab657bad2a2d9791c77
+org.antlr:antlr4-runtime:4.13.2  sha256:dd3e8a13a2d669bf84fb8d834de35ce4875f27157698d206241ec8488aadcaf7
+org.jspecify:jspecify:1.0.0  sha256:1fad6e6be7557781e4d33729d49ae1cdc8fdda6fe477bb0cc68ce351eafdfbab
+org.threeten:threeten-extra:1.10.0  sha256:861ea99147f158214950955c82fd2ebc4d7b020c0422945a1086e0686cadb10d
+com.google.protobuf:protobuf-java:4.35.1  sha256:a4345ba2aa009912ff6f90467fea2d104605256b72c50840d75f13256638a472
+com.fasterxml.jackson.core:jackson-core:2.19.2  sha256:aa77eaf29293a868c47372194f7c5287d77d9370b04ea25d3fffc1e4904b5880
+org.yaml:snakeyaml:2.4  sha256:ef779af5d29a9dde8cc70ce0341f5c6f7735e23edff9685ceaa9d35359b7bb7f
+
+Exact upstream redistribution texts:
+re2j-1.8-LICENSE: https://github.com/google/re2j/blob/re2j-1.8/LICENSE
+antlr4-runtime-4.13.2-LICENSE: https://github.com/antlr/antlr4/blob/4.13.2/LICENSE.txt
+protobuf-java-4.35.1-LICENSE: https://github.com/protocolbuffers/protobuf/blob/v35.1/LICENSE
+
+Other Apache-licensed components are covered by the included Apache 2.0 license. The dependency-specific copies and notices included in their original JARs are also provided here.
+The listenablefuture placeholder contains no compiled classes.

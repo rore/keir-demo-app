@@ -1,0 +1,56 @@
+{
+  "repository": "https://github.com/rore/keir-core",
+  "revision": "b2329440dd2a25acc547f3ebfea214748d912022",
+  "status": "verified-release",
+  "release": "v0.3.0",
+  "package": "@keir/runtime-node",
+  "version": "0.3.0",
+  "archive": "keir-runtime-node-0.3.0.tgz",
+  "sha256": "sha256:40d71748bf142872c832e7d48aa6e8f827d0759c6ca5006c1abfd19db52935cc",
+  "integrity": "sha512-9MJu5RronOfAW78xZ/uj7Y28/1ZkKEz8pNUgqn7O+AsqL/Z3q9tGfbF00q8OUEiD78Ot/HiMhPPhpVuRtAR84w==",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "sha256:1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"
+    },
+    {
+      "path": "README.md",
+      "sha256": "sha256:493b909eb710da3ca08afc15c02ad84d438c026e6466fef6cf632cc12936668a"
+    },
+    {
+      "path": "package.json",
+      "sha256": "sha256:bba57e491473af433319bdd5ff076ba4989d3cb6a5b4f98f9350e5ca64698343"
+    },
+    {
+      "path": "src/canonical.js",
+      "sha256": "sha256:956968127d5a9123e2afa549884d576cb6842ef2a78c7f72a4f6c02b4455db40"
+    },
+    {
+      "path": "src/cel.js",
+      "sha256": "sha256:d144ce2613329537c626338575f650672ccb474077df22db2d22b68b51519074"
+    },
+    {
+      "path": "src/index.js",
+      "sha256": "sha256:ceb75655e6e0d82a6c72e4bd1826d0bc4cec165e78c431dfab4156f26c5224e1"
+    },
+    {
+      "path": "src/model.js",
+      "sha256": "sha256:60437133923c54e36fd6088e91e63ec747e45e71d38747d8b97fcb06a9aa78ff"
+    },
+    {
+      "path": "src/validation.js",
+      "sha256": "sha256:9b80525b6376173973aee7dcc846b3ffdfab17bbf7b3eab0833ca08b4f5835c6"
+    }
+  ],
+  "compiler": {
+    "revision": "b2329440dd2a25acc547f3ebfea214748d912022",
+    "producer": "keir-compiler-java/0.3.0",
+    "jarDigest": "sha256:368ce1fc3e7ba54fb5e3c9880dc1c17f9dc9fc03cd6fe7a0df55fcc025e1c7a3"
+  },
+  "environment": {
+    "celJava": "0.14.0",
+    "celNode": "0.6.1",
+    "protobufJava": "4.35.1",
+    "protobufNode": "2.6.2"
+  }
+}

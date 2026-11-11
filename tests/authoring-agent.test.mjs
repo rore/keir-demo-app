@@ -55,23 +55,30 @@ test('task coaching requires discovered constants and independent expectations w
   assert.doesNotMatch(instructions, /choose Check task advice|outside the discovered read-only contract/);
 });
 
-test('authoring loads the exact released v5 companion and retains historical v4 bytes', async () => {
+test('authoring loads the exact candidate v7 companion and retains historical guides', async () => {
   const metadata = JSON.parse(readFileSync(new URL('../vendor/authoring-companion-provenance.json', import.meta.url)));
-  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v5.md', import.meta.url));
-  const current = metadata.files['customer-authoring-guide-v5.md'];
-  assert.equal(current.status, 'verified-release');
-  assert.equal(current.release, 'v0.3.0');
-  assert.equal(current.revision, 'f988c2b147933fcdd8b8f74ce7920f78acd4eca5');
-  assert.equal(current.source, 'docs/agents/customer-authoring-guide-v5.md');
-  assert.equal(current.bytes, 6224);
-  assert.equal(current.sha256, 'sha256:f9bb403c6f2cb75d834b8113e87bb94de034754ecb10bf7001bd36e129216cb0');
-  assert.deepEqual(current.distribution, { file: 'keir-authoring-v5.zip',
-    sha256: 'sha256:20249307192494acb1cf07cc002e7203bda4f6baf8a8c2257dd752ce1d8cfe44' });
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v7.md', import.meta.url));
+  const current = metadata.files['customer-authoring-guide-v7.md'];
+  assert.equal(current.status, 'verified-candidate');
+  assert.equal(current.release, null);
+  assert.equal(current.revision, 'bdd273112c7a86d255082c1de545a943cc2d87e6');
+  assert.equal(current.source, 'docs/agents/customer-authoring-guide-v7.md');
+  assert.equal(current.bytes, 6481);
+  assert.equal(current.sha256, 'sha256:81a8c46630ab63f643b396f55d06b67d792236ac79584760a64d1721c602721f');
+  assert.deepEqual(current.distribution, { file: 'keir-authoring-v7-candidate.zip',
+    sha256: 'sha256:8a4101a64fbbf4d09b59f936083a48df39256fcba8386cee66bd5f7bcad2c4a7' });
   for (const [path, info] of Object.entries(metadata.files)) {
     const bytes = readFileSync(new URL('../vendor/' + path, import.meta.url));
     assert.equal(bytes.length, info.bytes);
     assert.equal('sha256:' + createHash('sha256').update(bytes).digest('hex'), info.sha256);
   }
+  const previous = metadata.files['customer-authoring-guide-v5.md'];
+  assert.equal(previous.status, 'verified-release');
+  assert.equal(previous.release, 'v0.3.0');
+  assert.equal(previous.revision, 'f988c2b147933fcdd8b8f74ce7920f78acd4eca5');
+  assert.equal(previous.sha256, 'sha256:f9bb403c6f2cb75d834b8113e87bb94de034754ecb10bf7001bd36e129216cb0');
+  assert.equal(previous.distribution.sha256, 'sha256:20249307192494acb1cf07cc002e7203bda4f6baf8a8c2257dd752ce1d8cfe44');
+  assert.equal('sha256:' + createHash('sha256').update(readFileSync(new URL('../vendor/' + current.distribution.file, import.meta.url))).digest('hex'), current.distribution.sha256);
   const old = metadata.files['customer-authoring-guide-v4.md'];
   assert.equal(old.status, 'historical-copy');
   assert.equal(old.sha256, 'sha256:aeece1c28713ba945743dca47ad4fc6242f3f94cfda4fac9005b5b9df7afb5f7');

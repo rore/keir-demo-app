@@ -6,27 +6,33 @@ export const digest = bytes => 'sha256:' + createHash('sha256').update(bytes).di
 const sorted = value => Array.isArray(value) ? value.map(sorted) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value;
 export const json = value => JSON.stringify(sorted(value));
+// Cache registered execution definitions, not individual authored revisions.
+export const definitionKey = pins => json(Object.fromEntries([
+  'modelDigest', 'modelRef', 'definitionId', 'compiler', 'environment', 'packageIntegrity', 'hook', 'consumer', 'adapter',
+].map(name => [name, pins?.[name]])));
 export const TASK_HOOK = 'TaskCompleted';
 export const TASK_EVENT_HOOKS = Object.freeze(['TaskCreated', TASK_HOOK]);
 export const TASK_HOOKS = Object.freeze([...TASK_EVENT_HOOKS, 'TaskBeforeCreate']);
 export const TASK_DEFINITION = 'daymark.task-workflow/1';
 
-const archive = 'keir-runtime-node-0.3.0.tgz';
-const packageIntegrity = 'sha512-9MJu5RronOfAW78xZ/uj7Y28/1ZkKEz8pNUgqn7O+AsqL/Z3q9tGfbF00q8OUEiD78Ot/HiMhPPhpVuRtAR84w==';
-const compiler = 'keir-compiler-java/0.3.0';
+const archive = 'keir-runtime-node-0.3.1.tgz';
+const packageIntegrity = 'sha512-LZZjmNa3zeKE+BDqOzFPPXlQcIzeN/Ah8wohvaRjIc1rGh46hPFriL4E4z8sVNvHlYaAlVMd2yffjLR2qTs90g==';
+const previousIntegrity = 'sha512-9MJu5RronOfAW78xZ/uj7Y28/1ZkKEz8pNUgqn7O+AsqL/Z3q9tGfbF00q8OUEiD78Ot/HiMhPPhpVuRtAR84w==';
+const compiler = 'keir-compiler-java/0.3.1';
 const earlierIntegrity = 'sha512-4Rxkk3sbguL7B8e438xEAZiQhmIYul2wvn3ZAAPaKtZsm/6Bpom9UhQGW9IA/zu4VHrtMaX5fM/kWNNeKx6nJg==';
 const environment = Object.freeze({ celJava: '0.14.0', celNode: '0.6.1', protobufJava: '4.35.1', protobufNode: '2.6.2' });
 const load = path => readFileSync(new URL('../' + path, import.meta.url));
 
 export function readCurrentDefinition(hookId = TASK_HOOK) {
-  return readDefinition(hookId, false);
+  return readDefinition(hookId);
 }
 
-function readDefinition(hookId, earlier) {
+function readDefinition(hookId, generation = 'current') {
+  const earlier = generation === 'workflow', previous = generation === 'core-0.3.0';
   const hooks = earlier ? TASK_EVENT_HOOKS : TASK_HOOKS;
   if (!hooks.includes(hookId)) throw new Error('Unsupported host definition');
-  const directory = 'extensions/task-effect/' + (earlier ? 'workflow' : 'current');
-  const selectedCompiler = earlier ? 'keir-compiler-java/0.2.0' : compiler;
+  const directory = 'extensions/task-effect/' + generation;
+  const selectedCompiler = earlier ? 'keir-compiler-java/0.2.0' : previous ? 'keir-compiler-java/0.3.0' : compiler;
   const selection = JSON.parse(load(directory + '/selection.json'));
   const dcmBytes = load(directory + '/dcm.json'), modelDigest = digest(dcmBytes);
   if (modelDigest !== selection.modelDigest || selectedCompiler !== selection.compiler) throw new Error('Invalid model or compiler selection');
@@ -46,7 +52,7 @@ function readDefinition(hookId, earlier) {
     ...(earlier ? [] : [{ id: 'TaskBeforeCreate', label: 'Before a new task is saved', description: 'Check a new task before it is added', effect: 'READ', trigger: 'REQUEST' }]),
   ] },
     pins: { modelDigest, modelRef, definitionId: TASK_DEFINITION, compiler: selectedCompiler, environment,
-      packageIntegrity: earlier ? earlierIntegrity : packageIntegrity,
+      packageIntegrity: earlier ? earlierIntegrity : previous ? previousIntegrity : packageIntegrity,
       hook: hookId, consumer: entrypoint.consumer, adapter: earlier ? 'native-task-effect/2' : 'native-task-effect/3' } };
 }
 
@@ -67,7 +73,11 @@ export function readDefinitionForPins(pins) {
   if (!pins || !TASK_HOOKS.includes(pins.hook) || pins.definitionId !== TASK_DEFINITION || Object.hasOwn(pins, 'profile'))
     throw new Error('Unsupported host definition');
   if (!['keir-dcm/2', 'keir-dcm/3'].includes(pins.modelRef?.format)) throw new Error('Unsupported host definition');
-  const host = readDefinition(pins.hook, pins.modelRef.format === 'keir-dcm/2');
+  const generation = pins.modelRef.format === 'keir-dcm/2' && pins.compiler === 'keir-compiler-java/0.2.0' ? 'workflow'
+    : pins.modelRef.format === 'keir-dcm/3' && pins.compiler === 'keir-compiler-java/0.3.0' ? 'core-0.3.0'
+      : pins.modelRef.format === 'keir-dcm/3' && pins.compiler === compiler ? 'current' : null;
+  if (!generation) throw new Error('Unsupported host definition');
+  const host = readDefinition(pins.hook, generation);
   for (const [name, expected] of Object.entries(host.pins)) {
     if (json(pins[name]) !== json(expected)) throw new Error('Host definition mismatch');
   }
@@ -85,6 +95,7 @@ export function admitArtifact(artifactBytes, host) {
   if (digest(host.dcmBytes) !== trusted.pins.modelDigest) throw new Error('Host definition mismatch');
   const artifact = JSON.parse(Buffer.from(artifactBytes).toString('utf8'));
   if (artifact.entrypoint !== trusted.pins.hook) throw new Error('Artifact trigger mismatch');
+  if (artifact.compiler !== trusted.pins.compiler) throw new Error('Artifact compiler mismatch');
   const model = JSON.parse(trusted.dcmBytes);
   const implementations = Object.fromEntries(Object.entries(model.capabilities).map(([id, cap]) => [id, {
     version: cap.version, mode: 'simulation', keyType: model.hostKey.type,

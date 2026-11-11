@@ -5,23 +5,23 @@ import { createHash } from 'node:crypto';
 
 const hash = (algorithm, bytes, encoding) => createHash(algorithm).update(bytes).digest(encoding);
 
-test('official archive, lock integrity and installed bytes match verified provenance', () => {
+test('candidate archive, lock integrity and installed bytes match qualified provenance', () => {
   const provenance = JSON.parse(readFileSync('vendor/provenance.json'));
   const lock = JSON.parse(readFileSync('package-lock.json'));
   const archive = readFileSync(`vendor/${provenance.archive}`);
-  assert.equal(provenance.status, 'verified-release');
-  assert.equal(provenance.release, 'v0.3.0');
-  assert.equal(provenance.revision, 'b2329440dd2a25acc547f3ebfea214748d912022');
-  assert.equal(provenance.archive, 'keir-runtime-node-0.3.0.tgz');
-  assert.equal(provenance.sha256, 'sha256:40d71748bf142872c832e7d48aa6e8f827d0759c6ca5006c1abfd19db52935cc');
+  assert.equal(provenance.status, 'verified-candidate');
+  assert.equal(provenance.release, null);
+  assert.equal(provenance.revision, '5c772d02b4dc92bb28ea8aedabd34498ff6d9391');
+  assert.equal(provenance.archive, 'keir-runtime-node-0.3.1.tgz');
+  assert.equal(provenance.sha256, 'sha256:97b7afc93e260dab075e9576176ffb5f908a797f9fb5ea35d233240598486d86');
   assert.equal('sha256:' + hash('sha256', archive, 'hex'), provenance.sha256);
   assert.equal('sha512-' + hash('sha512', archive, 'base64'), provenance.integrity);
   assert.equal(lock.packages['node_modules/@keir/runtime-node'].integrity, provenance.integrity);
   assert.equal(lock.packages['node_modules/@keir/runtime-node'].resolved, `file:vendor/${provenance.archive}`);
-  assert.equal(lock.packages['node_modules/@keir/runtime-node'].version, '0.3.0');
+  assert.equal(lock.packages['node_modules/@keir/runtime-node'].version, '0.3.1');
   assert.equal(lock.packages[''].dependencies['@keir/runtime-node'], `file:vendor/${provenance.archive}`);
   assert.equal(JSON.parse(readFileSync('package.json')).dependencies['@keir/runtime-node'], `file:vendor/${provenance.archive}`);
-  assert.equal(JSON.parse(readFileSync('node_modules/@keir/runtime-node/package.json')).version, '0.3.0');
+  assert.equal(JSON.parse(readFileSync('node_modules/@keir/runtime-node/package.json')).version, '0.3.1');
   assert.deepEqual(provenance.files.map(file => file.path).sort(),
     ['LICENSE', 'README.md', 'package.json', 'src/canonical.js', 'src/cel.js', 'src/index.js', 'src/model.js', 'src/validation.js']);
   for (const file of provenance.files) assert.equal('sha256:' + hash('sha256',
@@ -51,4 +51,19 @@ test('the scenario3 schema has exact source provenance alongside historical sche
   assert.equal(schema.sha256, '80761a26039bcf8f33fdc3b16da624f665c855eba48c37fa59f4584f66609161');
   assert.equal(hash('sha256', readFileSync('vendor/keir-verification/scenario-v3.schema.json'), 'hex'), schema.sha256);
   assert.equal(hash('sha256', readFileSync('vendor/keir-verification/scenario.schema.json'), 'hex'), provenance.files['scenario.schema.json'].sha256);
+});
+
+
+test('original 0.3.0 packages, metadata and notices remain available without relabeling', () => {
+  const runtime = JSON.parse(readFileSync('vendor/keir-0.3.0-provenance.json'));
+  const compiler = JSON.parse(readFileSync('vendor/compiler-0.3.0-provenance.json'));
+  assert.equal(runtime.status, 'verified-release'); assert.equal(runtime.release, 'v0.3.0');
+  assert.equal(runtime.revision, 'b2329440dd2a25acc547f3ebfea214748d912022');
+  assert.equal(runtime.sha256, 'sha256:40d71748bf142872c832e7d48aa6e8f827d0759c6ca5006c1abfd19db52935cc');
+  assert.equal('sha256:' + hash('sha256', readFileSync('vendor/' + runtime.archive), 'hex'), runtime.sha256);
+  assert.equal('sha512-' + hash('sha512', readFileSync('vendor/' + runtime.archive), 'base64'), runtime.integrity);
+  assert.equal(compiler.compiler, 'keir-compiler-java/0.3.0'); assert.equal(compiler.release, 'v0.3.0');
+  assert.equal('sha256:' + hash('sha256', readFileSync('vendor/' + compiler.artifact.file), 'hex'), compiler.artifact.sha256);
+  assert.equal(compiler.notices, 'compiler-notices/THIRD-PARTY.txt');
+  assert.match(readFileSync('vendor/' + compiler.notices, 'utf8'), /Bundled compiler dependencies/);
 });

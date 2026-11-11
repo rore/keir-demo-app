@@ -4,7 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync, readSync,
   lstatSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
-import { loadHost, definitionForPins, digest, json, TASK_HOOK } from './extension-catalog.mjs';
+import { loadHost, definitionForPins, definitionKey, digest, json, TASK_HOOK } from './extension-catalog.mjs';
 import { taskEffectProofMatches } from './task-effect-simulation.mjs';
 import { normalizeTaskTag, normalizeTaskTags, parseWorkflowTagsText, validOpenMatchInput, normalizeWorkflowTitle } from './task-workflow-values.mjs';
 
@@ -885,7 +885,7 @@ export function taskEffectService(db, options = {}) {
   function current(row, invocation) {
     try {
       const context = contextFor(row.owner_id, invocation), pins = context.pins;
-      const hostKey = json({ model: pins?.modelDigest, hook: row.hook_id });
+      const hostKey = definitionKey(pins);
       let host = hosts.get(hostKey);
       if (!host) { host = definitionForPins(pins); hosts.set(hostKey, host); }
       const now = invocation.deadline.clock.nowMs();
