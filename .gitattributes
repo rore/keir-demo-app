@@ -4,8 +4,6 @@ extensions/task-effect/current/dcm.json -text
 vendor/*.jar binary
 vendor/*.tgz binary
 vendor/compiler-notices/** -text
-vendor/customer-authoring-guide-v3.md -text
-vendor/customer-authoring-guide-v4.md -text
-vendor/customer-authoring-guide-v5.md -text
+vendor/customer-authoring-guide-v*.md -text
 vendor/keir-verification/scenario-v2.schema.json -text
 vendor/keir-verification/scenario-v3.schema.json -text
