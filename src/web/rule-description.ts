@@ -95,7 +95,7 @@ export function describeRule(description: RuleDescription | null | undefined, pr
   else if (fields.priority?.kind === "taskField") parts.push(action?.capability === "tasks.create" ? "Copy this task’s priority." : "Keep this task’s priority.");
   if (textValue("addTag")) parts.push(`Add tag “${textValue("addTag")}”.`);
   if (Array.isArray(literal("tags"))) parts.push((literal("tags") as string[]).length ? `Tags ${(literal("tags") as string[]).join(", ")}.` : "No tags.");
-  if (textValue("notes")) parts.push(`Notes “${textValue("notes")}”.`);
+  if (textValue("notes") !== undefined) parts.push(textValue("notes") ? `Notes “${textValue("notes")}”.` : "Empty notes.");
   const due = fields.dueAt;
   if (due?.kind === "eventOffset") parts.push(`Due ${elapsedTime(due.seconds)} ${due.seconds < 0 ? "before" : "after"} ${event}.`);
   else if (textValue("dueAt")) parts.push(`Due ${readableTime(textValue("dueAt")!)}.`);

@@ -2,7 +2,7 @@
 
 Maya wants every completed task in **The spring collection** to leave her a new **Follow up** task in the same project. This tour follows that customization from a plain-language request to its saved result in Daymark. You can read it without running the app.
 
-The screenshots show the current app with fictional, disposable data. Authoring responses are scripted using the [offline fixture](../tests/README.md#offline-configured-ai-fixture); compilation, simulation, approval, activation and the native task writes are real. No paid AI requests were made for this tour.
+The screenshots show the app with fictional, disposable data. Authoring responses are scripted using the [offline fixture](../tests/README.md#offline-configured-ai-fixture); compilation, simulation, approval, activation and the native task writes are real. No paid AI requests were made for this tour. [Screenshot provenance](images/walkthrough/provenance.md) records the exact app revision and image checksums.
 
 To try it yourself, [run Daymark locally](../README.md#run-locally), have **Java 21** available, choose **Maya**, and [configure an AI provider](ai-authoring.md#configure-a-provider). Provider requests can incur charges, and the conversation may differ. Use a fresh demo workspace and add a second project, such as **Other project**, to try the nonmatching behavior too.
 
@@ -20,7 +20,9 @@ The assistant asks whether this should apply only to that project. Confirm the b
 
 ## 2. Read the proposed behavior
 
-When the assistant offers checked results, choose **See proposed change**. Read **Summary** before deciding. Here, the triggering task must be completed and belong to **The spring collection**. The new task starts open, with Normal priority, no tags, empty notes and no due date. The completed task stays unchanged.
+When the assistant offers checked results, choose **See proposed change**. **Summary** separates **When**, **Only when** and **Then** so you can check the proposed behavior at a glance. Here, the triggering task must be completed and belong to **The spring collection**. The new task starts open, with Normal priority, no tags, empty notes and no due date. The completed task stays unchanged. **Rule details** keeps the full explanation available.
+
+Choose **Rename** if you want a more useful saved name. You can use the suggested name, edit it, and choose **Save**. A suggestion changes nothing until you save it; an existing name stays yours to keep or change. This tour saves **Create “Follow up” tasks**.
 
 ![Summary of the proposed follow-up rule, marked Proposed change · Not on, with View simulation.](images/walkthrough/02-summary.png)
 
@@ -28,13 +30,15 @@ When the assistant offers checked results, choose **See proposed change**. Read 
 
 ## 3. Check the examples and approve
 
-Choose **View simulation**. Compare the intended action with what actually happened in each simulated situation. The matching example creates **Follow up** in the chosen project. A task completed in **Other project** creates nothing. The remaining examples check an open task and missing, denied or temporarily unavailable task details.
+Choose **View simulation**. Compare the intended action with what actually happened in each simulated situation. The matching example shows the task that started the rule alongside the separate **Created example task**. The new task's title, project and tags are recorded here; its other details were not checked by this example. The app's usual defaults in Summary describe what the task service does, rather than additional values verified by this simulation.
+
+Open the individual examples to read their intended and observed results. A task completed in **Other project** creates nothing. The remaining examples check an open task and missing, denied or temporarily unavailable task details.
 
 These are example tasks and simulated service responses: **your real saved tasks are unchanged**. A passing example means its observed result matched its expectation; an unavailable-task example can pass by correctly making no change.
 
-![Simulation showing the matching follow-up, six checked situations, and the separate Approve this change button.](images/walkthrough/03-simulation.png)
+![Simulation showing the separate created task, its recorded values, a clear limit on missing evidence, and expandable checked examples.](images/walkthrough/03-simulation.png)
 
-*Choose **Approve this change** only when the checked proposal matches your intent. Approval records agreement to this exact version and its saved checks.*
+*After reading the examples and coverage limits, **Go to approval** takes you to **Approve this change**. Choose it only when the checked proposal matches your intent. Approval records agreement to this exact version and its saved checks.*
 
 ## 4. Turn it on separately
 
