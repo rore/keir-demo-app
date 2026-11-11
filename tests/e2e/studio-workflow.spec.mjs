@@ -98,7 +98,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       await page.goto(`${fixture.origin}/#customization=${extensionId}`);
       await expect(rule.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
       const summary = rule.locator('.rs-rule-summary');
-      await expect(summary).toBeVisible();
+      await expect(rule.locator('.rs-rule-facts')).toBeVisible();
       await expect(summary).toContainText(hookId === 'TaskCreated' ? 'When a new task is added' : 'When a task is completed');
       const naturalFacts = {
         intake: ['set its priority to High', `it is in “${projectName}”`, 'it is titled exactly “Quote for spring launch”', 'it has the tag “client”'],
@@ -110,6 +110,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       const details = rule.locator('.rs-rule-details');
       await expect(details).toHaveJSProperty('open', false);
       await details.getByText('Rule details', { exact: true }).click();
+      await expect(summary).toBeVisible();
       for (const fact of facts) await expect(rule).toContainText(fact);
       await details.getByText('Rule details', { exact: true }).click();
       await expect(rule).not.toContainText('A full summary');

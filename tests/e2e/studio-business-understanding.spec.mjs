@@ -393,6 +393,34 @@ test('proposal links settle on an unobscured Summary while View simulation remai
     await expect(summary).toBeFocused();
     await expect(composer).toHaveValue(draft);
     await page.unroute(proofPath);
+    // Pointer reading on the outer scroller must also cancel a pending anchor,
+    // even when focus remains on Summary (as with a scrollbar/touch gesture).
+    const pointerGate = Promise.withResolvers(), pointerProof = Promise.withResolvers();
+    release = pointerGate.resolve;
+    await page.route(proofPath, async route => {
+      const response = await route.fetch();
+      pointerProof.resolve(); await pointerGate.promise;
+      try { await route.fulfill({ response }); } catch { /* Teardown can close a held page. */ }
+    });
+    await page.reload();
+    await expect(studio.locator('.rs-rule-summary')).toContainText('give it a due date exactly 7 days after it was added');
+    await studio.locator('#studio-view-saved').click();
+    await pointerProof.promise;
+    await expectDestination('Summary');
+    // Dispatch on the real outer scroller; changing scrollTop emulates the
+    // browser's scrollbar movement without assuming OS scrollbar coordinates.
+    await studio.dispatchEvent('pointerdown', { pointerType: 'touch' });
+    await studio.evaluate(element => { element.scrollTop += 120; });
+    const pointerPosition = await studio.evaluate(element => element.scrollTop);
+    const pointerTop = await summary.evaluate(element => element.getBoundingClientRect().top);
+    await expect(summary).toBeFocused();
+    pointerGate.resolve();
+    await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect.poll(async () => Math.abs(await studio.evaluate(element => element.scrollTop) - pointerPosition)).toBeLessThanOrEqual(2);
+    await expect.poll(async () => Math.abs(await summary.evaluate(element => element.getBoundingClientRect().top) - pointerTop)).toBeLessThanOrEqual(2);
+    await expect(summary).toBeFocused();
+    await page.unroute(proofPath);
     expect(await state()).toEqual(before);
     expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(tasksBefore);
     expect(fixture.requests.map(request => request.name)).toEqual(providerCalls);
