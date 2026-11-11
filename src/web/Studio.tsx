@@ -1955,7 +1955,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     <p role="status">This submitted request belongs to a deleted customization. It cannot be continued. Nothing was retried or created.</p>
     {recoveryError && <p role="alert">{recoveryError}</p>}
     <button className="quiet-button" onClick={() => callbacks.current.unavailable()}>Back to Customizations</button></section>;
-  return <section className={`read-studio${reviewOpen ? " rs-review-open" : ""}${inlineOpen ? " rs-inline-open" : ""}`} aria-label="Customization Studio" ref={studioPage} onWheelCapture={() => { readingRevision.current++; }} onScroll={event => {
+  return <section className={`read-studio${reviewOpen ? " rs-review-open" : ""}${inlineOpen ? " rs-inline-open" : ""}`} aria-label="Customization Studio" ref={studioPage}
+    onWheelCapture={() => { readingRevision.current++; }} onPointerDownCapture={() => { readingRevision.current++; }} onKeyDownCapture={() => { readingRevision.current++; }} onScroll={event => {
     if (event.target !== event.currentTarget) return;
     if (currentPane.current.open) canvasScroll.current = event.currentTarget.scrollTop;
     else trackConversation(event.currentTarget);
