@@ -1,6 +1,6 @@
 # Contributing
 
-Daymark demonstrates Keir in a working local task app. Read the [application scope](docs/scope.md) and [shared roadmap](https://github.com/rore/keir-core/blob/main/roadmap/board.md) before proposing a change.
+Daymark is a reference host for Keir. Read the [application scope](docs/scope.md) and [shared roadmap](https://github.com/rore/keir-core/blob/main/roadmap/board.md) before proposing a change.
 
 ## Build and test
 
@@ -16,7 +16,7 @@ The full authored-source suite also uses Java 21 and the compiler packaged in th
 
 ## Prepare a change
 
-- Keep each change focused and report the checks you ran. Preserve the [native task contract](docs/native-task-app-design.md), including ownership, persistence and session behavior.
+- Keep each change focused and report the checks you ran. Preserve the [host application invariants](docs/native-task-app-design.md), including ownership, persistence and session behavior.
 - Test real permissions, persistence and effect receipts separately from simulated examples. Keep app-specific tests here and follow the [shared testing guidelines](https://github.com/rore/keir-core/blob/main/docs/testing.md).
 - Use the pinned Keir packages. Test a proposed dependency update against Daymark before changing its pins.
 - Maintainers use the [shared development workflow](https://github.com/rore/keir-core/blob/main/docs/internal/workflow/current-process.md) for review, records and integration. The shared record lives in Core when required.

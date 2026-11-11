@@ -1,26 +1,23 @@
-# Daymark documentation
+# Keir demo documentation
 
-Daymark uses Keir for checks before a new task is saved and actions after tasks are added or completed.
+Start with the [screenshot walkthrough](customization-walkthrough.md): follow a request through compilation, simulation, approval and real host execution without installing the app.
 
-## Run and use Daymark
+## Run the example
 
-- [Screenshot walkthrough](customization-walkthrough.md) follows a project follow-up customization from request to its real saved result; no installation needed to read it.
-- [Run locally](../README.md#run-locally) to try the task workspace and its three demo accounts.
-- [Try a customization](../README.md#try-a-customization) to draft a rule, check examples, approve it, and turn it on.
+- [Run locally](../README.md#run-locally), then [try the follow-up customization](../README.md#try-a-customization).
 - [Configure an AI provider](ai-authoring.md#configure-a-provider) for conversational authoring.
-- [Local data and recovery](running.md) covers data directories, restart, backup, and reset.
+- [Local setup and recovery](running.md) covers ports, data directories, backup and reset.
 
-## Integration reference
+## Follow the Keir integration
 
-- [Customization lifecycle reference](read-extension-lifecycle.md) covers authoring operations, saved evidence, identity and recovery.
-- [Application scope](scope.md) lists implemented capabilities and boundaries.
-- [Native task behavior](native-task-app-design.md) covers task storage, tags, search, and access rules.
-- [Task creation and readback](task-creation.md) explains attempt IDs, lost responses, replay and current project access.
-- [Task completion and effects](task-effects.md) explains how Daymark binds Keir, simulates examples, and records real outcomes.
-- [Implementation map](../src/README.md) links Daymark's host binding, authoring, simulation and lifecycle services.
-- [Keir Core documentation](https://github.com/rore/keir-core/tree/main/docs) covers compiler and runtime APIs and the versioned specification.
+- [Published model and hooks](../extensions/task-effect/current/dcm.json): the capabilities an extension can use.
+- [Host binding and effects](task-effects.md): before-save decisions, after-save reactions and native receipts.
+- [Customization lifecycle](read-extension-lifecycle.md): authoring operations, saved evidence, approval, identity and recovery.
+- [Implementation map](../src/README.md): compiler, runtime, adapters and authoring services.
+- [Package provenance](package-provenance.md): exact compiler, runtime and guide pins.
+- [Keir embedding guide](https://github.com/rore/keir-core/blob/main/docs/embedding.md): the framework contracts demonstrated here.
 
-For development, see [Contributing](../CONTRIBUTING.md) and the [test guide](../tests/README.md).
+For changes to the sample host, see [Contributing](../CONTRIBUTING.md), the [demonstration scope](scope.md) and [test guide](../tests/README.md). Native application invariants are linked from the contributor guide.
 
 ## Design research and history
 
