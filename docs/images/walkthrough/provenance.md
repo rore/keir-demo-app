@@ -4,7 +4,7 @@ These are unedited screenshots of Daymark at source revision [`2e8516927276d8313
 
 The flow uses fictional, disposable data and the [offline authoring fixture](../../../tests/fixtures/authoring-server.mjs). Assistant responses are scripted; the installed compiler, simulation, saved evidence, explicit human approval, separate activation and native task writes are real. No paid model requests were made. The user explicitly chooses the suggested name and saves it; the assistant does not rename the customization.
 
-The capture follows the [walkthrough](../../customization-walkthrough.md): request and clarification, proposed behavior, recorded simulation values, approved but not active, completion of a newly added task, and the actual saved follow-up task. The app uses its pinned Core 0.3.1 candidate packages; this capture does not publish those packages or certify a deployment. The images contain no real customer data or provider settings.
+The capture follows the [walkthrough](../../customization-walkthrough.md): request and clarification, proposed behavior, recorded simulation values, approved but not active, completion of a newly added task, and the actual saved follow-up task. The app uses its pinned Core 0.3.1 package bytes; this capture does not certify a deployment. The images contain no real customer data or provider settings.
 
 Captured with Playwright 1.64.1 and Chromium 156.0.8078.79 at a 1,440 × 1,000 CSS-pixel viewport. The checks also exercise narrow and short viewports; these desktop images do not certify physical devices or other browser engines.
 
