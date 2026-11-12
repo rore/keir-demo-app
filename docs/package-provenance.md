@@ -19,7 +19,7 @@ Core's history cleanup changed commit IDs without changing the source trees used
 
 Core's [source revision receipt](https://github.com/rore/keir-core/blob/main/scripts/release-source-revisions.json) includes the shared tree pins. Its [provenance note](https://github.com/rore/keir-core/blob/main/docs/releases/source-provenance.md) explains historical companion rebuilds and new release qualification. A fresh build must record its actual source and receive its own package checks; do not overwrite a published release or relabel an existing vendor package.
 
-Legacy companion ZIPs omit the root project license; retain the [Apache 2.0 license](../LICENSE) when redistributing an old guide or archive. Original source IDs, archive hashes, JAR hashes and per-file digests identify those historical bytes and must not be relabeled.
+For an early companion archive that omits the root project license, retain the [Apache 2.0 license](../LICENSE) when redistributing it. Original source IDs, archive hashes, JAR hashes and per-file digests identify those historical bytes and must not be relabeled.
 
 A binary privacy scan or dependency-resolution check is bounded evidence. It does not clear remote release ZIPs, retained Actions artifacts, old pull-request history or external copies. Verify actual package downloads and the released Java consumer path before claiming those checks passed.
 
