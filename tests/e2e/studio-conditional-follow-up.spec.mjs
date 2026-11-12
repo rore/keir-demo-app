@@ -34,7 +34,7 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
     await button('See proposed change',ui).first().click();
     await expect(ui.locator('.rs-rule-summary')).toContainText('High priority');
     await expect(ui.locator('.rs-rule-summary')).toContainText('no open task titled exactly “Follow up”');
-    await expect(ui.locator('.rs-inline-behavior')).toContainText('simultaneous completions');
+    await expect(ui.locator('.rs-inline-behavior')).toContainText('simultaneous task completions');
     await expect(ui.locator('.rs-inline-behavior')).not.toContainText('full behavior could not be described');
     await page.screenshot({path:'build/core-040/screens/summary.png'});
     for(const viewport of [{width:320,height:740},{width:683,height:384}]){

@@ -144,7 +144,9 @@ export function describeRule(description: RuleDescription | null | undefined, pr
           : fields.addTag ? `Tag ${subject} “${textValue("addTag")}”` : "Discuss task behavior";
   return { complete, title, when: hook === "TaskCreated" ? "A task is added." : hook === "TaskCompleted" ? "A task is completed." : "The saved trigger runs.",
     summary, scope: conditions?.some(condition => condition.field === "noOpenMatch")
-      ? [scope, "The open-task check is a snapshot; simultaneous completions can still create more than one follow-up."].filter(Boolean).join(" ") : scope,
+      ? [scope, action?.capability === "tasks.create"
+        ? `The open-task check is a snapshot; simultaneous task ${hook === "TaskCreated" ? "additions" : "completions"} can still create more than one matching task.`
+        : "The open-task check is a snapshot; matching tasks can change after the check."].filter(Boolean).join(" ") : scope,
     onlyWhen, then: parts.length ? parts.join(" ") : "The action could not be fully described.",
     timing: due?.kind === "eventOffset" ? `${elapsedTime(due.seconds)} is an exact elapsed duration, including weekends. The local hour may shift when clocks change.` : null,
     unchanged };
