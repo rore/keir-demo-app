@@ -378,7 +378,7 @@ test('actual pinned compiler works from a standalone directory and preserves raw
   const first = await compiler.compile(source);
   assert.deepEqual(first.diagnostics, []);
   assert.ok(first.artifact instanceof Uint8Array);
-  assert.equal(sha(first.artifact), 'f778a2cc077dcd8516cb9c19a671eab515aa71821d058df2bf07264c67f081d4');
+  assert.equal(sha(first.artifact), 'c0a3997154cc164fb9fa855207f013a601b5a46211cf9c474c065cf259ced71e');
   const artifact = JSON.parse(first.artifact);
   assert.equal(artifact.format, 'keir-artifact/3');
   assert.equal(artifact.compiler, 'keir-compiler-java/0.4.0');

@@ -307,8 +307,9 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
     let name, args;
     if (index === 0) {
       assert.match(instructions, /supportedHooks from discover_catalog for availability/);
-      assert.match(instructions, /exact entrypoint, compiler configuration and scoped tools/);
-      assert.match(instructions, /protected bindings, declared errors/);
+      assert.match(instructions, /host-approved model, entrypoint, supported package\/producer tuple/);
+      assert.match(instructions, /compiler configuration and scoped authoring tools/);
+      assert.match(instructions, /capability results and errors, protected bindings, lifecycle and limits/);
       assert.match(instructions, /two positives with different source projects and titles/);
       assert.match(instructions, /clarify only genuinely unclear behavior/);
       assert.equal(body.tools.some(tool => /approve|activate|create_task/.test(tool.name)), false);
