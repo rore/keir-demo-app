@@ -284,7 +284,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: openai ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     // Eight scripted requests include read-only reopening; OpenAI reserves 3.096576 USD.
     KEIR_AI_MAX_USD: '3.1', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
-  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v7.md', import.meta.url), 'utf8');
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v8.md', import.meta.url), 'utf8');
   const calls = [], requestBytes = [];
   function respond(openaiContent, anthropicContent, stopReason) {
     const usage = { input_tokens: 10, output_tokens: 5 };
@@ -307,8 +307,9 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
     let name, args;
     if (index === 0) {
       assert.match(instructions, /supportedHooks from discover_catalog for availability/);
-      assert.match(instructions, /exact entrypoint, compiler configuration and scoped tools/);
-      assert.match(instructions, /protected bindings, declared errors/);
+      assert.match(instructions, /host-approved model, entrypoint, supported package\/producer tuple/);
+      assert.match(instructions, /compiler configuration and scoped authoring tools/);
+      assert.match(instructions, /capability results and errors, protected bindings, lifecycle and limits/);
       assert.match(instructions, /two positives with different source projects and titles/);
       assert.match(instructions, /clarify only genuinely unclear behavior/);
       assert.equal(body.tools.some(tool => /approve|activate|create_task/.test(tool.name)), false);

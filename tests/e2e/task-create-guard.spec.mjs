@@ -71,7 +71,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
           expect(response.ok(), await response.text()).toBe(true); return response.json();
         };
         const compiled = await write('compile', { hookId: 'TaskBeforeCreate', source: program.source, draftVersion: 0 });
-        expect(compiled.draft.pins.compiler).toBe('keir-compiler-java/0.3.1');
+        expect(compiled.draft.pins.compiler).toBe('keir-compiler-java/0.4.0');
         const saved = await write('scenarios', { revisionId: compiled.draft.id, draftVersion: compiled.draftVersion, cases: program.cases });
         const checked = await write('simulate', { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
         expect(checked.evidence.passed).toBe(true);

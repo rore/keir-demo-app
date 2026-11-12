@@ -36,6 +36,19 @@
         "file": "keir-authoring-v7-candidate.zip",
         "sha256": "sha256:8a4101a64fbbf4d09b59f936083a48df39256fcba8386cee66bd5f7bcad2c4a7"
       }
+    },
+    "customer-authoring-guide-v8.md": {
+      "edition": 8,
+      "status": "verified-candidate",
+      "release": "v0.4.0",
+      "revision": "dca92178dad7a9a4f65312128afec15abf88ce67",
+      "source": "docs/agents/customer-authoring-guide-v8.md",
+      "bytes": 6851,
+      "sha256": "sha256:bcb676ff6542594b960be11be126fa47cfb7b044f7dccc3fa89fefb0566ae14c",
+      "distribution": {
+        "file": "keir-authoring-v8-candidate.zip",
+        "sha256": "sha256:4433908295095612c495b11447170fe542758db06acc4b1ce253359a10ac2676"
+      }
     }
   }
 }

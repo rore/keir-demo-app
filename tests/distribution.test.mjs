@@ -5,23 +5,23 @@ import { createHash } from 'node:crypto';
 
 const hash = (algorithm, bytes, encoding) => createHash(algorithm).update(bytes).digest(encoding);
 
-test('candidate archive, lock integrity and installed bytes match qualified provenance', () => {
+test('released archive, lock integrity and installed bytes match qualified provenance', () => {
   const provenance = JSON.parse(readFileSync('vendor/provenance.json'));
   const lock = JSON.parse(readFileSync('package-lock.json'));
   const archive = readFileSync(`vendor/${provenance.archive}`);
-  assert.equal(provenance.status, 'verified-candidate');
-  assert.equal(provenance.release, null);
-  assert.equal(provenance.revision, '5c772d02b4dc92bb28ea8aedabd34498ff6d9391');
-  assert.equal(provenance.archive, 'keir-runtime-node-0.3.1.tgz');
-  assert.equal(provenance.sha256, 'sha256:97b7afc93e260dab075e9576176ffb5f908a797f9fb5ea35d233240598486d86');
+  assert.equal(provenance.status, 'verified-release');
+  assert.equal(provenance.release, 'v0.4.0');
+  assert.equal(provenance.revision, 'fc0601ae410e06c0be76d6f3b769abbd049b5999');
+  assert.equal(provenance.archive, 'keir-runtime-node-0.4.0.tgz');
+  assert.equal(provenance.sha256, 'sha256:b3e9b7fe31437d2fa2795cccc4758ebf1184d0eca6d15cfa93898d2591a67962');
   assert.equal('sha256:' + hash('sha256', archive, 'hex'), provenance.sha256);
   assert.equal('sha512-' + hash('sha512', archive, 'base64'), provenance.integrity);
   assert.equal(lock.packages['node_modules/@keir/runtime-node'].integrity, provenance.integrity);
   assert.equal(lock.packages['node_modules/@keir/runtime-node'].resolved, `file:vendor/${provenance.archive}`);
-  assert.equal(lock.packages['node_modules/@keir/runtime-node'].version, '0.3.1');
+  assert.equal(lock.packages['node_modules/@keir/runtime-node'].version, '0.4.0');
   assert.equal(lock.packages[''].dependencies['@keir/runtime-node'], `file:vendor/${provenance.archive}`);
   assert.equal(JSON.parse(readFileSync('package.json')).dependencies['@keir/runtime-node'], `file:vendor/${provenance.archive}`);
-  assert.equal(JSON.parse(readFileSync('node_modules/@keir/runtime-node/package.json')).version, '0.3.1');
+  assert.equal(JSON.parse(readFileSync('node_modules/@keir/runtime-node/package.json')).version, '0.4.0');
   assert.deepEqual(provenance.files.map(file => file.path).sort(),
     ['LICENSE', 'README.md', 'package.json', 'src/canonical.js', 'src/cel.js', 'src/index.js', 'src/model.js', 'src/validation.js']);
   for (const file of provenance.files) assert.equal('sha256:' + hash('sha256',
@@ -66,4 +66,15 @@ test('original 0.3.0 packages, metadata and notices remain available without rel
   assert.equal('sha256:' + hash('sha256', readFileSync('vendor/' + compiler.artifact.file), 'hex'), compiler.artifact.sha256);
   assert.equal(compiler.notices, 'compiler-notices/THIRD-PARTY.txt');
   assert.match(readFileSync('vendor/' + compiler.notices, 'utf8'), /Bundled compiler dependencies/);
+});
+
+
+test('original 0.3.1 package identity and candidate provenance stay intact beside 0.4.0', () => {
+  const old = JSON.parse(readFileSync('vendor/keir-0.3.1-provenance.json'));
+  const compiler = JSON.parse(readFileSync('vendor/compiler-0.3.1-provenance.json'));
+  assert.equal(old.status, 'verified-candidate'); assert.equal(old.release, null);
+  assert.equal(old.version, '0.3.1');
+  assert.equal('sha256:' + hash('sha256', readFileSync('vendor/' + old.archive), 'hex'), old.sha256);
+  assert.equal('sha256:' + hash('sha256', readFileSync('vendor/' + compiler.artifact.file), 'hex'), compiler.artifact.sha256);
+  assert.equal(compiler.compiler, 'keir-compiler-java/0.3.1');
 });

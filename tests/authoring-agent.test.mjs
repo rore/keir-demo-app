@@ -51,22 +51,22 @@ test('task coaching requires discovered constants and independent expectations w
     'independent expected scenarios', 'language keir/2', 'format keir-scenario/3', 'duration("604800s")',
     'one ordinary-language question', 'never infer an existing task identity', 'TaskBeforeCreate is a read-only decision',
     'Whitespace-only native notes have hasNotes false', 'ALLOW permits normal native checks to continue',
-    'matching ALLOW, matching DENY, nonmatching ALLOW and unavailable', 'exactly {status:"BLOCKED"}']) assert.ok(instructions.includes(phrase), phrase);
+    'matching ALLOW, matching DENY, nonmatching ALLOW and unavailable', 'exactly {status:"BLOCKED"}', 'exact guard proof when using a conditional lookup', 'Only that exact checked identifier establishes result existence']) assert.ok(instructions.includes(phrase), phrase);
   assert.doesNotMatch(instructions, /choose Check task advice|outside the discovered read-only contract/);
 });
 
-test('authoring loads the exact candidate v7 companion and retains historical guides', async () => {
+test('authoring loads the exact published candidate v8 companion and retains historical guides', async () => {
   const metadata = JSON.parse(readFileSync(new URL('../vendor/authoring-companion-provenance.json', import.meta.url)));
-  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v7.md', import.meta.url));
-  const current = metadata.files['customer-authoring-guide-v7.md'];
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v8.md', import.meta.url));
+  const current = metadata.files['customer-authoring-guide-v8.md'];
   assert.equal(current.status, 'verified-candidate');
-  assert.equal(current.release, null);
-  assert.equal(current.revision, 'bdd273112c7a86d255082c1de545a943cc2d87e6');
-  assert.equal(current.source, 'docs/agents/customer-authoring-guide-v7.md');
-  assert.equal(current.bytes, 6481);
-  assert.equal(current.sha256, 'sha256:81a8c46630ab63f643b396f55d06b67d792236ac79584760a64d1721c602721f');
-  assert.deepEqual(current.distribution, { file: 'keir-authoring-v7-candidate.zip',
-    sha256: 'sha256:8a4101a64fbbf4d09b59f936083a48df39256fcba8386cee66bd5f7bcad2c4a7' });
+  assert.equal(current.release, 'v0.4.0');
+  assert.equal(current.revision, 'dca92178dad7a9a4f65312128afec15abf88ce67');
+  assert.equal(current.source, 'docs/agents/customer-authoring-guide-v8.md');
+  assert.equal(current.bytes, 6851);
+  assert.equal(current.sha256, 'sha256:bcb676ff6542594b960be11be126fa47cfb7b044f7dccc3fa89fefb0566ae14c');
+  assert.deepEqual(current.distribution, { file: 'keir-authoring-v8-candidate.zip',
+    sha256: 'sha256:4433908295095612c495b11447170fe542758db06acc4b1ce253359a10ac2676' });
   for (const [path, info] of Object.entries(metadata.files)) {
     const bytes = readFileSync(new URL('../vendor/' + path, import.meta.url));
     assert.equal(bytes.length, info.bytes);

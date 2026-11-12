@@ -7,3 +7,5 @@ vendor/compiler-notices/** -text
 vendor/customer-authoring-guide-v*.md -text
 vendor/keir-verification/scenario-v2.schema.json -text
 vendor/keir-verification/scenario-v3.schema.json -text
+extensions/task-effect/core-0.3.1/dcm.json -text
+vendor/compiler-0.4.0-notices/** -text

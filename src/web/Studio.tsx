@@ -42,7 +42,7 @@ const workflowStarters = [
   { label: "Arrange a review", hook: "TaskCompleted", capabilities: ["tasks.get", "tasks.create"],
     text: "When a high-priority task tagged review is completed in Launch, create a review task in Reviews due 7 days after completion." },
   { label: "Avoid another follow-up", hook: "TaskCompleted", capabilities: ["tasks.get", "tasks.create", "tasks.openMatch"],
-    text: "When a task in Launch is completed, create a follow-up in Reviews only if one is not already open." },
+    text: "When a high-priority task in my chosen project is completed, check for an open task titled Follow up in that project. Create one only if none is open." },
   { label: "Add missing due dates", hook: "TaskCreated", capabilities: ["tasks.get", "tasks.update"],
     text: "When a task is added to Onboarding without a due date, give it a due date 7 days after it was added." },
 ];

@@ -5,6 +5,7 @@ Start with the [screenshot walkthrough](customization-walkthrough.md): follow a 
 ## Run the example
 
 - [Run locally](../README.md#run-locally), then [try the follow-up customization](../README.md#try-a-customization).
+- [Conditional follow-up](conditional-follow-up.md): check high-priority completions for an existing open follow-up before creating one.
 - [Configure an AI provider](ai-authoring.md#configure-a-provider) for conversational authoring.
 - [Local setup and recovery](running.md) covers ports, data directories, backup and reset.
 

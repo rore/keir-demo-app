@@ -149,7 +149,7 @@ test('an unavailable runtime archive blocks execution and preserves exact saved 
   const proof = lifecycle.evidence('maya', active.approvedEvidenceId, id);
   const read = fs.readFileSync;
   fs.readFileSync = (path, ...args) => {
-    if (String(path).endsWith('/vendor/keir-runtime-node-0.3.1.tgz')) throw new Error('Runtime archive unavailable');
+    if (String(path).endsWith('/vendor/keir-runtime-node-0.4.0.tgz')) throw new Error('Runtime archive unavailable');
     return read(path, ...args);
   };
   syncBuiltinESMExports();

@@ -173,3 +173,19 @@ test('partial and unavailable descriptions never promise full scope or preserved
   assert.doesNotMatch(unresolved.summary, /private-project-id|in any project/);
   assert.equal(describeRule({ coverage: 'unavailable' }, projectName), null);
 });
+
+
+test('open-match snapshot wording respects the trigger and distinguishes creation from updates', () => {
+  const conditions = [{ field: 'noOpenMatch', step: 'match', projectId: 'reviews', title: 'Review' }];
+  for (const [hook, wording] of [['TaskCreated','additions'],['TaskCompleted','completions']]) {
+    const result = describeRule({ coverage: 'complete', hook, conditions, action: {
+      capability: 'tasks.create', target: 'newTask', step: 'write', fields: { projectId: literal('reviews'), title: literal('Review') },
+    } }, projectName);
+    assert.match(result.scope, new RegExp('simultaneous task ' + wording));
+    assert.match(result.scope, /more than one matching task/);
+    assert.doesNotMatch(result.scope, /follow-up/);
+  }
+  const changed = describeRule(update({ priority: literal('high') }, conditions), projectName);
+  assert.match(changed.scope, /matching tasks can change after the check/);
+  assert.doesNotMatch(changed.scope, /create more than one/);
+});

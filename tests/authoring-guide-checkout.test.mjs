@@ -20,7 +20,7 @@ test('a forced-autocrlf checkout preserves the pinned guide and the real assista
     assert.equal(result.status, 0, result.stderr?.toString() || result.error?.message);
     return result.stdout;
   };
-  const guide = 'vendor/customer-authoring-guide-v7.md';
+  const guide = 'vendor/customer-authoring-guide-v8.md';
   const original = git(root, 'show', 'HEAD:' + guide);
   mkdirSync(join(checkout, 'vendor'));
   mkdirSync(join(checkout, 'src'));

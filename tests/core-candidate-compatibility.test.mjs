@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { openData, taskService } from '../src/data.mjs';
 import { createCompiler } from '../src/compiler.mjs';
@@ -10,12 +11,12 @@ import { createTaskCreateGuard } from '../src/task-create-guard.mjs';
 import { taskEffectSyntax, taskEffectScenarioExamples } from '../src/task-effect-simulation.mjs';
 import { taskCreateGuardFixture } from './fixtures/task-create-guard.mjs';
 import { admitTaskDraft } from './fixtures/task-authoring.mjs';
-import { restoreSavedCore030, savedRows, savedCore030 } from './fixtures/saved-core-0.3.0.mjs';
+import { restoreSavedCore, savedRows, savedCore030 } from './fixtures/saved-core-0.3.0.mjs';
 
 const owner = 'maya', newerOwner = 'leo';
 const input = state => ({ extensionId: state.extension.id, revisionId: state.draft.id, draftVersion: state.draftVersion });
-function setup(t) {
-  const db = openData(':memory:'); restoreSavedCore030(db); t.after(() => db.close());
+function setup(t, fixture) {
+  const db = openData(':memory:'); restoreSavedCore(db, fixture); t.after(() => db.close());
   return { db, lifecycle: createLifecycle(db, { compiler: createCompiler() }) };
 }
 async function activateNew(db, lifecycle, hookId, actor = newerOwner) {
@@ -26,7 +27,7 @@ async function activateNew(db, lifecycle, hookId, actor = newerOwner) {
   };
   const { extensionId } = admitTaskDraft(db, lifecycle, { owner: actor });
   let state = await lifecycle.compile(actor, { extensionId, hookId, draftVersion: 0, source: fixture.source }, () => {});
-  assert.equal(state.draft.pins.compiler, 'keir-compiler-java/0.3.1');
+  assert.equal(state.draft.pins.compiler, 'keir-compiler-java/0.4.0');
   state = await lifecycle.proposeScenarios(actor, { ...input(state), cases: fixture.cases }, () => {});
   state = await lifecycle.simulate(actor, input(state), () => {}); assert.equal(state.evidence.passed, true);
   const evidenceId = state.evidence.id;
@@ -34,17 +35,18 @@ async function activateNew(db, lifecycle, hookId, actor = newerOwner) {
   return lifecycle.activate(actor, { ...input(state), evidenceId, generation: state.selection.generation }, () => {});
 }
 
-test('retained 0.3.0 selections, artifacts and approvals reopen beside current 0.3.1 definitions', async t => {
-  const { db, lifecycle } = setup(t), original = savedRows(db);
-  assert.equal(savedCore030.demoRevision, '74778142e29048bfae0493d264a2e6e2fe7a14fd');
+for (const [version, savedFixture] of [['0.3.0', savedCore030], ['0.3.1', JSON.parse(readFileSync(new URL('./fixtures/saved-core-0.3.1.json', import.meta.url)))]]) {
+test(`retained ${version} selections, artifacts and approvals reopen beside current 0.4.0 definitions`, async t => {
+  const { db, lifecycle } = setup(t, savedFixture), original = savedRows(db);
+  assert.equal(savedFixture.producer, `keir-compiler-java/${version}`);
   for (const hook of TASK_HOOKS) {
-    const id = 'compat-030-' + hook, state = lifecycle.state(owner, id);
+    const id = `compat-${version === '0.3.0' ? '030' : '031'}-` + hook, state = lifecycle.state(owner, id);
     assert.equal(state.selection.eligible, true, hook);
-    assert.equal(state.selection.revision.pins.compiler, 'keir-compiler-java/0.3.0');
+    assert.equal(state.selection.revision.pins.compiler, `keir-compiler-java/${version}`);
     assert.equal(state.selection.revision.pins.modelDigest, loadHost(hook).pins.modelDigest);
     const execution = lifecycle.execution(owner, state.selection.revision.id, id);
     const trusted = definitionForPins(execution.pins);
-    assert.equal(trusted.pins.compiler, 'keir-compiler-java/0.3.0');
+    assert.equal(trusted.pins.compiler, `keir-compiler-java/${version}`);
     assert.equal(admitArtifact(execution.artifactBytes, trusted).compiler, trusted.pins.compiler);
     assert.throws(() => admitArtifact(execution.artifactBytes, loadHost(hook)), /Artifact compiler mismatch/);
     const current = await activateNew(db, lifecycle, hook);
@@ -52,20 +54,20 @@ test('retained 0.3.0 selections, artifacts and approvals reopen beside current 0
     assert.throws(() => admitArtifact(newer.artifactBytes, trusted), /Artifact compiler mismatch/);
   }
   const reopened = createLifecycle(db);
-  for (const hook of TASK_HOOKS) assert.equal(reopened.state(owner, 'compat-030-' + hook).selection.eligible, true);
+  for (const hook of TASK_HOOKS) assert.equal(reopened.state(owner, `compat-${version === '0.3.0' ? '030' : '031'}-` + hook).selection.eligible, true);
   assert.deepEqual(savedRows(db), original, 'Saved identity, source, artifact, proof, approval and selection bytes are unchanged.');
 });
 
 for (const order of [[owner, newerOwner], [newerOwner, owner]]) for (const hook of ['TaskCreated', 'TaskCompleted']) {
-  test(`native ${hook} admissions preserve both producers in cache order ${order.join(',')}`, async t => {
-    const { db, lifecycle } = setup(t), original = savedRows(db);
+  test(`retained ${version} native ${hook} admissions preserve both producers in cache order ${order.join(',')}`, async t => {
+    const { db, lifecycle } = setup(t, savedFixture), original = savedRows(db);
     await activateNew(db, lifecycle, hook);
     const reopened = createLifecycle(db), guard = createTaskCreateGuard({ db, lifecycle: reopened, commitReserveMs: 100 });
     const dispatcher = createTaskDispatcher({ db, lifecycle: reopened, guard });
     t.after(async () => { await dispatcher.close(); await guard.close(); });
     const tasks = taskService(db, { guard });
     for (const actor of order) {
-      const projectId = actor === owner ? savedCore030.projectId : tasks.listProjects(actor)[0].id;
+      const projectId = actor === owner ? savedFixture.projectId : tasks.listProjects(actor)[0].id;
       const task = await tasks.createTask(actor, { projectId, title: 'Fictional source task' }, { operationId: randomUUID() });
       if (hook === 'TaskCompleted') tasks.completeTask(actor, task.id);
       await dispatcher.wake();
@@ -75,15 +77,15 @@ for (const order of [[owner, newerOwner], [newerOwner, owner]]) for (const hook 
       const followUp = tasks.getTask(actor, result.receipt.value.id);
       assert.equal(followUp.title, 'Example follow-up task'); assert.equal(followUp.projectId, projectId);
       const admission = db.prepare('SELECT pins,revoked_at FROM task_events WHERE source_task_id=? AND hook_id=?').get(task.id, hook);
-      assert.equal(JSON.parse(admission.pins).compiler, actor === owner ? 'keir-compiler-java/0.3.0' : 'keir-compiler-java/0.3.1');
+      assert.equal(JSON.parse(admission.pins).compiler, actor === owner ? `keir-compiler-java/${version}` : 'keir-compiler-java/0.4.0');
       assert.equal(admission.revoked_at, null);
     }
     assert.deepEqual(savedRows(db), original);
   });
 }
 
-test('retained and new guards allow, deny and block native writes after reopening without identity switching', async t => {
-  const { db, lifecycle } = setup(t), original = savedRows(db);
+test(`retained ${version} and new guards allow, deny and block native writes after reopening without identity switching`, async t => {
+  const { db, lifecycle } = setup(t, savedFixture), original = savedRows(db);
   await activateNew(db, lifecycle, 'TaskBeforeCreate');
   const reopened = createLifecycle(db), guard = createTaskCreateGuard({ db, lifecycle: reopened, commitReserveMs: 100 });
   t.after(() => guard.close());
@@ -105,3 +107,5 @@ test('retained and new guards allow, deny and block native writes after reopenin
   db.prepare('UPDATE extension_evidence SET passed=1 WHERE id=?').run(oldProof);
   assert.deepEqual(savedRows(db), original);
 });
+
+}
