@@ -71,4 +71,8 @@ test('native conditional follow-up uses the approved artifact, then skips found 
     assert.ok(skipped.outcome.trace.some(e=>e.event==='STEP_SKIPPED'&&e.step==='match'));
     assert.deepEqual(skipped.outcome.trace.filter(e=>e.event==='CALL_DISPATCHED').map(e=>e.capability),['tasks.get']);
   }
+  const later=await complete('Send final collection notes','high');
+  assert.equal(later.receipt.effect,'CONFIRMED');
+  assert.notEqual(later.receipt.value.id,first.receipt.value.id);
+  assert.equal(tasks.getTask(owner,later.receipt.value.id).status,'open');
 });
