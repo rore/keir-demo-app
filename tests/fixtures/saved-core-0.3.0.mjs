@@ -3,11 +3,12 @@ import { readFileSync } from 'node:fs';
 // Captured with the unmodified 0.3.0 compiler, simulation, approval and activation.
 // The JSON is durable fictional test data, not a new artifact with an old stamp.
 export const savedCore030 = JSON.parse(readFileSync(new URL('./saved-core-0.3.0.json', import.meta.url)));
-export function restoreSavedCore030(db) {
+export function restoreSavedCore030(db) { return restoreSavedCore(db, savedCore030); }
+export function restoreSavedCore(db, fixture) {
   db.exec('BEGIN IMMEDIATE; PRAGMA defer_foreign_keys=ON');
-  db.prepare('INSERT INTO projects VALUES (?,?,?,?,?)').run(savedCore030.projectId, 'maya', 'Retained fictional project', '2026-02-02T02:40:00.000Z', '2026-02-02T02:40:00.000Z');
+  db.prepare('INSERT INTO projects VALUES (?,?,?,?,?)').run(fixture.projectId, 'maya', 'Retained fictional project', '2026-02-02T02:40:00.000Z', '2026-02-02T02:40:00.000Z');
   try {
-    for (const [table, rows] of Object.entries(savedCore030.tables)) for (const row of rows) {
+    for (const [table, rows] of Object.entries(fixture.tables)) for (const row of rows) {
       const keys = Object.keys(row);
       const values = Object.values(row).map(value => value && typeof value === 'object' && Object.hasOwn(value, 'base64')
         ? Buffer.from(value.base64, 'base64') : value);

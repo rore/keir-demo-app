@@ -29,6 +29,8 @@ An unknown outcome may already have changed a task. Use [saved-result recovery](
 
 The host also exposes before-save checks and after-create actions. The [host-binding reference](docs/task-effects.md) explains these hooks and their native guarantees.
 
+[Try the conditional follow-up example](docs/conditional-follow-up.md) to see Core 0.4.0 use an optional lookup’s answer: check only high-priority completions, then create a follow-up only when none is open.
+
 ## How it works
 
 A business request becomes a Keir program using only the capabilities Daymark exposes. Daymark's assistant clarifies the request, compiles the program and simulates examples against the exact artifact. You review the expected and observed behavior, approve that revision and separately turn it on. Daymark then executes the approved artifact when the chosen trigger occurs; execution needs no further AI request.

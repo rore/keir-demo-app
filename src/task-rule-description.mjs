@@ -32,7 +32,7 @@ export function taskRuleDescription(artifact, definition) {
     }
     const used = new Set(), decoded = new Map();
     let checkedBytes = 0;
-    function expression(value, before, depth = 0) {
+    function expression(value, before, depth = 0, inline = true) {
       if (depth >= 32 || !keys(value, ['literal', 'expr', 'type'])) return;
       if (Object.hasOwn(value, 'literal')) return Object.hasOwn(value, 'expr') ? undefined : literal(value.literal);
       if (typeof value.expr !== 'string') return;
@@ -44,9 +44,9 @@ export function taskRuleDescription(artifact, definition) {
         if (checkedBytes > 256_000) return;
         decoded.set(value.expr, fromBinary(CheckedExprSchema, Uint8Array.from(atob(encoded), char => char.charCodeAt(0))).expr);
       }
-      return node(decoded.get(value.expr), before, depth + 1);
+      return node(decoded.get(value.expr), before, depth + 1, inline);
     }
-    function node(expr, before, depth) {
+    function node(expr, before, depth, inline) {
       if (depth >= 32) return;
       const kind = expr?.exprKind;
       if (kind?.case === 'constExpr') {
@@ -57,17 +57,17 @@ export function taskRuleDescription(artifact, definition) {
       }
       if (kind?.case === 'identExpr') {
         const name = kind.value.name, index = indices.get(name), binding = steps[index];
-        if (index < before && binding?.op === 'BIND' && !Object.hasOwn(binding, 'when')) {
+        if (inline && index < before && binding?.op === 'BIND' && !Object.hasOwn(binding, 'when')) {
           used.add(name);
-          return expression(binding.value, index, depth + 1);
+          return expression(binding.value, index, depth + 1, inline);
         }
         return { kind: 'ident', name };
       }
       if (kind?.case === 'selectExpr') return { kind: 'field', name: kind.value.field, testOnly: kind.value.testOnly,
-        record: node(kind.value.operand, before, depth + 1) };
+        record: node(kind.value.operand, before, depth + 1, inline) };
       if (kind?.case === 'callExpr') return { kind: 'call', name: kind.value.function,
-        target: kind.value.target ? node(kind.value.target, before, depth + 1) ?? {} : undefined,
-        args: kind.value.args.map(arg => node(arg, before, depth + 1)) };
+        target: kind.value.target ? node(kind.value.target, before, depth + 1, inline) ?? {} : undefined,
+        args: kind.value.args.map(arg => node(arg, before, depth + 1, inline)) };
     }
     if (hook === 'TaskBeforeCreate') {
       const returned = artifact.return, output = model.types[model.entrypoints[hook].output]?.fields;
@@ -120,22 +120,37 @@ export function taskRuleDescription(artifact, definition) {
     let complete = keys(artifact, ['format', 'compiler', 'environment', 'expressions', 'entrypoint', 'modelRef', 'return', 'sourceDigest', 'steps']);
     for (const [index, step] of steps.entries()) {
       if (step.op !== 'CALL' || step === write) continue;
-      if (index >= writeIndex || Object.hasOwn(step, 'when')) { complete = false; continue; }
-      if (step.capability === 'tasks.get' && step.version === '3'
+      if (index >= writeIndex) { complete = false; continue; }
+      if (!Object.hasOwn(step, 'when') && step.capability === 'tasks.get' && step.version === '3'
         && Object.keys(step.args ?? {}).join() === 'taskId' && field(expression(step.args.taskId, index), 'input', 'taskId')) {
         reads.set(step.id, { kind: 'task' });
       } else if (step.capability === 'tasks.openMatch' && step.version === '1'
         && Object.keys(step.args ?? {}).sort().join() === 'projectId,title') {
         const project = expression(step.args.projectId, index), title = expression(step.args.title, index);
         if (project?.kind === 'literal' && title?.kind === 'literal' && validOpenMatchInput(project.value, title.value)) {
-          reads.set(step.id, { kind: 'match', projectId: project.value, title: title.value });
+          const guardIndex = indices.get(step.when), guard = steps[guardIndex];
+          if (Object.hasOwn(step, 'when') && !(guardIndex < index && guard?.op === 'BIND'
+              && !Object.hasOwn(guard, 'when') && guard.resultType === 'Boolean')) { complete = false; continue; }
+          reads.set(step.id, { kind: 'match', projectId: project.value, title: title.value, guard: step.when });
         } else complete = false;
       } else complete = false;
     }
-    function conditions(expr) {
+    function conditions(expr, raw = expr) {
       if (call(expr, '_&&_', 2)) {
-        const left = conditions(expr.args[0]), right = conditions(expr.args[1]);
+        const left = conditions(expr.args[0], raw.args?.[0]), right = conditions(expr.args[1], raw.args?.[1]);
         return left && right ? [...left, ...right] : undefined;
+      }
+      if (call(expr, '_?_:_', 3) && call(raw, '_?_:_', 3)
+        && expr.args[2]?.kind === 'literal' && expr.args[2].value === false && call(expr.args[1], '!_', 1)) {
+        const selected = expr.args[1].args[0], read = reads.get(selected?.record?.name);
+        if (read?.kind === 'match' && read.guard && raw.args[0]?.kind === 'ident' && raw.args[0].name === read.guard
+          && field(selected, selected.record.name, 'matches')) {
+          const eligibility = conditions(expr.args[0]);
+          if (eligibility) {
+            used.add(selected.record.name);
+            return [...eligibility, { field: 'noOpenMatch', projectId: read.projectId, title: read.title, step: selected.record.name }];
+          }
+        }
       }
       if (call(expr, '_==_', 2)) {
         for (const [selected, value] of [expr.args, [...expr.args].reverse()]) {
@@ -157,7 +172,7 @@ export function taskRuleDescription(artifact, definition) {
         if (read?.kind === 'task' && selected?.kind === 'field' && selected.testOnly && selected.name === 'dueAt') {
           used.add(selected.record.name); return [{ field: 'dueAbsent', step: selected.record.name }];
         }
-        if (read?.kind === 'match' && field(selected, selected.record.name, 'matches')) {
+        if (read?.kind === 'match' && !read.guard && field(selected, selected.record.name, 'matches')) {
           used.add(selected.record.name); return [{ field: 'noOpenMatch', projectId: read.projectId, title: read.title, step: selected.record.name }];
         }
       }
@@ -167,7 +182,7 @@ export function taskRuleDescription(artifact, definition) {
     else {
       const index = indices.get(write.when), binding = steps[index];
       if (index < writeIndex && binding?.op === 'BIND' && !Object.hasOwn(binding, 'when')) {
-        used.add(binding.id); guard = expression(binding.value, index); knownConditions = conditions(guard);
+        used.add(binding.id); guard = expression(binding.value, index); knownConditions = conditions(guard, expression(binding.value, index, 0, false));
       }
       if (!knownConditions) complete = false;
     }

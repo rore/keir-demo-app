@@ -284,7 +284,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: openai ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     // Eight scripted requests include read-only reopening; OpenAI reserves 3.096576 USD.
     KEIR_AI_MAX_USD: '3.1', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
-  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v7.md', import.meta.url), 'utf8');
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v8.md', import.meta.url), 'utf8');
   const calls = [], requestBytes = [];
   function respond(openaiContent, anthropicContent, stopReason) {
     const usage = { input_tokens: 10, output_tokens: 5 };
