@@ -15,3 +15,4 @@ vendor/keir-verification/scenario-v4.schema.json -text
 vendor/compiler-0.5.0-notices/** -text
 vendor/keir-authoring-companion-v9-manifest.json -text
 vendor/keir-authoring-companion-v9.zip binary
+tests/fixtures/saved-core-0.4.0.json -text

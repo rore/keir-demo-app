@@ -52,7 +52,8 @@ test('task coaching requires discovered constants and independent expectations w
     'New compiler outputs use artifact/scenario /4', 'size(input.tags) > 3 && !input.hasNotes', 'duration("604800s")',
     'one ordinary-language question', 'never infer an existing task identity', 'TaskBeforeCreate is a read-only decision',
     'Whitespace-only native notes have hasNotes false', 'ALLOW permits normal native checks to continue',
-    'matching ALLOW, matching DENY, nonmatching ALLOW and unavailable', 'exactly {status:"BLOCKED"}', 'exact guard proof when using a conditional lookup', 'Only that exact checked identifier establishes result existence']) assert.ok(instructions.includes(phrase), phrase);
+    'matching ALLOW, matching DENY, nonmatching ALLOW and unavailable', 'exactly {status:"BLOCKED"}', 'exact guard proof when using a conditional lookup',
+    'only that exact earlier unconditional Boolean BIND proves its result exists', 'If the CALL itself names an alias, use that exact identifier']) assert.ok(instructions.includes(phrase), phrase);
   assert.doesNotMatch(instructions, /choose Check task advice|outside the discovered read-only contract/);
 });
 

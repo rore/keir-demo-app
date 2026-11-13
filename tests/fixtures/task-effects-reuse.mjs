@@ -86,7 +86,7 @@ try {
   assert.equal(native.listTasks('sam', project.id).filter(task => task.title === fixture.metadata.title).length, 1);
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 1);
 
-  assert.deepEqual(boundVersions, ['5']); assert.equal(prepares, 1); assert.equal(invocations.length, 4);
+  assert.deepEqual(boundVersions, ['6']); assert.equal(prepares, 1); assert.equal(invocations.length, 4);
   assert.ok(invocations.every(row => row.prepared === invocations[0].prepared));
   assert.deepEqual(invocations.map(row => row.invocation.bindings.actorId), ['sam', 'maya', 'sam', 'sam']);
   assert.deepEqual(invocations.map(row => row.invocation.deadline.expiresAtMs), [1000, 1100, 1200, 1300]);

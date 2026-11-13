@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { openData, taskService } from '../src/data.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
-import { loadHost, authoringDefinition, definitionForPins, admitArtifact, TASK_HOOKS } from '../src/extension-catalog.mjs';
+import { loadHost, authoringDefinition, definitionForPins, admitArtifact, digest, TASK_HOOKS } from '../src/extension-catalog.mjs';
 import { createTaskDispatcher } from '../src/task-effects.mjs';
 import { createTaskCreateGuard } from '../src/task-create-guard.mjs';
 import { taskEffectSyntax, taskEffectScenarioExamples } from '../src/task-effect-simulation.mjs';
@@ -14,6 +14,14 @@ import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 import { restoreSavedCore, savedRows, savedCore030 } from './fixtures/saved-core-0.3.0.mjs';
 
 const owner = 'maya', newerOwner = 'leo';
+test('retained 0.4 snapshot is the exact inspected hosted baseline capture', () => {
+  const bytes = readFileSync(new URL('./fixtures/saved-core-0.4.0.json', import.meta.url)), fixture = JSON.parse(bytes);
+  assert.equal(bytes.length, 143497);
+  assert.equal(digest(bytes), 'sha256:aff2c905a7de66e2c5b74738e474b0d14c922f2b059758d44ef3c3727cfaea94');
+  assert.equal(fixture.demoRevision, '77feb10032d3b63475057564ca56099b1e498faa');
+  assert.equal(fixture.coreRevision, 'fc0601ae410e06c0be76d6f3b769abbd049b5999');
+  assert.equal(fixture.producer, 'keir-compiler-java/0.4.0');
+});
 const input = state => ({ extensionId: state.extension.id, revisionId: state.draft.id, draftVersion: state.draftVersion });
 function setup(t, fixture) {
   const db = openData(':memory:'); restoreSavedCore(db, fixture); t.after(() => db.close());

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mock } from 'node:test';
 
 const runtime = await import('@keir/runtime-node');
@@ -14,6 +15,7 @@ const { openData } = await import('../../src/data.mjs');
 const { createLifecycle } = await import('../../src/extension-lifecycle.mjs');
 const { admitTaskDraft } = await import('./task-authoring.mjs');
 const { seedTaskEffectBinding } = await import('./task-effect-schema.mjs');
+const { restoreSavedCore } = await import('./saved-core-0.3.0.mjs');
 const db = openData(':memory:');
 let app;
 try {
@@ -35,7 +37,7 @@ try {
   const login = await request('POST', '/api/session', { token: bootstrap.json().contextToken, body: { userId: 'maya' } });
   assert.equal(login.statusCode, 200, login.body);
   const auth = { token: login.json().contextToken, cookie: login.cookies.find(value => value.name === 'keir_demo_session').value };
-  assert.deepEqual(boundVersions, ['5', '5'], 'the actual guard and dispatcher reject their current model bindings');
+  assert.deepEqual(boundVersions, ['6'], 'the dispatcher rejects the numeric model; the guard binds only an actual selected definition');
   for (const path of ['/api/extensions', `/api/extensions/${extensionId}`]) {
     const response = await request('GET', path, auth);
     assert.equal(response.statusCode, 200, response.body);
@@ -75,6 +77,16 @@ try {
   assert.equal(outcome.statusCode, 200, outcome.body);
   assert.equal(outcome.json().state, 'NO_BINDING');
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_effect_receipts').get().n, 0);
+  // Selected guards bind lazily to their own model, not eagerly to the new authoring default.
+  restoreSavedCore(db, JSON.parse(readFileSync(new URL('./saved-core-0.4.0.json', import.meta.url))));
+  const beforeGuard = Object.fromEntries(['tasks', 'task_events', 'task_effect_receipts'].map(table =>
+    [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  const blocked = await request('POST', '/api/tasks', { ...auth, body: { projectId: projects.json()[0].id, title: 'Unavailable selected guard' } });
+  assert.equal(blocked.statusCode, 503, blocked.body);
+  assert.equal(blocked.json().code, 'CHECK_UNAVAILABLE');
+  assert.equal(blocked.json().state, 'NOT_CREATED');
+  assert.deepEqual(boundVersions, ['6', '5'], 'both actual bindings reject; the guard uses its exact retained selection');
+  for (const [table, rows] of Object.entries(beforeGuard)) assert.deepEqual(db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), rows);
   console.log('binding unavailable: review visible; activation and rollback refused; disable and native CRUD available');
 } finally {
   await app?.close();

@@ -75,10 +75,14 @@ export function authoringDefinition(hookId, modelDigest) {
   return host;
 }
 
-// Compiler identity, not the model's final digit, determines the artifact/scenario generation.
+// Pure format selection from already admitted pins. Never reread deployment files in a native guard.
 export function definitionFormats(pins) {
-  const host = readDefinitionForPins(pins), numeric = host.pins.modelRef.format === 'keir-dcm/4';
-  const version = host.pins.compiler === compiler ? '4' : host.pins.modelRef.format.slice(-1);
+  const format = pins?.modelRef?.format, numeric = format === 'keir-dcm/4';
+  const version = pins?.compiler === compiler && ['keir-dcm/3', 'keir-dcm/4'].includes(format) ? '4'
+    : pins?.compiler === 'keir-compiler-java/0.2.0' && format === 'keir-dcm/2' ? '2'
+      : ['keir-compiler-java/0.3.0', 'keir-compiler-java/0.3.1', 'keir-compiler-java/0.4.0'].includes(pins?.compiler)
+        && format === 'keir-dcm/3' ? '3' : null;
+  if (!version) throw new Error('Unsupported host format tuple');
   return { source: numeric ? 'keir/3' : 'keir/2', artifact: 'keir-artifact/' + version, scenario: 'keir-scenario/' + version };
 }
 
