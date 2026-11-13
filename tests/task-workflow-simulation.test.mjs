@@ -22,7 +22,7 @@ async function simulate(hook, workflow, options) {
   return { reports: result.reports.map(row => row.report), run, cases };
 }
 
-test('scenario reader keeps /1 and frozen /2 history and admits current /3 event scenarios', async () => {
+test('scenario reader keeps /1, /2 and /3 history and admits current /4 event scenarios', async () => {
   const path = name => new URL('../vendor/keir-verification/' + name, import.meta.url);
   assert.equal(digest(readFileSync(path('scenario-v2.schema.json'))),
     'sha256:04f7a3d00eb02bc3fdcf7a6387ae84a9995430d9b7b8165eccc204384e9cd9e2');
@@ -37,9 +37,9 @@ test('scenario reader keeps /1 and frozen /2 history and admits current /3 event
     assert.equal(result.reports.length, 6);
     const wrongHost = loadHost(TASK_EVENT_HOOKS.find(other => other !== hook));
     assert.equal((await runTaskEffectSimulation({ host: wrongHost, artifactBytes: artifact, scenarios })).status, 'FAIL');
-    assert.equal(decodeKeirScenario(Buffer.from(scenarios[0])).format, 'keir-scenario/3');
-    for (const format of ['keir-scenario/1', 'keir-scenario/2']) {
-      const historical = scenarios[0].replace('keir-scenario/3', format);
+    assert.equal(decodeKeirScenario(Buffer.from(scenarios[0])).format, 'keir-scenario/4');
+    for (const format of ['keir-scenario/1', 'keir-scenario/2', 'keir-scenario/3']) {
+      const historical = scenarios[0].replace('keir-scenario/4', format);
       assert.equal(decodeKeirScenario(Buffer.from(historical)).format, format);
       assert.equal((await runTaskEffectSimulation({ host, artifactBytes: artifact, scenarios: [historical] })).status, 'FAIL');
     }

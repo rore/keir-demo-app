@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:keir:schema:scenario:4",
+  "title": "Keir 0.5 verification scenario structure",
+  "description": "Unchanged complete response/expectation structure. Native readers match either exact artifact-4 tuple and validate numeric strings only under the selected numeric model; old scenarios are never relabeled.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "id", "given", "stubs", "expect"],
+  "properties": {
+    "format": {"const": "keir-scenario/4"},
+    "id": {"$ref": "urn:keir:schema:scenario:3#/properties/id"},
+    "given": {"$ref": "urn:keir:schema:scenario:3#/properties/given"},
+    "stubs": {"$ref": "urn:keir:schema:scenario:3#/properties/stubs"},
+    "expect": {"$ref": "urn:keir:schema:scenario:3#/properties/expect"}
+  }
+}

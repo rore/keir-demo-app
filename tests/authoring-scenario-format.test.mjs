@@ -284,7 +284,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: openai ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     // Eight scripted requests include read-only reopening; OpenAI reserves 3.096576 USD.
     KEIR_AI_MAX_USD: '3.1', OPENAI_API_KEY: 'synthetic-project-key', ANTHROPIC_API_KEY: 'synthetic-project-key' });
-  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v8.md', import.meta.url), 'utf8');
+  const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v9.md', import.meta.url), 'utf8');
   const calls = [], requestBytes = [];
   function respond(openaiContent, anthropicContent, stopReason) {
     const usage = { input_tokens: 10, output_tokens: 5 };
@@ -319,8 +319,8 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       assert.deepEqual(discovery.supportedHooks.map(hook => hook.id), TASK_HOOKS);
       assert.equal(discovery.selectedHook, null);
       const { sourceExample, scenarioExample, scenarioExamples } = discovery.examplesByHook[TASK_HOOK];
-      assert.equal(JSON.parse(sourceExample).language, 'keir/2');
-      assert.equal(JSON.parse(scenarioExample).format, 'keir-scenario/3');
+      assert.equal(JSON.parse(sourceExample).language, 'keir/3');
+      assert.equal(JSON.parse(scenarioExample).format, 'keir-scenario/4');
       assert.equal(discovery.conversationContext.messages.at(-1).text, request);
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));

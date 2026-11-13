@@ -11,6 +11,7 @@ import { loadHost, TASK_HOOK } from '../../src/extension-catalog.mjs';
 import { readAuthoringConfig } from '../../src/authoring-config.mjs';
 import { taskCustomizationFixture } from './task-customization.mjs';
 import { conditionalFollowUpFixture } from './task-conditional-follow-up.mjs';
+import { taskTagNotesFixture } from './task-tag-notes.mjs';
 import { taskWorkflowCases, taskWorkflowSource } from './task-workflow-source.mjs';
 
 const mismatchText = 'The other-project example tried to create a task when none was expected. Its outcome could not be confirmed. This did not pass. Keep the original expectations and explicitly ask to correct this change here.';
@@ -48,7 +49,7 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch, resum
     if (projects) assert.ok(project, 'The requested customer project must be discovered; never substitute the first project.');
     const editing = metadata.missingDue && discovery?.conversationContext.messages.at(-1)?.text === metadata.editRequest;
     const journey = metadata.missingDue ? { ...metadata, ...(editing && { source: metadata.editedSource, cases: metadata.editedCases }) }
-      : project ? (metadata.conditionalFollowUp ? conditionalFollowUpFixture : taskCustomizationFixture)({ projectId: project.id, title: metadata.title,
+      : project ? (metadata.tagNotes ? taskTagNotesFixture : metadata.conditionalFollowUp ? conditionalFollowUpFixture : taskCustomizationFixture)({ projectId: project.id, title: metadata.title,
       otherProjectId: metadata.otherProjectId }) : metadata;
     const { source, cases, wrongSource, projectId } = journey.metadata ?? journey;
     let name, args, text;
@@ -81,7 +82,7 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch, resum
         const currentText = messages.at(-1).text;
         assert.equal(providerText === currentText ? providerText : JSON.parse(providerText).currentUserMessage, currentText);
         if (/^(?:confirmed|yes)\b/i.test(messages.at(-1).text)) {
-          name = 'compile_draft'; args = { hookId: metadata.hookId ?? TASK_HOOK, sourceJson: metadata.missingDue || metadata.conditionalFollowUp ? source : '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
+          name = 'compile_draft'; args = { hookId: metadata.hookId ?? TASK_HOOK, sourceJson: metadata.missingDue || metadata.conditionalFollowUp || metadata.tagNotes ? source : '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
         } else if (resumeRequest && currentText === resumeRequest) {
           assert.equal(discovered.currentProposal.source, source);
           assert.deepEqual(discovered.currentProposal.cases, cases);
@@ -134,7 +135,7 @@ async function unusedLoopbackPort() {
 }
 
 // Synthetic offline transport only; app, compiler, lifecycle and simulator are real.
-export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, missingDue = false, conditionalFollowUp = false, resumeRequest, projectName, title = 'Review completed work', staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
+export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, missingDue = false, conditionalFollowUp = false, tagNotes = false, resumeRequest, projectName, title = 'Review completed work', staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
@@ -175,11 +176,13 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
       editedCases: taskWorkflowCases(host, 'missing-due', { ...options, elapsedSeconds: 432000 }),
       editRequest: 'Confirmed: change the delay to 120 hours after addition, for tasks without a due date in every project.',
       editedOfferText: 'I checked the revised delay of 120 hours. The earlier version is still on. Your tasks have not changed.' } }
-      : (conditionalFollowUp ? conditionalFollowUpFixture : taskCustomizationFixture)({ projectId: project.id, otherProjectId: other.id, title });
-    const question = missingDue ? 'Should every new task without a due date get one 168 hours after addition, in every project?'
+      : (tagNotes ? taskTagNotesFixture : conditionalFollowUp ? conditionalFollowUpFixture : taskCustomizationFixture)({ projectId: project.id, otherProjectId: other.id, title });
+    const question = tagNotes ? 'Should new tasks with more than three normalized distinct tags require non-whitespace notes, while tasks with three or fewer need no notes?'
+      : missingDue ? 'Should every new task without a due date get one 168 hours after addition, in every project?'
       : conditionalFollowUp ? `Should only high-priority completions in ${project.name} create ${title}, and only when no task with that exact title is already open there?`
       : `Should completing a task in ${project.name} create ${task.metadata.title}, while other projects create nothing?`;
-    const offerText = missingDue ? 'I checked four examples: two missing dates, an existing date and an unavailable task read. Your tasks have not changed.'
+    const offerText = tagNotes ? 'I checked eight examples. More than three normalized tags require notes; four through eight with notes are allowed. One example deliberately makes the required check unavailable. Your real tasks have not changed.'
+      : missingDue ? 'I checked four examples: two missing dates, an existing date and an unavailable task read. Your tasks have not changed.'
       : conditionalFollowUp ? `I checked six examples. High-priority completions create ${title} only when none is open in ${project.name}. Other priorities and projects make no change; an unavailable check creates nothing. Your real tasks have not changed.`
       : `I checked ${task.cases.length} example tasks. A completed task in ${project.name} creates ${task.metadata.title}; other projects create nothing. Your tasks have not changed. Review the saved changes when you are ready.`;
     const metadata = Object.freeze({ ...task.metadata, provider, question, offerText, mismatchText, projectName: project.name,

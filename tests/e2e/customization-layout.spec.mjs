@@ -136,7 +136,7 @@ async function prepareChoice(page, label) {
   await refresh(page);
   await expect.poll(async () => (await savedState(page)).draft?.id).toBe(proposed.draft.id);
   expect((await savedState(page)).draft.label).toBe(label);
-  expect(proposed.draft.pins.modelRef.format).toBe('keir-dcm/3');
+  expect(proposed.draft.pins.modelRef.format).toBe('keir-dcm/4');
   return proposed;
 }
 const choose = prepareChoice;

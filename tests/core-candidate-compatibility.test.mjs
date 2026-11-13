@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { openData, taskService } from '../src/data.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
-import { loadHost, definitionForPins, admitArtifact, TASK_HOOKS } from '../src/extension-catalog.mjs';
+import { loadHost, authoringDefinition, definitionForPins, admitArtifact, TASK_HOOKS } from '../src/extension-catalog.mjs';
 import { createTaskDispatcher } from '../src/task-effects.mjs';
 import { createTaskCreateGuard } from '../src/task-create-guard.mjs';
 import { taskEffectSyntax, taskEffectScenarioExamples } from '../src/task-effect-simulation.mjs';
@@ -27,7 +27,7 @@ async function activateNew(db, lifecycle, hookId, actor = newerOwner) {
   };
   const { extensionId } = admitTaskDraft(db, lifecycle, { owner: actor });
   let state = await lifecycle.compile(actor, { extensionId, hookId, draftVersion: 0, source: fixture.source }, () => {});
-  assert.equal(state.draft.pins.compiler, 'keir-compiler-java/0.4.0');
+  assert.equal(state.draft.pins.compiler, 'keir-compiler-java/0.5.0');
   state = await lifecycle.proposeScenarios(actor, { ...input(state), cases: fixture.cases }, () => {});
   state = await lifecycle.simulate(actor, input(state), () => {}); assert.equal(state.evidence.passed, true);
   const evidenceId = state.evidence.id;
@@ -35,15 +35,17 @@ async function activateNew(db, lifecycle, hookId, actor = newerOwner) {
   return lifecycle.activate(actor, { ...input(state), evidenceId, generation: state.selection.generation }, () => {});
 }
 
-for (const [version, savedFixture] of [['0.3.0', savedCore030], ['0.3.1', JSON.parse(readFileSync(new URL('./fixtures/saved-core-0.3.1.json', import.meta.url)))]]) {
-test(`retained ${version} selections, artifacts and approvals reopen beside current 0.4.0 definitions`, async t => {
+for (const [version, savedFixture] of [['0.3.0', savedCore030], ...['0.3.1', '0.4.0'].map(version =>
+  [version, JSON.parse(readFileSync(new URL(`./fixtures/saved-core-${version}.json`, import.meta.url)))])]) {
+test(`retained ${version} selections, artifacts and approvals reopen beside current 0.5.0 definitions`, async t => {
   const { db, lifecycle } = setup(t, savedFixture), original = savedRows(db);
   assert.equal(savedFixture.producer, `keir-compiler-java/${version}`);
   for (const hook of TASK_HOOKS) {
-    const id = `compat-${version === '0.3.0' ? '030' : '031'}-` + hook, state = lifecycle.state(owner, id);
+    const id = `compat-${version.replaceAll('.', '')}-` + hook, state = lifecycle.state(owner, id);
     assert.equal(state.selection.eligible, true, hook);
     assert.equal(state.selection.revision.pins.compiler, `keir-compiler-java/${version}`);
-    assert.equal(state.selection.revision.pins.modelDigest, loadHost(hook).pins.modelDigest);
+    assert.equal(state.selection.revision.pins.modelDigest, 'sha256:e7e250a249ea72f3261d7e52ac24a45fe42542ccf5fc5eb5de754069ca26f119');
+    assert.notEqual(state.selection.revision.pins.modelDigest, loadHost(hook).pins.modelDigest);
     const execution = lifecycle.execution(owner, state.selection.revision.id, id);
     const trusted = definitionForPins(execution.pins);
     assert.equal(trusted.pins.compiler, `keir-compiler-java/${version}`);
@@ -54,8 +56,38 @@ test(`retained ${version} selections, artifacts and approvals reopen beside curr
     assert.throws(() => admitArtifact(newer.artifactBytes, trusted), /Artifact compiler mismatch/);
   }
   const reopened = createLifecycle(db);
-  for (const hook of TASK_HOOKS) assert.equal(reopened.state(owner, `compat-${version === '0.3.0' ? '030' : '031'}-` + hook).selection.eligible, true);
+  for (const hook of TASK_HOOKS) assert.equal(reopened.state(owner, `compat-${version.replaceAll('.', '')}-` + hook).selection.eligible, true);
   assert.deepEqual(savedRows(db), original, 'Saved identity, source, artifact, proof, approval and selection bytes are unchanged.');
+});
+
+test(`a retained ${version} edit gets a new producer, proof and approval without replacing old approved bytes`, { timeout: 60_000 }, async t => {
+  const { db, lifecycle } = setup(t, savedFixture), original = savedRows(db);
+  const extensionId = `compat-${version.replaceAll('.', '')}-TaskBeforeCreate`, old = lifecycle.state(owner, extensionId);
+  const retained = authoringDefinition('TaskBeforeCreate', old.draft.pins.modelDigest);
+  const fixture = taskCreateGuardFixture({ host: retained, rule: 'client-due', projectId: savedFixture.projectId });
+  let state = await lifecycle.compile(owner, { extensionId, hookId: 'TaskBeforeCreate', modelDigest: retained.pins.modelDigest,
+    source: fixture.source, draftVersion: old.draftVersion }, () => {});
+  assert.notEqual(state.draft.id, old.draft.id);
+  assert.equal(state.draft.pins.compiler, 'keir-compiler-java/0.5.0');
+  assert.equal(state.draft.pins.modelDigest, old.draft.pins.modelDigest);
+  assert.equal(state.approved, false); assert.equal(state.evidence, null);
+  assert.equal(state.selection.revision.id, old.selection.revision.id);
+  assert.throws(() => lifecycle.activate(owner, { ...input(state), evidenceId: old.approvedEvidenceId,
+    generation: state.selection.generation }, () => {}), { status: 409 });
+  state = await lifecycle.proposeScenarios(owner, { ...input(state), cases: fixture.cases }, () => {});
+  state = await lifecycle.simulate(owner, input(state), () => {});
+  assert.equal(state.evidence.passed, true);
+  const evidenceId = state.evidence.id;
+  assert.notEqual(evidenceId, old.approvedEvidenceId);
+  state = lifecycle.approve(owner, { ...input(state), evidenceId }, () => {});
+  assert.deepEqual(savedRows(db).extension_selections, original.extension_selections);
+  state = lifecycle.activate(owner, { ...input(state), evidenceId, generation: state.selection.generation }, () => {});
+  assert.equal(state.selection.revision.id, state.draft.id);
+  const after = savedRows(db);
+  for (const table of ['extension_revisions', 'extension_revision_links', 'extension_authored', 'extension_evidence', 'extension_approvals'])
+    for (const row of original[table]) assert.ok(after[table].some(saved => JSON.stringify(saved) === JSON.stringify(row)), table);
+  assert.deepEqual(after.extension_selections.filter(row => row.hook_id !== 'TaskBeforeCreate'),
+    original.extension_selections.filter(row => row.hook_id !== 'TaskBeforeCreate'));
 });
 
 for (const order of [[owner, newerOwner], [newerOwner, owner]]) for (const hook of ['TaskCreated', 'TaskCompleted']) {
@@ -77,7 +109,7 @@ for (const order of [[owner, newerOwner], [newerOwner, owner]]) for (const hook 
       const followUp = tasks.getTask(actor, result.receipt.value.id);
       assert.equal(followUp.title, 'Example follow-up task'); assert.equal(followUp.projectId, projectId);
       const admission = db.prepare('SELECT pins,revoked_at FROM task_events WHERE source_task_id=? AND hook_id=?').get(task.id, hook);
-      assert.equal(JSON.parse(admission.pins).compiler, actor === owner ? `keir-compiler-java/${version}` : 'keir-compiler-java/0.4.0');
+      assert.equal(JSON.parse(admission.pins).compiler, actor === owner ? `keir-compiler-java/${version}` : 'keir-compiler-java/0.5.0');
       assert.equal(admission.revoked_at, null);
     }
     assert.deepEqual(savedRows(db), original);

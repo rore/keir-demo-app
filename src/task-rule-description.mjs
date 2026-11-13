@@ -1,6 +1,6 @@
 import { fromBinary } from '@bufbuild/protobuf';
 import { CheckedExprSchema } from '@bufbuild/cel-spec/cel/expr/checked_pb.js';
-import { digest, json } from './extension-catalog.mjs';
+import { digest, json, definitionFormats } from './extension-catalog.mjs';
 import { normalizeTaskTag, normalizeWorkflowTitle, parseWorkflowTagsText, validOpenMatchInput } from './task-workflow-values.mjs';
 
 const literal = value => ({ kind: 'literal', value });
@@ -17,8 +17,7 @@ export function taskRuleDescription(artifact, definition) {
   try {
     const pins = definition.pins, model = JSON.parse(Buffer.from(definition.dcmBytes).toString());
     if (digest(definition.dcmBytes) !== pins.modelDigest || !artifact
-      || !['keir-artifact/2', 'keir-artifact/3'].includes(artifact.format)
-      || artifact.format.slice(-1) !== pins.modelRef.format.slice(-1)
+      || artifact.format !== definitionFormats(pins).artifact
       || artifact.entrypoint !== hook || artifact.compiler !== pins.compiler
       || json(artifact.environment) !== json(pins.environment) || json(artifact.modelRef) !== json(pins.modelRef)
       || !/^sha256:[0-9a-f]{64}$/.test(artifact.sourceDigest ?? '')) return unavailable('The checked rule does not match its host definition.');
@@ -34,7 +33,13 @@ export function taskRuleDescription(artifact, definition) {
     let checkedBytes = 0;
     function expression(value, before, depth = 0, inline = true) {
       if (depth >= 32 || !keys(value, ['literal', 'expr', 'type'])) return;
-      if (Object.hasOwn(value, 'literal')) return Object.hasOwn(value, 'expr') ? undefined : literal(value.literal);
+      if (Object.hasOwn(value, 'literal')) {
+        if (Object.hasOwn(value, 'expr')) return;
+        if (model.format === 'keir-dcm/4' && value.type === 'Integer' && typeof value.literal === 'string'
+          && /^(?:0|-[1-9][0-9]*|[1-9][0-9]*)$/.test(value.literal) && Number.isSafeInteger(Number(value.literal)))
+          return literal(Number(value.literal));
+        return literal(value.literal);
+      }
       if (typeof value.expr !== 'string') return;
       if (artifact.expressions[value.expr]?.resultType !== value.type) return;
       if (!decoded.has(value.expr)) {
@@ -42,11 +47,12 @@ export function taskRuleDescription(artifact, definition) {
         if (typeof encoded !== 'string' || encoded.length > 22_000 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return;
         checkedBytes += encoded.length;
         if (checkedBytes > 256_000) return;
-        decoded.set(value.expr, fromBinary(CheckedExprSchema, Uint8Array.from(atob(encoded), char => char.charCodeAt(0))).expr);
+        decoded.set(value.expr, fromBinary(CheckedExprSchema, Uint8Array.from(atob(encoded), char => char.charCodeAt(0))));
       }
-      return node(decoded.get(value.expr), before, depth + 1, inline);
+      const checked = decoded.get(value.expr);
+      return node(checked.expr, before, depth + 1, inline, checked.referenceMap);
     }
-    function node(expr, before, depth, inline) {
+    function node(expr, before, depth, inline, references) {
       if (depth >= 32) return;
       const kind = expr?.exprKind;
       if (kind?.case === 'constExpr') {
@@ -64,10 +70,11 @@ export function taskRuleDescription(artifact, definition) {
         return { kind: 'ident', name };
       }
       if (kind?.case === 'selectExpr') return { kind: 'field', name: kind.value.field, testOnly: kind.value.testOnly,
-        record: node(kind.value.operand, before, depth + 1, inline) };
+        record: node(kind.value.operand, before, depth + 1, inline, references) };
       if (kind?.case === 'callExpr') return { kind: 'call', name: kind.value.function,
-        target: kind.value.target ? node(kind.value.target, before, depth + 1, inline) ?? {} : undefined,
-        args: kind.value.args.map(arg => node(arg, before, depth + 1, inline)) };
+        overloads: references?.[String(expr.id)]?.overloadId,
+        target: kind.value.target ? node(kind.value.target, before, depth + 1, inline, references) ?? {} : undefined,
+        args: kind.value.args.map(arg => node(arg, before, depth + 1, inline, references)) };
     }
     if (hook === 'TaskBeforeCreate') {
       const returned = artifact.return, output = model.types[model.entrypoints[hook].output]?.fields;
@@ -90,6 +97,12 @@ export function taskRuleDescription(artifact, definition) {
           const left = guardConditions(expr.args[0]), right = guardConditions(expr.args[1]);
           return left && right ? [...left, ...right] : undefined;
         }
+        if (model.format === 'keir-dcm/4' && call(expr, '_>_', 2)
+          && json(expr.overloads) === json(['greater_int64']) && call(expr.args[0], 'size', 1)
+          && json(expr.args[0].overloads) === json(['size_list']) && field(expr.args[0].args[0], 'input', 'tags')
+          && expr.args[1]?.kind === 'literal' && Number.isSafeInteger(expr.args[1].value)
+          && expr.args[1].value >= 0 && expr.args[1].value <= model.types.Tags.maxItems)
+          return [{ field: 'tagCount', value: expr.args[1].value }];
         if (call(expr, '_==_', 2)) {
           for (const [selected, value] of [expr.args, [...expr.args].reverse()]) {
             if (!field(selected, 'input') || value?.kind !== 'literal') continue;

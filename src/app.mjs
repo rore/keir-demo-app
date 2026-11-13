@@ -219,7 +219,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     noQuery(request);
     lifecycle.assertWritable(session.userId, request.params.extensionId);
     const fields = operation === 'compile' ? ['hookId', 'source', 'draftVersion'] : ['revisionId', 'cases', 'draftVersion'];
-    const allowed = operation === 'compile' ? [...fields, 'label'] : fields;
+    const allowed = operation === 'compile' ? [...fields, 'label', 'modelDigest'] : fields;
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(field => !allowed.includes(field))
         || fields.some(field => !Object.hasOwn(input, field)) || !Number.isSafeInteger(input.draftVersion) || input.draftVersion < 0
         || operation === 'scenarios' && (typeof input.revisionId !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(input.revisionId)))

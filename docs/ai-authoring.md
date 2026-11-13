@@ -4,6 +4,8 @@ Use this guide to configure the local provider, protect its key and control spen
 
 For the customer journey, [try a customization](../README.md#try-a-customization) or follow the [screenshot walkthrough](customization-walkthrough.md).
 
+The staged numeric candidate adds [notes for heavily tagged new tasks](tag-notes.md). New requests discover the numeric model. Editing an older model keeps that model and needs fresh checks and approval after recompilation. Offline scripted transport tests do not qualify a live model's adherence or authorize a provider call.
+
 ## Configure a provider
 
 In the local app, open **Configure** and choose a supported provider and model. Enter its API key. To cap Daymark spending, enter a positive USD amount with up to six decimal places. Leave the allowance blank to use AI without a Daymark spending cap. Saving checks the values locally and sends no provider request. Every save requires the full key.

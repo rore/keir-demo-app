@@ -4,7 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync, readSync,
   lstatSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
-import { loadHost, definitionForPins, definitionKey, digest, json, TASK_HOOK } from './extension-catalog.mjs';
+import { loadHost, definitionForPins, definitionKey, definitionFormats, digest, json, TASK_HOOK } from './extension-catalog.mjs';
 import { taskEffectProofMatches } from './task-effect-simulation.mjs';
 import { normalizeTaskTag, normalizeTaskTags, parseWorkflowTagsText, validOpenMatchInput, normalizeWorkflowTitle } from './task-workflow-values.mjs';
 
@@ -906,7 +906,7 @@ export function taskEffectService(db, options = {}) {
       const identity = JSON.parse(saved.identity), artifact = JSON.parse(Buffer.from(saved.artifact).toString('utf8'));
       if (json(pins) !== json({ ...identity, approvedEvidenceId: pins.approvedEvidenceId })
           || identity.artifactDigest !== digest(saved.artifact) || identity.rawSourceDigest !== digest(saved.source)
-          || artifact.format !== (pins.modelRef.format === 'keir-dcm/3' ? 'keir-artifact/3' : 'keir-artifact/2') || artifact.entrypoint !== row.hook_id
+          || artifact.format !== definitionFormats(pins).artifact || artifact.entrypoint !== row.hook_id
           || identity.compiledSourceDigest !== artifact.sourceDigest || identity.suiteDigest !== digest(saved.suite)) return false;
       const validProof = id => {
         const proof = db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? AND id=?').get(row.owner_id, saved.id, id);

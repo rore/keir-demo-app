@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, notFound, transaction, revokeTaskAdmissions } from './data.mjs';
-import { loadHost, readCurrentDefinition, readDefinitionForPins, definitionForPins, admitArtifact, digest, json, definitionKey, TASK_HOOK, TASK_HOOKS, TASK_DEFINITION } from './extension-catalog.mjs';
+import { loadHost, readCurrentDefinition, readDefinitionForPins, definitionForPins, authoringDefinition, admitArtifact, digest, json, definitionKey, TASK_HOOK, TASK_HOOKS, TASK_DEFINITION } from './extension-catalog.mjs';
 import { runTaskEffectSimulation, taskEffectProofMatches, preflightTaskEffectScenarios, taskEffectExpected, taskEffectVersions } from './task-effect-simulation.mjs';
 import { taskRuleDescription } from './task-rule-description.mjs';
 import { evidenceSummary } from './authoring-example.mjs';
@@ -107,7 +107,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     if (item.draft_id) {
       try {
         const pins = JSON.parse(revision(owner, item.draft_id, extensionId).identity);
-        if (pins.hook === item.hook_id && pins.definitionId === TASK_DEFINITION && ['keir-dcm/2', 'keir-dcm/3'].includes(pins.modelRef?.format)) return true;
+        if (pins.hook === item.hook_id && pins.definitionId === TASK_DEFINITION && ['keir-dcm/2', 'keir-dcm/3', 'keir-dcm/4'].includes(pins.modelRef?.format)) return true;
       } catch { /* The original conversation can still identify a repairable current draft. */ }
     }
     return !!db.prepare(`SELECT 1 FROM extension_conversation_links l JOIN authoring_conversations c ON c.id=l.conversation_id AND c.owner_id=l.owner_id
@@ -287,7 +287,9 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         || Buffer.from(input.source).toString('utf8') !== input.source) throw new AppError(400, 'Source must be 1–65,536 valid UTF-8 bytes.');
     const label = input.label ?? 'Authored extension';
     if (typeof label !== 'string' || !label.trim() || label.length > 80) throw new AppError(400, 'Use a label of 1–80 characters.');
-    const chosenHost = hosts.get(input.hookId);
+    let chosenHost;
+    try { if (hosts.has(input.hookId)) chosenHost = authoringDefinition(input.hookId, input.modelDigest); }
+    catch { throw new AppError(400, 'Choose a discovered authoring model.'); }
     if (!compiler || !chosenHost) throw new AppError(503, 'Source compilation is unavailable. Native tasks and saved extensions still work.');
     let result;
     try { result = await compiler.compile(Buffer.from(input.source), { definition: chosenHost, signal }); }
@@ -305,7 +307,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     }
     const value = { label: label.trim(), source: Buffer.from(input.source), artifact: Buffer.from(result.artifact), suite: null };
     try { admitArtifact(value.artifact, chosenHost); authoredPins(value, chosenHost); } catch { throw new AppError(422, 'The compiled program does not match the host contract.'); }
-    return value;
+    return { value, chosenHost };
   }
   function checkScenarios(row, item, rawCases) {
     try { preflightTaskEffectScenarios(item.artifactBytes, definition(row), rawCases); }
@@ -435,10 +437,10 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       requireTask(owner, input.extensionId);
       if (!TASK_HOOKS.includes(input.hookId) || state.hook_id !== null && state.hook_id !== input.hookId) throw new AppError(400, 'Choose the discovered task trigger.');
       if (state.draft_version !== input.draftVersion) conflict();
-      const value = await compileValue(input, authorize, signal);
+      const { value, chosenHost } = await compileValue(input, authorize, signal);
       commit(owner, input.extensionId, authorize, () => {
         abort(signal); if (draft(owner, input.extensionId).draft_version !== input.draftVersion) conflict();
-        saveAuthored(owner, input.extensionId, value, hosts.get(input.hookId));
+        saveAuthored(owner, input.extensionId, value, chosenHost);
       }); return api.state(owner, input.extensionId);
     },
     restart(owner, input, authorize) {

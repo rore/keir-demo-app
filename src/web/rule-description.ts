@@ -3,6 +3,7 @@ export type RuleCondition = ({ field: "projectId" | "title" | "tag" | "priority"
 export type RuleValue = { kind: "literal"; value: unknown } | { kind: "taskField"; step: string; field: string }
   | { kind: "eventOffset"; seconds: number } | { kind: "title"; step: string; prefix?: string; suffix?: string };
 export type GuardCondition = { field: "projectId" | "priority" | "tag"; value: string; negated?: boolean }
+  | { field: "tagCount"; value: number }
   | { field: "hasNotes" | "hasDueDate"; value: boolean };
 export type RuleDescription = { coverage: "complete" | "partial" | "unavailable"; hook?: string; conditions?: RuleCondition[];
   guard?: { conditions: GuardCondition[]; message: string };
@@ -33,12 +34,15 @@ export function describeRule(description: RuleDescription | null | undefined, pr
       }
       if (condition.field === "priority") return `its priority is ${priority(condition.value)}`;
       if (condition.field === "tag") return `it ${condition.negated ? "does not have" : "has"} the tag “${condition.value}”`;
+      if (condition.field === "tagCount") return `it has more than ${condition.value} distinct normalized tags`;
       if (condition.field === "hasNotes") return `it has ${condition.value ? "notes" : "no notes"}`;
       return `it has ${condition.value ? "a due date" : "no due date"}`;
     });
     const conditionText = new Intl.ListFormat("en").format(conditions);
     const statement = `Before saving a new task, stop saving when ${conditionText}. Show “${guard.message}”. Otherwise, this rule lets the app continue its normal permission, validation and save checks.`;
-    const unchanged = "This check does not change task details. Existing tasks stay unchanged.";
+    const unchanged = "This check does not change task details. Existing tasks stay unchanged."
+      + (guard.conditions.some(condition => condition.field === "tagCount")
+        ? " Tags are counted after trimming, Unicode normalization, lowercasing and deduplication. Whitespace-only notes count as no notes. Later edits are not checked by this new-task rule." : "");
     return { complete, title: "Check new tasks before saving", when: "Before a new task is saved.",
       summary: `${complete ? "" : "The full behavior could not be described. Known details: "}${statement} ${unchanged}`,
       scope: undefined, onlyWhen: `Saving is stopped only when ${conditionText}.`,

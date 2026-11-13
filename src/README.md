@@ -6,7 +6,7 @@ The Keir integration uses the independently packaged Node runtime and Java compi
 
 | Responsibility | Implementation |
 | --- | --- |
-| Published model, hook catalog and package pins | [extension-catalog.mjs](extension-catalog.mjs), [current DCM](../extensions/task-effect/current/dcm.json) |
+| Host model, hook catalog and exact package pins | [extension-catalog.mjs](extension-catalog.mjs), [numeric DCM](../extensions/task-effect/numeric/dcm.json), [retained authoring DCM](../extensions/task-effect/retained/dcm.json) |
 | Before-save decision and native continuation | [task-create-guard.mjs](task-create-guard.mjs), [app.mjs](app.mjs) |
 | After-save binding, dispatch and native effects | [task-effects.mjs](task-effects.mjs), [data.mjs](data.mjs) |
 | Exact-artifact simulation and decision consumption | [task-effect-simulation.mjs](task-effect-simulation.mjs) |

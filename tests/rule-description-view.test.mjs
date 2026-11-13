@@ -98,6 +98,17 @@ test('guard tag and boolean conditions are explicit and missing project names st
   assert.match(partial.summary, /priority is Normal/);
 });
 
+test('numeric tag count wording keeps the exact threshold, notes and creation-only boundary', () => {
+  const result = describeRule({ coverage: 'complete', hook: 'TaskBeforeCreate', guard: {
+    conditions: [{ field: 'tagCount', value: 3 }, { field: 'hasNotes', value: false }], message: 'Add notes.',
+  } }, projectName);
+  assert.equal(result.complete, true);
+  assert.match(result.summary, /more than 3 distinct normalized tags and it has no notes/);
+  assert.match(result.unchanged, /Whitespace-only notes count as no notes/);
+  assert.match(result.unchanged, /Later edits are not checked/);
+  assert.doesNotMatch(result.summary, /at most three|maximum three|three-tag limit/);
+});
+
 test('unconditional due writes disclose replacement while omitted fields and existing tags stay intact', () => {
   const overwrite = describeRule(update({ dueAt: { kind: 'eventOffset', seconds: 3600 } }), projectName);
   assert.equal(overwrite.title, 'Set due dates for new tasks');

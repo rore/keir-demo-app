@@ -1,4 +1,5 @@
 import { taskEffectSyntax } from '../../src/task-effect-simulation.mjs';
+import { definitionFormats } from '../../src/extension-catalog.mjs';
 
 const literal = value => ({ literal: value });
 const cel = value => ({ cel: value });
@@ -95,7 +96,7 @@ export function taskWorkflowCases(host, workflow, options) {
     operation('changed', capability, version, args, { kind: 'SUCCESS', value: { id }, effect: 'CONFIRMED' });
   const create = args => write('tasks.create', '2', createdTaskId, args);
   const update = args => write('tasks.update', '1', taskId, args);
-  const format = host.pins.modelRef.format === 'keir-dcm/3' ? 'keir-scenario/3' : 'keir-scenario/2';
+  const format = definitionFormats(host.pins).scenario;
   const example = (id, read, write, status) => scenario(format, input, id, read, write, status, workflow !== 'missing-due');
   const nearMiss = title === title.toLowerCase() ? title.toUpperCase() : title.toLowerCase();
   const cases = {

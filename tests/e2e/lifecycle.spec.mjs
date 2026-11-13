@@ -267,8 +267,8 @@ test('narrow Studio inspects current saved source and keeps a restored task choi
   const ui = studio(page);
   await openDetails(page);
   await ui.getByRole('button', { name: 'Inspect saved source and examples', exact: true }).click();
-  await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toContainText('keir/2');
-  await expect(ui.getByLabel('Artifact pins for inspection', { exact: true })).toContainText('keir-dcm/3');
+  await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toContainText('keir/3');
+  await expect(ui.getByLabel('Artifact pins for inspection', { exact: true })).toContainText('keir-dcm/4');
   await closeDetails(page);
   await ui.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
   await openDetails(page); await ui.getByText('Restore an earlier version', { exact: true }).click();

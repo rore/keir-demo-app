@@ -44,10 +44,10 @@ test('captured YAML retains its original proof while current YAML and JSON produ
   const captured = JSON.parse(fixture.artifact);
   assert.equal(captured.sourceDigest, fixture.pins.compiledSourceDigest);
   assert.deepEqual(taskRuleDescription(captured, capturedHost), expected);
-  const currentSource = fixture.source.replace("version: '4'", "version: '5'")
+  const currentSource = fixture.source.replace('language: keir/2', 'language: keir/3').replace("version: '4'", "version: '6'")
     .replace(captured.modelRef.digest, host.pins.modelDigest);
   const artifact = await compile(currentSource);
-  assert.equal(artifact.format, 'keir-artifact/3');
+  assert.equal(artifact.format, 'keir-artifact/4');
   assert.deepEqual(await compile(jsonRule()), artifact);
   assert.deepEqual(taskRuleDescription(artifact, host), expected);
 });

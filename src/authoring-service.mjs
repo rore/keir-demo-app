@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, transaction } from './data.mjs';
-import { loadHost, TASK_HOOKS, TASK_DEFINITION, digest, json } from './extension-catalog.mjs';
+import { loadHost, authoringDefinition, definitionFormats, TASK_HOOKS, TASK_DEFINITION, digest, json } from './extension-catalog.mjs';
 import { readAuthoringConfig, LEGACY_OPENAI_RESERVE_MICROS, OPENAI_RESERVE_MICROS } from './authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
 import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './authoring-agent.mjs';
@@ -469,7 +469,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       } },
       discover: () => {
         authorize(); const current = lifecycle.state(ctx.owner, ctx.extensionId), selectedHook = current.extension?.hookId ?? null;
-        const definition = selectedHook ? definitions.get(selectedHook) : definitions.values().next().value;
+        const baseId = current.draft?.id ?? ctx.baseRevisionId;
+        const proposal = baseId ? lifecycle.source(ctx.owner, baseId, ctx.extensionId) : null;
+        const definition = selectedHook ? authoringDefinition(selectedHook, proposal?.pins.modelDigest) : definitions.values().next().value;
         if (!definition) stop('HOST_UNAVAILABLE');
         const syntax = host => {
           const { source, cases } = authoringExample(host);
@@ -477,8 +479,6 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         };
         // The same DCM describes both hooks. Consumer and hook pins only belong to a bound trigger.
         const { hook, consumer, ...sharedPins } = definition.pins;
-        const baseId = current.draft?.id ?? ctx.baseRevisionId;
-        const proposal = baseId ? lifecycle.source(ctx.owner, baseId, ctx.extensionId) : null;
         const currentProposal = proposal ? { revisionId: proposal.revisionId, source: proposal.source, cases: proposal.cases,
           suiteDigest: proposal.suiteDigest, truncated: false } : null;
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.cases = null; currentProposal.truncated = true; }
@@ -489,7 +489,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           if (length([{ role, text }, ...recent]) > 16384) { truncated = true; break; }
           recent.unshift({ role, text });
         }
-        return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...sharedPins, selectedHook,
+        return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...sharedPins, ...definitionFormats(definition.pins), selectedHook,
           currentDraft: draftHandles(current), currentProposal, currentUse: currentUse(current), extension: current.extension, purpose: ctx.purpose,
           supportedHooks: lifecycle.hostCatalog().hooks, conversationContext: { messages: recent, truncated },
           businessContext, projects: projects(ctx.owner),
@@ -498,9 +498,11 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           }) };
       },
       compile: (source, version, signal, hookId) => invoke(async () => {
-        const selectedHook = lifecycle.state(ctx.owner, ctx.extensionId).extension?.hookId;
+        const current = lifecycle.state(ctx.owner, ctx.extensionId), selectedHook = current.extension?.hookId;
         if (!definitions.has(hookId) || selectedHook && selectedHook !== hookId || ctx.state.definitionId !== TASK_DEFINITION) stop('INVALID_TOOL_ARGUMENTS');
-        const value = await lifecycle.compile(ctx.owner, { extensionId: ctx.extensionId, hookId, source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
+        const definition = authoringDefinition(hookId, current.draft?.pins.modelDigest);
+        const value = await lifecycle.compile(ctx.owner, { extensionId: ctx.extensionId, hookId, modelDigest: definition.pins.modelDigest,
+          source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
       }),
       proposeScenarios: (revisionId, cases, version) => invoke(async () => draftHandles(await lifecycle.proposeScenarios(ctx.owner,
         { extensionId: ctx.extensionId, revisionId, cases, draftVersion: version }, authorize, { signal: ctx.controller.signal })), true),

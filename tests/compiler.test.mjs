@@ -8,13 +8,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CompilerError, createCompiler } from '../src/compiler.mjs';
-import { loadHost, TASK_HOOK } from '../src/extension-catalog.mjs';
+import { loadHost, authoringDefinition, TASK_HOOK } from '../src/extension-catalog.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const model = readFileSync(join(root, 'extensions/task-effect/current/dcm.json'));
 const vendor = join(root, 'vendor');
-const jarName = 'keir-compiler-java-0.4.0-cli.jar';
-const jarDigest = 'd008f1ac152888e504f2753359caa98ba20af55d44d765edba60157858c9b413';
+const jarName = 'keir-compiler-java-0.5.0-cli.jar';
+const jarDigest = '1561dd1cce36c2eb3521442dcedbfd3a0ba4f1781b1e052a079ecdab32366c36';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const source = Buffer.from(JSON.stringify({
   language: 'keir/2', domain: { ...JSON.parse(model).domain, fingerprint: 'sha256:' + sha(model) },
@@ -83,17 +83,17 @@ test('distribution is the pinned independent compiler and notice metadata resolv
   assert.equal(sha(await readFile(join(vendor, jarName))), info.artifact.sha256.slice(7));
   assert.equal(info.artifact.file, jarName);
   assert.equal(info.artifact.sha256, 'sha256:' + jarDigest);
-  assert.equal(info.artifact.bytes, 8_819_962);
-  assert.equal(info.compiler, 'keir-compiler-java/0.4.0');
-  assert.equal(info.status, 'verified-release');
-  assert.equal(info.release, 'v0.4.0');
-  assert.equal(info.source.revision, 'fc0601ae410e06c0be76d6f3b769abbd049b5999');
-  assert.deepEqual(info.distribution, { file: 'keir-compiler-cli-0.4.0.zip',
-    sha256: 'sha256:9960bb1f160e72a54c7d203b402f6056e4c430bdacc8094c73c4deb81a313e06' });
+  assert.equal(info.artifact.bytes, 8_826_669);
+  assert.equal(info.compiler, 'keir-compiler-java/0.5.0');
+  assert.equal(info.status, 'verified-candidate');
+  assert.equal(info.release, null);
+  assert.equal(info.source.revision, 'b9782d1cb7dd7106d44878f7199cbd4774e91510');
+  assert.deepEqual(info.distribution, { file: 'keir-compiler-cli-0.5.0.zip',
+    sha256: 'sha256:ec36271caaa55714257601c2f8bc7aa19f2ced76858f02b15021dacd3a138e76' });
   const notices = await readFile(join(vendor, info.notices), 'utf8');
   assert.equal((notices.match(/ sha256:[a-f0-9]{64}/g) ?? []).length, 19);
-  assert.match(await readFile(join(vendor, 'compiler-0.4.0-notices/LICENSE'), 'utf8'), /Apache License/);
-  assert.match(await readFile(join(vendor, 'compiler-0.4.0-notices/third-party/protobuf-java-4.35.1-LICENSE'), 'utf8'), /Redistribution/);
+  assert.match(await readFile(join(vendor, 'compiler-0.5.0-notices/LICENSE'), 'utf8'), /Apache License/);
+  assert.match(await readFile(join(vendor, 'compiler-0.5.0-notices/third-party/protobuf-java-4.35.1-LICENSE'), 'utf8'), /Redistribution/);
 });
 
 test('safe direct argv, immutable byte snapshots and minimal JVM environment', async t => {
@@ -338,7 +338,7 @@ test('trusted test budgets cannot widen production ceilings or use a missing mod
 test('explicit trusted definition retains the same compiler slot and exact model bytes', async t => {
   const f = fixture(t, okScript, { holdClose: true });
   const compiler = createCompiler({}, { launch: f.launch });
-  const definition = loadHost();
+  const definition = authoringDefinition(TASK_HOOK, 'sha256:' + sha(model));
   const pending = compiler.compile(source, { definition });
   definition.dcmBytes.fill(0);
   definition.pins.modelDigest = 'changed';
@@ -375,13 +375,26 @@ test('actual pinned compiler works from a standalone directory and preserves raw
   for (const name of [jarName, 'compiler-provenance.json']) await cp(join(vendor, name), join(directory, 'vendor', name));
   const imported = await import(pathToFileURL(join(directory, 'src/compiler.mjs')));
   const compiler = imported.createCompiler({ modelBytes: model, javaExecutable: java });
+  // Keep the original golden oracle on its exact old compiler/model/source. Never relabel its bytes.
+  const oldJar = await readFile(join(vendor, 'keir-compiler-java-0.4.0-cli.jar'));
+  assert.equal(sha(oldJar), 'd008f1ac152888e504f2753359caa98ba20af55d44d765edba60157858c9b413');
+  await writeFile(join(directory, 'old.jar'), oldJar);
+  await writeFile(join(directory, 'old.source'), source);
+  await writeFile(join(directory, 'old.dcm'), model);
+  const old = spawnSync(java, ['-Xmx256m', '-XX:-UsePerfData', '-Djava.io.tmpdir=' + directory, '-Duser.home=' + directory,
+    '-jar', join(directory, 'old.jar'), join(directory, 'old.source'), join(directory, 'old.dcm')], {
+    cwd: directory, shell: false, windowsHide: true, timeout: 10_000, killSignal: 'SIGKILL', maxBuffer: 1_048_576,
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TEMP: directory, TMP: directory, NODE_V8_COVERAGE: undefined },
+  });
+  assert.equal(old.status, 0); assert.equal(old.stderr.length, 0);
+  assert.equal(sha(old.stdout), 'c0a3997154cc164fb9fa855207f013a601b5a46211cf9c474c065cf259ced71e');
   const first = await compiler.compile(source);
   assert.deepEqual(first.diagnostics, []);
   assert.ok(first.artifact instanceof Uint8Array);
-  assert.equal(sha(first.artifact), 'c0a3997154cc164fb9fa855207f013a601b5a46211cf9c474c065cf259ced71e');
   const artifact = JSON.parse(first.artifact);
-  assert.equal(artifact.format, 'keir-artifact/3');
-  assert.equal(artifact.compiler, 'keir-compiler-java/0.4.0');
+  assert.equal(artifact.format, 'keir-artifact/4');
+  assert.equal(artifact.compiler, 'keir-compiler-java/0.5.0');
+  assert.deepEqual(artifact, { ...JSON.parse(old.stdout), format: 'keir-artifact/4', compiler: 'keir-compiler-java/0.5.0' });
   assert.equal(Object.hasOwn(artifact, 'profile'), false);
   const changed = Buffer.concat([source, Buffer.from('\n  \n')]);
   const second = await compiler.compile(changed);

@@ -67,6 +67,25 @@ jobs:
           java-version: '21'
       - run: npm ci
         if: steps.changes.outputs.docs_only != 'true'
+      - name: Capture authentic retained Core 0.4 approvals when absent
+        if: steps.changes.outputs.docs_only != 'true'
+        shell: bash
+        run: |
+          if [[ ! -f tests/fixtures/saved-core-0.4.0.json ]]; then
+            legacy="$RUNNER_TEMP/daymark-retained-040"
+            legacy_cache="$RUNNER_TEMP/daymark-040-npm-cache"
+            mkdir "$legacy" "$legacy_cache"
+            trap 'rm -rf -- "$legacy" "$legacy_cache"' EXIT
+            git archive 77feb10032d3b63475057564ca56099b1e498faa | tar -x -C "$legacy"
+            (cd "$legacy" && timeout --kill-after=10s 120s npm ci --ignore-scripts --cache "$legacy_cache")
+            timeout --kill-after=15s 90s node scripts/capture-core-040.mjs "$legacy" tests/fixtures/saved-core-0.4.0.json
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          name: retained-core-040-approval-fixture
+          path: tests/fixtures/saved-core-0.4.0.json
+          if-no-files-found: error
       - run: npm run build
         if: steps.changes.outputs.docs_only != 'true'
       - run: npm test

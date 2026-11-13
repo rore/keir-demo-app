@@ -1,18 +1,22 @@
 import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
 import { types as nodeTypes } from 'node:util';
-import { admitArtifact, definitionForPins, digest, hostBindings, json, TASK_HOOKS } from './extension-catalog.mjs';
+import { admitArtifact, definitionForPins, definitionFormats, digest, hostBindings, json, TASK_HOOKS } from './extension-catalog.mjs';
 import { decodeKeirScenario } from './keir-scenario.mjs';
 import { normalizeTaskTag, normalizeTaskTags, parseWorkflowTagsText, validOpenMatchInput, normalizeWorkflowTitle } from './task-workflow-values.mjs';
 
 const earlierVersions = Object.freeze({
   suite: 'task-effects-authored/2', fixtureVersion: 'daymark-task-effect-fixtures/2', simulator: 'daymark-task-effect-simulation/2',
 });
-export const TASK_EFFECT_VERSIONS = Object.freeze({
+const retainedVersions = Object.freeze({
   suite: 'task-effects-authored/3', fixtureVersion: 'daymark-task-effect-fixtures/3', simulator: 'daymark-task-effect-simulation/3',
 });
+export const TASK_EFFECT_VERSIONS = Object.freeze({
+  suite: 'task-effects-authored/4', fixtureVersion: 'daymark-task-effect-fixtures/4', simulator: 'daymark-task-effect-simulation/4',
+});
 export function taskEffectVersions(host) {
+  if (definitionFormats(host.pins).scenario === 'keir-scenario/4') return TASK_EFFECT_VERSIONS;
   if (host?.pins?.modelRef?.format === 'keir-dcm/2') return earlierVersions;
-  if (host?.pins?.modelRef?.format === 'keir-dcm/3') return TASK_EFFECT_VERSIONS;
+  if (host?.pins?.modelRef?.format === 'keir-dcm/3') return retainedVersions;
   throw new Error('Unsupported task simulation model');
 }
 const decisionHost = host => host.pins.consumer.kind === 'DECISION';
@@ -258,7 +262,7 @@ function validateRows(rows, artifact, host) {
   const consume = decisionHost(host) ? decisionConsumer(dcm, host.pins.hook) : reported;
   rows.forEach(({ given, stubs, expect }, index) => {
     try {
-      requireThat(rows[index].format === (dcm.format === 'keir-dcm/3' ? 'keir-scenario/3' : 'keir-scenario/2') && fixtures.includes(given.fixture));
+      requireThat(rows[index].format === definitionFormats(host.pins).scenario && fixtures.includes(given.fixture));
       validateValue(dcm, dcm.entrypoints[host.pins.hook].input, given.input);
       stubs.forEach(call => validateCall(call, dcm, given.input, true));
       expect.calls.forEach(call => validateCall(call, dcm, given.input));
@@ -434,7 +438,7 @@ export function taskEffectProofMatches(revision, authored, proof, host) {
     // Native guards re-read proof rows against the deployment captured by their service.
     const texts = JSON.parse(authored.suite), scenarios = decodeTaskEffectScenarios(texts);
     const artifact = JSON.parse(Buffer.from(authored.artifact).toString('utf8'));
-    if (artifact.format !== (pins.modelRef.format === 'keir-dcm/3' ? 'keir-artifact/3' : 'keir-artifact/2') || own(artifact, 'profile') || artifact.compiler !== pins.compiler
+    if (artifact.format !== definitionFormats(pins).artifact || own(artifact, 'profile') || artifact.compiler !== pins.compiler
         || artifact.entrypoint !== pins.hook || !same(artifact.modelRef, pins.modelRef) || !same(artifact.environment, pins.environment)
         || !/^sha256:[0-9a-f]{64}$/.test(artifact.sourceDigest) || pins.compiledSourceDigest !== artifact.sourceDigest) return false;
     validateRows(scenarios, artifact, host);
@@ -458,13 +462,13 @@ export function taskEffectProofMatches(revision, authored, proof, host) {
 // Format guidance only. Customer project and title must be resolved and authored separately.
 export function taskEffectSyntax(host) {
   const trusted = checkedHost(host), model = JSON.parse(trusted.dcmBytes);
-  if (decisionHost(trusted)) return JSON.stringify({ language: 'keir/2', domain: { ...model.domain, fingerprint: trusted.pins.modelDigest },
+  if (decisionHost(trusted)) return JSON.stringify({ language: definitionFormats(trusted.pins).source, domain: { ...model.domain, fingerprint: trusted.pins.modelDigest },
     entrypoint: trusted.pins.hook, name: 'format-only-task-check',
     steps: [{ id: 'needsDetails', let: { cel: 'input.priority == "high" && !input.hasNotes' } }],
     return: { record: { decision: { cel: 'needsDetails ? "DENY" : "ALLOW"' },
       message: { cel: 'needsDetails ? "Add notes for this task." : ""' } } } }, null, 2);
   const completion = trusted.pins.hook === 'TaskCompleted', status = completion ? 'COMPLETED' : 'OPEN';
-  return JSON.stringify({ language: 'keir/2', domain: { ...model.domain, fingerprint: trusted.pins.modelDigest }, entrypoint: trusted.pins.hook,
+  return JSON.stringify({ language: definitionFormats(trusted.pins).source, domain: { ...model.domain, fingerprint: trusted.pins.modelDigest }, entrypoint: trusted.pins.hook,
     name: 'format-only-task-example', steps: [
       { id: 'eligibleProject', let: { literal: 'project1', type: 'ProjectId' } },
       { id: 'source', call: 'tasks.get', args: { taskId: { cel: 'input.taskId' } } },
@@ -486,7 +490,7 @@ export function taskEffectScenarioExamples(host) {
     const outcome = { classification: unavailable ? 'FAILED' : 'COMPLETED',
       ...(unavailable ? { error: { code: 'HOST_CONTEXT_INVALID', path: '' } } : { result }), effects: [],
       trace: trace.map((event, sequence) => ({ ...event, sequence })) };
-    return JSON.stringify({ format: 'keir-scenario/3', id,
+    return JSON.stringify({ format: definitionFormats(trusted.pins).scenario, id,
       given: { fixture: unavailable ? 'invalid-key' : 'normal', input: { projectId: 'project1', priority, tags: [], hasNotes, hasDueDate: false } },
       stubs: [], expect: { outcome, calls: [], consumption: unavailable ? { status: 'BLOCKED' }
         : { status: denied ? 'DENIED' : 'ALLOWED', result } } });
@@ -512,7 +516,7 @@ export function taskEffectScenarioExamples(host) {
     ];
     const outcome = { classification: 'COMPLETED', result: { status: match ? 'CREATED' : 'NO_OP' },
       effects: match ? [{ step: 'created', capability: 'tasks.create', state: 'CONFIRMED' }] : [], trace: events.map((event, sequence) => ({ sequence, ...event })) };
-    return { format: trusted.pins.modelRef.format === 'keir-dcm/3' ? 'keir-scenario/3' : 'keir-scenario/2', id, given,
+    return { format: definitionFormats(trusted.pins).scenario, id, given,
       stubs: [{ ...read, response: { kind: 'SUCCESS', value: { id: 'task1', projectId, status, title: 'Example task', tags: [], priority: 'normal' } } },
         ...(match ? [{ ...write, response: { kind: 'SUCCESS', value: { id: 'task2' }, effect: 'CONFIRMED' } }] : [])],
       expect: { outcome, calls: match ? [read, write] : [read], consumption: consumeTaskEffect(outcome, host) } };
@@ -528,7 +532,7 @@ export function taskEffectScenarioExamples(host) {
       { sequence: 2, event: 'VALUE_BOUND', step: 'eligibleProject' }, { sequence: 3, event: 'STEP_START', step: 'source' },
       { sequence: 4, event: 'CALL_DISPATCHED', step: 'source', capability: 'tasks.get' }, { sequence: 5, event: 'TERMINATED', code },
     ] };
-    rows.push({ format: trusted.pins.modelRef.format === 'keir-dcm/3' ? 'keir-scenario/3' : 'keir-scenario/2', id, given,
+    rows.push({ format: definitionFormats(trusted.pins).scenario, id, given,
       stubs: [{ ...read, response: kind === 'BUSINESS_REJECTION' ? { kind, code } : { kind } }],
       expect: { outcome, calls: [read], consumption: consumeTaskEffect(outcome, host) } });
   }

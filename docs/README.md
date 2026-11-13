@@ -6,12 +6,13 @@ Start with the [screenshot walkthrough](customization-walkthrough.md): follow a 
 
 - [Run locally](../README.md#run-locally), then [try the follow-up customization](../README.md#try-a-customization).
 - [Conditional follow-up](conditional-follow-up.md): check high-priority completions for an existing open follow-up before creating one.
+- [Tag-count and notes](tag-notes.md): require notes for more than three normalized distinct tags, without restricting later edits.
 - [Configure an AI provider](ai-authoring.md#configure-a-provider) for conversational authoring.
 - [Local setup and recovery](running.md) covers ports, data directories, backup and reset.
 
 ## Follow the Keir integration
 
-- [Published model and hooks](../extensions/task-effect/current/dcm.json): the capabilities an extension can use.
+- [Numeric authoring model and hooks](../extensions/task-effect/numeric/dcm.json): the current host contract. The [retained authoring model](../extensions/task-effect/retained/dcm.json) preserves earlier model semantics; [original 0.4 definitions](../extensions/task-effect/current/) remain execution-only.
 - [Host binding and effects](task-effects.md): before-save decisions, after-save reactions and native receipts.
 - [Customization lifecycle](read-extension-lifecycle.md): authoring operations, saved evidence, approval, identity and recovery.
 - [Implementation map](../src/README.md): compiler, runtime, adapters and authoring services.

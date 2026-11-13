@@ -48,14 +48,15 @@ test('task coaching requires discovered constants and independent expectations w
   const instructions = f.requests[0].instructions;
   for (const phrase of ['discover_projects', 'Project names may repeat', 'selectedHook', 'FORMAT ONLY',
     'Only host-observed effect evidence', 'UNKNOWN never means no effect or safe retry', 'later completes that generated task',
-    'independent expected scenarios', 'language keir/2', 'format keir-scenario/3', 'duration("604800s")',
+    'independent expected scenarios', 'Numeric keir-dcm/4 uses source keir/3', 'retained keir-dcm/3 uses keir/2',
+    'New compiler outputs use artifact/scenario /4', 'size(input.tags) > 3 && !input.hasNotes', 'duration("604800s")',
     'one ordinary-language question', 'never infer an existing task identity', 'TaskBeforeCreate is a read-only decision',
     'Whitespace-only native notes have hasNotes false', 'ALLOW permits normal native checks to continue',
     'matching ALLOW, matching DENY, nonmatching ALLOW and unavailable', 'exactly {status:"BLOCKED"}', 'exact guard proof when using a conditional lookup', 'Only that exact checked identifier establishes result existence']) assert.ok(instructions.includes(phrase), phrase);
   assert.doesNotMatch(instructions, /choose Check task advice|outside the discovered read-only contract/);
 });
 
-test('authoring loads the exact published candidate v8 companion and retains historical guides', async () => {
+test('retained 0.4 companion and historical guides keep their exact original pins', async () => {
   const metadata = JSON.parse(readFileSync(new URL('../vendor/authoring-companion-provenance.json', import.meta.url)));
   const guide = readFileSync(new URL('../vendor/customer-authoring-guide-v8.md', import.meta.url));
   const current = metadata.files['customer-authoring-guide-v8.md'];
@@ -82,6 +83,51 @@ test('authoring loads the exact published candidate v8 companion and retains his
   const old = metadata.files['customer-authoring-guide-v4.md'];
   assert.equal(old.status, 'historical-copy');
   assert.equal(old.sha256, 'sha256:aeece1c28713ba945743dca47ad4fc6242f3f94cfda4fac9005b5b9df7afb5f7');
+  const f = fixture(); await f.run();
+  assert.equal(f.requests[0].instructions.endsWith(guide.toString('utf8')), false);
+});
+
+test('authoring loads exact final candidate guide 9 with its matching archive, manifest and profile pairs', async () => {
+  const read = name => readFileSync(new URL('../vendor/' + name, import.meta.url));
+  const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+  const metadata = JSON.parse(read('authoring-companion-provenance.json'));
+  const current = metadata.files['customer-authoring-guide-v9.md'], guide = read('customer-authoring-guide-v9.md');
+  assert.equal(current.status, 'verified-candidate'); assert.equal(current.release, null);
+  assert.equal(current.revision, '9435dfef2ade61af2d7617754c761775502d68b5');
+  assert.equal(current.source, 'docs/agents/customer-authoring-guide-v9.md');
+  assert.equal(current.qualification, 'https://github.com/rore/keir-core/actions/runs/43451868303');
+  assert.equal(current.bytes, 11801); assert.equal(guide.length, current.bytes);
+  assert.equal(current.sha256, 'sha256:21615e93fc426f11eb756e850a4e0660d3a5cab55f69f47f5b3e818fc3fb1257');
+  assert.equal(hash(guide), current.sha256);
+  assert.equal(current.distribution.file, 'keir-authoring-companion-v9.zip');
+  assert.equal(current.distribution.bytes, 246443);
+  assert.equal(current.distribution.sha256, 'sha256:c1ca8b6f2f3c5089afca5e134d0b21ed2477a570141c36fcc1ea55a2f6c41867');
+  const archive = read(current.distribution.file);
+  assert.equal(archive.length, current.distribution.bytes); assert.equal(hash(archive), current.distribution.sha256);
+  const manifestPins = current.distribution.manifest, bytes = read(manifestPins.file), manifest = JSON.parse(bytes);
+  assert.equal(manifestPins.file, 'keir-authoring-companion-v9-manifest.json');
+  assert.equal(manifestPins.source, 'manifest.json'); assert.equal(manifestPins.bytes, 7159);
+  assert.equal(manifestPins.sha256, 'sha256:a98c013fe2221073f93b280f8bc0223b49bd298ff7bc910e69a2dec97387a74b');
+  assert.equal(bytes.length, manifestPins.bytes); assert.equal(hash(bytes), manifestPins.sha256);
+  assert.equal(manifest.sourceRevision, current.revision); assert.equal(manifest.producer, 'keir-compiler-java/0.5.0');
+  assert.ok(Object.hasOwn(manifest.files, 'docs/specs/README.md'), 'The guide-linked offline qualification index must be packaged.');
+  assert.deepEqual(manifest.files['docs/specs/README.md'], { bytes: 12036,
+    digest: 'sha256:4bce42b59c998b3f8cde706ccba0628fa4e439d923524d3b838a98b8c1b06250' });
+  assert.equal(manifest.compatibility.coreRevision, '3a383c2d0c6227eedc9c03927c2dd1910360d5b9');
+  assert.equal(current.coreRevision, manifest.compatibility.coreRevision);
+  assert.deepEqual(manifest.contracts, { language: 'keir/3', dcm: 'keir-dcm/4', descriptorRecipe: 'keir-record-descriptors/3',
+    artifact: 'keir-artifact/4', scenario: 'keir-scenario/4', retainedAuthoring: { language: 'keir/2', dcm: 'keir-dcm/3',
+      descriptorRecipe: 'keir-record-descriptors/2', artifact: 'keir-artifact/4', scenario: 'keir-scenario/4' } });
+  assert.equal(Object.keys(manifest.files).length, 35);
+  assert.deepEqual(Object.keys(manifest.files).filter(path => path.startsWith('schemas/')).sort(), [
+    'schemas/artifact-3/artifact.schema.json', 'schemas/artifact-4/artifact.schema.json',
+    'schemas/dcm-3/dcm.schema.json', 'schemas/dcm-4/dcm.schema.json',
+    'schemas/scenario-3/scenario.schema.json', 'schemas/scenario-4/scenario.schema.json',
+    'schemas/source-2/source.schema.json', 'schemas/source-3/source.schema.json',
+  ]);
+  assert.equal(manifest.files['schemas/scenario-4/scenario.schema.json'].digest, hash(read('keir-verification/scenario-v4.schema.json')));
+  assert.equal(manifest.compatibility.packages.nodeRuntime.assets['keir-runtime-node-0.5.0.tgz'], JSON.parse(read('provenance.json')).sha256);
+  assert.equal(manifest.compatibility.packages.compiler.assets['keir-compiler-cli-0.5.0.zip'], JSON.parse(read('compiler-provenance.json')).distribution.sha256);
   const f = fixture(); await f.run();
   assert.equal(f.requests[0].instructions.endsWith(guide.toString('utf8')), true);
 });

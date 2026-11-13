@@ -659,7 +659,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const workflowHost = !catalogError && ["TaskCreated", "TaskCompleted"].every(id => hostCatalog?.hooks.some(hook => hook.id === id));
   const workflowRevision = state?.draft ?? state?.selection.revision;
   const beforeCreate = state?.extension?.hookId === "TaskBeforeCreate";
-  const trigger = !retired && (workflowHost || ["keir-dcm/2", "keir-dcm/3"].includes(workflowRevision?.pins.modelRef?.format ?? "") || beforeCreate || state?.extension?.hookId === "TaskCreated")
+  const trigger = !retired && (workflowHost || ["keir-dcm/2", "keir-dcm/3", "keir-dcm/4"].includes(workflowRevision?.pins.modelRef?.format ?? "") || beforeCreate || state?.extension?.hookId === "TaskCreated")
     ? taskTrigger(state?.extension?.hookId) : null;
   const { capabilities, taskFields } = hostFeatures(workflowHost ? hostCatalog : null);
   const conditions = Object.entries({ projectId: "project", title: "exact title", tags: "tags", priority: "priority", dueAt: "due date" })

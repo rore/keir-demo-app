@@ -145,7 +145,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
 test('Studio summarizes the current YAML follow-up and keeps forged or unsupported summaries conservative', async ({ page }, testInfo) => {
   const captured = JSON.parse(readFileSync(new URL('../fixtures/task-follow-up-summary.json', import.meta.url)));
   const currentHost = loadHost('TaskCompleted'), originalArtifact = JSON.parse(captured.artifact);
-  const currentSource = captured.source.replace("version: '4'", "version: '5'")
+  const currentSource = captured.source.replace('language: keir/2', 'language: keir/3').replace("version: '4'", "version: '6'")
     .replace(originalArtifact.modelRef.digest, currentHost.pins.modelDigest);
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
@@ -160,7 +160,7 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
     });
     expect(compiled.ok(), await compiled.text()).toBe(true);
     const state = await compiled.json();
-    expect(state.draft.pins.modelRef.format).toBe('keir-dcm/3');
+    expect(state.draft.pins.modelRef.format).toBe('keir-dcm/4');
     expect(state.draft.pins.artifactDigest).not.toBe(captured.pins.artifactDigest);
     expect(state.draft.pins.rawSourceDigest).toBe('sha256:' + createHash('sha256').update(currentSource).digest('hex'));
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });

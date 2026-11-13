@@ -9,3 +9,9 @@ vendor/keir-verification/scenario-v2.schema.json -text
 vendor/keir-verification/scenario-v3.schema.json -text
 extensions/task-effect/core-0.3.1/dcm.json -text
 vendor/compiler-0.4.0-notices/** -text
+extensions/task-effect/numeric/dcm.json -text
+extensions/task-effect/retained/dcm.json -text
+vendor/keir-verification/scenario-v4.schema.json -text
+vendor/compiler-0.5.0-notices/** -text
+vendor/keir-authoring-companion-v9-manifest.json -text
+vendor/keir-authoring-companion-v9.zip binary

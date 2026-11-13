@@ -224,7 +224,7 @@ test('real simulation observations and situations must match the independent exa
 test('the complete independent expected result must match before any intended-effect claim', () => {
   const update = example('expected-update', { effect: 'CONFIRMED', updatedTasks: [{ id: 'example-task', dueAt: '2027-01-07T23:00:00.000Z' }] });
   const [created] = JSON.parse(readFileSync(new URL('./fixtures/current-task-workflow-reports.json', import.meta.url), 'utf8'));
-  const [original] = taskEffectScenarioExamples(loadHost('TaskCompleted')).map(text => text.replace('keir-scenario/3', 'keir-scenario/2'));
+  const [original] = taskEffectScenarioExamples(loadHost('TaskCompleted')).map(text => text.replace('keir-scenario/4', 'keir-scenario/2'));
   const creation = { row: created, original };
   for (const [sample, mutate] of [
     [update, expected => { expected.updatedTasks[0].dueAt = '2030-01-01T00:00:00.000Z'; }],
@@ -251,7 +251,7 @@ test('the complete independent expected result must match before any intended-ef
 
 test('display project names stay in projected facts without weakening strict native observation checks', () => {
   const [item] = JSON.parse(readFileSync(new URL('./fixtures/current-task-workflow-reports.json', import.meta.url), 'utf8'));
-  const [original] = taskEffectScenarioExamples(loadHost('TaskCompleted')).map(text => text.replace('keir-scenario/3', 'keir-scenario/2'));
+  const [original] = taskEffectScenarioExamples(loadHost('TaskCompleted')).map(text => text.replace('keir-scenario/4', 'keir-scenario/2'));
   assert.equal(taskEffectObservationMatches(JSON.parse(original), item.report), true);
   item.report.scenario.task.projectName = 'Example source project';
   item.report.observed.createdTasks[0].projectName = 'Example destination project';
@@ -301,9 +301,9 @@ test('bounds keep counts limited to represented cases and preserve raw evidence'
   assert.equal(JSON.stringify(proof), before);
 });
 
-test('frozen Keir 2 reports and current Keir 3 update observations share the projection', () => {
+test('frozen Keir 2 reports and current Keir 4 update observations share the projection', () => {
   const reports = JSON.parse(readFileSync(new URL('./fixtures/current-task-workflow-reports.json', import.meta.url), 'utf8'));
-  const originals = taskEffectScenarioExamples(loadHost('TaskCompleted')).map(text => text.replace('keir-scenario/3', 'keir-scenario/2'));
+  const originals = taskEffectScenarioExamples(loadHost('TaskCompleted')).map(text => text.replace('keir-scenario/4', 'keir-scenario/2'));
   const historical = evidenceSummary({ reports }, originals);
   assert.equal(historical.cases[0].outcome, 'changed');
   assert.ok(historical.cases.some(row => row.outcome === 'handled-problem' && row.actual.native.error?.code === 'ADAPTER_TRANSIENT'));

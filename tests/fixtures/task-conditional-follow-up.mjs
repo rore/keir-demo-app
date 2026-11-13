@@ -1,10 +1,10 @@
-import { loadHost } from '../../src/extension-catalog.mjs';
+import { loadHost, definitionFormats } from '../../src/extension-catalog.mjs';
 
 // Authored business choices for tests, never a production template or native handler.
 export function conditionalFollowUpFixture({ projectId = 'project1', otherProjectId = 'project2', title = 'Follow up' } = {}) {
   const host = loadHost('TaskCompleted');
   const cel = cel => ({ cel }), literal = literal => ({ literal });
-  const source = JSON.stringify({ language: 'keir/2', name: 'priority-follow-up',
+  const source = JSON.stringify({ language: definitionFormats(host.pins).source, name: 'priority-follow-up',
     domain: { id: host.pins.modelRef.domainId, version: host.pins.modelRef.domainVersion, fingerprint: host.pins.modelDigest },
     entrypoint: 'TaskCompleted', steps: [
       { id: 'projectId', let: { literal: projectId, type: 'ProjectId' } },
@@ -51,7 +51,7 @@ export function conditionalFollowUpFixture({ projectId = 'project1', otherProjec
     events.push({ event: 'TERMINATED', ...(error && { code: error.code }) });
     const outcome = { classification: error ? 'FAILED' : 'COMPLETED', ...(error ? { error } : { result: { status: created ? 'CREATED' : 'NO_OP' } }),
       effects: created ? [{ step: 'created', capability: 'tasks.create', state: 'CONFIRMED' }] : [] };
-    return JSON.stringify({ format: 'keir-scenario/3', id, given: { input, fixture: 'normal' }, stubs,
+    return JSON.stringify({ format: definitionFormats(host.pins).scenario, id, given: { input, fixture: 'normal' }, stubs,
       expect: { outcome: { ...outcome, trace: events.map((row, sequence) => ({ sequence, ...row })) },
         calls: stubs.map(({ response, ...call }) => call), consumption: { status: 'REPORTED', ...outcome } } });
   }

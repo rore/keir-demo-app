@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
 import { taskService } from './data.mjs';
-import { loadHost, digest, json, hostBindings } from './extension-catalog.mjs';
+import { digest, json, hostBindings, definitionKey } from './extension-catalog.mjs';
 import { createTaskDecisionConsumer } from './task-effect-simulation.mjs';
 
 const hook = 'TaskBeforeCreate';
@@ -16,7 +16,8 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
     throw new TypeError('Task creation requires its native lifecycle and a positive commit reserve.');
 
   const tasks = taskService(db), invocations = new WeakMap(), decisions = new WeakMap(), running = new Set();
-  let closing = false, binding, preparedSlot;
+  let closing = false, preparedSlot;
+  const bindings = new Map();
   const selection = owner => db.prepare('SELECT * FROM extension_selections WHERE owner_id=? AND hook_id=?').get(owner, hook);
 
   function withinDeadline(context, deadline) {
@@ -65,8 +66,10 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
     } };
   }
 
-  try {
-    const host = loadHost(hook), model = JSON.parse(host.dcmBytes), keyType = model.hostKey.type;
+  function bindingFor(host) {
+    const key = definitionKey(host.pins);
+    if (bindings.has(key)) return bindings.get(key);
+    const model = JSON.parse(host.dcmBytes), keyType = model.hostKey.type;
     const result = bindModel(host.dcmBytes, {
       'tasks.get': read('tasks.get', '3', keyType),
       'tasks.openMatch': read('tasks.openMatch', '1', keyType),
@@ -74,14 +77,15 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
       'tasks.update': { version: '1', mode: 'real', keyType, invoke: async () => ({ ...denied(), effect: 'NONE' }) },
     });
     if (!result.diagnostic && result.boundModel)
-      binding = { modelDigest: host.pins.modelDigest, boundModel: result.boundModel, keyType };
-  } catch { /* A missing or incompatible selected model blocks; it never means no binding. */ }
+      bindings.set(key, { key, modelDigest: host.pins.modelDigest, boundModel: result.boundModel, keyType });
+    return bindings.get(key);
+  }
 
   async function check({ owner, input, selection: selected, deadline, operationDeadline, signal, requestKey }) {
     let context, attempts, eventId;
     try {
-      if (closing || !binding || typeof owner !== 'string' || !input || !selected?.revision_id
-          || !requestKey || typeof requestKey !== 'object' || requestKey.type !== binding.keyType
+      if (closing || typeof owner !== 'string' || !input || !selected?.revision_id
+          || !requestKey || typeof requestKey !== 'object'
           || typeof requestKey.value !== 'string' || !Object.isFrozen(requestKey)
           || operationDeadline?.clock !== deadline?.clock
           || !Number.isSafeInteger(operationDeadline?.expiresAtMs) || !Number.isSafeInteger(deadline?.expiresAtMs)
@@ -94,6 +98,8 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
         .get(owner, captured.revisionId);
       if (!link) return blocked;
       const execution = lifecycle.execution(owner, captured.revisionId, link.extension_id);
+      const binding = bindingFor(execution.host);
+      if (!binding || requestKey.type !== binding.keyType) return blocked;
       const artifactDigest = digest(execution.artifactBytes), pins = execution.pins;
       const selectedPins = JSON.parse(selected.binding_pins);
       if (execution.host.pins.modelDigest !== binding.modelDigest
@@ -106,10 +112,10 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
         selectionIdentity: json(selected), pinsIdentity: json(pins), hostPinsIdentity: json(execution.host.pins), artifactDigest, lastNow: -1, reads: [], calls: 0 };
       if (!authority(context, deadline)) return blocked;
       const modelDigest = binding.modelDigest;
-      if (preparedSlot?.artifactDigest !== artifactDigest || preparedSlot.modelDigest !== modelDigest) {
+      if (preparedSlot?.artifactDigest !== artifactDigest || preparedSlot.definitionKey !== binding.key) {
         const prepared = prepareProgram(execution.artifactBytes, binding.boundModel);
         if (prepared.diagnostic || !prepared.prepared) return blocked;
-        preparedSlot = { artifactDigest, modelDigest, prepared: prepared.prepared };
+        preparedSlot = { artifactDigest, modelDigest, definitionKey: binding.key, prepared: prepared.prepared };
       }
       eventId = randomUUID();
       attempts = invocations.get(requestKey);
@@ -154,6 +160,6 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
         return authority(context, context.operationDeadline);
       } catch { return false; }
     },
-    async close() { closing = true; preparedSlot = null; await Promise.allSettled(running); },
+    async close() { closing = true; await Promise.allSettled(running); preparedSlot = null; bindings.clear(); },
   });
 }

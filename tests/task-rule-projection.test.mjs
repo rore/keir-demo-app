@@ -4,7 +4,7 @@ import test, { before } from 'node:test';
 import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
 import { createCompiler } from '../src/compiler.mjs';
-import { loadHost, json } from '../src/extension-catalog.mjs';
+import { loadHost, authoringDefinition, json } from '../src/extension-catalog.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
 import { taskRuleDescription } from '../src/task-rule-description.mjs';
 import { taskEffectSyntax } from '../src/task-effect-simulation.mjs';
@@ -12,10 +12,10 @@ import { admitTaskDraft } from './fixtures/task-authoring.mjs';
 import { taskWorkflowSource, taskWorkflowCases } from './fixtures/task-workflow-source.mjs';
 
 const host = loadHost('TaskCreated'), authorize = () => {}, programs = new Map();
-const genericYaml = `language: keir/2
+const genericYaml = `language: keir/3
 domain:
   id: demo.tasks
-  version: '5'
+  version: '6'
   fingerprint: ${host.pins.modelDigest}
 entrypoint: TaskCreated
 name: format-only-task-example
@@ -49,7 +49,8 @@ before(async () => {
   const capturedGuard = JSON.parse(readFileSync(new URL('./fixtures/task-guard-summary.json', import.meta.url)));
   for (const [key, source, definition] of [
     ['complete', genericYaml, host], ['partial', JSON.stringify(partial), host],
-    ['unavailable', JSON.stringify(unsupportedGuard), guardHost], ['guard', capturedGuard.source, guardHost],
+    ['unavailable', JSON.stringify(unsupportedGuard), guardHost],
+    ['guard', capturedGuard.source, authoringDefinition('TaskBeforeCreate', 'sha256:e7e250a249ea72f3261d7e52ac24a45fe42542ccf5fc5eb5de754069ca26f119')],
   ]) {
     const result = await compiler.compile(Buffer.from(source), { definition });
     assert.deepEqual(result.diagnostics, []);
@@ -74,7 +75,8 @@ const input = state => ({ extensionId: state.extension.id, revisionId: state.dra
 async function create(f, coverage = 'complete', { owner = 'maya', name = 'Task customization' } = {}) {
   const { extensionId } = admitTaskDraft(f.db, f.lifecycle, { owner, name });
   const program = programs.get(coverage);
-  return f.lifecycle.compile(owner, { extensionId, source: program.source, hookId: program.definition.pins.hook, draftVersion: 0 }, authorize);
+  return f.lifecycle.compile(owner, { extensionId, source: program.source, hookId: program.definition.pins.hook,
+    modelDigest: program.definition.pins.modelDigest, draftVersion: 0 }, authorize);
 }
 async function checked(f, { failed = false } = {}) {
   let state = await create(f);

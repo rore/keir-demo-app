@@ -20,7 +20,7 @@
   "dependencies": {
     "@fastify/cookie": "11.1.5",
     "@fastify/static": "10.1.8",
-    "@keir/runtime-node": "file:vendor/keir-runtime-node-0.4.0.tgz",
+    "@keir/runtime-node": "file:vendor/keir-runtime-node-0.5.0.tgz",
     "ajv": "8.20.0",
     "fastify": "5.12.7",
     "react": "19.3.1",

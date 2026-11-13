@@ -37,6 +37,28 @@
         "sha256": "sha256:8a4101a64fbbf4d09b59f936083a48df39256fcba8386cee66bd5f7bcad2c4a7"
       }
     },
+    "customer-authoring-guide-v9.md": {
+      "edition": 9,
+      "status": "verified-candidate",
+      "release": null,
+      "revision": "9435dfef2ade61af2d7617754c761775502d68b5",
+      "source": "docs/agents/customer-authoring-guide-v9.md",
+      "bytes": 11801,
+      "sha256": "sha256:21615e93fc426f11eb756e850a4e0660d3a5cab55f69f47f5b3e818fc3fb1257",
+      "qualification": "https://github.com/rore/keir-core/actions/runs/43451868303",
+      "coreRevision": "3a383c2d0c6227eedc9c03927c2dd1910360d5b9",
+      "distribution": {
+        "file": "keir-authoring-companion-v9.zip",
+        "bytes": 246443,
+        "sha256": "sha256:c1ca8b6f2f3c5089afca5e134d0b21ed2477a570141c36fcc1ea55a2f6c41867",
+        "manifest": {
+          "file": "keir-authoring-companion-v9-manifest.json",
+          "source": "manifest.json",
+          "bytes": 7159,
+          "sha256": "sha256:a98c013fe2221073f93b280f8bc0223b49bd298ff7bc910e69a2dec97387a74b"
+        }
+      }
+    },
     "customer-authoring-guide-v8.md": {
       "edition": 8,
       "status": "verified-candidate",

@@ -4,7 +4,7 @@ import test from 'node:test';
 import { fromBinary, toBinary } from '@bufbuild/protobuf';
 import { CheckedExprSchema } from '@bufbuild/cel-spec/cel/expr/checked_pb.js';
 import { createCompiler } from '../src/compiler.mjs';
-import { loadHost } from '../src/extension-catalog.mjs';
+import { loadHost, authoringDefinition, readDefinitionForPins } from '../src/extension-catalog.mjs';
 import { taskRuleDescription } from '../src/task-rule-description.mjs';
 import { taskWorkflowSource } from './fixtures/task-workflow-source.mjs';
 
@@ -13,6 +13,9 @@ const captured = JSON.parse(readFileSync(new URL('./fixtures/task-follow-up-summ
 const capturedGuard = JSON.parse(readFileSync(new URL('./fixtures/task-guard-summary.json', import.meta.url)));
 const oldArtifact = JSON.parse(captured.artifact);
 const host = loadHost('TaskCompleted');
+const retainedGuardHost = authoringDefinition('TaskBeforeCreate', 'sha256:e7e250a249ea72f3261d7e52ac24a45fe42542ccf5fc5eb5de754069ca26f119');
+const historicalGuardHost = readDefinitionForPins({ ...retainedGuardHost.pins, compiler: 'keir-compiler-java/0.4.0',
+  packageIntegrity: 'sha512-BmA7SC7gIYHFmqVlDPcG4Cv51OYRsGRNAImh3AraBZQ2BVhE7YpKIQbkTTSz/wTiZDpIrl1EV9aYxdZ2anDmTw==' });
 const literal = value => ({ kind: 'literal', value });
 const source = (workflow, selected = host) => JSON.parse(taskWorkflowSource(selected, workflow));
 async function compile(value, selected = host) {
@@ -164,18 +167,18 @@ test('deep alias chains exceed bounded recognition without claiming completeness
 });
 
 test('captured before-create rule describes its actual project and normal-priority denial', async () => {
-  const guardHost = loadHost('TaskBeforeCreate');
+  const guardHost = retainedGuardHost;
   const artifact = JSON.parse(capturedGuard.artifact);
   const expected = { coverage: 'complete', hook: 'TaskBeforeCreate', guard: {
     conditions: [{ field: 'projectId', value: 'summary-project' }, { field: 'priority', value: 'normal' }],
     message: 'Choose a priority for this task.',
   } };
-  assert.deepEqual(taskRuleDescription(artifact, guardHost), expected);
+  assert.deepEqual(taskRuleDescription(artifact, historicalGuardHost), expected);
   assert.deepEqual(taskRuleDescription(await compile(capturedGuard.source, guardHost), guardHost), expected);
 });
 
 test('before-create description fails closed for unsupported decision logic and unused steps', () => {
-  const guardHost = loadHost('TaskBeforeCreate'), artifact = JSON.parse(capturedGuard.artifact);
+  const guardHost = historicalGuardHost, artifact = JSON.parse(capturedGuard.artifact);
   for (const change of [
     item => { item.entrypoint = 'TaskCreated'; },
     item => { item.steps.push({ id: 'unused', op: 'BIND', resultType: 'String', value: { literal: 'extra', type: 'String' } }); },
@@ -189,7 +192,7 @@ test('before-create description fails closed for unsupported decision logic and 
 });
 
 test('compiled before-create aliases preserve equivalent guards while unsupported predicates stay unavailable', async () => {
-  const guardHost = loadHost('TaskBeforeCreate'), original = capturedGuard.source;
+  const guardHost = retainedGuardHost, original = capturedGuard.source;
   const renamed = original.replaceAll('needsPriority', 'projectAndPriorityMatch');
   assert.deepEqual(taskRuleDescription(await compile(renamed, guardHost), guardHost), taskRuleDescription(
     await compile(original, guardHost), guardHost));
@@ -212,7 +215,7 @@ test('compiled before-create aliases preserve equivalent guards while unsupporte
 });
 
 test('compiled before-create messages are trimmed and oversized UTF-8 messages stay unavailable', async () => {
-  const guardHost = loadHost('TaskBeforeCreate'), original = capturedGuard.source;
+  const guardHost = retainedGuardHost, original = capturedGuard.source;
   const padded = original.replace('"Choose a priority for this task."', JSON.stringify('  Choose a priority for this task.  '));
   assert.equal(taskRuleDescription(await compile(padded, guardHost), guardHost).guard.message, 'Choose a priority for this task.');
   const oversized = original.replace('"Choose a priority for this task."', JSON.stringify('é'.repeat(129)));

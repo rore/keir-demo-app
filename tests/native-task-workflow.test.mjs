@@ -38,8 +38,8 @@ test('both approved event selections execute exact current artifacts through nat
     const [added, completed] = TASK_EVENT_HOOKS;
     const first = await approveAndActivate(db, lifecycle, added, projectId);
     const second = await approveAndActivate(db, lifecycle, completed, projectId);
-    assert.equal(first.draft.pins.modelRef.format, 'keir-dcm/3');
-    assert.equal(second.draft.pins.modelRef.format, 'keir-dcm/3');
+    assert.equal(first.draft.pins.modelRef.format, 'keir-dcm/4');
+    assert.equal(second.draft.pins.modelRef.format, 'keir-dcm/4');
     const selections = lifecycle.collection(owner).selections;
     assert.equal(selections[added].revision.id, first.draft.id);
     assert.equal(selections[completed].revision.id, second.draft.id);

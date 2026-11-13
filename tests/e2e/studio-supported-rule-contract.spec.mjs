@@ -24,10 +24,13 @@ async function signIn(page, fixture, owner = 'maya') {
 }
 
 function guardProgram(projectId, otherProjectId) {
-  const program = taskCreateGuardFixture({ host: loadHost('TaskBeforeCreate'), rule: 'project-priority', projectId, otherProjectId });
-  // Keep the captured checked rule's shape; substitute only synthetic project and binding names.
+  const host = loadHost('TaskBeforeCreate');
+  const program = taskCreateGuardFixture({ host, rule: 'project-priority', projectId, otherProjectId });
+  // Reauthor the same rule shape for the discovered numeric contract; never mutate the captured fixture.
   return { ...program, source: capturedGuard.source.replaceAll('project2', 'chosenProject')
-    .replaceAll('needsPriority', 'restricted').replaceAll('summary-project', projectId) };
+    .replaceAll('needsPriority', 'restricted').replaceAll('summary-project', projectId)
+    .replace('language: keir/2', 'language: keir/3').replace("version: '5'", "version: '6'")
+    .replace(JSON.parse(capturedGuard.artifact).modelRef.digest, host.pins.modelDigest) };
 }
 
 async function save(page, fixture, headers, hook, program, name, owner = 'maya', extensionId) {

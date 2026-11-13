@@ -352,7 +352,7 @@ test('real source compilation, independent suite edits and exact A/B approval/us
   let lifecycle = create(db);
   admitTaskDraft(db, lifecycle, { extensionId: 'maya-task-fixture' });
   const legacy = nativeTasks(db), fixture = fixtureFor(), id = itemId(lifecycle);
-  const duplicate = fixture.source.replace('"language": "keir/2"', '"language": "keir/2", "language": "keir/2"');
+  const duplicate = fixture.source.replace('"language": "keir/3"', '"language": "keir/3", "language": "keir/3"');
   await assert.rejects(lifecycle.compile('maya', { extensionId: id, hookId: TASK_HOOK, source: duplicate, draftVersion: 0 }, authorized), { status: 422 });
   assert.equal(lifecycle.state('maya', id).draftVersion, 0);
   let state = await lifecycle.compile('maya', { extensionId: id, hookId: TASK_HOOK, source: fixture.source, draftVersion: 0 }, authorized);
@@ -398,7 +398,7 @@ function readOnlyProgram(steps) {
     { event: 'CALL_DISPATCHED', step, capability: 'tasks.get' }, { event: 'CALL_SUCCEEDED', step, capability: 'tasks.get' }])
     : [{ event: 'STEP_START', step: 'constant' }, { event: 'VALUE_BOUND', step: 'constant' }]), { event: 'RETURNED' }, { event: 'TERMINATED' }];
   const outcome = { classification: 'COMPLETED', result: { status: 'NO_OP' }, effects: [], trace: trace.map((event, sequence) => ({ sequence, ...event })) };
-  return { source: JSON.stringify(source), row: { format: 'keir-scenario/3', id: 'normal',
+  return { source: JSON.stringify(source), row: { format: 'keir-scenario/4', id: 'normal',
     given: { input: { taskId: 'task1', occurredAt: '2026-03-07T12:34:56.789Z' }, fixture: 'normal' },
     stubs: calls.map(call => ({ ...call, response: { kind: 'SUCCESS',
       value: { id: 'task1', projectId: 'project1', status: 'COMPLETED', title: 'Example task', tags: [], priority: 'normal' } } })),

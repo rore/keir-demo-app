@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { openData, taskService, taskEffectService } from '../src/data.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
-import { loadHost, definitionForPins } from '../src/extension-catalog.mjs';
+import { loadHost, definitionForPins, definitionFormats } from '../src/extension-catalog.mjs';
 import { createTaskCreateGuard } from '../src/task-create-guard.mjs';
 import { createTaskDispatcher } from '../src/task-effects.mjs';
 import { createApp } from '../src/app.mjs';
@@ -44,8 +44,8 @@ async function activate(f, fixture) {
   const { extensionId } = admitTaskDraft(f.db, f.lifecycle, { owner, name: 'Runtime guard' });
   let state = await f.lifecycle.compile(owner, { extensionId, hookId: 'TaskBeforeCreate', draftVersion: 0, source: fixture.source }, () => {});
   const artifact = JSON.parse(f.lifecycle.execution(owner, state.draft.id, extensionId).artifactBytes);
-  assert.equal(artifact.format, 'keir-artifact/3');
-  assert.equal(artifact.compiler, 'keir-compiler-java/0.4.0');
+  assert.equal(artifact.format, 'keir-artifact/4');
+  assert.equal(artifact.compiler, 'keir-compiler-java/0.5.0');
   const input = value => ({ extensionId, revisionId: value.draft.id, draftVersion: value.draftVersion });
   state = await f.lifecycle.proposeScenarios(owner, { ...input(state), cases: fixture.cases }, () => {});
   state = await f.lifecycle.simulate(owner, input(state), () => {});
@@ -155,7 +155,7 @@ function readFixture(f) {
   const anchor = f.native.listTasks(owner, f.projectId).find(task => task.status === 'open');
   const value = { id: anchor.id, projectId: anchor.projectId, status: 'OPEN', title: anchor.title, tags: anchor.tags,
     priority: anchor.priority, ...(anchor.dueAt === null ? {} : { dueAt: anchor.dueAt }) };
-  const source = JSON.stringify({ language: 'keir/2', name: 'native-read-consistency-guard', entrypoint: 'TaskBeforeCreate',
+  const source = JSON.stringify({ language: definitionFormats(host.pins).source, name: 'native-read-consistency-guard', entrypoint: 'TaskBeforeCreate',
     domain: { ...model.domain, fingerprint: host.pins.modelDigest }, steps: [
       { id: 'anchorId', let: { literal: anchor.id, type: 'TaskId' } },
       { id: 'anchor', call: 'tasks.get', args: { taskId: { cel: 'anchorId' } } },
@@ -170,7 +170,7 @@ function readFixture(f) {
     const events = [{ event: 'INVOCATION_START' }, { event: 'STEP_START', step: 'anchorId' }, { event: 'VALUE_BOUND', step: 'anchorId' },
       ...calls.flatMap(item => [{ event: 'STEP_START', step: item.step }, { event: 'CALL_DISPATCHED', step: item.step, capability: item.capability },
         { event: 'CALL_SUCCEEDED', step: item.step, capability: item.capability }]), { event: 'RETURNED' }, { event: 'TERMINATED' }];
-    return JSON.stringify({ format: 'keir-scenario/3', id: matches ? 'existing-match' : 'absent-match', given: { input, fixture: 'normal' },
+    return JSON.stringify({ format: definitionFormats(host.pins).scenario, id: matches ? 'existing-match' : 'absent-match', given: { input, fixture: 'normal' },
       stubs: calls.map((item, index) => ({ ...item, response: { kind: 'SUCCESS', value: index ? { matches } : value } })),
       expect: { outcome: { classification: 'COMPLETED', result, effects: [], trace: events.map((event, sequence) => ({ sequence, ...event })) },
         calls, consumption: { status: matches ? 'DENIED' : 'ALLOWED', result } } });
@@ -267,7 +267,7 @@ test('real guard permission, selection, cancellation and parent deadline changes
   });
 });
 
-test('original approved /2 event bytes coexist with a real /3 guard under runtime 0.3', async t => {
+test('original approved /2 event bytes coexist with a real /4 guard under runtime 0.5', async t => {
   const f = setup(t), old = seedTaskEffectBinding(f.db, owner);
   f.db.prepare("UPDATE extension_selections SET revision_id=?,generation=generation+1,binding_pins=? WHERE owner_id=? AND hook_id='TaskCompleted'")
     .run(old.revisionId, JSON.stringify(old.pins), owner);

@@ -5,6 +5,51 @@ import { evidenceSummary } from '../src/authoring-example.mjs';
 import { createAuthoringService } from '../src/authoring-service.mjs';
 import { openData } from '../src/data.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
+import { createCompiler } from '../src/compiler.mjs';
+import { authoringDefinition } from '../src/extension-catalog.mjs';
+import { taskCreateGuardFixture } from './fixtures/task-create-guard.mjs';
+import { restoreSavedCore030, savedCore030 } from './fixtures/saved-core-0.3.0.mjs';
+
+test('authoring discovers and recompiles an authentic older model without migrating it or borrowing approval', { timeout: 60_000 }, async t => {
+  const db = openData(':memory:'); restoreSavedCore030(db);
+  const lifecycle = createLifecycle(db, { compiler: createCompiler() });
+  const extensionId = 'compat-030-TaskBeforeCreate', before = lifecycle.state('maya', extensionId);
+  const oldSource = lifecycle.source('maya', before.draft.id, extensionId);
+  const host = authoringDefinition('TaskBeforeCreate', before.draft.pins.modelDigest);
+  const fixture = taskCreateGuardFixture({ host, rule: 'priority-note', projectId: savedCore030.projectId });
+  const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra',
+    KEIR_AI_MAX_USD: '2', OPENAI_API_KEY: 'synthetic-key' });
+  let discovery;
+  const service = createAuthoringService({ db, lifecycle, config, providerFactory: () => ({
+    reserveMicros: config.reserveMicros, maxMicros: config.maxMicros,
+    async complete(request) {
+      const usage = { inputTokens: 1, outputTokens: 1 };
+      if (!request.toolResult) return { calls: [{ id: 'discover', name: 'discover_catalog', arguments: {} }], text: '', usage };
+      const output = JSON.parse(request.toolResult.output); assert.equal(output.ok, true);
+      if (!discovery) {
+        discovery = output.result;
+        return { calls: [{ id: 'compile', name: 'compile_draft', arguments: { hookId: 'TaskBeforeCreate', sourceJson: fixture.source,
+          expectedDraftVersion: discovery.currentDraft.draftVersion } }], text: '', usage };
+      }
+      return { calls: [], text: 'The edited draft needs its own checked examples and approval.', usage };
+    },
+  }) });
+  t.after(async () => { await service.close(); db.close(); });
+  const { conversation } = await service.turn('maya', { conversationId: null, operationId: 'retained-model-authoring',
+    text: 'Require notes for high-priority new tasks instead.', expectedVersion: 0, expectedDraftVersion: before.draftVersion,
+    target: { kind: 'revise', extensionId, baseRevisionId: before.draft.id, selectionGeneration: before.selection.generation } }, { sessionId: 'retained-authoring', current: () => true });
+  assert.equal((await service.wait('maya', conversation.id)).status, 'IDLE');
+  assert.deepEqual([discovery.dcm.format, discovery.source, discovery.scenario, discovery.compiler],
+    ['keir-dcm/3', 'keir/2', 'keir-scenario/4', 'keir-compiler-java/0.5.0']);
+  assert.equal(discovery.currentProposal.source, oldSource.source);
+  const after = lifecycle.state('maya', extensionId);
+  assert.notEqual(after.draft.id, before.draft.id);
+  assert.equal(after.draft.pins.modelDigest, before.draft.pins.modelDigest);
+  assert.equal(after.draft.pins.compiler, 'keir-compiler-java/0.5.0');
+  assert.equal(after.approved, false);
+  assert.deepEqual(after.selection, before.selection);
+  assert.deepEqual(lifecycle.source('maya', before.draft.id, extensionId), oldSource);
+});
 
 test('discovery shows all three trigger contracts without binding a trigger or activating an item', async t => {
   const db = openData(':memory:'), lifecycle = createLifecycle(db);
@@ -28,7 +73,8 @@ test('discovery shows all three trigger contracts without binding a trigger or a
   const { conversation: admitted } = await service.turn('maya', input, lease);
   const conversation = await service.wait('maya', admitted.id);
   assert.equal(conversation.status, 'IDLE');
-  assert.equal(discovery.dcm.format, 'keir-dcm/3');
+  assert.equal(discovery.dcm.format, 'keir-dcm/4');
+  assert.deepEqual([discovery.source, discovery.artifact, discovery.scenario], ['keir/3', 'keir-artifact/4', 'keir-scenario/4']);
   assert.equal(discovery.selectedHook, null);
   assert.equal(discovery.currentUse.unavailableReason, 'TRIGGER_UNRESOLVED');
   assert.equal(discovery.hook, undefined);
@@ -36,7 +82,7 @@ test('discovery shows all three trigger contracts without binding a trigger or a
     assert.ok(discovery.supportedHooks.some(item => item.id === hook));
     const examples = discovery.examplesByHook[hook];
     assert.equal(JSON.parse(examples.sourceExample).entrypoint, hook);
-    assert.equal(JSON.parse(examples.scenarioExample).format, 'keir-scenario/3');
+    assert.equal(JSON.parse(examples.scenarioExample).format, 'keir-scenario/4');
   }
   const guard = discovery.examplesByHook.TaskBeforeCreate;
   assert.deepEqual(guard.scenarioExamples.map(text => JSON.parse(text).expect.consumption.status), ['ALLOWED', 'DENIED', 'ALLOWED', 'BLOCKED']);

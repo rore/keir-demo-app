@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { definitionFormats } from '../../src/extension-catalog.mjs';
 
 // These selectors choose authored test programs; the host has no rule-specific handlers.
 export function taskCreateGuardFixture({ host, rule, projectId = 'project1', otherProjectId = 'project2' }) {
   assert.ok(typeof projectId === 'string' && projectId.isWellFormed() && projectId);
   assert.ok(typeof otherProjectId === 'string' && otherProjectId.isWellFormed() && otherProjectId && otherProjectId !== projectId);
   const model = JSON.parse(Buffer.from(host.dcmBytes).toString('utf8'));
-  assert.equal(model.format, 'keir-dcm/3');
+  assert.ok(['keir-dcm/3', 'keir-dcm/4'].includes(model.format));
   assert.equal(host.pins.hook, 'TaskBeforeCreate');
   assert.equal(host.pins.modelRef.domainId, model.domain.id);
   assert.equal(host.pins.modelRef.domainVersion, model.domain.version);
@@ -46,7 +47,7 @@ export function taskCreateGuardFixture({ host, rule, projectId = 'project1', oth
   const example = examples[rule];
   const projectStep = ['project-review', 'project-priority'].includes(rule)
     ? [{ id: 'chosenProject', let: { literal: projectId, type: 'ProjectId' } }] : [];
-  const source = JSON.stringify({ language: 'keir/2', name: 'task-create-guard-' + rule,
+  const source = JSON.stringify({ language: definitionFormats(host.pins).source, name: 'task-create-guard-' + rule,
     domain: { id: host.pins.modelRef.domainId, version: host.pins.modelRef.domainVersion, fingerprint: host.pins.modelDigest },
     entrypoint: 'TaskBeforeCreate',
     steps: [...projectStep, { id: 'restricted', let: { cel: example.condition } }],
@@ -60,7 +61,7 @@ export function taskCreateGuardFixture({ host, rule, projectId = 'project1', oth
     const events = [{ event: 'INVOCATION_START' },
       ...bindIds.flatMap(step => [{ event: 'STEP_START', step }, { event: 'VALUE_BOUND', step }]),
       { event: 'RETURNED' }, { event: 'TERMINATED' }];
-    return { format: 'keir-scenario/3', id, given: { input, fixture: 'normal' }, stubs: [],
+    return { format: definitionFormats(host.pins).scenario, id, given: { input, fixture: 'normal' }, stubs: [],
       expect: { outcome: { classification: 'COMPLETED', result, effects: [],
         trace: events.map((event, sequence) => ({ sequence, ...event })) }, calls: [],
       consumption: { status: decision === 'ALLOW' ? 'ALLOWED' : 'DENIED', result } } };
@@ -70,7 +71,7 @@ export function taskCreateGuardFixture({ host, rule, projectId = 'project1', oth
     completed(rule + '-matching-allow', example.matchingAllow, 'ALLOW', ''),
     completed(rule + '-matching-deny', example.matchingDeny, 'DENY', example.message),
     completed(rule + '-nonmatch-allow', example.nonmatchingAllow, 'ALLOW', ''),
-    { format: 'keir-scenario/3', id: rule + '-unavailable',
+    { format: definitionFormats(host.pins).scenario, id: rule + '-unavailable',
       given: { input: rule === 'project-priority' ? example.matchingAllow : example.matchingDeny, fixture: 'invalid-key' }, stubs: [],
       expect: { outcome: { classification: 'FAILED', error: { code: 'HOST_CONTEXT_INVALID', path: '' }, effects: [],
         trace: [{ sequence: 0, event: 'INVOCATION_START' }, { sequence: 1, event: 'TERMINATED', code: 'HOST_CONTEXT_INVALID' }] },

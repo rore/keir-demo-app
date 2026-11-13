@@ -1,0 +1,192 @@
+{
+  "compatibility": {
+    "coreRevision": "3a383c2d0c6227eedc9c03927c2dd1910360d5b9",
+    "packages": {
+      "compiler": {
+        "assets": {
+          "keir-compiler-cli-0.5.0.zip": "sha256:ec36271caaa55714257601c2f8bc7aa19f2ced76858f02b15021dacd3a138e76"
+        },
+        "version": "0.5.0"
+      },
+      "javaRuntime": {
+        "assets": {
+          "keir-java-runtime-maven-0.5.0.zip": "sha256:88e9f903b32df239832e7c0a91b2db3a445a8e31bb5066f54578773c8b890e77"
+        },
+        "version": "0.5.0"
+      },
+      "nodeRuntime": {
+        "assets": {
+          "keir-runtime-node-0.5.0.tgz": "sha256:9c59e4722f4d85bcd0e57580a1cef9526f7ceb52670e345576e39ca29d489736"
+        },
+        "version": "0.5.0"
+      }
+    },
+    "status": "release"
+  },
+  "contracts": {
+    "artifact": "keir-artifact/4",
+    "dcm": "keir-dcm/4",
+    "descriptorRecipe": "keir-record-descriptors/3",
+    "language": "keir/3",
+    "retainedAuthoring": {
+      "artifact": "keir-artifact/4",
+      "dcm": "keir-dcm/3",
+      "descriptorRecipe": "keir-record-descriptors/2",
+      "language": "keir/2",
+      "scenario": "keir-scenario/4"
+    },
+    "scenario": "keir-scenario/4"
+  },
+  "environment": {
+    "celJava": "0.14.0",
+    "celNode": "0.6.1",
+    "protobufJava": "4.35.1",
+    "protobufNode": "2.6.2"
+  },
+  "files": {
+    "LICENSE": {
+      "bytes": 11357,
+      "digest": "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "conformance/keir-4/retained-names.json": {
+      "bytes": 1852,
+      "digest": "sha256:6a683a0a14c77498b194b327c89d5e004a42e3984d3bad1cbf0cd05126a5e7d0"
+    },
+    "conformance/keir-4/retained-names.sha256": {
+      "bytes": 72,
+      "digest": "sha256:23ffaa391b094f9de7f7f5d023761447d680edc3df1c9dd6d054f0a6f4a7b86b"
+    },
+    "docs/agents/customer-authoring-guide-v9.md": {
+      "bytes": 11801,
+      "digest": "sha256:21615e93fc426f11eb756e850a4e0660d3a5cab55f69f47f5b3e818fc3fb1257"
+    },
+    "docs/specs/README.md": {
+      "bytes": 12036,
+      "digest": "sha256:4bce42b59c998b3f8cde706ccba0628fa4e439d923524d3b838a98b8c1b06250"
+    },
+    "docs/specs/compiler-artifact.md": {
+      "bytes": 21824,
+      "digest": "sha256:89209984b1f45c48ce051ff53137ea51c24c326ddd0c47c83bb7ef241cca208e"
+    },
+    "docs/specs/domain-model.md": {
+      "bytes": 17209,
+      "digest": "sha256:cccb8d220d1dbbbb25eadfbc20d7fbccf6da6baed7b769ded7e385244ddc245a"
+    },
+    "docs/specs/host-model-binding.md": {
+      "bytes": 12943,
+      "digest": "sha256:daaf4b87105b142279e88421663b65f446beae8c6831fdc1a79a75236d210995"
+    },
+    "docs/specs/language.md": {
+      "bytes": 21748,
+      "digest": "sha256:1c6bf04d5eb701d8839294772b1c337274ad825538ae594119af6e1d640bb86f"
+    },
+    "docs/specs/pre-operation-decisions.md": {
+      "bytes": 19245,
+      "digest": "sha256:3a3915c7976642fd1bad70a8164cfba0bbf69487f02c8ba9dc10605820690644"
+    },
+    "docs/specs/runtime.md": {
+      "bytes": 19974,
+      "digest": "sha256:daf590f218fbb7663f4bc5464fb4d66a2a1da60f20802912e628376aba8e9728"
+    },
+    "docs/specs/workflow-expressions.md": {
+      "bytes": 18143,
+      "digest": "sha256:db189b02ad93143f3d3b9cc8970a69054611de9ea79a572fd6a7aa8d68fda0b8"
+    },
+    "examples/numeric/README.md": {
+      "bytes": 2635,
+      "digest": "sha256:a8ee6a5ba907fc987f215ec77cdf22e0056c5db1dbc523b32d6d7919ddeb8134"
+    },
+    "examples/numeric/quote/artifact.json": {
+      "bytes": 5531,
+      "digest": "sha256:7dce5a0732e51602d3cbadf34ab83b64b2d2217954404df2b11b804e059e6e99"
+    },
+    "examples/numeric/quote/artifact.sha256": {
+      "bytes": 72,
+      "digest": "sha256:e4958d5525b04186c530ab2f811991eac4e09c6360026b0c93319b1d9a93de77"
+    },
+    "examples/numeric/quote/cases.json": {
+      "bytes": 1805,
+      "digest": "sha256:da25bde8feda18303afb088fae917411c096669c930c8bc68c3bc4223455700c"
+    },
+    "examples/numeric/quote/dcm.json": {
+      "bytes": 935,
+      "digest": "sha256:fde3ca5e32dd2e837579a37cad6e381506a60212714d9a40fb58927a27672135"
+    },
+    "examples/numeric/quote/dcm.sha256": {
+      "bytes": 72,
+      "digest": "sha256:2eed76f4545ab66ccf44928c7ccc8db3482fa9c38f989be69765552202f1a4e1"
+    },
+    "examples/numeric/quote/scenarios/normal.json": {
+      "bytes": 1108,
+      "digest": "sha256:a1572bb8b970d78ad2fb99c77c1d2aa17de023acd674ba87d44610c265add0bf"
+    },
+    "examples/numeric/quote/source.json": {
+      "bytes": 915,
+      "digest": "sha256:df9af78c6b9f85e9ee3807e24b6ee815ed5861e59777dccd9548c24c4428c2f6"
+    },
+    "examples/numeric/stock/artifact.json": {
+      "bytes": 3571,
+      "digest": "sha256:74bfac543bf8c456f163c41981810f708e175604924615e48355bcec98fe92b7"
+    },
+    "examples/numeric/stock/artifact.sha256": {
+      "bytes": 72,
+      "digest": "sha256:4dc90a19c0a6a7df9c3c277548c48a20ee1c71376ba1db4345e27ede47571dad"
+    },
+    "examples/numeric/stock/cases.json": {
+      "bytes": 2131,
+      "digest": "sha256:ef864fc89c5c2208cb85922c18ddc5474dc1db51e1dbacc64b66db06bf1339a3"
+    },
+    "examples/numeric/stock/dcm.json": {
+      "bytes": 1602,
+      "digest": "sha256:ad87c9bf8aa96647df1432dfbe1cc39abcfaa89bf93b218579ae8961b7974e6f"
+    },
+    "examples/numeric/stock/dcm.sha256": {
+      "bytes": 72,
+      "digest": "sha256:7aacc479408f7fce2c902d090d448abbd08e912f83b35100b44b6e2ea60dd9f4"
+    },
+    "examples/numeric/stock/scenarios/normal.json": {
+      "bytes": 2551,
+      "digest": "sha256:830f6c26fcdee4a078b01c6175034a226bf2ac4813c53e998a1b06647f32e355"
+    },
+    "examples/numeric/stock/source.json": {
+      "bytes": 900,
+      "digest": "sha256:b6388c576633b4e9ebc9445e67aca49efce1dbdb8dc1567c48769b9bb6b67c3a"
+    },
+    "schemas/artifact-3/artifact.schema.json": {
+      "bytes": 6618,
+      "digest": "sha256:4f1fe6bbaa2cd292710a3c67617bad4746688e50310ac9588b7205cb70d585ac"
+    },
+    "schemas/artifact-4/artifact.schema.json": {
+      "bytes": 1969,
+      "digest": "sha256:79b9c3545cefdf83b3bc97d8460685f42ab1305d154d80335707f9424bbd71df"
+    },
+    "schemas/dcm-3/dcm.schema.json": {
+      "bytes": 11206,
+      "digest": "sha256:78dc431b92913ff7e63c96154d17f07a9daa9d221536d65450ddd36429244945"
+    },
+    "schemas/dcm-4/dcm.schema.json": {
+      "bytes": 1170,
+      "digest": "sha256:b525039877af5c71817a2a2738e7cf971ee23ae41d19a4d3b6b19fea73842614"
+    },
+    "schemas/scenario-3/scenario.schema.json": {
+      "bytes": 15088,
+      "digest": "sha256:80761a26039bcf8f33fdc3b16da624f665c855eba48c37fa59f4584f66609161"
+    },
+    "schemas/scenario-4/scenario.schema.json": {
+      "bytes": 842,
+      "digest": "sha256:886f98d9ee5367e4649ef8469558b20ebf20426ff6cceae9a95aa7230e6c5dc4"
+    },
+    "schemas/source-2/source.schema.json": {
+      "bytes": 4252,
+      "digest": "sha256:8a496c63d06b25d76e4cf972c20bdf9e414fe4dc67e85f68f3157c5bb30d821a"
+    },
+    "schemas/source-3/source.schema.json": {
+      "bytes": 863,
+      "digest": "sha256:52b705fd6ca319e52970ac7cecb26fb3403d53193666c52da4a0bf1fa5c24119"
+    }
+  },
+  "format": "keir-authoring-companion/9",
+  "guide": "docs/agents/customer-authoring-guide-v9.md",
+  "producer": "keir-compiler-java/0.5.0",
+  "sourceRevision": "9435dfef2ade61af2d7617754c761775502d68b5"
+}

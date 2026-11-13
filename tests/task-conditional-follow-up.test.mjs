@@ -15,7 +15,7 @@ test('published compiler and installed runtime preserve independent conditional 
   const f = conditionalFollowUpFixture();
   const compiled = await compiler.compile(Buffer.from(f.source), { definition: f.host });
   assert.deepEqual(compiled.diagnostics, []);
-  assert.equal(JSON.parse(compiled.artifact).compiler, 'keir-compiler-java/0.4.0');
+  assert.equal(JSON.parse(compiled.artifact).compiler, 'keir-compiler-java/0.5.0');
   const proof = await runTaskEffectSimulation({ artifactBytes: compiled.artifact, host: f.host, scenarios: f.cases });
   assert.equal(proof.status, 'PASS', JSON.stringify(proof));
   assert.deepEqual(proof.reports.map(r => r.report.native.classification), ['COMPLETED','COMPLETED','COMPLETED','COMPLETED','FAILED','FAILED']);

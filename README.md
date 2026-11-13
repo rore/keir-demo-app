@@ -35,7 +35,7 @@ The host also exposes before-save checks and after-create actions. The [host-bin
 
 A business request becomes a Keir program using only the capabilities Daymark exposes. Daymark's assistant clarifies the request, compiles the program and simulates examples against the exact artifact. You review the expected and observed behavior, approve that revision and separately turn it on. Daymark then executes the approved artifact when the chosen trigger occurs; execution needs no further AI request.
 
-Daymark owns the task data, permissions, capability implementations, conversations, evidence and activation policy. Keir supplies the language, compiler, runtime and simulation contracts. Inspect the [published model](extensions/task-effect/current/dcm.json), [authoring service](docs/read-extension-lifecycle.md#authoring-service) and [implementation map](src/README.md) to follow that boundary.
+Daymark owns the task data, permissions, capability implementations, conversations, evidence and activation policy. Keir supplies the language, compiler, runtime and simulation contracts. Inspect the [numeric host model](extensions/task-effect/numeric/dcm.json), [authoring service](docs/read-extension-lifecycle.md#authoring-service) and [implementation map](src/README.md) to follow that boundary. The staged Core 0.5 candidate adds a [tag-count/notes example](docs/tag-notes.md); package publication and deployment remain separate.
 
 This checkout vendors pinned Keir compiler/runtime packages and an authoring guide. [Package provenance](docs/package-provenance.md) records their versions, hashes and compatibility. See the [documentation](docs/README.md) for setup and integration, or [Contributing](CONTRIBUTING.md) for development and testing.
 
