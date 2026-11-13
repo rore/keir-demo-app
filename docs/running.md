@@ -30,6 +30,7 @@ New databases receive the fictional Maya, Leo and Sam accounts and sample data. 
 
 Running native tasks requires Node 24.14.1, not Java or AI credentials. Optional authored-source compilation requires the independently packaged pinned compiler and Java 21. `KEIR_JAVA_BIN` may identify an existing Java executable in the app process's launch environment; it is trusted server configuration, not a request field. This setting does not install Java or change PATH/global configuration. If compilation is unavailable, native tasks and saved history remain usable.
 
+<a id="keir-1-cutover"></a>
 For execution authority and saved outcomes, see [host integration](read-extension-lifecycle.md). When upgrading an older database, keep its matching app and verified backup, and [rehearse the cutover](read-extension-lifecycle.md#upgrade-an-earlier-database) on a separate copy.
 
 ## Stop and lock recovery
@@ -53,6 +54,7 @@ Seed retains saved changes. Reset deliberately restores demo fixtures and backs 
 
 To restore: stop the app, verify no process owns its lock, preserve current `app.sqlite` separately, then copy a selected verified backup over `app.sqlite` in the same data directory. Restart and inspect expected projects/tasks for all people. Never overwrite a live database. Tests reopen the generated backup and verify saved edits; automatic recovery does not guess which copy is right.
 
+<a id="http-and-dependencies"></a>
 ## Local security
 
 Use the exact printed loopback origin. Only built files in `dist/` are public. Sign-in is fictional demo impersonation, not production authentication. Startup and native tasks make no provider requests or telemetry; AI authoring sends the [documented context](ai-authoring.md#configure-a-provider) to your provider. Setup contacts npm. See the [implementation reference](native-task-app-design.md#local-protocol-and-dependency-boundary) for request limits and exact-origin checks, and the [test guide](../tests/README.md#browser-checks) for optional browser downloads.
@@ -67,7 +69,3 @@ Use the exact printed loopback origin. Only built files in `dist/` are public. S
 | AI settings unavailable or rejected | Use **Configure** with one of the exact [supported pairs](ai-authoring.md#configure-a-provider) and the full API key. Saving validates locally rather than testing the key. An invalid saved settings file fails closed instead of falling back to environment settings. |
 | Provider rejects an authoring turn | Inspect the saved status before explicitly retrying. Check provider credentials, account access and rate limits; no reload automatically repeats a paid request. |
 | Spending allowance exhausted | Existing reservations survive cancellation, settings changes and reset. Review the shared allowance in **Configure**; increasing it or leaving it uncapped permits further charges. Reset is not a refund. |
-
-
-<a id="keir-1-cutover"></a>
-<a id="http-and-dependencies"></a>

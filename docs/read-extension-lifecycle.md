@@ -1,3 +1,4 @@
+<a id="customization-lifecycle-reference"></a>
 # Daymark host integration
 
 Daymark implements Keir in a task-management application. Use this reference when building or changing that integration. For the user journey, start with the [walkthrough](customization-walkthrough.md); for provider keys, costs and privacy, use [AI setup](ai-authoring.md).
@@ -31,7 +32,6 @@ The host catalog provides `tasks.get@3`, `tasks.openMatch@1`, `tasks.create@2`, 
 ## Native outcomes
 
 The native write and event capture commit together. The reaction runs afterward. A captured admission contains its owner, trigger, event time, revision, checked approval, dependency pins and original native key. The host prepares the exact artifact before the exclusive first claim. Each invocation receives fresh owner, event, key and deadline context. A claimed admission is never replayed after interruption. Unavailable dependencies leave unclaimed work pending. Revoked admissions remain revoked across reenable and restart.
-
 
 ## Runtime binding and host authority
 
@@ -113,13 +113,9 @@ Startup marks interrupted authoring state without dispatching another provider r
 
 Use a fresh data directory when starting the current-contract build alongside an earlier installation. Keep the earlier database and its matching app together. Restore a verified current backup into an isolated directory before switching which data you use. See [running Daymark](running.md#reset-and-restoration).
 
-
 ## Upgrade an earlier database
 
 To cut over from Keir 1, keep the previous app and database together until eligible pending work settles. The migration refuses to proceed while any pending admission lacks a durable revocation. Revoked pending rows remain visible as history. Existing Keir 1 selections become historically unavailable, and current selections start off. Old sources, evidence, events and receipts remain readable. Start a new current-format revision and approve its own checked evidence before enabling it. Upgrading an existing Keir 2 database preserves its event selections and adds the before-save selection disabled.
 
-For developer checks and their limits, see [verification](../tests/README.md). Provider compatibility and deployment are separate from synthetic and native tests.
-
-
-<a id="customization-lifecycle-reference"></a>
 <a id="package-and-verification"></a>
+For package pins, see [provenance](package-provenance.md); for developer checks and their limits, see [verification](../tests/README.md). Provider compatibility and deployment are separate from synthetic and native tests.
