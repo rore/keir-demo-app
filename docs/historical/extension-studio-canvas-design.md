@@ -6,7 +6,7 @@
 
 Daymark is a task app with customization as a normal workspace destination. Use the stacked host identity **Daymark** with **A KEIR Demo** immediately below it. A person can open **Customizations** to see their saved setups, start a new change, or return to review and manage an existing one.
 
-**Product direction.** A business user develops a customization through an agent that carries the application context and guides the process in everyday language. The earlier single-item interaction and [guided-example proposal](../studio-guided-example.md) are historical. The working design below defines how a person creates and keeps distinct customizations.
+**Product direction.** A business user develops a customization through an agent that carries the application context and guides the process in everyday language. The earlier single-item interaction and [guided-example proposal](https://github.com/rore/keir-demo-app/blob/9eaddae0ed262f06727f440651204e746974979e/docs/studio-guided-example.md) are historical. The working design below defines how a person creates and keeps distinct customizations.
 
 ## Interaction requirements after the reset
 

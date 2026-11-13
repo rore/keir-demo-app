@@ -51,3 +51,7 @@ A binary privacy scan or dependency-resolution check is bounded evidence. It doe
 ## Verification and rollout boundary
 
 [Application verification](../tests/README.md) covers the installed package hashes, real compiler/simulation/runtime paths, immutable retained approvals and native task effects. The scripted authoring journey is separate from live-provider qualification. This adoption changes the repository's packages; it does not deploy, restart an operator's instance or change repository visibility.
+
+## Earlier integration evidence
+
+The earlier Keir 2 integrated qualification passed the four workflows for intake priority, review-task creation, open-match follow-ups and missing due dates. Each used the same compiled artifact in simulation and against native task rows. The migration checks covered preserved records and receipts, rollback, the pending-event guard, reopening and restore with the previous package. That hosted run passed the build, 375 Node tests and 182 Chromium tests, with 12 opt-in Node tests skipped. [Native workflow tests](../tests/native-task-workflow.test.mjs) · [Workflow browser tests](../tests/e2e/studio-workflow.spec.mjs) · [Hosted verification](https://github.com/rore/keir-demo-app/actions/runs/42261861370)

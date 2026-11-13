@@ -22,20 +22,20 @@ Open the exact address printed in the terminal (by default `http://127.0.0.1:300
 
 1. With **Java 21** available, open **Customizations** → **New customization**. Use **Configure** to set up a provider, API key and an optional spending allowance. Sending a request to the provider can incur charges. See [AI authoring setup](docs/ai-authoring.md#configure-a-provider).
 2. In Maya's seeded workspace, try “When I complete a task in The spring collection, create a task titled Follow up in that project.” If you chose another demo user, use one of their projects. Review matching and nonmatching examples. The examples simulate service calls and leave saved tasks alone.
-3. Choose **Approve this change** when the checked examples match your intent. Separately choose **Turn on for tasks completed**. If another rule is on for that trigger, Studio names the rule this will replace. The previous customization stays saved; rules for other triggers keep their selections.
+3. Choose **Approve this change** when the checked examples match your intent. Separately choose **Turn on for tasks completed**. If another rule is on for that trigger, Daymark names the rule this will replace. The previous customization stays saved; rules for other triggers keep their selections.
 4. Return to **Tasks** and complete a new matching task. Check its **Customization outcome** for the real result. Earlier completions stay as they were.
 
 An unknown outcome may already have changed a task. Use [saved-result recovery](docs/customization-walkthrough.md#changes-and-recovery) before retrying.
 
-The host also exposes before-save checks and after-create actions. The [host-binding reference](docs/task-effects.md) explains these hooks and their native guarantees.
-
-[Try the conditional follow-up example](docs/conditional-follow-up.md) to see Core 0.4.0 use an optional lookup’s answer: check only high-priority completions, then create a follow-up only when none is open.
+The walkthrough also shows a [conditional follow-up](docs/customization-walkthrough.md#avoid-another-follow-up) and a [before-save check](docs/customization-walkthrough.md#require-notes-for-many-tags).
 
 ## How it works
 
-A business request becomes a Keir program using only the capabilities Daymark exposes. Daymark's assistant clarifies the request, compiles the program and simulates examples against the exact artifact. You review the expected and observed behavior, approve that revision and separately turn it on. Daymark then executes the approved artifact when the chosen trigger occurs; execution needs no further AI request.
+A business request becomes a Keir program using only the capabilities Daymark exposes. Daymark's assistant clarifies the request, compiles the program and simulates examples against the exact compiled extension. You review the expected and observed behavior, approve that revision and separately turn it on. Daymark then executes the approved compiled extension when the chosen trigger occurs; execution needs no further AI request.
 
-Daymark owns the task data, permissions, capability implementations, conversations, evidence and activation policy. Keir supplies the language, compiler, runtime and simulation contracts. Inspect the [numeric host model](extensions/task-effect/numeric/dcm.json), [authoring service](docs/read-extension-lifecycle.md#authoring-service) and [implementation map](src/README.md) to follow that boundary. The staged Core 0.5 candidate adds a [tag-count/notes example](docs/tag-notes.md); package publication and deployment remain separate.
+Daymark owns data, permissions, services, saved checks and activation. Keir supplies the language, compiler and runtime. The assistant cannot approve or activate its proposal. Each execution can make at most one change through the exposed services; task dates do not schedule execution. Keir does not supply arbitrary API access or automatic retries.
+
+The three fictional accounts demonstrate separate customer state. Local sign-in deliberately impersonates them; it is not production authentication. For the host boundary and implementation, see [Daymark integration](docs/read-extension-lifecycle.md) and the [source map](src/README.md).
 
 This checkout vendors pinned Keir compiler/runtime packages and an authoring guide. [Package provenance](docs/package-provenance.md) records their versions, hashes and compatibility. See the [documentation](docs/README.md) for setup and integration, or [Contributing](CONTRIBUTING.md) for development and testing.
 

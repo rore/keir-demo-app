@@ -2,7 +2,7 @@
 
 Maya wants every completed task in **The spring collection** to leave her a new **Follow up** task in the same project. This tour follows that customization from a plain-language request to its saved result in Daymark. You can read it without running the app.
 
-The screenshots show the app with fictional, disposable data. Authoring responses are scripted using the [offline fixture](../tests/README.md#offline-configured-ai-fixture); compilation, simulation, approval, activation and the native task writes are real. No paid AI requests were made for this tour. [Screenshot provenance](images/walkthrough/provenance.md) records the exact app revision and image checksums.
+The screenshots show the app with fictional, disposable data. Authoring responses are scripted using the [offline fixture](../tests/README.md#offline-configured-ai-fixture); compilation, simulation, approval, activation and the native task writes are real. No paid AI requests were made for this tour.
 
 To try it yourself, [run Daymark locally](../README.md#run-locally), have **Java 21** available, choose **Maya**, and [configure an AI provider](ai-authoring.md#configure-a-provider). Provider requests can incur charges, and the conversation may differ. Use a fresh demo workspace and add a second project, such as **Other project**, to try the nonmatching behavior too.
 
@@ -72,4 +72,47 @@ Opening a saved customization or earlier messages sends no AI request. A changed
 
 An unknown effect means a task may already have changed. Use **Check result** and the available readback before another action; do not repeat task completion to retry a reaction. Cancellation cannot undo a committed write. After a lost authoring response, inspect the original saved request and use its offered recovery rather than sending a replacement paid turn.
 
-For version, evidence and recovery contracts, see the [lifecycle reference](read-extension-lifecycle.md). For native effect guarantees, see [task customizations](task-effects.md).
+For saved evidence and native execution guarantees, see the [host integration reference](read-extension-lifecycle.md).
+
+
+## More examples
+
+Use the same describe → check examples → approve → turn on sequence for these rules. Each has its own checked revision and trigger selection; approving a rule never turns it on.
+
+### Avoid another follow-up
+
+> When a high-priority task in The spring collection is completed, check for an open task titled Follow up in that project. Create one only if none is open. Other priorities and projects should do nothing. If the check is unavailable, create nothing.
+
+**Avoid another follow-up** is an editable starting point in **New customization**. Check these cases before approving it:
+
+| Situation | Expected behavior |
+| --- | --- |
+| High priority, chosen project, no open Follow up | Look for a match, then create Follow up. |
+| Same situation with an open Follow up | Look for a match; create nothing. |
+| Normal priority or another project | Skip the lookup and create nothing. |
+| Task details or lookup unavailable | Report the failed check; create nothing. |
+
+Turn it on for **tasks completed**. Add and complete a High-priority task in the chosen project; inspect **Customization outcome** and **Open task**. Completing another while Follow up is open creates nothing. Completing the Normal-priority follow-up itself does not match this rule.
+
+This demonstrates using an operation's returned answer in a condition. Skipping a lookup supplies no answer, and a failed lookup is not evidence that no match exists. The title match is exact and case-sensitive. It is a snapshot, not a uniqueness reservation: simultaneous eligible completions can both create follow-ups.
+
+### Require notes for many tags
+
+> Before saving a new task with more than three tags, require notes.
+
+This example uses the **unpublished numeric candidate** staged in this checkout. It counts the list the host supplies, not a database total; it is not a feature of the published packages. See [package provenance](package-provenance.md) for the exact dependencies.
+
+| New task | Expected decision |
+| --- | --- |
+| Up to three distinct tags, no notes | Allow normal saving checks to continue. |
+| Four through eight tags, no notes | Ask for notes; save nothing. |
+| Four through eight tags, non-whitespace notes | Allow normal saving checks to continue. |
+| Required check unavailable | Stop saving; distinguish this from rejection by the rule. |
+
+Daymark trims, normalizes and lowercases tags before counting distinct values: `Client, client, REVIEW, internal` counts as three. Whitespace-only notes do not count. The app's own eight-tag maximum still applies; nine distinct tags fail native validation before the rule runs.
+
+After reviewing the examples, approve and separately choose **Turn on for new tasks**. In **Tasks → Details**, submit four tags without notes. Your entries stay in the form. Add notes and submit the correction to save once. Quick-add and Enter use the same check. It applies to future creation, including automation, not to later edits of existing tasks. An allowed check still needs native permission and validation; it is not a save receipt. After a lost response, check the original attempt before creating another.
+
+## About these examples
+
+The screenshot journey and automated example journeys use scripted authoring responses with the real compiler, simulator and native services. They do not establish live-model compatibility. [Screenshot provenance](images/walkthrough/provenance.md) records the images; [verification](../tests/README.md) describes test boundaries.
