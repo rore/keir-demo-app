@@ -1,30 +1,14 @@
-# Keir demo documentation
+# Daymark documentation
 
-Start with the [screenshot walkthrough](customization-walkthrough.md): follow a request through compilation, simulation, approval and real host execution without installing the app.
+Daymark is a task-management demo of Keir. The task rules are examples of what a host can expose, not built-in Keir features.
 
-## Run the example
+- [See a customization](customization-walkthrough.md): screenshots from request to real execution, plus conditional follow-up and before-save examples.
+- [Run locally](../README.md#run-locally), [configure AI authoring](ai-authoring.md) or [recover local data](running.md).
+- [Understand the integration](read-extension-lifecycle.md): host responsibilities, saved evidence, approval, execution and recovery.
 
-- [Run locally](../README.md#run-locally), then [try the follow-up customization](../README.md#try-a-customization).
-- [Conditional follow-up](conditional-follow-up.md): check high-priority completions for an existing open follow-up before creating one.
-- [Tag-count and notes](tag-notes.md): require notes for more than three normalized distinct tags, without restricting later edits.
-- [Configure an AI provider](ai-authoring.md#configure-a-provider) for conversational authoring.
-- [Local setup and recovery](running.md) covers ports, data directories, backup and reset.
+For development, see [Contributing](../CONTRIBUTING.md), the [implementation map](../src/README.md) and [tests](../tests/README.md). Exact dependency pins live in [package provenance](package-provenance.md).
 
-## Follow the Keir integration
-
-- [Numeric authoring model and hooks](../extensions/task-effect/numeric/dcm.json): the current host contract. The [retained authoring model](../extensions/task-effect/retained/dcm.json) preserves earlier model semantics; [original 0.4 definitions](../extensions/task-effect/current/) remain execution-only.
-- [Host binding and effects](task-effects.md): before-save decisions, after-save reactions and native receipts.
-- [Customization lifecycle](read-extension-lifecycle.md): authoring operations, saved evidence, approval, identity and recovery.
-- [Implementation map](../src/README.md): compiler, runtime, adapters and authoring services.
-- [Package provenance](package-provenance.md): exact compiler, runtime and guide pins.
-- [Keir embedding guide](https://github.com/rore/keir-core/blob/main/docs/embedding.md): the framework contracts demonstrated here.
-
-For changes to the sample host, see [Contributing](../CONTRIBUTING.md), the [demonstration scope](scope.md) and [test guide](../tests/README.md). Native application invariants are linked from the contributor guide.
-
-## Design research and history
-
-These materials document design work rather than instructions for using the current app:
-
-- [Studio embedding](studio-embedding.md): a proposed reusable UI boundary, not an independently packaged integration.
-- [Business-understanding study](studio-business-understanding/concepts.md) and [recommendation](studio-business-understanding/recommendation.md): scripted design research with synthetic examples.
-- [Rejected guided example](studio-guided-example.md), [superseded on-demand proposal](studio-on-demand-review.md) and [canvas-era design](historical/extension-studio-canvas-design.md): retained history.
+<a id="design-research-and-history"></a>
+<a id="follow-the-keir-integration"></a>
+<a id="keir-demo-documentation"></a>
+<a id="run-the-example"></a>

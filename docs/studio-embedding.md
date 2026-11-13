@@ -45,4 +45,4 @@ Treat identifiers as opaque. A template, hook, customization, revision, evidence
 
 Use these journeys to plan the boundary, then qualify its implementation without Studio interpreting a task receipt or the host reimplementing review interactions. Keep the reusable portion in the application initially. Independent packaging, version compatibility across hosts and measured integration effort are separate delivery decisions.
 
-See the [current Studio design](extension-studio-design.md), [extension lifecycle](read-extension-lifecycle.md) and [task effects](task-effects.md). The [earlier Studio interactions](studio-on-demand-review.md) are historical.
+See the [current Studio design](extension-studio-design.md), [extension lifecycle](read-extension-lifecycle.md) and [task effects](read-extension-lifecycle.md). The [earlier Studio interactions](https://github.com/rore/keir-demo-app/blob/9eaddae0ed262f06727f440651204e746974979e/docs/studio-on-demand-review.md) are historical.

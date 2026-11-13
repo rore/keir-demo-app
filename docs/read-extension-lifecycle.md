@@ -1,6 +1,49 @@
-# Customization lifecycle reference
+# Daymark host integration
 
-This reference describes Daymark's authoring, evidence and recovery contracts. For customer actions, use [Try a customization](../README.md#try-a-customization) and the [screenshot walkthrough](customization-walkthrough.md). Provider configuration and spending are covered in [AI setup](ai-authoring.md).
+Daymark implements Keir in a task-management application. Use this reference when building or changing that integration. For the user journey, start with the [walkthrough](customization-walkthrough.md); for provider keys, costs and privacy, use [AI setup](ai-authoring.md).
+
+## Host responsibilities
+
+Daymark owns data, permissions, the declared task operations, adapters, saved evidence and activation. Owner identity and replay keys come from trusted host context, never model or browser authority. Events keep their originating owner after sign-out. The packaged Node runtime executes the same compiled bytes in simulation and real execution, with different service implementations.
+
+Each program has bounded operations and data and at most one possible mutation. It cannot call arbitrary URLs, scripts or SQL, schedule work, wait durably or retry automatically. Adding a capability requires a host-model revision and verification. Daymark offers no manual source or scenario editor. Production hosting and a separately packaged Studio remain outside this demo; [Studio embedding](studio-embedding.md) is a proposal.
+
+## Checks before adding
+
+Each owner may enable one **Before a new task is saved** rule independently of their after-added and after-completed rules. No selected check keeps ordinary native creation available. A selected check that cannot run stops creation; it never becomes an absent rule. Approval and turning on remain separate decisions.
+
+The check receives the normalized proposed `projectId`, `priority`, typed `tags` list, `hasNotes` and `hasDueDate`. `hasNotes` means the native notes contain non-whitespace text; `hasDueDate` means native validation accepted a non-null due instant. The full title and notes stay private to native creation, with their existing limits. Tags retain the native eight-item limit. A project-specific condition compares the proposed typed ID with the customer's project choice resolved through authorized discovery.
+
+The read-only program returns required `decision` (`ALLOW` or `DENY`) and bounded plain-text `message`. It can combine conditions, such as client tags requiring a due date or high priority requiring notes. An ALLOW permits normal native permission, validation and save checks to continue; it is not a save receipt. DENY keeps all entered fields for correction. Unavailable execution, bad output, cancellation, expired budget, changed approval/selection or stale read facts stop the attempt distinctly from a customer denial. There is no field-hint or message-parsing protocol.
+
+The [tag-count example](customization-walkthrough.md#require-notes-for-many-tags) counts the host-normalized distinct list; it adds no database total or Decimal task field. Native limits apply before the hook.
+
+Both human/API and automation creation use this check. Successful local READ projections are captured privately, then reread under the native transaction before insertion. Postwrite checks retain authority and deadlines without rejecting the operation for changing its own prewrite predicate. No asynchronous guard work holds the write transaction, and no guard WRITE or recursive READ hook is available.
+
+Human attempts use [native creation identity and readback](native-task-app-design.md#creation-attempts-and-readback). Automation retains its original key and exact immutable receipts: a settled receipt replays before a new guard check; a concurrent saved winner beats a later denial. Confirmed denial maps to the existing `TASK_INVALID`/NONE capability result, while unavailable-before-write maps to `TRANSIENT_FAILURE`/NONE, with separate host diagnostic detail. Unknown write results remain unknown until native readback.
+
+## Actions after adding or completing
+
+An approved and enabled workflow runs after native task creation or completion commits. Each owner has one selection per trigger. The program may read an owner-visible task, check for an open task with an exact title in one accessible project, then create one task or update the triggering task. It can compare title, project, tags, priority, and due time. The event carries its persisted occurrence instant, so adding 168 elapsed hours gives an exact due time across daylight-saving changes. A successful open-task check describes the authorized read snapshot. Concurrent actions can still create another matching task.
+
+The host catalog provides `tasks.get@3`, `tasks.openMatch@1`, `tasks.create@2`, and `tasks.update@1`. Create accepts a title and optional notes, comma-separated tags, priority, and due time. Update accepts a tag, priority, or due time and leaves omitted fields alone. Clear an existing due time in the native editor. The runtime limits each authored String to 256 UTF-8 bytes. Native title and tag limits still apply. Automation-created tasks do not start another creation workflow. A person can complete one later and trigger a completion workflow normally.
+
+## Native outcomes
+
+The native write and event capture commit together. The reaction runs afterward. A captured admission contains its owner, trigger, event time, revision, checked approval, dependency pins and original native key. The host prepares the exact artifact before the exclusive first claim. Each invocation receives fresh owner, event, key and deadline context. A claimed admission is never replayed after interruption. Unavailable dependencies leave unclaimed work pending. Revoked admissions remain revoked across reenable and restart.
+
+
+## Runtime binding and host authority
+
+Prepare and reuse only the same exact definition and artifact. Every invocation supplies fresh owner, event, original key and deadline context. Saved source and history remain readable when execution dependencies are unavailable.
+
+The enclosing operation retains its one-second budget. A nested guard receives a smaller expiry reserving 100 ms for native revalidation and commit. The reserve is a configured bound, not a latency guarantee. Cancellation and the original deadline still prevent late continuation.
+
+Ordinary startup needs no deployment report, build manifest, platform credential or separate installation approval. The runtime validates structural compatibility and enforces operation, resource and deadline limits. The native host owns current permission, selected approved bytes, owner-visible resources, original-key authenticity, duplicate payload checks and atomic task/receipt persistence. Reached capabilities check current authority and the supplied absolute deadline before sensitive work and commit. Simulation and customer approval do not certify these native guarantees.
+
+Disable and deletion invalidate selection and durably revoke captured admissions through the existing lifecycle/native database. Reenable, restart or a new selection never clears a recorded revocation. Previously queued work stays held, interrupted work is never replayed, and finished or uncertain results keep their original receipts and dependency pins.
+
+Test actual native ownership, receipt, revocation, deadline and process-restart behavior separately from synthetic checks; see [verification](../tests/README.md). Process-crash evidence does not establish arbitrary power-loss durability or live-provider/persona acceptance. Qualification is bounded by its recorded packages, platform and checks.
 
 ## Authoring service
 
@@ -40,9 +83,7 @@ A saved customization has its own owner-scoped identity, draft version, immutabl
 
 Real execution additionally requires compatible runtime binding and current native host permission. The optional `executionAvailability` projection explains when customizations cannot run. A false value disables activation and rollback; discussion, compilation, checks and customer approval remain valid. `selection.eligible` also reflects current execution authority, so a saved selection is not automatically claimed to be working. Simulation success and customer approval do not certify the real adapter or every future task.
 
-The [pinned candidate packages](package-provenance.md) support two authoring profiles. New items use source `keir/3`, model `keir-dcm/4` and descriptor recipe `/3`. Editing a saved `/3` model keeps source `keir/2` and descriptor recipe `/2`. Both compile with `keir-compiler-java/0.5.0` into artifact/scenario `/4`. The existing compile route accepts an optional model digest, resolved only against these server-owned definitions. It does not accept model bytes, authority or a compiler choice. There is no source sniffing or fallback compilation.
-
-Original `/2` event artifacts and compiler 0.3.0/0.3.1/0.4.0 `/3` artifacts keep their exact producer, model, approval and evidence. A newly compiled retained-model edit needs its own evidence, approval and separate activation. It does not overwrite the old approved bytes. Earlier Keir 1 rules remain readable as history after cutover. The [tag-count/notes example](tag-notes.md) uses supplied-list length under the numeric model; it adds no Decimal task field.
+Compilation resolves the optional model digest only against server-owned definitions. Requests cannot supply model bytes, authority or a compiler choice; there is no source sniffing or fallback compilation. New revisions need their own evidence, approval and separate activation. Existing artifacts, sources, approvals and receipts retain their exact identities rather than being silently recompiled. [Package provenance](package-provenance.md) owns the current and retained profile/package mapping.
 
 Earlier advice conversations, scripted examples and their approvals remain historical. They cannot be resumed or turned into a task-creating customization. Start a new customization with fresh checks, approval and activation. Original receipt recovery remains readable and never creates a replacement item or repeats an old write.
 
@@ -68,12 +109,17 @@ Saved messages, versions and receipts are paged. Discussions have no fixed age, 
 
 Source is bounded UTF-8 text; suites, reports, provider context and responses have byte and format limits. Compiler, simulator, authoring and runtime work retain separate concurrency, timeout and cancellation controls. Complete evidence is fetched by exact owner-scoped ID; oversize or incomplete evidence is rejected rather than truncated into eligibility. History, versions and discussions are paged and retained without silently replacing the current head.
 
-Startup marks interrupted authoring state without dispatching another provider request, compile or simulation. Cancellation cannot undo a committed operation. After a lost response, inspect the original operation receipt and saved state before explicitly retrying. Recovery retains that request's identity and does not create a replacement item. Reload never automatically repeats a paid turn, compile or native write. Restart requires sign-in while saved work and receipts persist. Interrupted native outcomes remain distinct from later reconciliation observations. See [task effects](task-effects.md) for exact process-crash and durability limits; no arbitrary power-loss guarantee is implied.
+Startup marks interrupted authoring state without dispatching another provider request, compile or simulation. Cancellation cannot undo a committed operation. After a lost response, inspect the original operation receipt and saved state before explicitly retrying. Recovery retains that request's identity and does not create a replacement item. Reload never automatically repeats a paid turn, compile or native write. Restart requires sign-in while saved work and receipts persist. Interrupted native outcomes remain distinct from later reconciliation observations. The process-crash tests do not establish arbitrary power-loss durability.
 
 Use a fresh data directory when starting the current-contract build alongside an earlier installation. Keep the earlier database and its matching app together. Restore a verified current backup into an isolated directory before switching which data you use. See [running Daymark](running.md#reset-and-restoration).
 
-## Package and verification
 
-The runtime and compiler are independently packaged and pinned through repository provenance and the lockfile. New compilations use the current Keir specification and Daymark DCM. Existing approved selections keep their original compatible model and package pins. See [task effects](task-effects.md) for the binding and native authority boundary.
+## Upgrade an earlier database
 
-The [verification guide](../tests/README.md) distinguishes public-projection UI tests, actual compiler/simulator checks, native persistence/process tests, integrated qualification and optional live-provider checks. No live-provider compatibility or integrated release result is asserted by this lifecycle guide.
+To cut over from Keir 1, keep the previous app and database together until eligible pending work settles. The migration refuses to proceed while any pending admission lacks a durable revocation. Revoked pending rows remain visible as history. Existing Keir 1 selections become historically unavailable, and current selections start off. Old sources, evidence, events and receipts remain readable. Start a new current-format revision and approve its own checked evidence before enabling it. Upgrading an existing Keir 2 database preserves its event selections and adds the before-save selection disabled.
+
+For developer checks and their limits, see [verification](../tests/README.md). Provider compatibility and deployment are separate from synthetic and native tests.
+
+
+<a id="customization-lifecycle-reference"></a>
+<a id="package-and-verification"></a>

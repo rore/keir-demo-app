@@ -96,3 +96,22 @@ Tasks, their ordinary creation events and successful terminal results commit tog
 Every saved-result read and replay checks the current session, owner and access to the original project. Project access loss returns a generic access error without the saved snapshot or rule message. A different owner cannot read the result by knowing its UUID.
 
 The exclusive destructive demo reset backs up and clears these records with the tasks. Its newly seeded projects have different IDs. A retained attempt must remain bound to its original owner and exact project ID; never retarget it to the new default project. Browser drafts and attempt IDs are not promised to survive page reload.
+
+## Local protocol and dependency boundary
+
+
+Use the exact printed `127.0.0.1` origin and port. Host is checked on every request. Sign-in/out and mutations also require the exact Origin, bounded JSON and expected session context. API responses are uncached; ordinary API responses never write cookies. Only `dist/` is public. Authored source is UTF-8 text up to 64 KiB. Scenario documents are submitted as raw JSON strings (1–8, each at most 64 KiB and 128 KiB together) so duplicate keys reach the strict native parser unchanged. The preparation routes accept up to 1 MiB JSON; decoded source and case limits still apply.
+
+Ordinary local startup and task management add no provider calls or telemetry. Live authoring explicitly sends context to the configured provider; see [provider context and local storage](ai-authoring.md#configure-a-provider). The server uses a loopback listener and exact-origin checks. Setup contacts npm. The scoped `glob` override replaces the static plugin's vulnerable transitive version with qualified `14.0.3`; remove it only when the plugin ships an independently checked fixed dependency range. Never use a blanket forced dependency upgrade.
+
+`npm run test:browser:install` downloads pinned Chromium from Playwright's CDN into ignored `.tools/playwright/`; it does not install Linux OS libraries. Provisioning those libraries is a separate system setup step. See [browser checks](../tests/README.md#browser-checks) before running the suite; native app startup needs neither this browser download nor those test dependencies.
+
+## Keir 1 cutover
+
+Use the previous app to settle eligible pending Keir 1 work. Keep a verified backup with that app version and rehearse the upgrade on a separate copy. Keir 2 checks for pending work inside the migration transaction and refuses to switch while any pending event lacks a durable revocation. Revoked pending events remain visible as historical evidence. Both Keir 2 selections start off and previous selections become historically unavailable. Started or uncertain outcomes remain available for reconciliation.
+
+To rehearse a restore, retain the upgraded copy separately and reopen the verified pre-cutover backup with the previous app in an isolated directory. Review any writes accepted since the backup before restoring it over a later database.
+
+Cookie/server session establishes identity; a separate context token binds each request to its initiating UI scope. Queries remain owner-scoped. A write committed before sign-out remains that person's write; cancellation cannot undo it. Stale tabs return to sign-in instead of adopting a new cookie's identity. Current browsers with Web Locks and BroadcastChannel are required; pinned Playwright Chromium is qualified. Demo sign-in is deliberate impersonation, not production IAM.
+
+The one-second operation budget reserves 100 ms for native revalidation and commit when invoking a nested guard. The original reserve measurement was 40 disk-backed creates, maximum 26.17 ms including two READs; it is not a four-READ worst-case bound or latency guarantee.

@@ -2,7 +2,7 @@
 
 Build with `npm run build`. `npm test` uses Node's test runner and temporary SQLite databases. Full authored-source verification also needs the pinned compiler and Java 21. Tests do not install Java, change global configuration, reuse an operator database or make live provider requests.
 
-This integration stages the independently qualified unpublished Core 0.5.0 compiler/runtime candidate. New authoring uses source `/3`, model `/4`, artifact/scenario `/4`; retained-model authoring uses source `/2`, model `/3`, artifact/scenario `/4`. Original `/2` event artifacts and compiler-0.3.0/0.3.1/0.4.0 `/3` artifacts keep their exact pins and approvals. The corrected companion 9 packet is byte-pinned, including its offline guide-linked index. There is a separate selection for each trigger. See [task customizations](../docs/task-effects.md) and [package provenance](../docs/package-provenance.md). Runtime startup requires no deployment certificate or report approval.
+Use [host integration](../docs/read-extension-lifecycle.md) for contracts and [package provenance](../docs/package-provenance.md) for exact staged dependencies and retained compatibility. Tests must keep prior approved bytes and receipts unchanged.
 
 Before-create tests compile the three required rules with the actual compiler, run independent scenario expectations, approve and activate exact artifacts, and exercise native/API creation. They cover read consistency, the operation's own insert, parent budgets, cancellation, approval/selection changes, original-key concurrency, old/new artifact coexistence, native limits and unchanged automation receipt bytes. Separate decision-consumer checks reject malformed outputs, trace/ledger inconsistencies and handled rejections that return ALLOW.
 
@@ -51,15 +51,11 @@ Browser setup downloads pinned Chromium into ignored `.tools/playwright/`, separ
 
 Layout, recovery, setup, lifecycle and integrated-authoring journeys cover owner boundaries, late responses, reading position, unsaved native fields and exact authority under the current contract. `continuous-authoring.spec.mjs` exercises current conversation and history pagination, retry at the exact cursor and lost first-create receipt recovery. Layout cases include wheel/PageDown, stable rail/header/composer, pane edges, splitter limits and narrow/short viewports. Rendered designer review remains separate from automated assertions.
 
-The earlier Keir 2 integrated qualification passed the four workflows for intake priority, review-task creation, open-match follow-ups and missing due dates. Each used the same compiled artifact in simulation and against native task rows. The migration checks covered preserved records and receipts, rollback, the pending-event guard, reopening and restore with the previous package. That hosted run passed the build, 375 Node tests and 182 Chromium tests, with 12 opt-in Node tests skipped. [Native workflow tests](native-task-workflow.test.mjs) · [Workflow browser tests](e2e/studio-workflow.spec.mjs) · [Hosted verification](https://github.com/rore/keir-demo-app/actions/runs/42261861370)
-
 ## Offline configured-AI fixture
 
 `tests/fixtures/authoring-server.mjs` supplies scripted provider transport and uses isolated settings and data. Compiler, simulator and application routes are real where the fixture invokes them. `authoring-integrated.spec.mjs` covers the configured transport journey, while `studio-workflow.spec.mjs` covers the two task triggers and four workflow examples. Live-provider qualification is separate.
 
 ## Optional live checks and reporting
-
-The provider qualification command is dry by default. A live run requires explicit authorization of provider costs and its separate finite allowance; saving in-app configuration does not grant that authorization. See [AI authoring](../docs/ai-authoring.md#optional-live-provider-qualification). Provider qualification is separate from native runtime, permission and persistence checks.
 
 Keep default regression fast, record actual duration and investigate regressions. Use focused checks for changed behavior, then the required broader gates. Report failures, skipped work and mock boundaries explicitly; do not substitute a fixture PASS for actual package, provider or native execution verification. CI results and measured reports remain evidence with their stated scope, not production authentication or general durability guarantees.
 
@@ -73,10 +69,30 @@ Candidate compatibility tests reopen old and new selections on their exact model
 
 `task-conditional-follow-up.test.mjs` compiles with the pinned candidate JAR and executes the installed runtime against six independently specified scenarios: eligible absent/found, Normal priority, another project, failed lookup and failed task read. Assertions include exact ordered calls, skipped lookup traces, complete outcomes and receipts, compiler rejection of unproved result access, conservative unsupported summaries, and real native creation/no-op behavior. `studio-conditional-follow-up.spec.mjs` adds the real app journey through scripted clarification, summary, simulation, separate approval/activation, native Tasks and reopening, with narrow/short summary checks. It makes no live provider requests.
 
-`core-candidate-compatibility.test.mjs` reopens authentic saved 0.3.0, 0.3.1 and hosted-captured 0.4.0 approvals, retains their rows unchanged, and executes them beside new 0.5.0 rules in both cache orders across all three hooks. `distribution.test.mjs` checks installed package bytes and exact retained package identity. These checks do not establish atomic uniqueness for the open-task snapshot or general production scale. The [business example](../docs/conditional-follow-up.md) describes the boundary.
+`core-candidate-compatibility.test.mjs` reopens authentic saved 0.3.0, 0.3.1 and hosted-captured 0.4.0 approvals, retains their rows unchanged, and executes them beside new 0.5.0 rules in both cache orders across all three hooks. `distribution.test.mjs` checks installed package bytes and exact retained package identity. These checks do not establish atomic uniqueness for the open-task snapshot or general production scale. The [business example](../docs/customization-walkthrough.md#avoid-another-follow-up) describes the boundary.
 
 ## Numeric tag-count and notes journey
 
 `task-tag-notes.test.mjs` specifies eight independent complete scenario expectations and native zero-through-eight tag boundaries, normalization/deduplication, whitespace-only notes, pre-hook rejection of invalid/nine tags, committed-response readback, later edits, automation immutable NONE receipts and replay, and retained/numeric profile switches. Summary negatives mutate actual checked protobuf overloads. Each test has a 60-second bound. Historical definition and fixture bytes stay unchanged.
 
 `studio-tag-notes.spec.mjs` specifies the configured-offline natural-language journey through real compile/simulation, saved-artifact summaries, separate approval/activation, collection/current/reload surfaces, and details/quick-button/Enter creation. It checks field retention, correction with a new operation ID, native readback, unchanged other-owner/hook selections, and no provider calls during native execution. Its 90-second bound and desktop/320px/683×384 checks do not qualify other browsers, live providers or deployment. [Hosted run 43474838743](https://github.com/rore/keir-demo-app/actions/runs/43474838743) passed at `331f2d910bc8c7117415f978035a017dfaec794f`: build, 606 Node passes with 12 existing opt-in process/crash skips, and all 261 browser tests. The complete tag/notes journey passed through all three native creation entries, reload and saved-artifact identity. Provider transport was scripted; no live-provider or deployment qualification is claimed.
+
+## Optional live provider qualification
+
+The default command is a dry check and makes no provider request:
+
+The qualification script reads only its process environment, not the running app's saved settings file. Supply its supported provider/model/key and finite allowance separately; in-app setup does not authorize a qualification call.
+
+```sh
+node scripts/check-authoring-provider.mjs
+```
+
+The opt-in check uses the isolated host fixture included with this project. Run it only after an operator has configured one accepted provider, supplied a key, chosen a spend cap, and explicitly authorized the possible provider costs:
+
+```sh
+node scripts/check-authoring-provider.mjs --live --host scripts/authoring-qualification-host.mjs
+```
+
+This can make billable live requests and exercise the local compiler/simulator. The script emits bounded status and qualification details, not credentials or provider continuation content. Fake protocol checks in the automated suite validate the harness and request handling; they do not establish real provider compatibility. No live provider qualification is claimed by this guide.
+
+Each explicit qualification invocation creates and removes its own synthetic database and has its own configured allowance. It does not consume or reset the running app's ledger. Repeating the command can incur another allowance of charges.
