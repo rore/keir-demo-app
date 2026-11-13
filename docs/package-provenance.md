@@ -1,6 +1,6 @@
 # Package provenance
 
-This integration checkout stages the independently qualified **unpublished Core 0.5 candidate**, not a public release or deployment. The exact downloaded package input is Core `b9782d1cb7dd7106d44878f7199cbd4774e91510`, [Actions run 43431976777](https://github.com/rore/keir-core/actions/runs/43431976777), artifact `14039569337`. Active metadata uses `verified-candidate` and `release: null`. Focused source review and this host's executable journey verification remain pending.
+This integration checkout stages the independently qualified **unpublished Core 0.5 candidate**, not a public release or deployment. The exact downloaded package input is Core `b9782d1cb7dd7106d44878f7199cbd4774e91510`, [Actions run 43431976777](https://github.com/rore/keir-core/actions/runs/43431976777), artifact `14039569337`. Active metadata uses `verified-candidate` and `release: null`. Focused source reviews passed. [Hosted run 43474838743](https://github.com/rore/keir-demo-app/actions/runs/43474838743) at Daymark `331f2d910bc8c7117415f978035a017dfaec794f` passed build, 606 Node tests (12 existing opt-in process/crash skips) and all 261 browser tests. These are scripted-provider host integration results, not live-model qualification, publication or deployment.
 
 | Candidate asset | SHA-256 |
 | --- | --- |
@@ -50,4 +50,4 @@ A binary privacy scan or dependency-resolution check is bounded evidence. It doe
 
 ## Verification and rollout boundary
 
-[Application verification](../tests/README.md) covers the installed release hashes, real compiler/simulation/runtime paths, immutable retained approvals and native task effects. The scripted authoring journey is separate from live-provider qualification. This adoption changes the repository's packages; it does not deploy, restart an operator's instance or change repository visibility.
+[Application verification](../tests/README.md) covers the installed package hashes, real compiler/simulation/runtime paths, immutable retained approvals and native task effects. The scripted authoring journey is separate from live-provider qualification. This adoption changes the repository's packages; it does not deploy, restart an operator's instance or change repository visibility.
