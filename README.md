@@ -31,7 +31,7 @@ The walkthrough also shows a [conditional follow-up](docs/customization-walkthro
 
 ## How it works
 
-A business request becomes a Keir program using only the capabilities Daymark exposes. Daymark's assistant clarifies the request, compiles the program and simulates examples against the exact artifact. You review the expected and observed behavior, approve that revision and separately turn it on. Daymark then executes the approved compiled extension when the chosen trigger occurs; execution needs no further AI request.
+A business request becomes a Keir program using only the capabilities Daymark exposes. Daymark's assistant clarifies the request, compiles the program and simulates examples against the exact compiled extension. You review the expected and observed behavior, approve that revision and separately turn it on. Daymark then executes the approved compiled extension when the chosen trigger occurs; execution needs no further AI request.
 
 Daymark owns data, permissions, services, saved checks and activation. Keir supplies the language, compiler and runtime. The assistant cannot approve or activate its proposal. Each execution can make at most one change through the exposed services; task dates do not schedule execution. Keir does not supply arbitrary API access or automatic retries.
 
