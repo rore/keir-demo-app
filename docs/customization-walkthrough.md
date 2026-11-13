@@ -20,9 +20,7 @@ The assistant asks whether this should apply only to that project. Confirm the b
 
 ## 2. Read the proposed behavior
 
-When the assistant offers checked results, choose **See proposed change**. **Summary** separates **When**, **Only when** and **Then** so you can check the proposed behavior at a glance. Here, the triggering task must be completed and belong to **The spring collection**. The new task starts open, with Normal priority, no tags, empty notes and no due date. The completed task stays unchanged. **Rule details** keeps the full explanation available.
-
-Choose **Rename** if you want a more useful saved name. You can use the suggested name, edit it, and choose **Save**. A suggestion changes nothing until you save it; an existing name stays yours to keep or change. This tour saves **Create “Follow up” tasks**.
+Choose **See proposed change**. Read **When**, **Only when** and **Then**: a completed task in **The spring collection** should create **Follow up** in that project. Other projects should create nothing. The original completion stays unchanged.
 
 ![Summary of the proposed follow-up rule, marked Proposed change · Not on, with View simulation.](images/walkthrough/02-summary.png)
 
@@ -30,7 +28,7 @@ Choose **Rename** if you want a more useful saved name. You can use the suggeste
 
 ## 3. Check the examples and approve
 
-Choose **View simulation**. Compare the intended action with what actually happened in each simulated situation. The matching example shows the task that started the rule alongside the separate **Created example task**. The new task's title, project and tags are recorded here; its other details were not checked by this example. The app's usual defaults in Summary describe what the task service does, rather than additional values verified by this simulation.
+Choose **View simulation**. Compare the intended action with what actually happened in each simulated situation. The matching example shows the task that started the rule alongside the separate **Created example task**. Only the recorded values are checked; the preview does not verify every task detail.
 
 Open the individual examples to read their intended and observed results. A task completed in **Other project** creates nothing. The remaining examples check an open task and missing, denied or temporarily unavailable task details.
 

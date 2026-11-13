@@ -32,7 +32,5 @@ Earlier OpenAI reservations omitted cache-write pricing. This version conservati
 <a id="how-daymark-runs-the-assistant"></a>
 For authoring tools, saved operations and recovery guarantees, see the [lifecycle reference](read-extension-lifecycle.md#authoring-service). Daymark loads the authoring guide recorded in [package provenance](package-provenance.md).
 
-For the optional paid qualification harness, see [developer verification](../tests/README.md#optional-live-provider-qualification). Saving app settings does not authorize that check. Scripted automated tests do not qualify a live model.
-
-
 <a id="optional-live-provider-qualification"></a>
+For the optional paid qualification harness, see [developer verification](../tests/README.md#optional-live-provider-qualification). Saving app settings does not authorize that check. Scripted automated tests do not qualify a live model.
