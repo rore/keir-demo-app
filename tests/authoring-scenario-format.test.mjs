@@ -237,6 +237,7 @@ for (const extra of ['', ' Please show the checked results before asking for my 
   { sessionId: 'format-regression-session', current: () => true });
   const settled = await service.wait('maya', started.conversation.id);
   t.diagnostic('Maximum serialized request bytes ' + largestRequest);
+  t.diagnostic('Scripted calls ' + calls.join(',') + '; settled ' + settled.status + '/' + (settled.code ?? 'none'));
   assert.ok(largestRequest <= 131072, 'Every provider request must remain within the unchanged context limit.');
   assert.equal(settled.status, 'REVIEW_AVAILABLE', JSON.stringify(settled));
   assert.equal(settled.review.eligible, true);
