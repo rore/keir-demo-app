@@ -54,7 +54,7 @@ test('natural-language tag/notes rule reaches real compilation, saved review and
     expect(selections()).toEqual(originalSelections); expect(counts()).toEqual(before);
     await button('Turn on for new tasks', review).click();
     expect(counts()).toEqual(before);
-    expect((await state()).selection.revision.id).toBe(current.review.revisionId);
+    await expect.poll(async () => (await state()).selection.revision?.id).toBe(current.review.revisionId);
     expect(selections().filter(row => row.owner_id !== 'maya' || row.hook_id !== 'TaskBeforeCreate'))
       .toEqual(originalSelections.filter(row => row.owner_id !== 'maya' || row.hook_id !== 'TaskBeforeCreate'));
     await navigate('Customizations');
