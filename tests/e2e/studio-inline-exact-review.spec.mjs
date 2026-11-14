@@ -232,9 +232,10 @@ test('scrolling while a turn-off response is held leaves conversation focus in p
     await page.setViewportSize({ width: 390, height: 844 });
     await reviewLink(page).click();
     await expect(review(page).getByText('On for my tasks', { exact: true })).toBeVisible();
-    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
-    const log = studio(page).locator('.rs-messages');
-    const disable = studio(page).getByRole('button', { name: 'Turn off this customization', exact: true });
+    const log = studio(page);
+    await expect(log).toHaveCSS('overflow-y', 'auto');
+    await expect(studio(page).locator('.rs-preview')).toBeHidden();
+    const disable = studio(page).getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true });
     const url = `${origin}/api/${path}/disable`;
     await expect(disable).toBeEnabled();
     await log.evaluate(element => { element.scrollTop = element.scrollHeight; });

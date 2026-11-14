@@ -152,7 +152,6 @@ test('created task values are separate from the trigger and naming requires an e
     await expect(created.locator('.rs-changed-field')).toHaveCount(1);
     await expect(example).not.toContainText('Before this change');
 
-    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
     const rename = studio(page).getByRole('button', { name: 'Rename', exact: true });
     await rename.click();
     const form = studio(page).getByRole('form', { name: 'Rename customization', exact: true });
@@ -298,7 +297,7 @@ test('unexpected BLOCKED stays a mismatch and never borrows the deliberate failu
     allowed.report.native = structuredClone(unavailable.report.native);
     fixture.db.prepare('UPDATE extension_evidence SET payload=? WHERE id=?').run(JSON.stringify(payload), checked.evidence.id);
     await collection(page); await page.locator('#edit-' + extensionId).click();
-    await studio(page).locator('#studio-view-saved').click();
+    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     const wrong = review(page).getByRole('article', { name: 'Example: New task example 1', exact: true });
     await expect(wrong).toContainText('Needs another check');
     await expect(wrong).not.toContainText('This example deliberately');

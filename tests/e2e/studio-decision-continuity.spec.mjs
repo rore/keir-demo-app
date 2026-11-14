@@ -254,7 +254,6 @@ for (const operation of ['approve', 'activate']) test(`a late real ${operation} 
       await expect(composer(page)).toBeVisible();
       await expect(review(page)).toBeHidden();
       expect(await api(page, path)).toEqual(committed);
-      await studio(page).getByRole('button', { name: 'More', exact: true }).click();
       await studio(page).getByRole('button', { name: 'Back to tasks', exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved task title');
     }

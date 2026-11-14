@@ -34,7 +34,7 @@ for (const viewport of [{ width: 2000, height: 1040 }, { width: 1440, height: 90
       await expect(studio.getByRole('heading', { name, exact: true })).toBeVisible();
       await page.screenshot({ path: info.outputPath('existing-studio.png') });
       expect(await frame()).toEqual(original);
-      expect((await studio.boundingBox()).width).toBeLessThanOrEqual(850);
+      expect((await studio.boundingBox()).width).toBe((await page.locator('.studio-main').boundingBox()).width);
       await expect(studio.getByRole('button', { name: 'Send', exact: true })).toHaveCount(1);
       await studio.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep this unsent question.');
       await studio.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
@@ -43,7 +43,7 @@ for (const viewport of [{ width: 2000, height: 1040 }, { width: 1440, height: 90
       await page.getByRole('button', { name: 'New customization', exact: true }).click();
       await expect(studio.getByRole('heading', { name: 'New customization', exact: true })).toBeVisible();
       expect(await frame()).toEqual(original);
-      expect((await studio.boundingBox()).width).toBeLessThanOrEqual(850);
+      expect((await studio.boundingBox()).width).toBe((await page.locator('.studio-main').boundingBox()).width);
       await studio.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
       await expect(card).toBeVisible();
       await card.getByRole('button', { name: 'Open', exact: true }).click();

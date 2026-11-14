@@ -137,7 +137,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect((await read('extensions')).selection).toEqual(selection);
     await ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
-    await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
+    await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
     await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
     await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
     await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(repaired.review.revisionId);
@@ -406,7 +406,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
       expect((await read('extensions')).selection.revision?.id ?? null).toBe(selectedA.revision_id);
       await ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
-      await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
+      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
       await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
       await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
@@ -467,7 +467,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await selectProject(page, fixture.metadata.projectName);
         await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
         await page.locator('#open-customizations').click();
-        await expect(ui.getByRole('log', { name: 'Studio conversation', exact: true })).toHaveCSS('overflow-y', 'auto');
+        await expect(ui).toHaveCSS('overflow-y', 'auto');
         const manage = ui.getByRole('button', { name: 'More', exact: true });
         await manage.scrollIntoViewIfNeeded();
         await expect(manage).toBeInViewport({ ratio: 1 });

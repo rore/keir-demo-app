@@ -19,7 +19,6 @@ async function openSaved(page, fixture, name) {
   else await destination.selectOption('customizations');
   await page.getByRole('article', { name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/, exact: true }).click();
   await expect(studio(page).getByRole('heading', { name, exact: true })).toBeVisible();
-  await studio(page).getByRole('button', { name: 'More', exact: true }).click();
 }
 
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }, { width: 683, height: 384 }]) {

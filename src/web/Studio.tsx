@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { describeRule, type RuleCondition, type RuleDescription } from "./rule-description";
 import "./Studio.css";
 
@@ -534,6 +534,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [observationPaused, setObservationPaused] = useState(false);
   const [visible, setVisible] = useState(!document.hidden);
   const authoringLifetime = useRef(new AbortController());
+  const [width, setWidth] = useState(52);
   const [pane, setPane] = useState<"conversation" | "preview">("conversation");
   const [canvasView, setCanvasView] = useState<"active" | "results" | "details">("active");
   const viewIntent = useRef(0), focusIntent = useRef(0);
@@ -566,6 +567,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const messageId = useRef(0);
   const initialized = useRef(false);
   const focusUse = useRef<{ view: number; focus: number; reading: number; target: string } | null>(null);
+  const [limits, setLimits] = useState({ min: 30, max: 70 });
   const mounted = useRef(false);
   const locked = useRef(false);
   const serial = useRef(0);
@@ -678,10 +680,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     : eligibleOffer ? offer!.evidenceId : state.evidence?.passed ? state.evidence.id : null) : null;
   const reviewKey = savedReview ? `${savedReview.owner.id}/${savedReview.extension.id}/${savedReview.revision.id}/${savedReview.draftVersion}/${savedReview.evidenceId}` : "";
   const ownActive = state?.selection.revision?.extensionId === state?.extension?.id ? state?.selection.revision : null;
-  const deadline = (revision: Revision | null | undefined) => {
-    const due = revision?.ruleDescription?.action?.fields.dueAt;
-    return due?.kind === "eventOffset" && due.seconds > 0 && due.seconds % 86400 === 0 ? `${due.seconds / 86400}-day deadline` : null;
-  };
   const currentUse = state?.selection.revision ? state.selection.eligible ? `“${state.selection.revision.extensionName}” is in use.`
     : "The saved setup could not be checked. Its use is unverified." : "No customization is in use.";
   const inspectionRevision = activeView ? ownActive : state?.draft ?? ownActive;
@@ -716,6 +714,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const failedEvidenceId = state?.evidence && !state.evidence.passed && state.evidence.revisionId === state.draft?.id ? state.evidence.id : null;
   const viewingCurrentFailure = viewedDraft && !!failedEvidenceId && savedReview?.evidenceId === failedEvidenceId;
   const newerEvidenceId = state?.evidence?.passed && state.evidence.id !== savedReview?.evidenceId ? state.evidence.id : null;
+  const latestReviewAvailable = !!savedReview && (!viewedCurrent || !!newerEvidenceId);
   const viewedInUse = !!savedReview && trusted && state?.owner.id === savedReview.owner.id && state.extension?.id === savedReview.extension.id
     && state.selection.eligible && state.selection.revision?.id === savedReview.revision.id
     && state.selection.approvedEvidenceId === savedReview.evidenceId;
@@ -1072,7 +1071,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     else if (next && next !== canvasView) canvasScroll.current = 0;
     if (next) managementReturn.current = null;
     const position = canvasScroll.current;
-    if (!reviewOpen || invoker instanceof HTMLElement && invoker.closest(".rs-chat") && !invoker.closest(".rs-preview")) {
+    if (!reviewOpen || invoker instanceof HTMLElement && invoker.closest(".rs-chat")) {
       reviewInvoker.current = invoker instanceof HTMLElement ? invoker : null;
       conversationReturn.current = conversationScroller()?.scrollTop ?? 0;
       followConversation.current = false;
@@ -1081,7 +1080,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     setReviewOpen(true); setPane("preview");
     requestAnimationFrame(() => {
       if (!mounted.current || viewIntent.current !== intent || focusIntent.current !== focus) return;
-      canvas.current?.parentElement?.scrollIntoView({ block: "start" });
       if (next !== "details") room.current?.querySelector<HTMLElement>(next === "results" ? "#studio-results-heading" : "#studio-canvas")?.focus({ preventScroll: true });
       if (canvas.current) canvas.current.scrollTop = position;
       canvasScroll.current = position;
@@ -1118,11 +1116,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     if (locked.current || !trusted || !state?.extension || !ownActive) return;
     const snapshot = { ownerId: state.owner.id, extensionId: state.extension.id, revision: ownActive,
       generation: state.selection.generation, evidenceId: state.selection.approvedEvidenceId };
-    reviewInvoker.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    conversationReturn.current = conversationScroller()?.scrollTop ?? 0;
-    currentPane.current = { open: false, view: "active" }; setReviewOpen(false); setPane("conversation");
-    setActiveSnapshot(snapshot); setActiveProof(null); setActiveSummaryError(""); setActiveView(true);
-    focusInline("studio-active-heading");
+    setActiveSnapshot(snapshot); setActiveProof(null); setActiveSummaryError(""); setActiveView(true); openPane("active");
     if (!state.selection.eligible || snapshot.revision.provenance === "operator" || !snapshot.evidenceId) {
       setActiveSummaryError("No verified task examples are available for this version. Inspect its saved source and checks.");
       return;
@@ -1658,6 +1652,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   useEffect(() => {
     const observer = new ResizeObserver(entries => {
       syncScrollInset();
+      const available = (room.current?.clientWidth ?? 900) - 14;
+      const min = Math.max(30, Math.ceil(300 / available * 100));
+      const max = Math.min(70, Math.floor((available - 340) / available * 100));
+      if (min <= max) setLimits({ min, max });
       const log = conversationScroller();
       if (log && followConversation.current) log.scrollTop = log.scrollHeight;
       else if (entries.some(entry => entry.target === room.current) && document.activeElement instanceof HTMLElement
@@ -1997,24 +1995,40 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     else trackConversation(event.currentTarget);
   }}>
     <div className="sr-only" role="status">{busy || notice}</div>
-    <header className="rs-header"><div><div className="rs-title"><h1 id="studio-title" tabIndex={-1} title={state?.extension?.name}>{state?.extension?.name ?? (target.extensionId ? "Opening customization…" : target.conversationId ? "Opening conversation…" : "New customization")}</h1>
-      </div></div>
+    <header className="rs-header"><div><p className="rs-breadcrumb">Customization Studio</p><h1 className="rs-goal">{displayedRule?.complete ? displayedRule.title : "Discuss a customization"}</h1><div className="rs-title"><span className="rs-identity-label">Saved name</span><h2 id="studio-title" tabIndex={-1} title={state?.extension?.name}>{state?.extension?.name ?? (target.extensionId ? "Opening customization…" : target.conversationId ? "Opening conversation…" : "New customization")}</h2>
+      {state?.extension && <CustomizationName key={state.owner.id + "/" + state.extension.id} ownerId={state.owner.id} itemId={state.extension.id} name={state.extension.name} suggestion={displayedRule?.complete ? Array.from(displayedRule.title).slice(0, 80).join("") : undefined} disabled={disabled || !!restart} request={request} saved={next => {
+        if (!mounted.current || next.owner.id !== ownerId || next.extension?.id !== extensionId.current) return;
+        setState(old => old?.extension?.id === next.extension!.id ? { ...old, extension: { ...old.extension, name: next.extension!.name },
+          selection: { ...old.selection, revision: old.selection.revision?.extensionId === next.extension!.id ? { ...old.selection.revision, extensionName: next.extension!.name } : old.selection.revision } } : old);
+      }} />}</div></div>
       <div className="rs-header-actions">{activeAuthoring && <button className="rs-stop" disabled={!!busy || conversation?.status === "CANCELLING"} onClick={() => void stopAuthoring()}>{conversation?.status === "CANCELLING" ? "Stopping…" : "Stop"}</button>}<button className="rs-back" aria-label={backLabel} onClick={back} disabled={!!busy || !!restart}><span className="rs-full-label">{backLabel}</span><span className="rs-short-label" aria-hidden="true">Back</span></button></div></header>
     {error && <div role="alert" className="rs-error">{error} <button onClick={() => void refresh(true)} disabled={!!busy}>Retry</button></div>}
     {executionUnavailable && <p role="status" className="rs-setup-notice">{state?.executionAvailability?.message || "Task customizations cannot run in this installation yet. Your tasks still work."}</p>}
     {state && <div className="rs-status-summary" aria-label="Customization status">
-      <div><span id="studio-customization-status" tabIndex={-1}>{state.selection.revision && !state.selection.eligible ? "Current use unverified" : ownActive
-        ? <button id="studio-view-active" className="rs-link" disabled={disabled} onClick={() => void showActive()}>On: {deadline(ownActive) ?? (selectedDraft ? "this version" : "earlier version")}</button>
-        : state.selection.revision ? `On: ${state.selection.revision.extensionName} (another customization)` : "Not on"}</span>
-        {state.draft ? <button id="studio-view-saved" className="rs-link" disabled={!inlineAvailable || disabled} onClick={() => {
-          if (decisionEvidenceId || failedEvidenceId) void openReview(undefined, "studio-saved-change");
-          else { setActiveView(false); focusInline("studio-saved-change"); }
-        }}>{selectedDraft ? "Current proposal" : `Draft: ${deadline(state.draft) ?? (state.approved ? "approved" : state.evidence ? "checked" : "not checked")}, not on`}</button> : <span>In discussion</span>}</div>
+      <div><strong id="studio-customization-status" tabIndex={-1}>{state.extension ? ownActive ? state.selection.eligible
+        ? state.draft && !selectedDraft ? "Earlier version in use" : beforeCreate ? "On for new tasks" : "On for my tasks" : "Couldn’t check what’s in use"
+        : state.approved ? "Approved · Not on yet" : state.draft ? "Proposed change · Not on" : "In discussion · Not in use" : "New customization · In discussion"}</strong>
+        {ownActive && state.draft && !selectedDraft && <span>{!state.evidence ? "Proposed change · Examples pending" : state.approved ? "Proposed change · Approved · Not on yet" : "Proposed change · Not on"}</span>}
+        {trigger ? <span>{beforeCreate ? "Checks before adding · " : `For ${trigger} · `}{!trusted || state.selection.revision && !state.selection.eligible ? "Couldn’t check which rule is on"
+          : state.selection.revision ? `Currently on: ${state.selection.revision.extensionName}` : `No rule is on for ${trigger}`}</span>
+          : !workflowHost && state.selection.revision && !ownActive && <span>{state.selection.eligible ? "Another customization is in use" : "Couldn’t check the saved selection"}</span>}</div>
       <div className="rs-summary-actions">
         <button id="studio-manage" aria-label="More" disabled={!!restart} onClick={openTools}>More</button>
+        {decisionEvidenceId && <button id="studio-view-saved" aria-label={latestReviewAvailable && inlineOpen ? "See current proposal" : "See proposed change"}
+          disabled={!reviewAllowed} onClick={() => void openReview(latestReviewAvailable && inlineOpen ? newerEvidenceId ?? decisionEvidenceId : decisionEvidenceId, "studio-saved-change")}>
+          <span className="rs-full-label">{latestReviewAvailable && inlineOpen ? "See current proposal" : "See proposed change"}</span>
+          <span className="rs-short-label" aria-hidden="true">{latestReviewAvailable && inlineOpen ? "Latest" : "Summary"}</span></button>}
+        {inlineAvailable && !decisionEvidenceId && <button onClick={() => {
+          if (currentPane.current.open) closeReview();
+          focusInline("studio-saved-change");
+        }}>Return to saved change</button>}
+        {ownActive && state.selection.eligible && <button aria-label="Back to tasks" onClick={backToTasks}>
+          <span className="rs-full-label">Back to tasks</span><span className="rs-short-label" aria-hidden="true">Tasks</span></button>}
+        {ownActive && <button aria-label="Turn off this customization" disabled={disabled || !!restart} onClick={() => void mutate("disable", { generation: state.selection.generation }, "This customization is off. Earlier tasks and receipts are kept.", true)}>
+          <span className="rs-full-label">Turn off this customization</span><span className="rs-short-label" aria-hidden="true">Turn off</span></button>}
       </div>
     </div>}
-    <div className={`rs-room rs-show-${pane}${reviewOpen ? "" : " rs-review-closed"}`} ref={room}>
+    <div className={`rs-room rs-show-${pane}${reviewOpen ? "" : " rs-review-closed"}`} ref={room} style={{ "--rs-chat": Math.max(limits.min, Math.min(limits.max, width)) } as CSSProperties}>
       <section className="rs-chat" aria-labelledby="studio-conversation">
         <h2 id="studio-conversation" className="sr-only" tabIndex={-1}>Conversation</h2>
         <div ref={chatLog} className="rs-messages" inert={!!restart} tabIndex={0} role="log" aria-label="Studio conversation" aria-live="off"
@@ -2039,12 +2053,17 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {messages.map(message => {
             const currentReceipt = !retired && !historyView && (!message.conversationId || message.conversationId === conversation?.id)
               && message.evidenceId === decisionEvidenceId;
+            const latestExplanation = message.who === "Studio" && !message.evidenceId && !!message.conversationId
+              && message.conversationId === conversation?.id && messages.at(-1)?.id === message.id && reviewAllowed;
             return <article className={`rs-message ${message.who === "You" ? "rs-yours" : "rs-assistant"}`} data-conversation-message={!!message.conversationId || undefined} key={message.id}>
                <strong>{message.who === "Studio" ? "Daymark assistant" : message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}
                {message.openCustomization && <button className="rs-link" disabled={!!busy || activeAuthoring || !!pendingTurn || !!restart}
                  onClick={() => void openOfferedCustomization(message.openCustomization!)}>Open “{message.openCustomization.name}”</button>}
-               {message.evidenceId && !currentReceipt && <button data-evidence-link={message.evidenceId} disabled={!!busy} className="rs-link" onClick={() => void (inlineAvailable && message.evidenceId === failedEvidenceId
-                   ? openReview(message.evidenceId) : showEvidence(message.evidenceId!))}>{message.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button>}
+              {message.evidenceId && (currentReceipt
+                ? <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview(undefined, "studio-saved-change")}>See proposed change</button>
+                : <button data-evidence-link={message.evidenceId} disabled={!!busy} className="rs-link" onClick={() => void (inlineAvailable && message.evidenceId === failedEvidenceId
+                  ? openReview(message.evidenceId) : showEvidence(message.evidenceId!))}>{message.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button>)}
+              {latestExplanation && <button className="rs-link" onClick={() => void openReview()}>Show example checks</button>}
             </article>;
           })}
           {retired && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3>{state?.legacySelection && <p>Previously selected · unavailable to run</p>}<p>Its source, examples, discussion and history remain available to read. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
@@ -2055,6 +2074,13 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               ? openReview(conversation.review!.evidenceId) : showEvidence(conversation.review!.evidenceId))}>{conversation.review.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button></article>}
           {conversation && !contextRecovery && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
           {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT", "EXPIRED"].includes(conversation?.code ?? "") && !activeAuthoring && !staleConversation && !historyView && !retired && <button disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue here from saved work"}</button>}
+          {state?.extension && ownActive && !historyView && !staleConversation && <article className="rs-message">
+            <p>{!trusted || !state.selection.eligible ? "Daymark couldn’t check which version is in use."
+              : state.draft && state.draft.id !== ownActive.id ? "Your current setup is still on. Your proposed change is not on yet." : "This setup is in use."}</p>
+            {state.draft && state.draft.id !== ownActive.id && checkedDraftSummary && <p>Examples for your proposal: {checkedDraftSummary}.</p>}
+            {state.draft && state.draft.id !== ownActive.id && checkedActiveSummary && <p>Checked examples for your current setup: {checkedActiveSummary}.</p>}
+            <button id="studio-view-active" className="rs-link" disabled={!!busy} onClick={() => void showActive()}>View what’s in use</button>
+          </article>}
 
           {authoringError && <p role="alert">{authoringError}</p>}
           {recoveryError && <p role="alert">{recoveryError}</p>}
@@ -2062,23 +2088,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {(authoringError || observationPaused || pendingTurn) && <div className="rs-recovery"><button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring()}>{!authoring && authoringError ? "Retry status" : "Check authoring status"}</button>
             {pendingTurn && retryTurn && !retired && <button disabled={!!busy} onClick={() => void submitAuthoring(pendingTurn)}>Retry submitted request</button>}</div>}
           <div className="rs-decision-brief">
-          {activeView && activeSnapshot && <article className="rs-sheet rs-inline-review" aria-label="Version in use">
-            <p className="rs-kicker">{activeSelectionMatches ? "In use · Read-only" : "Previously viewed version · Read-only"}</p>
-            <h3 id="studio-active-heading" tabIndex={-1}>What’s in use</h3>
-            {describeRule(activeSnapshot.revision.ruleDescription, projectName)?.summary && <p>{describeRule(activeSnapshot.revision.ruleDescription, projectName)!.summary}</p>}
-            {activeProof && activeSelectionMatches && state?.selection.eligible ? <>
-              <p aria-label="Checked behavior in use">Checked examples in use: {activeProof.reports.length}. {summarizeExamples(activeProof)}.</p>
-              <section className="rs-inline-cases" aria-label="Checked active behavior">{activeProof.reports.map((item, index) => checkedExample(item, index, true, activeProof))}</section>
-              {simulationLimits(activeProof, describeRule(activeSnapshot.revision.ruleDescription, projectName)?.timing)}
-            </> : <p role="status">{activeSummaryError || "Checking the saved examples for this version…"}</p>}
-            <button onClick={() => { setActiveView(false); closeReview(); }}>Return to proposal</button>
-          </article>}
-          {showSavedBehavior && state?.draft && <article hidden={activeView} className="rs-sheet rs-inline-behavior" aria-label="About this rule">
+          {showSavedBehavior && state?.draft && <article className="rs-sheet rs-inline-behavior" aria-label="About this rule">
             <p className="rs-kicker">{selectedDraft ? "What is on now" : state.approved ? "Approved · Not on yet" : "Proposed change · Not on"}</p>
             <h3 id="studio-saved-change" tabIndex={-1}>Summary</h3>
-            {!inlineOpen && <p className="rs-brief-summary">{displayedRule?.complete ? displayedRule.then : "Saved proposal; inspect its behavior and example coverage before deciding."}</p>}
-            {!inlineOpen && <p className="rs-brief-coverage">{state.evidence?.passed ? "Examples checked. Review the outcomes and coverage." : state.evidence ? "Examples need attention." : "No checked examples yet."}</p>}
-            <div hidden={!inlineOpen}>
             {displayedRule?.scope && <p>{displayedRule.scope}</p>}
             {trigger && <dl className="rs-rule-facts">
               <div><dt>When</dt><dd>{displayedRule?.when ?? (beforeCreate ? "Before a new task is saved." : trigger === "tasks added" ? "A task is added." : "A task is completed.")}</dd></div>
@@ -2093,17 +2105,17 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             {summaryPending ? <p className="muted" role="status">Reading the saved rule…</p> : !fullWorkflowSummary && <p className="muted">A full summary of this rule is unavailable. {state.evidence
               ? "See which situations were checked and what happened in the simulation."
               : "Sample checks show what happens in the cases you try."}</p>}
-            </div><div className="rs-summary-controls">
+            <div className="rs-summary-controls">
             {!sendDisabled && authoring?.availability.available && <button className="rs-link" onClick={() => document.getElementById("studio-message")?.focus()}>{trigger ? "Ask for a change" : "Ask about this rule"}</button>}
             {!state.evidence && !decisionEvidenceId && <p>This revision has no checked examples yet.</p>}
-            {inlineAvailable && ((decisionEvidenceId || failedEvidenceId) ? !inlineOpen && <button className="rs-link" disabled={disabled} onClick={() => void openReview()}>Review</button>
+            {inlineAvailable && ((decisionEvidenceId || failedEvidenceId) ? <button className="rs-primary" disabled={disabled} onClick={() => void openReview()}>View simulation</button>
               : state.draft.suiteDigest || state.draft.kind === "prepared"
                 ? <button className="rs-primary" disabled={disabled} onClick={() => void mutate("simulate", { revisionId: state.draft!.id, draftVersion: state.draftVersion }, "Example check saved.")}>
                   {ownActive && !selectedDraft ? "Check this revised change" : "Check examples"}</button>
                 : <button disabled={sendDisabled || !authoring?.availability.available} onClick={() => document.getElementById("studio-message")?.focus()}>Discuss example checks</button>)}
             </div>
           </article>}
-          {savedReview && state && <article id="studio-review" hidden={!inlineOpen || activeView} className="rs-sheet rs-review rs-inline-review" aria-label="Current decision">
+          {savedReview && state && <article id="studio-review" hidden={!inlineOpen} className="rs-sheet rs-review rs-inline-review" aria-label="Current decision">
             <h3 id="studio-review-heading" tabIndex={-1}>Simulation</h3>
             <p className="rs-review-status">{viewedInUse ? beforeCreate ? "On for new tasks" : "On for my tasks" : reviewLoading ? "Checking saved results…"
               : !viewedDraft || !inlineAvailable ? trigger ? "Earlier simulation · read-only" : "Earlier versions · read-only" : reviewError ? "Saved results unavailable for a decision" : viewingCurrentFailure ? "Check needs a correction"
@@ -2170,6 +2182,46 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button className="rs-link" onClick={hideInline}>Hide simulation</button>
           </article>}
           </div>
+          <div ref={chatEnd} />
+        </div>
+        {newMessages && <button className="rs-new-messages" onClick={() => { const log = conversationScroller(); if (log) log.scrollTop = log.scrollHeight; followConversation.current = true; setNewMessages(false); }}>New messages ↓</button>}
+          {contextRecovery && !retired && <article className="rs-message rs-decision rs-current-decision" aria-label="Continue saved work">
+            <p role="status">{contextContinuation && activeAuthoring ? "Continuing from saved work. Waiting for accepted work to settle." : authoringReason("CONTEXT_LIMIT")}</p>
+            <button className="rs-primary" disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>Continue here from saved work</button>
+          </article>}
+          {restart && <article id="studio-restart-confirm" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Start from version in use">
+            <div className="rs-restart-body">
+            <h3>Start changes from this version?</h3><p>Version in use: {restart.activeLabel}. Saved changes: {restart.draftLabel}. You’ll start from the version in use. Your unfinished changes and their discussion will stay in History. Your current setup will keep running.</p>
+            <details><summary>Saved version details</summary><p>Active revision: {restart.revisionId}</p><p>Saved draft version: {restart.draftVersion}</p><p>Selection generation: {restart.generation}</p></details>
+            </div><div className="rs-restart-actions">
+            <button className="rs-primary" disabled={disabled} onClick={() => void mutate("restart", { draftVersion: restart.draftVersion, revisionId: restart.revisionId, generation: restart.generation }, "New changes start from the version in use. Earlier changes and discussion remain in History. Check and approve this proposal before turning it on.")}>Start from this version</button>
+            <button disabled={!!busy} onClick={() => { setRestart(null); document.getElementById("studio-view-active")?.focus(); }}>Cancel</button>
+            </div>
+          </article>}
+        {!retired && !restart && authoring && !authoring.availability.available && ["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <div className="rs-setup-notice"><p>Set up the assistant to create or change a customization.</p><button id="assistant-configure" onClick={openSetup}>Configure</button></div>}
+        {!restart && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
+        {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
+        {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
+        <form hidden={retired || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Daymark assistant</label>
+          <textarea id="studio-message" maxLength={8192} rows={1} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; editText(e.target.value); setStarterNotice(""); }} placeholder="Ask or describe a change…"
+            onKeyDown={event => {
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+              event.preventDefault();
+              if (!event.repeat && !sendDisabled && authoring?.availability.available && text.trim() && !locked.current) event.currentTarget.form?.requestSubmit();
+            }} />
+          <button disabled={!authoring?.availability.available || sendDisabled || !text.trim()}>Send</button></form>
+        {!retired && !restart && draftStorageUnavailable && draftText && <p className="rs-setup-notice" role="status">This browser could not keep this draft for reload. Your text is kept in this tab while you stay signed in.</p>}
+        <p hidden={retired || !!restart} className="rs-chat-note">{authoring?.availability.available ? "Ask about this proposal or describe a change." : "You decide whether to approve and turn on a change."}</p>
+      </section>
+      <div hidden={!reviewOpen} className="rs-divider" role="separator" tabIndex={0} aria-label="Resize conversation and proposal" aria-orientation="vertical"
+        aria-valuemin={limits.min} aria-valuemax={limits.max} aria-valuenow={width}
+        onKeyDown={event => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+          event.preventDefault(); readingRevision.current++; setWidth(old => event.key === "Home" ? limits.min : event.key === "End" ? limits.max : Math.max(limits.min, Math.min(limits.max, old + (event.key === "ArrowLeft" ? -2 : 2))));
+        } }}
+        onPointerDown={event => { readingRevision.current++; event.currentTarget.setPointerCapture(event.pointerId); }}
+        onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId) && room.current) {
+          const bounds = room.current.getBoundingClientRect(); setWidth(Math.round(Math.max(limits.min, Math.min(limits.max, (event.clientX - bounds.left) / (bounds.width - 14) * 100))));
+        } }} onPointerUp={event => event.currentTarget.releasePointerCapture(event.pointerId)} />
       <section hidden={!reviewOpen} className="rs-preview" aria-label="Customization preview">
         <button className="rs-close-review" onClick={closeReview}>Back to conversation</button>
 
@@ -2177,6 +2229,16 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         onWheel={() => { readingRevision.current++; }} onKeyDown={() => { readingRevision.current++; }} onPointerDown={() => { readingRevision.current++; }}
         onScroll={event => { if (reviewOpen) canvasScroll.current = event.currentTarget.scrollTop; }}>
         {state && <>
+          {activeView && canvasView === "active" && activeSnapshot && <article className="rs-sheet" aria-label="Version in use">
+            <h3>{activeSelectionMatches ? "Version currently in use" : "Previously viewed version"}</h3><p>{state.draft && state.draft.id !== activeSnapshot.revision.id && <>Your saved changes are separate. </>}This view is read-only.</p>
+            {activeProof && activeSelectionMatches && state.selection.eligible ? <><p aria-label="Checked behavior in use">Checked examples in use: {activeProof.reports.length}. {summarizeExamples(activeProof)}.</p><p>These were example tasks; your real tasks have not changed. Other situations remain untested.</p>
+              {simulationLimits(activeProof, describeRule(activeSnapshot.revision.ruleDescription, projectName)?.timing)}</>
+              : <p role="status">{activeSummaryError || "Checking the saved examples for this version…"}</p>}
+            <button disabled={retired || disabled || !activeSelectionMatches || !state.selection.eligible} onClick={() => { setRestart({ draftVersion: state.draftVersion, revisionId: activeSnapshot.revision.id, generation: activeSnapshot.generation, activeLabel: checkedActiveSummary || "current setup; no verified checked description is available", draftLabel: checkedDraftSummary || `saved version ${state.draftVersion}; no verified checked description is available` }); closeReview(); }}>Start changes from this version</button>
+            <button onClick={() => { setActiveView(false); closeReview(); }}>Return to proposal</button>
+            <button className="rs-link" disabled={disabled} onClick={() => void inspectSource(activeSelectionMatches ? undefined : activeSnapshot.revision.id)}>Inspect this version’s source</button>
+            <details><summary>Saved version details</summary><p>Label: {activeSnapshot.revision.label}</p><p>Revision: {activeSnapshot.revision.id}</p><p>Saved draft version: {state.draftVersion}</p></details>
+          </article>}
           {evidence && <article hidden={canvasView !== "results"} className="rs-sheet rs-results" aria-label="Sample results">
             <h3 id="studio-results-heading" tabIndex={-1}>{!currentEvidence ? "Earlier examples" : exampleId ? exampleTitle(evidence.reports.find(item => item.id === exampleId)!, evidence.reports.findIndex(item => item.id === exampleId)) : "Saved checked examples"}</h3>
             <section aria-label="Expected and actual sample results">{evidence.reports.filter(item => !exampleId || item.id === exampleId).map((item, index) => <div className="rs-proof-comparison" key={item.id}>{currentProofExample(item)}<section aria-label="Saved proposed example"><h4>{currentEvidence ? "Saved example being inspected" : exampleTitle(item, index)}</h4>{checkedExample(item, index)}</section></div>)}</section>
@@ -2198,19 +2260,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         </>}
         <section hidden={canvasView !== "details"} className="rs-sheet rs-tools" aria-label="Versions and settings">
           <h3 id="studio-more-heading" tabIndex={-1}>Versions and settings</h3>
-          {state?.extension && <CustomizationName key={state.owner.id + "/" + state.extension.id} ownerId={state.owner.id} itemId={state.extension.id} name={state.extension.name} suggestion={displayedRule?.complete ? Array.from(displayedRule.title).slice(0, 80).join("") : undefined} disabled={disabled || !!restart} request={request} saved={next => {
-            if (!mounted.current || next.owner.id !== ownerId || next.extension?.id !== extensionId.current) return;
-            setState(old => old?.extension?.id === next.extension!.id ? { ...old, extension: { ...old.extension, name: next.extension!.name },
-              selection: { ...old.selection, revision: old.selection.revision?.extensionId === next.extension!.id ? { ...old.selection.revision, extensionName: next.extension!.name } : old.selection.revision } } : old);
-          }} />}
           <section aria-label="What’s in use"><h3>What’s in use</h3><p>{currentUse}</p></section>
-          {state && ownActive && <button disabled={retired || disabled || !state.selection.eligible} onClick={() => {
-            setRestart({ draftVersion: state.draftVersion, revisionId: ownActive.id, generation: state.selection.generation,
-              activeLabel: checkedActiveSummary || "current setup; checked description unavailable", draftLabel: checkedDraftSummary || `saved version ${state.draftVersion}; checked description unavailable` });
-            closeReview();
-          }}>Start changes from this version</button>}
-          {state && ownActive && <button aria-label="Turn off this customization" disabled={disabled || !!restart} onClick={() => void mutate("disable", { generation: state.selection.generation }, "This customization is off. Earlier tasks and receipts are kept.", true)}>Turn off this customization</button>}
-          <button onClick={backToTasks}>Back to tasks</button>
           <section aria-label="Earlier versions"><h3>Earlier versions</h3>
             {earlierVersions.map(item => <p key={item.id}>{item.label ?? "Saved draft"} · {item.revisionId === state?.selection.revision?.id
               ? state.selection.eligible ? "In use" : "Use could not be checked" : "Not in use"} · Read-only <button disabled={disabled} onClick={() => void inspectSource(item.revisionId!)}>View technical details</button></p>)}
@@ -2285,37 +2335,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         <button className="rs-reload" onClick={() => void refresh(true)} disabled={!!busy}>Reload saved state</button>
           </details>
         </section>
-       </section>
-       </section>
-          {newMessages && <button className="rs-new-messages" onClick={() => { const log = conversationScroller(); if (log) log.scrollTop = log.scrollHeight; followConversation.current = true; setNewMessages(false); }}>New messages ↓</button>}
-          <div ref={chatEnd} />
-        </div>
-          {contextRecovery && !retired && <article className="rs-message rs-decision rs-current-decision" aria-label="Continue saved work">
-            <p role="status">{contextContinuation && activeAuthoring ? "Continuing from saved work. Waiting for accepted work to settle." : authoringReason("CONTEXT_LIMIT")}</p>
-            <button className="rs-primary" disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>Continue here from saved work</button>
-          </article>}
-          {restart && <article id="studio-restart-confirm" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Start from version in use">
-            <div className="rs-restart-body">
-            <h3>Start changes from this version?</h3><p>Version in use: {restart.activeLabel}. Saved changes: {restart.draftLabel}. You’ll start from the version in use. Your unfinished changes and their discussion will stay in History. Your current setup will keep running.</p>
-            <details><summary>Saved version details</summary><p>Active revision: {restart.revisionId}</p><p>Saved draft version: {restart.draftVersion}</p><p>Selection generation: {restart.generation}</p></details>
-            </div><div className="rs-restart-actions">
-            <button className="rs-primary" disabled={disabled} onClick={() => void mutate("restart", { draftVersion: restart.draftVersion, revisionId: restart.revisionId, generation: restart.generation }, "New changes start from the version in use. Earlier changes and discussion remain in History. Check and approve this proposal before turning it on.")}>Start from this version</button>
-            <button disabled={!!busy} onClick={() => { setRestart(null); document.getElementById("studio-view-active")?.focus(); }}>Cancel</button>
-            </div>
-          </article>}
-        {!retired && !restart && authoring && !authoring.availability.available && ["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <div className="rs-setup-notice"><p>Set up the assistant to create or change a customization.</p><button id="assistant-configure" onClick={openSetup}>Configure</button></div>}
-        {!restart && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
-        {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
-        {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
-        <form hidden={retired || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Daymark assistant</label>
-          <textarea id="studio-message" maxLength={8192} rows={1} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; editText(e.target.value); setStarterNotice(""); }} placeholder="Ask or describe a change…"
-            onKeyDown={event => {
-              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-              event.preventDefault();
-              if (!event.repeat && !sendDisabled && authoring?.availability.available && text.trim() && !locked.current) event.currentTarget.form?.requestSubmit();
-            }} />
-          <button className="rs-primary" disabled={!authoring?.availability.available || sendDisabled || !text.trim()}>Send</button></form>
-        {!retired && !restart && draftStorageUnavailable && draftText && <p className="rs-setup-notice" role="status">This browser could not keep this draft for reload. Your text is kept in this tab while you stay signed in.</p>}
+      </section>
       </section>
     </div>
     {setupOpen && <AssistantSetup request={request} close={closeSetup} beginSave={() => { ++setupGeneration.current; }} saved={next => {

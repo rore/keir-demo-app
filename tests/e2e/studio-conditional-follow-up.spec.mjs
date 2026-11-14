@@ -52,7 +52,7 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
     expect((await state()).selection.revision?.id??null).toBe(oldSelection);
     await expect(button('Turn on for tasks completed',ui)).toBeEnabled();
     await button('Turn on for tasks completed',ui).click();
-    await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
+    await expect(ui.getByLabel('Customization status')).toContainText('On for my tasks');
     expect(f.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
     const callCount=f.requests.length;
     const selected=await state();expect(selected.selection.revision.id).toBe(current.review.revisionId);

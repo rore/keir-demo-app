@@ -27,7 +27,7 @@ export async function openSimulation(page) {
   const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
   const hide = studio.getByRole('button', { name: 'Hide simulation', exact: true });
   if (await hide.isVisible()) await hide.click();
-  await studio.getByRole('button', { name: 'Review', exact: true }).click();
+  await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
   await expect(studio.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
   return openSavedChanges(page);
 }

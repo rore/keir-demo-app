@@ -114,7 +114,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
       await expect(composer).toHaveValue('Keep this unsent question about weekends.');
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      const messages = studio.locator('.rs-messages');
+      const messages = width <= 600 || height <= 500 ? studio : studio.locator('.rs-messages');
       await messages.evaluate(element => { element.scrollTop = 0; });
       await studio.getByRole('heading', { name: 'Summary', exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
       await page.screenshot({ path: testInfo.outputPath(`due-date-overview-${width}.png`) });
@@ -243,8 +243,7 @@ test('a different supported behavior keeps its exact supplied name and truthful 
     expect((await exactState()).extension.name).toBe(name);
     await studio.locator('#studio-view-saved').click();
     await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
-    await studio.getByRole('button', { name: 'Hide simulation', exact: true }).click();
-    await studio.getByRole('button', { name: 'Review', exact: true }).click();
+    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(decision.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
     await page.screenshot({ path: testInfo.outputPath('other-behavior-summary-simulation.png') });
 
@@ -256,8 +255,7 @@ test('a different supported behavior keeps its exact supplied name and truthful 
     const reopenedDecision = reopened.getByRole('article', { name: 'Current decision', exact: true });
     await reopened.locator('#studio-view-saved').click();
     await expect(reopened.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
-    await reopened.getByRole('button', { name: 'Hide simulation', exact: true }).click();
-    await reopened.getByRole('button', { name: 'Review', exact: true }).click();
+    await reopened.getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(reopenedDecision.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
     expect((await exactState()).extension.name).toBe(name);
     const persisted = fixture.db.prepare('SELECT name FROM extensions WHERE id=?').get(extensionId);
@@ -266,7 +264,7 @@ test('a different supported behavior keeps its exact supplied name and truthful 
   } finally { await fixture.close(); }
 });
 
-test('Draft and Review reach the same unobscured inline review at desktop, narrow and short sizes', async ({ page }) => {
+test('proposal links settle on an unobscured Summary while View simulation remains a separate destination at desktop, narrow and short sizes', async ({ page }) => {
   test.setTimeout(90_000);
   const fixture = await startAuthoringFixture({ missingDue: true });
   const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -317,7 +315,7 @@ test('Draft and Review reach the same unobscured inline review at desktop, narro
     await composer.fill(draft);
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 320, height: 740 }, { width: 683, height: 384 }]) {
       await page.setViewportSize(viewport);
-      for (const invoker of ['header', 'review']) {
+      for (const invoker of ['header', 'conversation']) {
         const gate = Promise.withResolvers(), proofArrived = Promise.withResolvers(), sourceArrived = Promise.withResolvers();
         release = gate.resolve;
         const proofPath = `**/api/extensions/${id}/evidence/${before.evidence.id}`;
@@ -335,16 +333,22 @@ test('Draft and Review reach the same unobscured inline review at desktop, narro
         await page.reload();
         await expect(composer).toHaveValue(draft);
         const link = invoker === 'header' ? studio.locator('#studio-view-saved')
-          : studio.getByRole('button', { name: 'Review', exact: true });
-        await expect(link).toHaveAccessibleName(invoker === 'header' ? /Draft:/ : 'Review');
+          : studio.locator('.rs-message').getByRole('button', { name: 'See proposed change', exact: true });
+        await expect(link).toHaveAccessibleName('See proposed change');
+        if (viewport.width === 320 && invoker === 'header') {
+          await expect(link.locator('.rs-short-label')).toHaveText('Summary');
+          await expect(link.locator('.rs-short-label')).toBeVisible();
+        }
         await link.click();
         await Promise.all([proofArrived.promise, sourceArrived.promise]);
         gate.resolve();
         await expect(studio.locator('.rs-rule-summary')).toContainText('give it a due date exactly 7 days after it was added');
         await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        await expectDestination(invoker === 'header' ? 'Summary' : 'Simulation');
+        await expectDestination('Summary');
         await expect(composer).toHaveValue(draft);
+        await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+        await expectDestination('Simulation');
         await decision.getByRole('button', { name: 'Go to approval', exact: true }).click();
         await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -370,16 +374,16 @@ test('Draft and Review reach the same unobscured inline review at desktop, narro
     await studio.locator('#studio-view-saved').click();
     await proofArrived.promise;
     await expectDestination('Summary');
-    const scroller = studio.locator('.rs-messages');
+    const scroller = studio;
     await expect(scroller).toHaveCSS('overflow-y', 'auto');
     const status = studio.locator(':scope > .rs-status-summary');
-    await expect(status).toBeInViewport({ ratio: 1 });
+    await expect(status).toHaveCSS('position', 'sticky');
     const bounds = await status.boundingBox();
     expect(bounds).not.toBeNull();
     const point = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
     expect(await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.rs-status-summary'), point)).toBe(true);
     const previousScroll = await scroller.evaluate(element => element.scrollTop);
-    await scroller.hover({ position: { x: 5, y: 5 } });
+    await page.mouse.move(point.x, point.y);
     await page.mouse.wheel(0, 120);
     await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(previousScroll + 20);
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

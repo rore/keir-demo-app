@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, chromium } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
@@ -166,4 +166,93 @@ test('an unavailable assistant keeps its direct Configure action outside closed 
     expect(await read(page, `extensions/${id}`)).toEqual(before);
     expect(writes).toEqual([]); expect(fixture.requests).toEqual([]);
   } finally { await page.close(); await fixture.close(); }
+});
+
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 683, height: 384 }]) {
+  test(`restored More is a sibling inspection and returns reading, focus and input at ${viewport.width}x${viewport.height}`, async ({ page }, info) => {
+    const fixture = await startAuthoringFixture({ intentResolutions: Array(4).fill('discuss') });
+    try {
+      await page.setViewportSize(viewport); await enter(page, fixture);
+      const id = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Restored Studio' }).extensionId;
+      const before = await read(page, `extensions/${id}`);
+      await openItem(page, id);
+      for (let index = 0; index < 4; index++) {
+        await composer(page).fill(`Discussion ${index}. ${'Explain this saved work without changing it. '.repeat(20)}`);
+        await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
+        await expect(studio(page).getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+        await expect(composer(page)).toHaveValue('');
+        await expect(studio(page).locator('.rs-working')).toBeHidden();
+        await expect(studio(page).getByRole('button', { name: 'More', exact: true })).toBeEnabled();
+      }
+      await composer(page).fill('Keep this unsent question while reading earlier messages.');
+      const reading = await studio(page).evaluate(node => {
+        const log = node.querySelector('[role="log"]');
+        const scroller = getComputedStyle(node).overflowY === 'auto' ? node : log;
+        scroller.scrollTop = 120;
+        return scroller.scrollTop;
+      });
+      expect(reading).toBeGreaterThan(0);
+      const frame = () => page.evaluate(() => ['.workspace', '.workspace-top', '.rail'].map(selector => {
+        const node = document.querySelector(selector);
+        return getComputedStyle(node).display === 'none' ? null : node.getBoundingClientRect().toJSON();
+      }));
+      const geometry = await frame();
+      const invoker = studio(page).locator('#studio-manage');
+      await invoker.evaluate(node => node.focus({ preventScroll: true }));
+      await page.keyboard.press('Enter');
+      await expect(more(page).getByRole('heading', { name: 'Versions and settings', exact: true })).toBeFocused();
+      expect(await more(page).evaluate(node => !!node.closest('[role="log"]'))).toBe(false);
+      expect(await studio(page).evaluate(node => {
+        const room = node.querySelector('.rs-room');
+        return ['.rs-chat', '.rs-divider', '.rs-preview'].every(selector => room.querySelector(':scope > ' + selector));
+      })).toBe(true);
+      if (viewport.width === 1440) {
+        await expect(studio(page).getByRole('separator')).toBeVisible();
+        await expect(studio(page).locator('.rs-chat')).toBeVisible();
+      } else await expect(studio(page).locator('.rs-chat')).toBeHidden();
+      expect(await frame()).toEqual(geometry);
+      await page.screenshot({ path: info.outputPath('restored-more.png') });
+      await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();
+      await expect(invoker).toBeFocused();
+      await expect(composer(page)).toHaveValue('Keep this unsent question while reading earlier messages.');
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(await studio(page).evaluate(node => (getComputedStyle(node).overflowY === 'auto' ? node : node.querySelector('[role="log"]')).scrollTop)).toBe(reading);
+      expect(await frame()).toEqual(geometry);
+      expect(await read(page, `extensions/${id}`)).toEqual(before);
+      expect(fixture.requests.filter(request => request.name === 'resolve_intent').map(request => request.intent)).toEqual(Array(4).fill('discuss'));
+      await page.screenshot({ path: info.outputPath('restored-conversation.png') });
+    } finally { await page.close(); await fixture.close(); }
+  });
+}
+
+test('restored More and its return remain reachable at native 200 percent zoom', async ({}, info) => {
+  const fixture = await startAuthoringFixture({ unconfigured: true });
+  // A temporary Chromium profile keeps this native browser preference out of everyday installations.
+  const context = await chromium.launchPersistentContext('', { channel: 'chromium', headless: true, viewport: { width: 1440, height: 1000 } });
+  try {
+    const settings = await context.newPage();
+    await settings.goto('chrome://settings/appearance');
+    await settings.evaluate(() => chrome.settingsPrivate.setDefaultZoom(2));
+    expect(await settings.evaluate(() => new Promise(resolve => chrome.settingsPrivate.getDefaultZoom(resolve)))).toBe(2);
+    const page = await context.newPage();
+    await settings.close();
+    const id = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Native zoom restoration' }).extensionId;
+    await enter(page, fixture); await openItem(page, id);
+    const before = await read(page, `extensions/${id}`);
+    expect(await page.evaluate(() => ({ width: innerWidth, ratio: devicePixelRatio }))).toEqual({ width: 720, ratio: 2 });
+    await composer(page).fill('Keep this unsent question at native zoom.');
+    await openMore(page);
+    await expect(more(page).getByRole('heading', { name: 'Versions and settings', exact: true })).toBeInViewport({ ratio: 1 });
+    expect(await more(page).evaluate(node => !!node.closest('[role="log"]'))).toBe(false);
+    await expect(studio(page).locator('.rs-chat')).toBeHidden();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath('restored-more-native-200.png') });
+    await studio(page).getByRole('button', { name: 'Back to conversation', exact: true }).click();
+    await expect(studio(page).locator('#studio-manage')).toBeFocused();
+    await expect(composer(page)).toHaveValue('Keep this unsent question at native zoom.');
+    await expect(studio(page).getByRole('button', { name: 'Send', exact: true })).toHaveCount(1);
+    expect(await read(page, `extensions/${id}`)).toEqual(before);
+    expect(fixture.requests).toEqual([]);
+    await page.screenshot({ path: info.outputPath('restored-conversation-native-200.png') });
+  } finally { await context.close(); await fixture.close(); }
 });

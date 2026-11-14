@@ -84,7 +84,7 @@ test('a task customization is authored, checked, approved, used and deleted thro
     const proof = await api(page, `extensions/${id}/evidence/${approved.evidence.id}`);
     expect(proof.reports).toHaveLength(6); expect(proof.reports.every(item => item.report.status === 'PASS')).toBe(true);
     await ui.getByRole('button', { name: /^(Turn on for tasks completed)$/ }).click();
-    await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
+    await expect(ui.getByLabel('Customization status')).toContainText('On for my tasks');
     await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
     const active = await api(page, 'extensions/' + id); expect(active.selection.revision.id).toBe(approved.draft.id);
     const providerCalls = fixture.requests.length, native = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();

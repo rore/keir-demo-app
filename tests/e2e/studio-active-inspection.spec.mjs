@@ -177,7 +177,7 @@ for (const activeWorkflow of ['onboarding', 'intake']) test(`clock-change covera
     await page.goto(`${fixture.origin}/#customization=${extensionId}`);
     await expect(studio(page).getByRole('heading', { name: 'Timing coverage', exact: true })).toBeVisible();
     // Wait for the current draft description too, so the old cross-revision leak cannot pass by racing its load.
-    await expect(studio(page).locator('.rs-brief-summary')).toContainText(activeWorkflow === 'onboarding' ? 'Priority High' : '7 days');
+    await expect(studio(page).locator('.rs-rule-facts')).toContainText(activeWorkflow === 'onboarding' ? 'Priority High' : '7 days');
     await openActive(page);
     await expect(activeView(page).getByLabel('Checked behavior in use', { exact: true })).toBeVisible();
     const caveat = 'They do not show whether this fixed elapsed duration fits your needs around clock changes.';

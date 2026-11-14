@@ -296,7 +296,7 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await expect(page.getByRole('article', { name: completion.extensionName })).toContainText('In use');
     await page.getByRole('article', { name: extension.name }).getByRole('button', { name: 'Continue changes' }).click();
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
-    await expect(studio.locator('#studio-customization-status')).toHaveText('On: Existing intake rule (another customization)');
+    await expect(studio.getByLabel('Customization status')).toContainText('For tasks added · Currently on: Existing intake rule');
     await expect(studio.getByRole('article', { name: 'About this rule' }).locator('.rs-rule-summary')).toContainText('set its priority to High');
     await studio.locator('#studio-view-saved').click();
     const review = studio.getByRole('article', { name: 'Current decision' });
@@ -336,7 +336,7 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     expect(actions).toEqual(['approve']);
     await use.click();
     await expect(studio.locator('#studio-title')).toHaveText('Intake priority');
-    await expect(studio.locator('#studio-view-active')).toHaveText('On: this version');
+    await expect(studio.getByLabel('Customization status')).toContainText('Currently on: Intake priority');
     expect(actions[1]).toMatchObject({ generation: 7, revisionId: draft.id, evidenceId: evidence.id });
   } finally { await fixture.close(); }
 });

@@ -4,7 +4,7 @@ Maya wants every completed task in **The spring collection** to leave her a new 
 
 The screenshots show the app with fictional, disposable data. Authoring responses are scripted using the [offline fixture](../tests/README.md#offline-configured-ai-fixture); compilation, simulation, approval, activation and the native task writes are real. No paid AI requests were made for this tour.
 
-The screenshots retain the earlier layout. Current Studio uses one **Send** action and a compact inline review; the instructions below describe that flow. Saved behavior, example evidence and the separate approval/activation decisions are the same.
+The screenshots predate the single **Send** action. Current Studio keeps the restored layout and review navigation, with one Send for questions and requests. Saved behavior, example evidence and the separate approval/activation decisions are the same.
 
 To try it yourself, [run Daymark locally](../README.md#run-locally), have **Java 21** available, choose **Maya**, and [configure an AI provider](ai-authoring.md#configure-a-provider). Provider requests can incur charges, and the conversation may differ. Use a fresh demo workspace and add a second project, such as **Other project**, to try the nonmatching behavior too.
 
@@ -22,7 +22,7 @@ The assistant asks whether this should apply only to that project. Confirm the b
 
 ## 2. Read the proposed behavior
 
-Open the proposal's inline review from its card or the draft status. Read **When**, **Only when** and **Then**: a completed task in **The spring collection** should create **Follow up** in that project. Other projects should create nothing. The original completion stays unchanged.
+Choose **See proposed change**. Read **When**, **Only when** and **Then**: a completed task in **The spring collection** should create **Follow up** in that project. Other projects should create nothing. The original completion stays unchanged.
 
 ![Summary of the proposed follow-up rule, marked Proposed change · Not on, with View simulation.](images/walkthrough/02-summary.png)
 
@@ -30,7 +30,7 @@ Open the proposal's inline review from its card or the draft status. Read **When
 
 ## 3. Check the examples and approve
 
-Read the examples within that same review. Compare the intended action with what actually happened in each simulated situation. The matching example shows the task that started the rule alongside the separate **Created example task**. Only the recorded values are checked; the preview does not verify every task detail.
+Choose **View simulation**. Compare the intended action with what actually happened in each simulated situation. The matching example shows the task that started the rule alongside the separate **Created example task**. Only the recorded values are checked; the preview does not verify every task detail.
 
 Open the individual examples to read their intended and observed results. A task completed in **Other project** creates nothing. The remaining examples check an open task and missing, denied or temporarily unavailable task details.
 
@@ -38,7 +38,7 @@ These are example tasks and simulated service responses: **your real saved tasks
 
 ![Simulation showing the separate created task, its recorded values, a clear limit on missing evidence, and expandable checked examples.](images/walkthrough/03-simulation.png)
 
-*After reading the examples and coverage limits, choose **Approve this change** only when the checked proposal matches your intent. Approval records agreement to this exact version and its saved checks. It does not turn the rule on.*
+*After reading the examples and coverage limits, choose **Go to approval** to reach **Approve this change**. Approve only when the checked proposal matches your intent. Approval records agreement to this exact version and its saved checks. It does not turn the rule on.*
 
 ## 4. Turn it on separately
 

@@ -334,7 +334,6 @@ p {
   min-height:0;
   overflow:hidden;
 }
-.studio-main > .read-studio { width: 100%; max-width: 850px; margin-inline: auto; }
 .rail {
   width:208px;
   flex-shrink:0;

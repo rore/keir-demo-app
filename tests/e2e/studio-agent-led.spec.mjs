@@ -133,10 +133,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await decision.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
       await expect.poll(async () => (await saved(page, newId)).selection.revision.id).toBe(prepared.draft.id);
       expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
-      await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
+      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
       await expect(composer).toHaveValue('Keep this unsent personal request');
       await page.screenshot({ path: `build/studio-extension-creation/agent-led-on-${viewport.width}x${viewport.height}.png` });
-      await ui.getByRole('button', { name: 'More', exact: true }).click();
       await ui.getByRole('button', { name: 'Back to tasks', exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved native title');
       await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toHaveCount(0);
@@ -147,7 +146,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await outcome.getByRole('button', { name: `Open task: ${fixture.metadata.title}`, exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue(fixture.metadata.title);
       await page.locator('#open-customizations').click();
-      await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
+      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
       await expect(ui.locator('.rs-chat')).toContainText(fixture.metadata.offerText);
       await expect(composer).toBeVisible();
       expect(fixture.requests).toHaveLength(10);
