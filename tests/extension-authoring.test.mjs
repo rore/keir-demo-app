@@ -27,7 +27,7 @@ function scriptedProvider({ onCall = () => {}, question = 'Would creating a task
       async complete(args) {
         requests.push(args); onCall(args);
         const n = step++;
-        const current = args.input?.startsWith('{"previousUserMessages":') ? JSON.parse(args.input).currentUserMessage : args.input;
+        const current = args.input !== undefined ? JSON.parse(args.input).currentUserMessage : undefined;
         if (compileRequested) return response(null, 'The supported task change is prepared as a draft for your review.');
         if (typeof current === 'string' && /^no\b/i.test(current)) return response(null, 'No changes were made.');
         if (typeof current === 'string' && /\byes\b|\bagree\b/i.test(current)) {

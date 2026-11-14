@@ -32,7 +32,7 @@ function setup(t) {
       async complete(request) {
         const sequence = ++providerCalls;
         if (first) {
-          first = false; text = request.input;
+          first = false; text = JSON.parse(request.input).currentUserMessage;
           return { calls: [{ id: `discover-${sequence}`, name: 'discover_catalog', arguments: {} }], text: '',
             continuation: { provider: 'synthetic', items: [] }, usage: { inputTokens: 2, outputTokens: 1 } };
         }

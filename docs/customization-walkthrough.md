@@ -8,7 +8,7 @@ To try it yourself, [run Daymark locally](../README.md#run-locally), have **Java
 
 ## 1. Describe the change
 
-Open **Customizations** → **New customization** and send:
+Open **Customizations** → **New customization**, enter the request below and choose **Prepare changes**. Use the same action when answering a clarification that should prepare the draft. **Send** is for discussion without draft changes.
 
 > When I complete a task in The spring collection, create a task titled Follow up in that project.
 

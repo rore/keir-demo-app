@@ -135,7 +135,7 @@ async function unusedLoopbackPort() {
 }
 
 // Synthetic offline transport only; app, compiler, lifecycle and simulator are real.
-export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, missingDue = false, conditionalFollowUp = false, tagNotes = false, resumeRequest, projectName, title = 'Review completed work', staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
+export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, missingDue = false, conditionalFollowUp = false, tagNotes = false, resumeRequest, projectName, title = 'Review completed work', authoringOverride = {}, staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
@@ -193,7 +193,7 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
     if (!missingDue) assert.notEqual(metadata.wrongSource, metadata.source, 'The semantic mismatch variant must change compiled behavior.');
     const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
     app = await createApp({ db, origin, staticRoot: resolve(staticRoot), compiler,
-      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest) } });
+      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest), ...authoringOverride } });
     await app.listen({ host: '127.0.0.1', port });
     return { app, db, origin, directory, metadata, requests, close };
   } catch (error) { await close(); throw error; }

@@ -7,7 +7,7 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
   const f=await startAuthoringFixture({conditionalFollowUp:true,title:'Follow up'});
   const ui=page.getByRole('region',{name:'Customization Studio',exact:true});
   const button=(name,scope=page)=>scope.getByRole('button',{name,exact:true});
-  const send=async text=>{await ui.getByLabel('Message to Daymark assistant',{exact:true}).fill(text);await button('Send',ui).click();};
+  const send=async text=>{await ui.getByLabel('Message to Daymark assistant',{exact:true}).fill(text);await button('Prepare changes',ui).click();};
   const navigate=async name=>button(name,page.getByRole('navigation',{name:'Main navigation'})).click();
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   mkdirSync('build/core-040/screens',{recursive:true});

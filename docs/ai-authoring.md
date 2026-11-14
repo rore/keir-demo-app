@@ -4,6 +4,14 @@ Use this guide to configure the local provider, protect its key and control spen
 
 For the customer journey, [try a customization](../README.md#try-a-customization) or follow the [screenshot walkthrough](customization-walkthrough.md).
 
+## Discuss your existing work
+
+Try asking, “What would complement the customizations I already have?” The assistant can inspect your saved rules and relevant tasks. It should explain which version and task evidence support its suggestion, and say when the information is incomplete. A saved name alone does not describe what a rule does.
+
+**Send** (or Enter) discusses without changing rules or tasks. **Prepare changes** lets the assistant create or revise the currently opened draft and check examples. An offered **Open** button opens an existing customization after checking access again. It does not repeat your earlier request there. Your previous conversation and unsent text are kept. Approval and turning a checked revision on remain separate choices.
+
+Generic **Continue** and **Try again** actions resume discussion only. Choose **Prepare changes** for further draft or example-check work. Retrying an unconfirmed submitted request preserves that exact request's original intent.
+
 ## Configure a provider
 
 In the local app, open **Configure** and choose a supported provider and model. Enter its API key. To cap Daymark spending, enter a positive USD amount with up to six decimal places. Leave the allowance blank to use AI without a Daymark spending cap. Saving checks the values locally and sends no provider request. Every save requires the full key.
@@ -17,7 +25,9 @@ The saved settings file is `ai-authoring.json` in the app's chosen data director
 
 When set, the allowance is shared across all demo owners in the database. Daymark records a conservative cost estimate before each provider request, even with the cap off. Those records survive cancellations, settings changes and data resets. A cap must cover previous reservations and stops new requests when the remaining amount is too small. Provider charges still apply with either setting. Leave `KEIR_AI_MAX_USD` unset or blank for no Daymark cap when using environment configuration. Keep keys out of browser code, chat, screenshots, logs and public files.
 
-The provider can receive your authoring text, bounded recent conversation, the published host contract, format examples, current draft and cases, and bounded synthetic check summaries. Owner-scoped project discovery sends existing project names and IDs to the provider to resolve project choices. The provider does not receive session cookies or protected runtime bindings. Provider-side retention depends on the provider and your account terms; local storage and deletion do not control provider retention. Avoid unrelated private information in messages.
+The provider can receive your authoring text, bounded recent conversation, the published host contract, format examples, current draft and cases, and bounded synthetic check summaries. Each turn includes the editing target and a count of other saved customizations, not the task database. On request, owner-scoped tools send project names/IDs, saved customization metadata and exact-version behavior/check summaries, or a bounded page of tasks from one project. Task results include titles, status, tags, priority, dates and whether notes exist. Notes are omitted unless requested for relevant context; returned notes are limited to 256 Unicode code points and marked when shortened. Pages and partial summaries do not establish a pattern across all your tasks.
+
+These reads use only the signed-in demo person's access. Task text and saved names are data, not instructions or permission to change a rule. The provider does not receive another person's records, session cookies or protected runtime bindings. Provider-side retention depends on the provider and your account terms; local storage and deletion do not control provider retention. Avoid unrelated private information in messages and tasks you ask the assistant to inspect.
 
 Changing the provider, model, key or allowance requires fresh authoring context for future requests. The saved conversation stays with the customization. Continue explicitly in Customizations when ready. If a save response is lost, resubmit the complete settings only if you want to retry the save. Wait for ongoing authoring or cancellation to settle before saving again.
 

@@ -71,13 +71,15 @@ type Evidence = { id: string; revisionId: string; kind?: "authored" | "prepared"
 }[] };
 type SavedReview = { owner: State["owner"]; extension: NonNullable<State["extension"]>; revision: Revision;
   draftVersion: number; evidenceId: string; suiteDigest: string | null; selection: State["selection"] };
-type Message = { id: number | string; who: "You" | "Studio"; text: string; conversationId?: string; evidenceId?: string; exampleCount?: number; context?: string };
+type OpenCustomization = { extensionId: string; name: string };
+type Message = { id: number | string; who: "You" | "Studio"; text: string; conversationId?: string; evidenceId?: string; exampleCount?: number; context?: string; openCustomization?: OpenCustomization };
 type Operation = { id: string; runId: string; version: number };
 type Conversation = {
   retired?: boolean;
   extensionId: string | null; purpose: "CREATE" | "REVISE" | null;
   id: string; version: number; status: "IDLE" | "RUNNING" | "CANCELLING" | "AWAITING_USER" | "REVIEW_AVAILABLE" | "CANCELLED" | "BLOCKED" | "INTERRUPTED";
   runId: string; operation: Operation; messages: { id: string; role: "user" | "assistant"; text: string; kind: "text" | "clarification" | "review";
+    openCustomization?: OpenCustomization;
     receipt?: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string } }[];
   messagesBefore?: string | null;
   code: string | null; review: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string; eligible: boolean } | null;
@@ -100,7 +102,7 @@ type Authoring = {
   transcript?: Transcript;
 };
 type TurnTarget = { kind: "create" } | { kind: "revise"; extensionId: string; baseRevisionId: string | null; selectionGeneration: number } | { kind: "resume"; extensionId: string };
-type Turn = { target: TurnTarget; conversationId: string | null; operationId: string; text: string; expectedVersion: number; expectedDraftVersion: number };
+type Turn = { target: TurnTarget; conversationId: string | null; operationId: string; text: string; expectedVersion: number; expectedDraftVersion: number; intent?: "discuss" | "prepare" };
 export function pendingRequests(ownerId: string) {
   const entries: { entryId: string; turn: Turn }[] = [];
   const prefix = "daymark-studio-work:" + ownerId + ":";
@@ -115,7 +117,8 @@ export function pendingRequests(ownerId: string) {
       if (!turn || !/^[0-9a-f-]{36}$/i.test(turn.operationId) || typeof turn.text !== "string" || !turn.text.trim()
         || new TextEncoder().encode(turn.text).length > 8192 || !Number.isSafeInteger(turn.expectedVersion) || turn.expectedVersion < 0
         || !Number.isSafeInteger(turn.expectedDraftVersion) || turn.expectedDraftVersion < 0
-        || !(turn.conversationId === null || typeof turn.conversationId === "string") || !turn.target) continue;
+        || !(turn.conversationId === null || typeof turn.conversationId === "string") || !turn.target
+        || turn.intent !== undefined && !["discuss", "prepare"].includes(turn.intent)) continue;
       const target = turn.target;
       if (target.kind === "create" ? turn.conversationId !== null : !["revise", "resume"].includes(target.kind)
         || typeof target.extensionId !== "string" || !target.extensionId || target.kind === "resume" && !turn.conversationId
@@ -150,6 +153,7 @@ function authoringReason(code: string | null | undefined) {
   if (code === "CONVERSATION_LIMIT") return "An earlier authoring policy stopped this request. Your saved conversations remain available.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
   if (code === "REVIEW_NOT_READY") return "The exact saved review could not be confirmed. Ask Studio to check the current changes, or keep discussing the draft.";
+  if (code === "DISCUSSION_ONLY") return "This message was discussion-only. Use Prepare changes when you want to create or revise this draft.";
   return "AI authoring is unavailable for this request. Check saved state; native tasks and saved work remain available.";
 }
 type Props = {
@@ -167,6 +171,7 @@ type Props = {
   recoveryKey: string;
   projects: readonly { id: string; name: string }[];
   targeted: (target: StudioTarget) => void;
+  openCustomization: (target: StudioTarget) => void;
   unavailable: () => void;
   task?: { title: string; status: "open" | "completed" };
 };
@@ -281,6 +286,7 @@ function conversationMessage(id: string, item: Conversation["messages"][number])
   return { id: `ai:${id}:${item.id}`, conversationId: id, who: item.role === "user" ? "You" : "Studio",
     text: item.role === "user" && item.text.startsWith(continuationPrefix) ? "Continue from saved work." : item.text,
     evidenceId: item.role === "assistant" ? item.receipt?.evidenceId : undefined,
+    openCustomization: item.role === "assistant" ? item.openCustomization : undefined,
     context: item.role === "user" && item.text.startsWith(continuationPrefix) ? item.text : undefined };
 }
 
@@ -363,7 +369,7 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
       <div className="rs-setup-fields">
         <h2 id="assistant-setup-title">Set up the assistant</h2>
         <p>These settings are shared by all three people in this demo. Each person keeps their own customizations.</p>
-        <p>The AI service receives your messages, a description of what the app can do, your draft customization, sample cases and filtered results. Sending a message may cost money.</p>
+        <p>The AI service receives your messages, draft and example checks. It can also read your saved customizations and relevant tasks in bounded pages, including task notes when needed. It cannot read another demo person’s work. Sending a message may cost money.</p>
         {reading && <p role="status">Checking current settings…</p>}
         {readFailed && <p role="alert">Assistant settings could not be checked. <button type="button" disabled={waiting || reading} onClick={() => void read(!setup)}>Retry status</button></p>}
         {error && <p className="error" role="alert">{error}</p>}
@@ -456,7 +462,7 @@ function CustomizationName({ ownerId, itemId, name, suggestion, disabled, reques
   </>;
 }
 
-export default function Studio({ request, changed, beforeSelectionChange, back, backToTasks, createNew, backLabel, target, ownerId, draftScope, drafts, recoveryKey, projects, targeted, unavailable, task }: Props) {
+export default function Studio({ request, changed, beforeSelectionChange, back, backToTasks, createNew, backLabel, target, ownerId, draftScope, drafts, recoveryKey, projects, targeted, openCustomization, unavailable, task }: Props) {
   const initialTarget = useRef(target);
   const extensionId = useRef(target.extensionId);
   const requestedConversation = useRef<string | null>(null);
@@ -566,8 +572,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const locked = useRef(false);
   const serial = useRef(0);
   const stateEpoch = useRef(0);
-  const callbacks = useRef({ request, changed, beforeSelectionChange, targeted, unavailable });
-  callbacks.current = { request, changed, beforeSelectionChange, targeted, unavailable };
+  const callbacks = useRef({ request, changed, beforeSelectionChange, targeted, openCustomization, unavailable });
+  callbacks.current = { request, changed, beforeSelectionChange, targeted, openCustomization, unavailable };
   function keepDraft(key: string, value: string | null) {
     drafts.set(key, value);
     try {
@@ -1368,7 +1374,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         if (existing < 0) merged.splice(position, 0, item);
         else {
           const previous = merged[existing];
-          if (item.text !== previous.text || item.who !== previous.who || item.context !== previous.context || item.evidenceId !== previous.evidenceId)
+            if (item.text !== previous.text || item.who !== previous.who || item.context !== previous.context || item.evidenceId !== previous.evidenceId
+              || item.openCustomization?.extensionId !== previous.openCustomization?.extensionId || item.openCustomization?.name !== previous.openCustomization?.name)
             merged[existing] = item;
           position = existing;
         }
@@ -1466,8 +1473,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const operationId = crypto.randomUUID();
     if (contextRecovery) setContextContinuation({ conversationId: conversation.id, expectedVersion: conversation.version });
     void submitAuthoring({ target: { kind: "resume", extensionId: extensionId.current! }, conversationId: conversation.id,
-      operationId, text: "Continue from saved work. Ask before changing any independent examples.",
-      expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion });
+       operationId, text: "Continue from saved work. Ask before changing any independent examples.",
+      expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion, intent: "discuss" });
   }
   async function recoverTurn(input: Turn, turn: number) {
     let recoveredResponse = false;
@@ -1913,13 +1920,32 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     if (authoring?.availability.available) {
       if (/[\uD800-\uDFFF]/u.test(text) || new TextEncoder().encode(text).length > 8192) { setAuthoringError("Use valid text within the 8 KiB description limit."); return; }
       const target = turnTarget(), resumed = target.kind === "resume" ? conversation : null;
-      const input = { target, conversationId: resumed?.id ?? null, operationId: crypto.randomUUID(), text,
-        expectedVersion: resumed?.version ?? 0, expectedDraftVersion: state!.draftVersion };
+      const intent = (event.nativeEvent as SubmitEvent).submitter instanceof HTMLButtonElement
+        && ((event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement).value === "prepare" ? "prepare" : "discuss";
+      const input: Turn = { target, conversationId: resumed?.id ?? null, operationId: crypto.randomUUID(), text,
+        expectedVersion: resumed?.version ?? 0, expectedDraftVersion: state!.draftVersion, intent };
       submittedDraft.current = { operationId: input.operationId, edit: draftEdits.current };
       draftValue.current = null;
       keepDraft(draftBinding.current.key, null);
       void submitAuthoring(input);
       return;
+    }
+  }
+  async function openOfferedCustomization(offered: OpenCustomization) {
+    if (locked.current || activeAuthoring || pendingTurn || restart) return;
+    locked.current = true;
+    const turn = ++serial.current, currentItem = extensionId.current;
+    setBusy("Checking customization…"); setError("");
+    try {
+      const saved = await callbacks.current.request<State>(extensionPath(offered.extensionId), "GET", undefined, authoringLifetime.current.signal);
+      if (!mounted.current || serial.current !== turn || extensionId.current !== currentItem) return;
+      if (saved.owner.id !== ownerId || saved.extension?.id !== offered.extensionId || saved.extension.name !== offered.name)
+        throw new Error("Customization changed");
+      callbacks.current.openCustomization({ extensionId: saved.extension.id });
+    } catch {
+      if (mounted.current && serial.current === turn) setError("That customization changed or is unavailable. Choose it from Customizations; your current conversation and unsent text are kept.");
+    } finally {
+      if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); }
     }
   }
   function chooseStarter(request: string) {
@@ -2008,7 +2034,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button id="studio-earlier-messages" disabled={!!busy} onClick={() => void earlierMessages()}>{earlierMessagesFailed ? "Retry earlier messages" : "Load earlier messages"}</button>
           </div>}
           {entry === "start" && <article className="rs-message rs-start">
-            <strong>Daymark assistant</strong><h2>{workflowHost ? "What would you like Daymark to do for you?" : "What would you like to change about your work?"}</h2>
+             <strong>Daymark assistant</strong><h2>{workflowHost ? "What would you like Daymark to do for you?" : "What would you like to change about your work?"}</h2>
+             <p>Ask about your saved customizations or tasks, or explore a useful next rule. I’ll check relevant details rather than assume what a saved name means.</p>
             {availableStarters.length > 0 ? <><p>Choose a starting point, then make it yours.</p><div className="rs-starters">{availableStarters.map(starter =>
               <button key={starter.label} type="button" onClick={() => chooseStarter(starter.text)}>{starter.label}</button>)}</div><p role="status">{starterNotice}</p></>
               : <p>Tell me what you want to happen. We’ll check what Daymark can support and work through useful examples together.</p>}
@@ -2022,7 +2049,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             const latestExplanation = message.who === "Studio" && !message.evidenceId && !!message.conversationId
               && message.conversationId === conversation?.id && messages.at(-1)?.id === message.id && reviewAllowed;
             return <article className={`rs-message ${message.who === "You" ? "rs-yours" : "rs-assistant"}`} data-conversation-message={!!message.conversationId || undefined} key={message.id}>
-              <strong>{message.who === "Studio" ? "Daymark assistant" : message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}
+               <strong>{message.who === "Studio" ? "Daymark assistant" : message.who}</strong><p>{message.text}</p>{message.context && <details><summary>Earlier discussion included</summary><pre aria-label="Included earlier discussion">{message.context}</pre></details>}
+               {message.openCustomization && <button className="rs-link" disabled={!!busy || activeAuthoring || !!pendingTurn || !!restart}
+                 onClick={() => void openOfferedCustomization(message.openCustomization!)}>Open “{message.openCustomization.name}”</button>}
               {message.evidenceId && (currentReceipt
                 ? <button className="rs-link" disabled={!reviewAllowed} onClick={() => void openReview(undefined, "studio-saved-change")}>See proposed change</button>
                 : <button data-evidence-link={message.evidenceId} disabled={!!busy} className="rs-link" onClick={() => void (inlineAvailable && message.evidenceId === failedEvidenceId
@@ -2173,7 +2202,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
               event.preventDefault();
               if (!event.repeat && !sendDisabled && authoring?.availability.available && text.trim() && !locked.current) event.currentTarget.form?.requestSubmit();
             }} />
-          <button disabled={!authoring?.availability.available || sendDisabled || !text.trim()}>Send</button></form>
+          <div className="rs-send-actions"><button disabled={!authoring?.availability.available || sendDisabled || !text.trim()}>Send</button>
+            <button type="submit" value="prepare" disabled={!authoring?.availability.available || sendDisabled || !text.trim()}>Prepare changes</button></div></form>
+        {!retired && !historyView && !restart && <p className="rs-composer-help">Send discusses only. Prepare changes updates “{state?.extension?.name ?? "New customization"}” and can check examples. Open another customization first to change it. Approval and turning it on stay separate.</p>}
         {!retired && !restart && draftStorageUnavailable && draftText && <p className="rs-setup-notice" role="status">This browser could not keep this draft for reload. Your text is kept in this tab while you stay signed in.</p>}
         <p hidden={retired || !!restart} className="rs-chat-note">{authoring?.availability.available ? "Ask about this proposal or describe a change." : "You decide whether to approve and turn on a change."}</p>
       </section>

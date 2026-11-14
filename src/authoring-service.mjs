@@ -5,13 +5,14 @@ import { readAuthoringConfig, LEGACY_OPENAI_RESERVE_MICROS, OPENAI_RESERVE_MICRO
 import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
 import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './authoring-agent.mjs';
 import { authoringExample, businessContext, evidenceSummary } from './authoring-example.mjs';
+import { createAuthoringContext } from './authoring-context.mjs';
 
 export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_INVALID', 'AI_CREDENTIALS_MISSING', 'HOST_UNAVAILABLE', 'LEGACY_CUSTOMIZATION_RETIRED',
   'AUTHORING_GUIDE_UNAVAILABLE',
   'SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'CONVERSATION_LIMIT', 'CONFIG_CHANGED', 'BYTE_LIMIT', 'CONTEXT_LIMIT', 'TOKEN_LIMIT', 'TIME_LIMIT', 'EXPIRED',
   'RUN_INTERRUPTED', 'CANCELLED', 'STALE_CONTEXT', 'STALE_DRAFT', 'STALE_CONVERSATION', 'AI_BUSY', 'PROVIDER_TIMEOUT',
   'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', 'PROVIDER_RESPONSE_INVALID',
-  'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
+  'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'DISCUSSION_ONLY', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
 const codeFor = value => AUTHORING_CODES.includes(value) ? value : 'TOOL_FAILED';
 const safeMessage = code => ({
   AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create a customization. Native tasks remain available.',
@@ -27,6 +28,7 @@ const safeMessage = code => ({
   CONVERSATION_LIMIT: 'The owner conversation limit has been reached.', CONFIG_CHANGED: 'The AI configuration changed. Check saved state before sending again.',
   BUDGET_EXHAUSTED: 'This authoring run reached its resource limit.', REVIEW_NOT_READY: 'Run the current independent examples before offering review.',
   INVALID_TOOL_ARGUMENTS: 'The assistant could not finish preparing the example checks. Saved work is kept. Continue explicitly to try again.',
+  DISCUSSION_ONLY: 'This message only discusses saved work. Use Prepare changes to prepare or check a draft. Your rules and tasks have not changed.',
 }[code] ?? 'Authoring could not finish safely. Check saved state before continuing.');
 const error = (status, code) => { const value = new AppError(status, safeMessage(code)); value.code = codeFor(code); return value; };
 const stop = code => { throw new AuthoringError(code); };
@@ -251,7 +253,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       WHERE l.owner_id=? AND l.extension_id=? AND o.operation_id=? LIMIT 1`).get(owner, extensionId, operationId);
   }
   function validate(input) {
-    if (!object(input) || Object.keys(input).length !== 6 || !['conversationId', 'operationId', 'text', 'expectedVersion', 'expectedDraftVersion', 'target'].every(key => Object.hasOwn(input, key))
+    if (!object(input) || Object.keys(input).length !== (Object.hasOwn(input, 'intent') ? 7 : 6) || !['conversationId', 'operationId', 'text', 'expectedVersion', 'expectedDraftVersion', 'target'].every(key => Object.hasOwn(input, key))
+        || Object.hasOwn(input, 'intent') && !['discuss', 'prepare'].includes(input.intent)
         || !(input.conversationId === null || token(input.conversationId)) || !token(input.operationId)
         || typeof input.text !== 'string' || !input.text.isWellFormed() || !input.text.trim() || Buffer.byteLength(input.text) > 8192
         || !integer(input.expectedVersion) || !integer(input.expectedDraftVersion)) throw error(400, 'INVALID_TOOL_ARGUMENTS');
@@ -276,6 +279,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       const result = state.lastResult; const id = ctx.runId + '-assistant';
       if (result && !view.messages.some(message => message.id === id)) view.messages.push({ id, role: 'assistant',
         text: result.message ?? safeMessage(codeFor(result.code)), kind: result.status === 'AWAITING_USER' ? 'clarification' : result.review ? 'review' : 'text',
+        ...(result.openCustomization && { openCustomization: result.openCustomization }),
         ...(result.review && { receipt: { revisionId: result.review.revisionId, draftVersion: result.review.draftVersion,
           suiteDigest: result.review.suiteDigest, evidenceId: result.review.evidenceId } }) });
       view.code = result?.code ? codeFor(result.code) : null;
@@ -391,7 +395,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const authorize = () => { if (!ctx.context.current()) stop('STALE_CONTEXT'); };
     const mapped = () => draftHandles(lifecycle.state(ctx.owner, ctx.extensionId));
     const invoke = (work, scenario = false) => tracked(ctx, async () => {
-      authorize(); try { return await work(); }
+      authorize(); if (ctx.input.intent === 'discuss') stop('DISCUSSION_ONLY');
+      try { return await work(); }
       catch (cause) {
         if (cause instanceof AuthoringError) throw cause;
         if (cause?.code === 'LEGACY_CUSTOMIZATION_RETIRED') stop(cause.code);
@@ -424,12 +429,12 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       if (!same(current, handle) || proof.revisionId !== handle.revisionId || proof.identity?.suiteDigest !== handle.simulationSuiteIdentity) stop('STALE_DRAFT');
       return reviewFor(current, proof);
     };
-    const currentUse = current => {
+    const currentUse = (current, extensionId = ctx.extensionId) => {
       if (!current.extension?.hookId) return { generation: null, relation: 'none', selected: null,
         checkedSummary: null, unavailableReason: 'TRIGGER_UNRESOLVED' };
       const selection = current.selection, revision = selection.revision;
       const result = { generation: selection.generation,
-        relation: !revision ? 'none' : revision.extensionId === ctx.extensionId ? 'thisitem' : 'anotheritem',
+        relation: !revision ? 'none' : revision.extensionId === extensionId ? 'thisitem' : 'anotheritem',
         selected: revision ? { extensionId: revision.extensionId, name: revision.extensionName, revisionId: revision.id,
           provenance: revision.provenance, eligible: selection.eligible === true, approvedEvidenceId: selection.approvedEvidenceId ?? null } : null,
         checkedSummary: null, unavailableReason: null };
@@ -442,7 +447,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       if (revision.provenance !== 'customer') return unavailable('NO_CUSTOMER_APPROVAL');
       if (!selection.approvedEvidenceId) return unavailable('APPROVAL_UNAVAILABLE');
       try {
-        const proof = lifecycle.evidence(ctx.owner, selection.approvedEvidenceId, ctx.extensionId);
+        const proof = lifecycle.evidence(ctx.owner, selection.approvedEvidenceId, extensionId);
         if (proof.id !== selection.approvedEvidenceId || proof.revisionId !== revision.id) return unavailable('APPROVED_PROOF_MISMATCH');
         if (proof.passed !== true || !Array.isArray(proof.reports) || !proof.reports.length
             || proof.reports.some(item => !object(item) || typeof item.id !== 'string' || !object(item.expected) || typeof (item.expected.outcome ?? item.expected).classification !== 'string'
@@ -452,8 +457,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         if (proof.reports.some(item => !object(item.report.observed)
           || !['CONFIRMED', 'NONE', 'UNKNOWN', 'NOT_OBSERVED'].includes(item.report.observed.effect)
           || !['createdTasks', 'updatedTasks'].every(key => item.report.observed[key] === null || Array.isArray(item.report.observed[key])))) return unavailable('APPROVED_PROOF_UNUSABLE');
-        const source = lifecycle.source(ctx.owner, revision.id, ctx.extensionId);
-        if (source.extensionId !== ctx.extensionId || source.revisionId !== revision.id || !Array.isArray(source.cases) || !source.cases.length) return unavailable('APPROVED_SOURCE_MISMATCH');
+        const source = lifecycle.source(ctx.owner, revision.id, extensionId);
+        if (source.extensionId !== extensionId || source.revisionId !== revision.id || !Array.isArray(source.cases) || !source.cases.length) return unavailable('APPROVED_SOURCE_MISMATCH');
         source.cases.forEach(text => JSON.parse(text));
         if (Object.hasOwn(proof, 'summary') && !proof.summary) return unavailable('APPROVED_PROOF_UNAVAILABLE');
         result.checkedSummary = { scope: 'synthetic examples, not live task observations', evidenceId: proof.id,
@@ -463,6 +468,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       } catch { return unavailable('APPROVED_PROOF_UNAVAILABLE'); }
     };
     return {
+      ...createAuthoringContext({ db, lifecycle, owner: ctx.owner, extensionId: ctx.extensionId,
+        intent: ctx.input.intent ?? 'prepare', authorize, currentUse }),
       readDraft: () => { authorize(); return mapped(); },
       projects: before => { authorize(); try { return projects(ctx.owner, before); } catch (cause) {
         if (cause.code === 'INVALID_TOOL_ARGUMENTS') stop('INVALID_TOOL_ARGUMENTS'); throw cause;
@@ -569,7 +576,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       baseRevisionId: link?.base_revision_id ?? (input.target.kind === 'revise' ? input.target.baseRevisionId : null),
       baseGeneration: link?.base_generation ?? (input.target.kind === 'revise' ? input.target.selectionGeneration : null),
       tracked: new Set(), admitted: false };
-    ctx.context = { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId,
+    ctx.context = { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId, intent: input.intent ?? 'prepare',
       budget: { remainingMicros: Math.max(0, config.maxMicros - effectiveHeld()) },
       current: () => {
         if (closing || controller.signal.aborted || lease.current() !== true) return false;
@@ -617,7 +624,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     live.set(ctx.runId, ctx);
     const provider = { ...native, complete: args => tracked(ctx, () => native.complete(args)) };
     const task = runAuthoringTurn({ provider, host: ctx.host, context: ctx.context, state: ctx.state,
-      input: { id: input.operationId, text: input.text, expectedVersion: input.expectedVersion },
+      input: { id: input.operationId, text: input.text, expectedVersion: input.expectedVersion, intent: input.intent ?? 'prepare' },
       priorUserMessages: history, signal: ctx.controller.signal, instructions: ctx.instructions });
     ctx.promise = (async () => {
       let result;

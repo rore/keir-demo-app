@@ -75,7 +75,7 @@ test('a task customization is authored, checked, approved, used and deleted thro
     await ui.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
     await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(`Confirmed: completing a task in ${fixture.metadata.projectName} should create ${fixture.metadata.title}; other projects should create nothing.`);
-    await ui.getByRole('button', { name: 'Send', exact: true }).click();
+    await ui.getByRole('button', { name: 'Prepare changes', exact: true }).click();
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible();
     await openSavedChanges(page);
     await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
