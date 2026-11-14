@@ -19,6 +19,7 @@ async function openSaved(page, fixture, name) {
   else await destination.selectOption('customizations');
   await page.getByRole('article', { name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/, exact: true }).click();
   await expect(studio(page).getByRole('heading', { name, exact: true })).toBeVisible();
+  await studio(page).getByRole('button', { name: 'More', exact: true }).click();
 }
 
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }, { width: 683, height: 384 }]) {
@@ -35,7 +36,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       const heading = ui.getByRole('heading', { name, exact: true });
       await expect(heading).toHaveAttribute('title', name);
       const geometry = await heading.evaluate(node => ({ height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight) }));
-      expect(geometry.height).toBeLessThanOrEqual(geometry.line + 1);
+      expect(geometry.height).toBeLessThanOrEqual(geometry.line * 3 + 1);
+      await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeInViewport({ ratio: 1 });
       await expect(ui.getByRole('button', { name: 'More', exact: true })).toBeInViewport({ ratio: 1 });
       await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).scrollIntoViewIfNeeded();
       await expect(ui.getByRole('button', { name: 'Back to Customizations', exact: true })).toBeInViewport({ ratio: 1 });
@@ -140,7 +142,7 @@ test('saved behavior illustrates task creation and checked examples keep authore
     fixture.db.prepare('UPDATE authoring_conversations SET state=? WHERE id=?').run(JSON.stringify(state), conversation.id);
     await page.goto(fixture.origin + '/#customization=' + id);
     const ui = studio(page), decision = ui.getByRole('article', { name: 'Current decision', exact: true });
-    const invitation = ui.getByRole('button', { name: 'See proposed change', exact: true }).first();
+    const invitation = ui.locator('#studio-view-saved');
     await openSavedChanges(page);
     await expect(ui.getByRole('article', { name: 'About this rule', exact: true })).toContainText(task.metadata.title);
     const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });

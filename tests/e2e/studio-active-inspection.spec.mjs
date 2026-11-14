@@ -2,9 +2,10 @@ import { test, expect } from '@playwright/test';
 import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
-import { TASK_HOOK } from '../../src/extension-catalog.mjs';
+import { TASK_HOOK, loadHost } from '../../src/extension-catalog.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
+import { taskWorkflowSource, taskWorkflowCases } from '../fixtures/task-workflow-source.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const activeView = page => studio(page).getByRole('article', { name: 'Version in use', exact: true });
@@ -47,7 +48,7 @@ async function seed(page, fixture, activeAlternative = false) {
   return { path, active, state, draftProof, activeTitle, draftTitle };
 }
 async function openActive(page) {
-  await studio(page).getByRole('button', { name: 'View what’s in use', exact: true }).click();
+  await studio(page).locator('#studio-view-active').click();
 }
 async function openProof(page, id) {
   const ui = studio(page);
@@ -149,6 +150,47 @@ for (const change of ['owner', 'selection']) test(`a late active proof cannot su
     }
     expect(fixture.requests).toHaveLength(0);
   } finally { release?.(); await fixture.close(); }
+});
+
+for (const activeWorkflow of ['onboarding', 'intake']) test(`clock-change coverage follows ${activeWorkflow === 'onboarding' ? 'elapsed active / no-deadline draft' : 'no-deadline active / elapsed draft'}`, async ({ page }) => {
+  const fixture = await startAuthoringFixture({ unconfigured: true });
+  try {
+    await page.goto(fixture.origin);
+    await page.getByRole('button', { name: 'Continue as Maya' }).click();
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Timing coverage' });
+    const path = 'extensions/' + extensionId, host = loadHost('TaskCreated');
+    const options = { projectId: fixture.metadata.projectId, destinationProjectId: fixture.metadata.otherProjectId };
+    let state = await api(page, path);
+    const handle = () => ({ revisionId: state.draft.id, draftVersion: state.draftVersion });
+    for (const workflow of [activeWorkflow, activeWorkflow === 'onboarding' ? 'intake' : 'onboarding']) {
+      state = await api(page, path + '/compile', { hookId: 'TaskCreated', source: taskWorkflowSource(host, workflow, options).toString(), draftVersion: state.draftVersion });
+      state = await api(page, path + '/scenarios', { ...handle(), cases: taskWorkflowCases(host, workflow, options) });
+      state = await api(page, path + '/simulate', handle());
+      expect(state.evidence.passed).toBe(true);
+      if (workflow === activeWorkflow) {
+        state = await api(page, path + '/approve', { ...handle(), evidenceId: state.evidence.id });
+        state = await api(page, path + '/activate', { ...handle(), generation: state.selection.generation, evidenceId: state.approvedEvidenceId });
+      }
+    }
+    expect(state.selection.revision.id).not.toBe(state.draft.id);
+    await page.goto(`${fixture.origin}/#customization=${extensionId}`);
+    await expect(studio(page).getByRole('heading', { name: 'Timing coverage', exact: true })).toBeVisible();
+    // Wait for the current draft description too, so the old cross-revision leak cannot pass by racing its load.
+    await expect(studio(page).locator('.rs-brief-summary')).toContainText(activeWorkflow === 'onboarding' ? 'Priority High' : '7 days');
+    await openActive(page);
+    await expect(activeView(page).getByLabel('Checked behavior in use', { exact: true })).toBeVisible();
+    const caveat = 'They do not show whether this fixed elapsed duration fits your needs around clock changes.';
+    if (activeWorkflow === 'onboarding') await expect(activeView(page).locator('.rs-coverage')).toContainText(caveat);
+    else await expect(activeView(page).locator('.rs-coverage')).not.toContainText(caveat);
+    await activeView(page).getByRole('button', { name: 'Return to proposal', exact: true }).click();
+    await openSavedChanges(page);
+    const coverage = studio(page).getByRole('article', { name: 'Current decision', exact: true }).locator('.rs-coverage');
+    if (activeWorkflow === 'onboarding') await expect(coverage).not.toContainText(caveat);
+    else await expect(coverage).toContainText(caveat);
+    expect(await api(page, path)).toEqual(state);
+    expect(fixture.requests).toHaveLength(0);
+  } finally { await fixture.close(); }
 });
 
 test('operator selection has an honest summary fallback without invented approval evidence', async ({ page }) => {

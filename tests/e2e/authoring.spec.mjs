@@ -200,7 +200,7 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('Which project should this customization cover?', { exact: true })).toBeVisible({ timeout: 10_000 });
   expect(Object.keys(calls.turns[0]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'intent', 'operationId', 'target', 'text']);
-  expect(calls.turns[0]).toMatchObject({ conversationId: null, intent: 'discuss', text: 'Suggest a task customization for my projects', expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'revise', extensionId: demo.extensionIds.maya, baseRevisionId: null, selectionGeneration: 0 } });
+  expect(calls.turns[0]).toMatchObject({ conversationId: null, intent: 'auto', text: 'Suggest a task customization for my projects', expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'revise', extensionId: demo.extensionIds.maya, baseRevisionId: null, selectionGeneration: 0 } });
   expect(typeof calls.turns[0].operationId).toBe('string');
   expect(await ui.getByText('Checking the submitted task customization request.', { exact: true }).count()).toBe(1);
   expect(firstPolls).toBeGreaterThanOrEqual(2);
@@ -209,7 +209,7 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('What should the next example cover?', { exact: true })).toBeVisible({ timeout: 10_000 });
   expect(Object.keys(calls.turns[1]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'intent', 'operationId', 'target', 'text']);
-  expect(calls.turns[1]).toMatchObject({ conversationId: 'conversation-1', intent: 'discuss', text: 'Use open tasks as the first example', expectedVersion: 1, expectedDraftVersion: 0, target: { kind: 'resume', extensionId: demo.extensionIds.maya } });
+  expect(calls.turns[1]).toMatchObject({ conversationId: 'conversation-1', intent: 'auto', text: 'Use open tasks as the first example', expectedVersion: 1, expectedDraftVersion: 0, target: { kind: 'resume', extensionId: demo.extensionIds.maya } });
   expect(typeof calls.turns[1].operationId).toBe('string');
   expect(calls.turns[1].operationId).not.toBe(calls.turns[0].operationId);
   expect(await ui.getByText('Checking the follow-up request.', { exact: true }).count()).toBe(1);
@@ -393,11 +393,11 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   await openSavedItem(page, demo.extensionIds.maya);
   const ui = studio(page);
   await expect(ui.getByText('Inspect the exact offered run.', { exact: true })).toBeVisible();
-  const heading = ui.locator('.rs-chat-note');
-  await expect(heading).toContainText('Ask about this proposal or describe a change.');
+  const heading = ui.locator('#studio-title');
+  await expect(heading).toHaveText(suite.extension.name);
   await expect(heading).not.toContainText(available.provider);
   await expect(heading).not.toContainText(available.model);
-  const offerButton = authoring(page).getByRole('button', { name: eligible ? 'See proposed change' : 'View earlier examples', exact: true }).first();
+  const offerButton = eligible ? authoring(page).locator('#studio-view-saved') : authoring(page).getByRole('button', { name: 'View earlier examples', exact: true }).first();
   await expect(offerButton).toBeInViewport();
   await expect(offerButton).toBeEnabled();
   if (width === 683) {

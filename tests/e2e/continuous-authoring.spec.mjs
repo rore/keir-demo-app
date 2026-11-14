@@ -436,7 +436,7 @@ test('reloading an accepted context continuation keeps the prior decision hidden
   await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
   await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
   await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
-  await expect(ui.getByLabel('Customization status', { exact: true }).getByText('Approved · Not on yet', { exact: true })).toBeVisible();
+  await expect(ui.locator('#studio-view-saved')).toHaveText('Draft: approved, not on');
   // Compiled UI with a synthetic accepted run; reload reads status without repeating the paid request.
   await page.screenshot({ path: testInfo.outputPath('context-continuation-running-after-reload.png'), fullPage: true });
   expect(turns).toHaveLength(1);

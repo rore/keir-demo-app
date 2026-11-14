@@ -86,12 +86,13 @@ for (const hook of ['TaskBeforeCreate', 'TaskCreated', 'TaskCompleted']) {
       await expect(card.getByRole('heading', { name, exact: true })).toBeVisible();
       await page.locator('#edit-' + extensionId).click();
       await assertFacts(summary(page), facts);
+      await studio(page).locator('#studio-view-saved').click();
       const primaryFacts = summary(page).getByRole('definition');
       await expect(primaryFacts).toHaveCount(3);
       for (const fact of await primaryFacts.all()) await expect(fact).toBeVisible();
       if (hook === 'TaskBeforeCreate') await expect(summary(page).getByText('Stops saving when', { exact: true })).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath(`${hook}-summary.png`) });
-      await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+      await studio(page).locator('#studio-view-saved').click();
       await expect(review(page)).toContainText('Example tasks; your tasks are unchanged.');
       const nextStep = review(page).getByRole('button', { name: 'Go to approval', exact: true });
       await expect(nextStep).toBeVisible();
@@ -118,7 +119,7 @@ for (const hook of ['TaskBeforeCreate', 'TaskCreated', 'TaskCompleted']) {
       await page.locator('#edit-' + extensionId).click();
       await assertFacts(summary(page), facts);
       expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeRows);
-      await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+      await studio(page).locator('#studio-view-saved').click();
       await turnOn(page, hook);
       await collection(page);
       await assertFacts(card, facts);
@@ -140,7 +141,7 @@ test('created task values are separate from the trigger and naming requires an e
       source: fixture.metadata.source, cases: fixture.metadata.cases,
     }, name);
     await collection(page); await page.locator('#edit-' + extensionId).click();
-    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    await studio(page).locator('#studio-view-saved').click();
     const example = review(page).getByRole('region', { name: 'Triggering task and created example', exact: true });
     await expect(example.getByText('Triggering example task', { exact: true })).toBeVisible();
     const created = example.locator('.rs-task-after');
@@ -151,15 +152,23 @@ test('created task values are separate from the trigger and naming requires an e
     await expect(created.locator('.rs-changed-field')).toHaveCount(1);
     await expect(example).not.toContainText('Before this change');
 
+    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
     const rename = studio(page).getByRole('button', { name: 'Rename', exact: true });
     await rename.click();
     const form = studio(page).getByRole('form', { name: 'Rename customization', exact: true });
     await expect(form.getByLabel('Name', { exact: true })).toHaveValue(name);
     for (const [width, height] of [[390, 844], [683, 384]]) {
       await page.setViewportSize({ width, height });
+      await expect(form.getByLabel('Name', { exact: true })).toBeFocused();
       await expect(form.getByLabel('Name', { exact: true })).toBeInViewport();
-      await expect(form.getByRole('button', { name: 'Save', exact: true })).toBeInViewport();
-      await expect(form.getByRole('button', { name: 'Use suggested name', exact: true })).toBeInViewport();
+      await form.getByLabel('Name', { exact: true }).press('Tab');
+      await expect(form.getByRole('button', { name: 'Save', exact: true })).toBeFocused();
+      await expect(form.getByRole('button', { name: 'Save', exact: true })).toBeInViewport({ ratio: 1 });
+      await page.keyboard.press('Tab'); await expect(form.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(form.getByRole('button', { name: 'Use suggested name', exact: true })).toBeFocused();
+      await expect(form.getByRole('button', { name: 'Use suggested name', exact: true })).toBeInViewport({ ratio: 1 });
+      await form.getByLabel('Name', { exact: true }).focus();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath(`explicit-name-${width}.png`) });
     }
@@ -177,6 +186,7 @@ test('created task values are separate from the trigger and naming requires an e
     await form.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(studio(page).locator('#studio-title')).toHaveText(suggestion);
     expect(await currentName()).toBe(suggestion);
+    await studio(page).locator('#studio-view-saved').click();
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
@@ -200,7 +210,7 @@ test('tag updates distinguish a recorded empty starting list from an unrecorded 
     });
     const { extensionId } = await save(page, fixture, headers, 'TaskCreated', { source: JSON.stringify(source), cases }, 'Tag new tasks');
     await collection(page); await page.locator('#edit-' + extensionId).click();
-    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    await studio(page).locator('#studio-view-saved').click();
     const after = review(page).locator('.rs-before-after .rs-task-after');
     await expect(after).toContainText('Tags: next');
     await expect(after).not.toContainText('complete resulting tag list is unknown');
@@ -213,7 +223,7 @@ test('tag updates distinguish a recorded empty starting list from an unrecorded 
       await route.fulfill({ response, json: body });
     });
     await page.reload();
-    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    await studio(page).locator('#studio-view-saved').click();
     await expect(after).toContainText('Added tag: next');
     await expect(after).toContainText('Starting tags were not recorded; the complete resulting tag list is unknown.');
     await expect(after).not.toContainText('Tags: next');
@@ -230,7 +240,7 @@ test('collection keeps selected A separate from proposed B and resolves names on
     const headers = await signIn(page, fixture), { projectId, otherProjectId, projectName } = fixture.metadata;
     const name = 'My explicit saved check', first = await save(page, fixture, headers, 'TaskBeforeCreate', guardProgram(projectId, otherProjectId), name);
     await collection(page); await page.locator('#edit-' + first.extensionId).click();
-    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    await studio(page).locator('#studio-view-saved').click();
     await turnOn(page, 'TaskBeforeCreate');
     const next = taskCreateGuardFixture({ host: loadHost('TaskBeforeCreate'), rule: 'client-due', projectId, otherProjectId });
     const second = await save(page, fixture, headers, 'TaskBeforeCreate', next, name, 'maya', first.extensionId);
@@ -288,7 +298,7 @@ test('unexpected BLOCKED stays a mismatch and never borrows the deliberate failu
     allowed.report.native = structuredClone(unavailable.report.native);
     fixture.db.prepare('UPDATE extension_evidence SET payload=? WHERE id=?').run(JSON.stringify(payload), checked.evidence.id);
     await collection(page); await page.locator('#edit-' + extensionId).click();
-    await summary(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    await studio(page).locator('#studio-view-saved').click();
     const wrong = review(page).getByRole('article', { name: 'Example: New task example 1', exact: true });
     await expect(wrong).toContainText('Needs another check');
     await expect(wrong).not.toContainText('This example deliberately');

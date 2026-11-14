@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSimulation } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { loadHost } from '../../src/extension-catalog.mjs';
@@ -88,7 +89,8 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         await page.goto(`${fixture.origin}/#customization=${extensionId}`);
         const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
         const about = studio.getByRole('article', { name: 'About this rule', exact: true });
-        await expect(studio.getByLabel('Customization status')).toContainText('Checks before adding');
+        await expect(studio.getByLabel('Customization status')).toContainText('Draft: checked, not on');
+        await studio.locator('#studio-view-saved').click();
         await expect(about).toContainText('Before a new task is saved.');
         await expect(about).toContainText('This rule can stop a new task from being added.');
         await expect(about).not.toContainText('See the example tasks and exact rule for its requirements.');
@@ -99,8 +101,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
           await expect(about).toContainText(`the task is in “${projectName}” and its priority is Normal`);
           await expect(about).not.toContainText('missing priority');
         }
-        await about.getByRole('button', { name: 'View simulation', exact: true }).click();
-        const review = studio.getByRole('article', { name: 'Current decision', exact: true });
+        const review = await openSimulation(page);
         await expect(review.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
         await expect(review).toContainText('Example tasks; your tasks are unchanged.');
         const example = id => review.getByRole('article', { name: evidence.summary.cases.find(item => item.id === id)?.simulatedFailure
@@ -126,12 +127,13 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         expect(afterEvents()).toEqual(originalEvents);
         expect(fixture.db.prepare('SELECT evidence_id FROM extension_approvals WHERE owner_id=? AND revision_id=?').get(owner, checked.draft.id).evidence_id).toBe(checked.evidence.id);
         await use.click();
-        await expect(studio.getByLabel('Customization status')).toContainText('On for new tasks');
+        await expect(studio.locator('#studio-view-active')).toContainText('On: this version');
         await expect(studio.locator('#studio-use-confirmed')).toBeFocused();
         expect(selected().revision_id).toBe(checked.draft.id);
         expect(selected().generation).toBe(originalSelection.generation + 1);
         expect(afterEvents()).toEqual(originalEvents);
         expect(counts()).toEqual(originalCounts);
+        await studio.getByRole('button', { name: 'More', exact: true }).click();
         await studio.getByRole('button', { name: 'Back to tasks', exact: true }).click();
         await selectProject(page, projectName);
 

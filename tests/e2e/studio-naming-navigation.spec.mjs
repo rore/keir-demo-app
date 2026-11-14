@@ -76,6 +76,7 @@ test('untitled items show their request and returning from sample history resets
     await collection.evaluate(node => { node.scrollTop = node.scrollHeight; });
     expect(await collection.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
     await page.locator(`#edit-${secondId}`).click();
+    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
     await studio(page).getByRole('button', { name: 'Rename', exact: true }).scrollIntoViewIfNeeded();
     await expect(studio(page).getByRole('button', { name: 'Rename', exact: true })).toBeInViewport({ ratio: 1 });
     await studio(page).getByRole('button', { name: 'More', exact: true }).click();

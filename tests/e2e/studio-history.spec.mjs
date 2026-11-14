@@ -54,7 +54,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       const beginRestart = async () => {
         if (await ui.locator('.rs-preview').isVisible())
           await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
-        await ui.getByRole('button', { name: 'View what’s in use', exact: true }).click();
+        await ui.getByRole('button', { name: 'More', exact: true }).click();
         await ui.getByRole('button', { name: 'Start changes from this version', exact: true }).click();
         const confirmation = ui.getByRole('article', { name: 'Start from version in use', exact: true });
         await confirmation.getByText('Saved version details', { exact: true }).click();

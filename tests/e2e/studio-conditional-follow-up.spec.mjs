@@ -4,10 +4,10 @@ import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 test('conditional follow-up is authored, checked, approved, activated and saved through real native Tasks', async ({ page }) => {
   test.setTimeout(90_000);
-  const f=await startAuthoringFixture({conditionalFollowUp:true,title:'Follow up'});
+  const f=await startAuthoringFixture({conditionalFollowUp:true,title:'Follow up',intentResolutions:['prepare','prepare']});
   const ui=page.getByRole('region',{name:'Customization Studio',exact:true});
   const button=(name,scope=page)=>scope.getByRole('button',{name,exact:true});
-  const send=async text=>{await ui.getByLabel('Message to Daymark assistant',{exact:true}).fill(text);await button('Prepare changes',ui).click();};
+  const send=async text=>{await ui.getByLabel('Message to Daymark assistant',{exact:true}).fill(text);await button('Send',ui).click();};
   const navigate=async name=>button(name,page.getByRole('navigation',{name:'Main navigation'})).click();
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   mkdirSync('build/core-040/screens',{recursive:true});
@@ -31,18 +31,19 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
     expect(proof.reports[2].report.calls.map(c=>c.capability)).toEqual(['tasks.get']);
     expect(proof.reports[4].report.native.classification).toBe('FAILED');
     expect(proof.reports[4].report.observed.effect).toBe('NONE');
-    await button('See proposed change',ui).first().click();
+    await ui.locator('#studio-view-saved').click();
+    await ui.getByText('Rule details',{exact:true}).click();
     await expect(ui.locator('.rs-rule-summary')).toContainText('High priority');
     await expect(ui.locator('.rs-rule-summary')).toContainText('no open task titled exactly “Follow up”');
     await expect(ui.locator('.rs-inline-behavior')).toContainText('simultaneous task completions');
     await expect(ui.locator('.rs-inline-behavior')).not.toContainText('full behavior could not be described');
     await page.screenshot({path:'build/core-040/screens/summary.png'});
     for(const viewport of [{width:320,height:740},{width:683,height:384}]){
-      await page.setViewportSize(viewport);await button('See proposed change',ui).first().click();
+      await page.setViewportSize(viewport);await ui.locator('#studio-view-saved').click();
       await expect(ui.getByRole('heading',{name:'Summary',exact:true})).toBeVisible();
       expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     }
-    await page.setViewportSize({width:1440,height:1000});await button('View simulation',ui).click();
+    await page.setViewportSize({width:1440,height:1000});await ui.locator('#studio-view-saved').click();
     const decision=ui.getByRole('article',{name:'Current decision',exact:true});
     await expect(button('Approve this change',decision)).toBeEnabled();
     await expect(decision).toContainText('Example tasks; your tasks are unchanged.');
@@ -51,7 +52,7 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
     expect((await state()).selection.revision?.id??null).toBe(oldSelection);
     await expect(button('Turn on for tasks completed',ui)).toBeEnabled();
     await button('Turn on for tasks completed',ui).click();
-    await expect(ui.getByLabel('Customization status',{exact:true})).toContainText('On for my tasks');
+    await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
     expect(f.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
     const callCount=f.requests.length;
     const selected=await state();expect(selected.selection.revision.id).toBe(current.review.revisionId);
@@ -81,7 +82,7 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
     expect(skipped.outcome.trace.some(e=>e.event==='STEP_SKIPPED'&&e.step==='match')).toBe(true);
     expect(f.requests.length).toBe(callCount);
     await navigate('Customizations');await button('Open',page.getByRole('article',{name:'Untitled customization',exact:true})).click();
-    await button('See proposed change',ui).first().click();await expect(ui.locator('.rs-rule-summary')).toContainText('High priority');
+    await ui.locator('#studio-view-saved').click();await ui.getByText('Rule details',{exact:true}).click();await expect(ui.locator('.rs-rule-summary')).toContainText('High priority');
     expect((await state()).selection.revision.id).toBe(current.review.revisionId);expect(f.requests.length).toBe(callCount);expect(errors).toEqual([]);
   } finally {await f.close();}
 });

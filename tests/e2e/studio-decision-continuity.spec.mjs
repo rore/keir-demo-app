@@ -54,7 +54,7 @@ async function openItem(page, id) {
   await expect(composer(page)).toBeVisible();
 }
 async function openReview(page) {
-  await studio(page).getByRole('button', { name: 'See proposed change', exact: true }).click();
+  await studio(page).locator('#studio-view-saved').click();
   await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
 }
 async function closeReview(page) {
@@ -254,6 +254,7 @@ for (const operation of ['approve', 'activate']) test(`a late real ${operation} 
       await expect(composer(page)).toBeVisible();
       await expect(review(page)).toBeHidden();
       expect(await api(page, path)).toEqual(committed);
+      await studio(page).getByRole('button', { name: 'More', exact: true }).click();
       await studio(page).getByRole('button', { name: 'Back to tasks', exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved task title');
     }
@@ -298,8 +299,8 @@ for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preser
     await expect(review(page)).toBeVisible();
     await expect(review(page)).toContainText('Evidence: ' + state.evidence.id);
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true }).and(review(page).locator('button:enabled'))).toHaveCount(0);
-    await expect(studio(page).getByRole('button', { name: 'See current proposal', exact: true })).toBeEnabled();
-    await studio(page).getByRole('button', { name: 'See current proposal', exact: true }).click();
+    await expect(studio(page).locator('#studio-view-saved')).toBeEnabled();
+    await studio(page).locator('#studio-view-saved').click();
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     if (!await review(page).getByLabel('Saved source for approval', { exact: true }).isVisible())
       await review(page).getByText('Technical details for this version', { exact: true }).click();

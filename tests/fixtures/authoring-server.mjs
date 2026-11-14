@@ -32,12 +32,30 @@ function nativeHistory(provider, body) {
   };
 }
 
-function scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest) {
+function wireReply(provider, name, args, text, id) {
+  const raw = provider === 'openai'
+    ? { status: 'completed', output: name ? [{ type: 'reasoning', id: 'reason-' + id, encrypted_content: 'synthetic-private-reasoning', summary: [] },
+      { type: 'function_call', call_id: id, name, arguments: JSON.stringify(args) }]
+      : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], usage: { input_tokens: 10, output_tokens: 5 } }
+    : { stop_reason: name ? 'tool_use' : 'end_turn', content: name ? [{ type: 'thinking', thinking: 'synthetic-private-reasoning', signature: 'synthetic-signature' },
+      { type: 'tool_use', id, name, input: args }] : [{ type: 'text', text }], usage: { input_tokens: 10, output_tokens: 5 } };
+  return new Response(JSON.stringify(raw), { headers: { 'content-type': 'application/json' } });
+}
+function scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest, intentResolutions) {
   const { question, offerText } = metadata;
   return async (url, init) => {
     assert.equal(url, provider === 'openai' ? 'https://api.openai.com/v1/responses' : 'https://api.anthropic.com/v1/messages');
     assert.equal(init.redirect, 'error');
     const body = JSON.parse(init.body), history = nativeHistory(provider, body);
+    if (body.tools.length === 1 && body.tools[0].name === 'resolve_intent') {
+      const next = intentResolutions.shift();
+      assert.ok(next, 'Supply the explicit scripted intent sequence; the fixture never classifies natural text.');
+      const args = typeof next === 'string' ? { intent: next, question: '' } : next;
+      assert.ok(['discuss', 'prepare', 'clarify'].includes(args.intent));
+      assert.equal(history.calls.length, 0, 'Resolution starts without native continuation.');
+      requests.push(Object.freeze({ callId: 'synthetic-intent', name: 'resolve_intent', intent: args.intent }));
+      return wireReply(provider, 'resolve_intent', args, '', 'synthetic-intent');
+    }
     assert.equal(body.tools.some(tool => /approve|activate|select/.test(tool.name)), false);
     assert.equal(history.reasoning.length, history.calls.length, 'Native reasoning must survive continuation.');
     for (const output of history.outputs) assert.ok(history.calls.some(call => call.id === output.id), 'Tool results retain their native call IDs.');
@@ -116,13 +134,7 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch, resum
     } else throw new Error('The synthetic fixture supports one review journey per explicit turn.');
     const id = 'synthetic-call-' + (history.calls.length + 1);
     requests.push(Object.freeze({ callId: id, name: name ?? 'text' }));
-    const raw = provider === 'openai'
-      ? { status: 'completed', output: name ? [{ type: 'reasoning', id: 'reason-' + id, encrypted_content: 'synthetic-private-reasoning', summary: [] },
-        { type: 'function_call', call_id: id, name, arguments: JSON.stringify(args) }]
-        : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], usage: { input_tokens: 10, output_tokens: 5 } }
-      : { stop_reason: name ? 'tool_use' : 'end_turn', content: name ? [{ type: 'thinking', thinking: 'synthetic-private-reasoning', signature: 'synthetic-signature' },
-        { type: 'tool_use', id, name, input: args }] : [{ type: 'text', text }], usage: { input_tokens: 10, output_tokens: 5 } };
-    return new Response(JSON.stringify(raw), { headers: { 'content-type': 'application/json' } });
+    return wireReply(provider, name, args, text, id);
   };
 }
 
@@ -135,12 +147,12 @@ async function unusedLoopbackPort() {
 }
 
 // Synthetic offline transport only; app, compiler, lifecycle and simulator are real.
-export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, missingDue = false, conditionalFollowUp = false, tagNotes = false, resumeRequest, projectName, title = 'Review completed work', authoringOverride = {}, staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
+export async function startAuthoringFixture({ provider = 'openai', port, unconfigured = false, semanticMismatch = false, missingDue = false, conditionalFollowUp = false, tagNotes = false, resumeRequest, projectName, title = 'Review completed work', authoringOverride = {}, intentResolutions = ['prepare', 'prepare', 'discuss', 'prepare'], staticRoot = process.env.KEIR_TEST_STATIC_ROOT ?? fileURLToPath(new URL('../../dist/', import.meta.url)) } = {}) {
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
-  // Preserve the old OpenAI capacities (9/10/18 requests) and the original Anthropic allowances.
-  const maxUsd = provider === 'openai' ? missingDue ? '7' : semanticMismatch ? '3.9' : '3.5'
+  // Finite offline allowance includes the separately accounted intent-resolution calls.
+  const maxUsd = provider === 'openai' ? missingDue ? '10' : '5'
     : missingDue ? '6' : semanticMismatch ? '3.2' : '3';
   const config = readAuthoringConfig(unconfigured ? {} : { KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     KEIR_AI_MAX_USD: maxUsd, OPENAI_API_KEY: 'synthetic-offline-key', ANTHROPIC_API_KEY: 'synthetic-offline-key' });
@@ -193,7 +205,7 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
     if (!missingDue) assert.notEqual(metadata.wrongSource, metadata.source, 'The semantic mismatch variant must change compiled behavior.');
     const compiler = createCompiler({ javaExecutable: process.env.KEIR_JAVA_BIN });
     app = await createApp({ db, origin, staticRoot: resolve(staticRoot), compiler,
-      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest), ...authoringOverride } });
+      authoringSettingsFile: join(directory, 'ai-authoring.json'), authoring: { config, fetchImpl: scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest, [...intentResolutions]), ...authoringOverride } });
     await app.listen({ host: '127.0.0.1', port });
     return { app, db, origin, directory, metadata, requests, close };
   } catch (error) { await close(); throw error; }

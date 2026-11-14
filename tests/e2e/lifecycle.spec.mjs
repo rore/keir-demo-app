@@ -66,7 +66,7 @@ async function open(page) {
   await expect(studio(page).getByRole('button', { name: 'More', exact: true })).toBeEnabled();
   expect(await studio(page).locator('.rs-composer').evaluate(form => form.getBoundingClientRect().height)).toBeLessThan(180);
   if (page.viewportSize().width <= 760) {
-    expect(await studio(page).evaluate(node => getComputedStyle(node).overflowY)).toBe('auto');
+    await expect(studio(page).getByRole('log', { name: 'Studio conversation', exact: true })).toHaveCSS('overflow-y', 'auto');
     await studio(page).locator('.rs-header').scrollIntoViewIfNeeded();
     const manage = studio(page).getByRole('button', { name: 'More', exact: true });
     await expect(manage).toBeInViewport({ ratio: 1 });
@@ -95,7 +95,7 @@ async function checkSaved(page, waitForReview = true) {
   if (checked.evidence.passed || checked.approved) {
     if (waitForReview) await openSavedChanges(page);
     else {
-      await studio(page).getByRole('button', { name: 'See proposed change', exact: true }).first().click();
+      await studio(page).locator('#studio-view-saved').click();
       await expect(studio(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
     }
   }
@@ -134,15 +134,15 @@ async function approve(page) {
 }
 async function inspectActive(page, label) {
   await closeDetails(page);
-  const view = studio(page).getByRole('button', { name: 'View what’s in use', exact: true });
+  const view = studio(page).locator('#studio-view-active');
   if (await view.isVisible()) {
     await view.click();
     const active = studio(page).getByRole('article', { name: 'Version in use' });
-    await active.getByText('Saved version details', { exact: true }).click();
-    await expect(active.getByText('Label: ' + label, { exact: true })).toBeVisible();
+    await expect(active).toContainText('Read-only');
+    await expect(active.getByRole('button', { name: /Approve|Turn on/ })).toHaveCount(0);
     expect((await savedLifecycle(page, page.url())).selection.revision.label).toBe(label);
   } else {
-    await expect(studio(page).getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
+    await expect(studio(page).locator('#studio-view-active')).toContainText('On:');
     expect((await savedLifecycle(page, page.url())).selection.revision.label).toBe(label);
   }
 }
@@ -192,7 +192,8 @@ test('real task review separates typed assent, approval and use; native edits an
   expect(completed.status.receipt.effect).toBe('CONFIRMED');
   expect((await nativeRequest(page, 'tasks/' + completed.status.receipt.value.id)).title).toBe('Customer follow-up');
   await open(page);
-  await ui.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
+  await ui.getByRole('button', { name: 'More', exact: true }).click();
+  await ui.getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
   await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved lifecycle title');
   expect(await nativeRequest(page, 'tasks/' + completed.source.id + '/reaction')).toEqual(completed.status);
@@ -248,7 +249,8 @@ test('a held real reaction read survives a selection transition without replay o
     await page.getByLabel('Task title', { exact: true }).fill('Keep this edit');
     const before = await nativeRequest(page, 'projects/' + project.id + '/tasks');
     await open(page);
-    await studio(page).getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
+    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
+    await studio(page).getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
     await studio(page).getByRole('button', { name: 'Back to my task', exact: true }).click();
     release(); await finished;
     await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this edit');
@@ -270,7 +272,8 @@ test('narrow Studio inspects current saved source and keeps a restored task choi
   await expect(ui.getByLabel('Saved source for inspection', { exact: true })).toContainText('keir/3');
   await expect(ui.getByLabel('Artifact pins for inspection', { exact: true })).toContainText('keir-dcm/4');
   await closeDetails(page);
-  await ui.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
+  await ui.getByRole('button', { name: 'More', exact: true }).click();
+  await ui.getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
   await openDetails(page); await ui.getByText('Restore an earlier version', { exact: true }).click();
   await ui.getByLabel('Previously in use').selectOption(saved.selection.revision.id);
   await expect(ui.locator('.rs-restore-confirm')).toContainText('Restore Original follow-up for future use?');
@@ -313,15 +316,16 @@ test('a stale second-tab simulation and chat approval fail closed and reload the
 test('an ineligible saved task selection stays unavailable and can be turned off', async ({ page, demo }) => {
   await enter(page, demo.origin); demo.invalidateSelected(); await open(page);
   const ui = studio(page);
-  await expect(ui.getByLabel('Customization status')).toContainText('Couldn’t check what’s in use');
+  await expect(ui.locator('#studio-customization-status')).toHaveText('Current use unverified');
   expect((await savedLifecycle(page, demo.origin)).selection.eligible).toBe(false);
-  await expect(ui.getByLabel('Customization status').getByText('On for my tasks', { exact: true })).toHaveCount(0);
+  await expect(ui.locator('#studio-view-active')).toHaveCount(0);
   await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
   await expect(page.locator('.status-label.open')).toHaveText('○ Up next');
   const source = await completedTask(page, 'Unavailable selected task contract', false);
   expect(source.status.state).toBe('PENDING'); expect(source.status.outcome).toBeNull(); expect(source.status.receipt).toBeNull();
   await open(page);
-  await ui.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
+  await ui.getByRole('button', { name: 'More', exact: true }).click();
+  await ui.getByRole('button', { name: 'Turn off this customization', exact: true }).click(); await expectOff(page);
   expect((await nativeRequest(page, 'tasks/' + source.source.id + '/reaction')).state).toBe('PENDING');
 });
 
@@ -356,8 +360,14 @@ async function expectedExample(page, matching = true) {
 }
 
 async function reloadStudio(page) {
+  const saved = await savedLifecycle(page, page.url());
   await openDetails(page);
-  await studio(page).getByRole('button', { name: 'Reload saved state', exact: true }).click();
+  const reload = studio(page).getByRole('button', { name: 'Reload saved state', exact: true });
+  const response = page.waitForResponse(value => value.request().method() === 'GET'
+    && new URL(value.url()).pathname === `/api/extensions/${saved.extension.id}`);
+  await reload.click();
+  expect((await response).ok()).toBe(true);
+  await expect(reload).toBeEnabled();
   await expect(studio(page).getByLabel('Customization status', { exact: true })).toBeVisible();
   await closeDetails(page);
 }

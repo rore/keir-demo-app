@@ -28,7 +28,7 @@ const safeMessage = code => ({
   CONVERSATION_LIMIT: 'The owner conversation limit has been reached.', CONFIG_CHANGED: 'The AI configuration changed. Check saved state before sending again.',
   BUDGET_EXHAUSTED: 'This authoring run reached its resource limit.', REVIEW_NOT_READY: 'Run the current independent examples before offering review.',
   INVALID_TOOL_ARGUMENTS: 'The assistant could not finish preparing the example checks. Saved work is kept. Continue explicitly to try again.',
-  DISCUSSION_ONLY: 'This message only discusses saved work. Use Prepare changes to prepare or check a draft. Your rules and tasks have not changed.',
+  DISCUSSION_ONLY: 'This message was understood as discussion. Describe the change you want to prepare, or clarify your request. Approval and turning it on are separate.',
 }[code] ?? 'Authoring could not finish safely. Check saved state before continuing.');
 const error = (status, code) => { const value = new AppError(status, safeMessage(code)); value.code = codeFor(code); return value; };
 const stop = code => { throw new AuthoringError(code); };
@@ -176,19 +176,24 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     return { messages, next };
   }
   function priorUserMessages(ctx) {
-    const texts = [];
+    const texts = []; let clarification, sawAssistant = false;
     if (ctx.input.target.kind === 'create') return { texts, truncated: false };
     let scanned = 0;
     for (const row of itemMessageRows(ctx.owner, ctx.extensionId)) {
       if (++scanned > 60) return { texts, truncated: true };
-      const { id, role, text } = JSON.parse(row.payload);
+      const { id, role, text, kind, openCustomization } = JSON.parse(row.payload);
+      if (!sawAssistant && role === 'assistant') {
+        sawAssistant = true;
+        if (kind === 'clarification' && !openCustomization && typeof text === 'string' && Buffer.byteLength(text) <= 2048)
+          clarification = { question: text };
+      }
       if (role !== 'user' || typeof text !== 'string' || !text.trim()
           || row.conversationId === ctx.id && id === ctx.input.operationId
           || text === 'Continue from saved work. Ask before changing any independent examples.') continue;
-      if (texts.length === 6 || length([text, ...texts]) > 8192) return { texts, truncated: true };
+      if (texts.length === 6 || length([text, ...texts]) > 8192) return { texts, truncated: true, clarification };
       texts.unshift(text);
     }
-    return { texts, truncated: false };
+    return { texts, truncated: false, clarification };
   }
   function appendMessage(owner, id, message) {
     if (db.prepare('SELECT 1 FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(id, message.id)) return;
@@ -254,7 +259,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   }
   function validate(input) {
     if (!object(input) || Object.keys(input).length !== (Object.hasOwn(input, 'intent') ? 7 : 6) || !['conversationId', 'operationId', 'text', 'expectedVersion', 'expectedDraftVersion', 'target'].every(key => Object.hasOwn(input, key))
-        || Object.hasOwn(input, 'intent') && !['discuss', 'prepare'].includes(input.intent)
+        || Object.hasOwn(input, 'intent') && !['auto', 'discuss', 'prepare'].includes(input.intent)
         || !(input.conversationId === null || token(input.conversationId)) || !token(input.operationId)
         || typeof input.text !== 'string' || !input.text.isWellFormed() || !input.text.trim() || Buffer.byteLength(input.text) > 8192
         || !integer(input.expectedVersion) || !integer(input.expectedDraftVersion)) throw error(400, 'INVALID_TOOL_ARGUMENTS');
@@ -323,6 +328,13 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           lifecycle.assertAvailable(ctx.owner, ctx.extensionId);
         }
         const previous = cp.phase === 'ADMIT' ? prior?.state ?? state : prior.state;
+        const expectedIntent = ctx.resolvedIntent;
+        if (state.resolvedIntent !== expectedIntent) {
+          const current = lifecycle.state(ctx.owner, ctx.extensionId);
+          if (ctx.input.intent !== 'auto' || expectedIntent !== null || cp.phase !== 'RESULT' || cp.kind !== 'provider' || cp.ordinal !== 1
+              || !['discuss', 'prepare', 'clarify'].includes(state.resolvedIntent)
+              || !same(draftHandles(current), state.handles) || current.selection.generation !== ctx.resolutionGeneration) stop('STALE_CONTEXT');
+        }
         for (const group of ['counts', 'usage']) for (const [key, n] of Object.entries(state[group])) {
           if (!integer(n) || n < previous[group][key]) stop('HOST_RESULT_INVALID');
         }
@@ -379,7 +391,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           .run(ctx.id, ctx.owner, ctx.input.operationId, ctx.hash, ctx.runId, state.version);
         for (const message of messages) appendMessage(ctx.owner, ctx.id, message);
       });
-      committed = true; ctx.admitted = true; ctx.state = state;
+      committed = true; ctx.admitted = true; ctx.state = state; ctx.resolvedIntent = state.resolvedIntent;
       ctx.context.budget.remainingMicros = Math.max(0, config.maxMicros - effectiveHeld());
       checkpointFault({ stage: 'afterCommit', phase: cp.phase, runId: ctx.runId, ordinal: cp.ordinal });
     } catch (cause) {
@@ -395,7 +407,7 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     const authorize = () => { if (!ctx.context.current()) stop('STALE_CONTEXT'); };
     const mapped = () => draftHandles(lifecycle.state(ctx.owner, ctx.extensionId));
     const invoke = (work, scenario = false) => tracked(ctx, async () => {
-      authorize(); if (ctx.input.intent === 'discuss') stop('DISCUSSION_ONLY');
+      authorize(); if (ctx.input.intent === 'discuss' || ctx.resolvedIntent !== 'prepare') stop('DISCUSSION_ONLY');
       try { return await work(); }
       catch (cause) {
         if (cause instanceof AuthoringError) throw cause;
@@ -575,7 +587,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
       purpose: link?.purpose ?? (input.target.kind === 'create' ? 'CREATE' : 'REVISE'),
       baseRevisionId: link?.base_revision_id ?? (input.target.kind === 'revise' ? input.target.baseRevisionId : null),
       baseGeneration: link?.base_generation ?? (input.target.kind === 'revise' ? input.target.selectionGeneration : null),
-      tracked: new Set(), admitted: false };
+      tracked: new Set(), admitted: false, resolvedIntent: input.intent === 'auto' ? null : input.intent ?? 'prepare',
+      resolutionGeneration: currentState.selection.generation };
     ctx.context = { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId, intent: input.intent ?? 'prepare',
       budget: { remainingMicros: Math.max(0, config.maxMicros - effectiveHeld()) },
       current: () => {

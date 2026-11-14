@@ -54,7 +54,7 @@ async function createCandidate(page, fixture, { label = 'Independent saved propo
 }
 async function send(page, text) {
   await studio(page).getByLabel('Message to Daymark assistant', { exact: true }).fill(text);
-  await studio(page).getByRole('button', { name: 'Prepare changes', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
 }
 async function authorCandidate(page, fixture) {
   await send(page, `When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`);
@@ -111,7 +111,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(prepared.selection).toEqual(before.selection);
       expect(documents.source).toBe(fixture.metadata.source); expect(documents.cases).toEqual(fixture.metadata.cases);
       expect(await saved(page, activeId)).toEqual(activeBefore);
-      expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification', 'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+      expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification', 'resolve_intent', 'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
       const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
       await expect(proposed.getByRole('article', { name: /^Example:/ })).toHaveCount(documents.cases.length);
       await expect(proposed).toContainText(fixture.metadata.title);
@@ -133,9 +133,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await decision.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
       await expect.poll(async () => (await saved(page, newId)).selection.revision.id).toBe(prepared.draft.id);
       expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
-      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
+      await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
       await expect(composer).toHaveValue('Keep this unsent personal request');
       await page.screenshot({ path: `build/studio-extension-creation/agent-led-on-${viewport.width}x${viewport.height}.png` });
+      await ui.getByRole('button', { name: 'More', exact: true }).click();
       await ui.getByRole('button', { name: 'Back to tasks', exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved native title');
       await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toHaveCount(0);
@@ -146,10 +147,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await outcome.getByRole('button', { name: `Open task: ${fixture.metadata.title}`, exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue(fixture.metadata.title);
       await page.locator('#open-customizations').click();
-      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
+      await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
       await expect(ui.locator('.rs-chat')).toContainText(fixture.metadata.offerText);
       await expect(composer).toBeVisible();
-      expect(fixture.requests).toHaveLength(8);
+      expect(fixture.requests).toHaveLength(10);
     } finally { await fixture.close(); }
   });
 }
@@ -207,7 +208,7 @@ test('a new assistant proposal does not replace an unrelated saved proposal on r
     expect(created.selection).toEqual(before.selection);
     expect(documents.source).toBe(fixture.metadata.source); expect(documents.cases).toEqual(fixture.metadata.cases);
     expect(await saved(page, id)).toEqual(before); expect(await source(page, id, before.draft.id)).toEqual(beforeSource);
-    expect(fixture.requests).toHaveLength(8);
+    expect(fixture.requests).toHaveLength(10);
   } finally { await fixture.close(); }
 });
 

@@ -7,16 +7,16 @@ import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
 
 test('offline due-date conversation explains checked behavior and keeps approval, use and later edits separate', async ({ page }, testInfo) => {
   test.setTimeout(90_000);
-  const fixture = await startAuthoringFixture({ missingDue: true });
+  const fixture = await startAuthoringFixture({ missingDue: true, intentResolutions: ['prepare', 'prepare', 'prepare'] });
   const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
   const composer = studio.getByLabel('Message to Daymark assistant', { exact: true });
   const decision = studio.getByRole('article', { name: 'Current decision', exact: true });
   const send = async text => {
     await composer.fill(text);
-    await studio.getByRole('button', { name: 'Prepare changes', exact: true }).click();
+    await studio.getByRole('button', { name: 'Send', exact: true }).click();
   };
   const seeChange = async () => {
-    await studio.getByRole('button', { name: 'See proposed change', exact: true }).first().click();
+    await studio.locator('#studio-view-saved').click();
     await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
     await expect(decision.locator('.rs-review-status')).not.toHaveText('Checking saved results…');
   };
@@ -30,7 +30,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
     const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
     await send('Could you help me give new tasks a due date automatically?');
     await expect(studio.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
-    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
     await send('Confirmed: every project, only when the new task has no due date. Use exactly 168 hours after addition.');
     await expect(studio.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
 
@@ -114,7 +114,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
       await expect(composer).toHaveValue('Keep this unsent question about weekends.');
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      const messages = width <= 600 || height <= 500 ? studio : studio.locator('.rs-messages');
+      const messages = studio.locator('.rs-messages');
       await messages.evaluate(element => { element.scrollTop = 0; });
       await studio.getByRole('heading', { name: 'Summary', exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
       await page.screenshot({ path: testInfo.outputPath(`due-date-overview-${width}.png`) });
@@ -134,6 +134,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
       await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath(`checked-due-date-${width}.png`) });
       await coverage.evaluate(element => element.scrollIntoView({ block: 'start' }));
+      await decision.getByRole('button', { name: 'Approve this change', exact: true }).scrollIntoViewIfNeeded();
       await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath(`simulation-decision-${width}.png`) });
       await decision.locator('.rs-decision-actions').scrollIntoViewIfNeeded();
@@ -188,7 +189,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
     await seeChange();
     await expect(studio.locator('.rs-rule-facts')).toContainText('120');
     await expect(composer).toHaveValue('Keep this unsent refinement for the next discussion.');
-    await studio.getByRole('button', { name: 'View what’s in use', exact: true }).click();
+    await studio.locator('#studio-view-active').click();
     await expect(composer).toHaveValue('Keep this unsent refinement for the next discussion.');
     await studio.getByRole('button', { name: 'Return to proposal', exact: true }).click();
     await expect(composer).toHaveValue('Keep this unsent refinement for the next discussion.');
@@ -240,9 +241,10 @@ test('a different supported behavior keeps its exact supplied name and truthful 
     await expect(studio.locator('.rs-rule-summary')).toContainText(fixture.metadata.projectName);
     await expect(studio.locator('.rs-rule-facts')).toContainText('A task is completed.');
     expect((await exactState()).extension.name).toBe(name);
-    await studio.getByRole('button', { name: 'See proposed change', exact: true }).first().click();
+    await studio.locator('#studio-view-saved').click();
     await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
-    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+    await studio.getByRole('button', { name: 'Hide simulation', exact: true }).click();
+    await studio.getByRole('button', { name: 'Review', exact: true }).click();
     await expect(decision.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
     await page.screenshot({ path: testInfo.outputPath('other-behavior-summary-simulation.png') });
 
@@ -252,9 +254,10 @@ test('a different supported behavior keeps its exact supplied name and truthful 
     await expect(reopened.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
     await expect(reopened.locator('.rs-rule-summary')).toContainText(`create a new task titled “${name}”`);
     const reopenedDecision = reopened.getByRole('article', { name: 'Current decision', exact: true });
-    await reopened.getByRole('button', { name: 'See proposed change', exact: true }).first().click();
+    await reopened.locator('#studio-view-saved').click();
     await expect(reopened.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
-    await reopened.getByRole('button', { name: 'View simulation', exact: true }).click();
+    await reopened.getByRole('button', { name: 'Hide simulation', exact: true }).click();
+    await reopened.getByRole('button', { name: 'Review', exact: true }).click();
     await expect(reopenedDecision.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
     expect((await exactState()).extension.name).toBe(name);
     const persisted = fixture.db.prepare('SELECT name FROM extensions WHERE id=?').get(extensionId);
@@ -263,7 +266,7 @@ test('a different supported behavior keeps its exact supplied name and truthful 
   } finally { await fixture.close(); }
 });
 
-test('proposal links settle on an unobscured Summary while View simulation remains a separate destination at desktop, narrow and short sizes', async ({ page }) => {
+test('Draft and Review reach the same unobscured inline review at desktop, narrow and short sizes', async ({ page }) => {
   test.setTimeout(90_000);
   const fixture = await startAuthoringFixture({ missingDue: true });
   const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -295,7 +298,7 @@ test('proposal links settle on an unobscured Summary while View simulation remai
     await studio.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(studio.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
     await composer.fill('Confirmed: every project, only when the new task has no due date. Use exactly 168 hours after addition.');
-    await studio.getByRole('button', { name: 'Prepare changes', exact: true }).click();
+    await studio.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(studio.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
     const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     const { contextToken } = await (await page.request.get(fixture.origin + '/api/session')).json();
@@ -314,7 +317,7 @@ test('proposal links settle on an unobscured Summary while View simulation remai
     await composer.fill(draft);
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 320, height: 740 }, { width: 683, height: 384 }]) {
       await page.setViewportSize(viewport);
-      for (const invoker of ['header', 'conversation']) {
+      for (const invoker of ['header', 'review']) {
         const gate = Promise.withResolvers(), proofArrived = Promise.withResolvers(), sourceArrived = Promise.withResolvers();
         release = gate.resolve;
         const proofPath = `**/api/extensions/${id}/evidence/${before.evidence.id}`;
@@ -332,29 +335,27 @@ test('proposal links settle on an unobscured Summary while View simulation remai
         await page.reload();
         await expect(composer).toHaveValue(draft);
         const link = invoker === 'header' ? studio.locator('#studio-view-saved')
-          : studio.locator('.rs-message').getByRole('button', { name: 'See proposed change', exact: true });
-        await expect(link).toHaveAccessibleName('See proposed change');
-        if (viewport.width === 320 && invoker === 'header') {
-          await expect(link.locator('.rs-short-label')).toHaveText('Summary');
-          await expect(link.locator('.rs-short-label')).toBeVisible();
-        }
+          : studio.getByRole('button', { name: 'Review', exact: true });
+        await expect(link).toHaveAccessibleName(invoker === 'header' ? /Draft:/ : 'Review');
         await link.click();
         await Promise.all([proofArrived.promise, sourceArrived.promise]);
         gate.resolve();
         await expect(studio.locator('.rs-rule-summary')).toContainText('give it a due date exactly 7 days after it was added');
         await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        await expectDestination('Summary');
+        await expectDestination(invoker === 'header' ? 'Summary' : 'Simulation');
         await expect(composer).toHaveValue(draft);
-        await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+        await decision.getByRole('button', { name: 'Go to approval', exact: true }).click();
         await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        await expectDestination('Simulation');
+        await expect(decision.locator('#studio-decision-step')).toBeFocused();
+        await decision.getByRole('button', { name: 'Approve this change', exact: true }).scrollIntoViewIfNeeded();
+        await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(composer).toHaveValue(draft);
         await page.unroute(proofPath); await page.unroute(sourcePath);
       }
     }
-    // A wheel over the sticky status row must cancel the late anchor without changing focus.
+    // Reading the transcript must cancel the late anchor without changing focus.
     await page.setViewportSize({ width: 683, height: 384 });
     const gate = Promise.withResolvers(), proofArrived = Promise.withResolvers();
     release = gate.resolve;
@@ -369,31 +370,32 @@ test('proposal links settle on an unobscured Summary while View simulation remai
     await studio.locator('#studio-view-saved').click();
     await proofArrived.promise;
     await expectDestination('Summary');
-    await expect(studio).toHaveCSS('overflow-y', 'auto');
+    const scroller = studio.locator('.rs-messages');
+    await expect(scroller).toHaveCSS('overflow-y', 'auto');
     const status = studio.locator(':scope > .rs-status-summary');
-    await expect(status).toHaveCSS('position', 'sticky');
+    await expect(status).toBeInViewport({ ratio: 1 });
     const bounds = await status.boundingBox();
     expect(bounds).not.toBeNull();
     const point = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
     expect(await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.rs-status-summary'), point)).toBe(true);
-    const previousScroll = await studio.evaluate(element => element.scrollTop);
-    await page.mouse.move(point.x, point.y);
+    const previousScroll = await scroller.evaluate(element => element.scrollTop);
+    await scroller.hover({ position: { x: 5, y: 5 } });
     await page.mouse.wheel(0, 120);
-    await expect.poll(() => studio.evaluate(element => element.scrollTop)).toBeGreaterThan(previousScroll + 20);
+    await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(previousScroll + 20);
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const readingPosition = await studio.evaluate(element => element.scrollTop);
+    const readingPosition = await scroller.evaluate(element => element.scrollTop);
     const summary = studio.getByRole('heading', { name: 'Summary', exact: true });
     const readingTop = await summary.evaluate(element => element.getBoundingClientRect().top);
     await expect(summary).toBeFocused();
     gate.resolve();
     await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await expect.poll(async () => Math.abs(await studio.evaluate(element => element.scrollTop) - readingPosition)).toBeLessThanOrEqual(2);
+    await expect.poll(async () => Math.abs(await scroller.evaluate(element => element.scrollTop) - readingPosition)).toBeLessThanOrEqual(2);
     await expect.poll(async () => Math.abs(await summary.evaluate(element => element.getBoundingClientRect().top) - readingTop)).toBeLessThanOrEqual(2);
     await expect(summary).toBeFocused();
     await expect(composer).toHaveValue(draft);
     await page.unroute(proofPath);
-    // Pointer reading on the outer scroller must also cancel a pending anchor,
+    // Pointer reading on the transcript scroller must also cancel a pending anchor,
     // even when focus remains on Summary (as with a scrollbar/touch gesture).
     const pointerGate = Promise.withResolvers(), pointerProof = Promise.withResolvers();
     release = pointerGate.resolve;
@@ -407,17 +409,17 @@ test('proposal links settle on an unobscured Summary while View simulation remai
     await studio.locator('#studio-view-saved').click();
     await pointerProof.promise;
     await expectDestination('Summary');
-    // Dispatch on the real outer scroller; changing scrollTop emulates the
+    // Dispatch on the real transcript scroller; changing scrollTop emulates the
     // browser's scrollbar movement without assuming OS scrollbar coordinates.
-    await studio.dispatchEvent('pointerdown', { pointerType: 'touch' });
-    await studio.evaluate(element => { element.scrollTop += 120; });
-    const pointerPosition = await studio.evaluate(element => element.scrollTop);
+    await scroller.dispatchEvent('pointerdown', { pointerType: 'touch' });
+    await scroller.evaluate(element => { element.scrollTop += 120; });
+    const pointerPosition = await scroller.evaluate(element => element.scrollTop);
     const pointerTop = await summary.evaluate(element => element.getBoundingClientRect().top);
     await expect(summary).toBeFocused();
     pointerGate.resolve();
     await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await expect.poll(async () => Math.abs(await studio.evaluate(element => element.scrollTop) - pointerPosition)).toBeLessThanOrEqual(2);
+    await expect.poll(async () => Math.abs(await scroller.evaluate(element => element.scrollTop) - pointerPosition)).toBeLessThanOrEqual(2);
     await expect.poll(async () => Math.abs(await summary.evaluate(element => element.getBoundingClientRect().top) - pointerTop)).toBeLessThanOrEqual(2);
     await expect(summary).toBeFocused();
     await page.unroute(proofPath);

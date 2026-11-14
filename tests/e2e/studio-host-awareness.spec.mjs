@@ -17,12 +17,16 @@ const snapshot = db => Object.fromEntries(['tasks', 'projects', 'extension_revis
   'extension_approvals', 'extension_selections', 'extension_history', 'task_events', 'task_effect_receipts']
   .map(name => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
 
-async function fixture({ empty = false, unsolicitedMutation = false, blockedOnce = false } = {}) {
+async function fixture({ empty = false, unsolicitedMutation = false, blockedOnce = false, intents = ['discuss', 'discuss', 'prepare'] } = {}) {
   let f, first, second;
   const calls = [], turns = [];
   f = await startAuthoringFixture({ authoringOverride: { config, providerFactory: () => {
     let step = 0, text, context;
     return { reserveMicros: config.reserveMicros, maxMicros: config.maxMicros, async complete(request) {
+      if (request.tools.length === 1 && request.tools[0].name === 'resolve_intent') {
+        const intent = intents.shift(); expect(['discuss', 'prepare']).toContain(intent);
+        return { calls: [{ id: 'intent', name: 'resolve_intent', arguments: { intent, question: '' } }], text: '', usage: { inputTokens: 2, outputTokens: 1 } };
+      }
       if (request.input !== undefined) {
         const input = JSON.parse(request.input); text = input.currentUserMessage; context = input.hostContext;
         turns.push({ text, context, tools: request.tools.map(tool => tool.name) });
@@ -34,7 +38,7 @@ async function fixture({ empty = false, unsolicitedMutation = false, blockedOnce
         name = 'compile_draft'; args = { hookId: 'TaskCompleted', sourceJson: '{}', expectedDraftVersion: 0 };
       } else if (unsolicitedMutation) {
         expect(output).toEqual({ ok: false, code: 'DISCUSSION_ONLY' });
-        reply = 'I can discuss your work without changing a rule. Use Prepare changes if you decide to make a draft.';
+        reply = 'I can discuss your work without changing a rule. Describe the draft change you want to prepare.';
       } else if (/Open the after-completion rule/.test(text)) {
         if (step === 0) { name = 'inspect_customization'; args = { extensionId: first.extension.id }; }
         else { name = 'offer_customization'; args = { extensionId: first.extension.id }; }
@@ -81,9 +85,9 @@ async function enter(page, f) {
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await expect(composer(page)).toBeVisible();
 }
-async function send(page, text, action = 'Send') {
+async function send(page, text) {
   await composer(page).fill(text);
-  await ui(page).getByRole('button', { name: action, exact: true }).click();
+  await ui(page).getByRole('button', { name: 'Send', exact: true }).click();
 }
 
 test('a new discussion uses two existing rules and task evidence, then opens an exact item only on click', async ({ page }, info) => {
@@ -108,8 +112,8 @@ test('a new discussion uses two existing rules and task evidence, then opens an 
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 320, height: 740 }]) {
       await page.setViewportSize(viewport);
       await expect(open).toBeVisible();
-      await expect(ui(page).locator('.rs-composer-help')).toContainText('Prepare changes updates “Untitled customization”');
-      await expect(ui(page).locator('.rs-composer-help')).toBeInViewport();
+      await expect(ui(page).locator('#studio-title')).toHaveText('Untitled customization');
+      await expect(composer(page)).toBeInViewport();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: info.outputPath(`host-awareness-${viewport.width}.png`) });
     }
@@ -119,7 +123,7 @@ test('a new discussion uses two existing rules and task evidence, then opens an 
     await expect(composer(page)).toHaveValue('');
     expect(f.turns.length).toBe(count);
     expect(snapshot(f.db)).toEqual(before);
-    await send(page, 'Prepare a change to this opened draft.', 'Prepare changes');
+    await send(page, 'Prepare a change to this opened draft.');
     await expect(ui(page).getByText(/Preparation is scoped to this opened customization/)).toBeVisible();
     expect(f.turns.at(-1).context.intent).toBe('prepare');
     expect(f.turns.at(-1).context.editingTarget.extensionId).toBe(f.first.extension.id);
@@ -154,10 +158,10 @@ test('even an unsolicited provider compile during Send cannot alter tasks, rules
 });
 
 test('generic Try again resumes discussion, even after an interrupted preparation request', async ({ page }) => {
-  const f = await fixture({ blockedOnce: true });
+  const f = await fixture({ blockedOnce: true, intents: ['prepare'] });
   try {
     await enter(page, f); const before = snapshot(f.db);
-    await send(page, 'Prepare a change to this draft.', 'Prepare changes');
+    await send(page, 'Prepare a change to this draft.');
     const retry = ui(page).getByRole('button', { name: 'Try again from saved work', exact: true });
     await expect(retry).toBeVisible();
     expect(f.turns[0].context.intent).toBe('prepare');

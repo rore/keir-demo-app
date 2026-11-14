@@ -6,7 +6,11 @@ The conversation is the workspace. Application-owned explanations, task previews
 
 This specification supersedes the [preserved canvas-era design](historical/extension-studio-canvas-design.md). The [old scripted prototype](extension-studio/README.md) is historical; its files and tests remain intact. Earlier visual passes establish only their recorded scope, not acceptance of the whole experience.
 
-The current comparison is the [business-understanding design study](studio-business-understanding/concepts.md), with [results and recommendation](studio-business-understanding/recommendation.md). **A is selected: one decision brief inside the conversation**, after ordinary conversation develops the idea. Ordinary question-led clarification comes beforehand. B is retained only as a historical comparison, not an extra production flow. Two proxy readers understood the semantics but preferred different layouts; the user subsequently selected A. This is a design choice, not a measured usability win. Neither alternative is production implementation yet.
+The [business-understanding study](studio-business-understanding/concepts.md) and its [recommendation](studio-business-understanding/recommendation.md) preserve the earlier selection of A: one decision brief inside the conversation, after ordinary clarification. B is historical, not an extra production flow. Later working-application reviews found that accumulated controls and explanations crowded out the conversation. The current correction consolidates that delivered interaction rather than introducing another canvas or wizard.
+
+Keep a compact, persistent strip with the exact saved name and current-use/draft distinction. One Send belongs beside a short input that grows with the message. Questions and suggestions stay discussion; clear requests can prepare the opened draft, and ambiguous intent needs clarification. Do not ask the person to choose a send mode. A suggestion about another customization offers an explicit, identifiable Open action; it never changes the target or repeats the previous request there.
+
+Use one compact proposal card in the conversation. Its collapsed state shows a concise behavior/scope summary, meaningful evidence status and Review. Full behavior, exceptions, examples and limitations expand there before the human decision. The Draft status can return to this same object; do not add another permanent review button or a parallel review workspace. Reading what is currently on uses the same business-readable presentation, explicitly read-only and distinct from the draft.
 
 ## What the person is doing
 
@@ -25,7 +29,7 @@ Do not offer a main action called Save history or ask the person to decide what 
 
 ## Explain before asking for approval
 
-Use **Summary** for the proposed behavior and **Simulation** for its example outcomes. Explain the latter as “Example tasks; your tasks are unchanged.” Describe outcomes in task language: “Due date added as intended,” “Existing date kept,” or “No change when details were unavailable—as intended.” Do not label the customer surface “checked examples” or lead with “matches” and pass totals. Keep independent “What we wanted” and “What happened” details accessible. “Could not finish the simulation,” “Different from what we wanted,” “Could not confirm whether the task changed,” and “Not covered by this simulation” describe different states and must not be collapsed into success.
+Explain the proposed behavior and its example outcomes as sections of the same inline review, not competing Summary, simulation and approval destinations. Explain examples as “Example tasks; your tasks are unchanged.” Describe outcomes in task language: “Due date added as intended,” “Existing date kept,” or “No change when details were unavailable—as intended.” A compact evidence status must not replace meaningful outcomes with pass totals. Keep independent “What we wanted” and “What happened” details accessible. “Could not finish the simulation,” “Different from what we wanted,” “Could not confirm whether the task changed,” and “Not covered by this simulation” describe different states and must not be collapsed into success.
 
 Lead with what will happen in recognizable task language. A description is derived from the exact source and verified bindings, not a remembered chat message, generated name, or a handful of passing examples. Unknown conditions remain unknown; they cannot be omitted to make a confident sentence.
 
@@ -43,9 +47,11 @@ Report confirmed activation separately from a submitted request. Unknown complet
 
 When the person asks a follow-up, keep the composer, reading position and unsent text. A late reply offers new information without replacing the example being read. Earlier evidence stays tied to its original proposal and is visibly read-only when it cannot support the current decision.
 
+Show one host-owned progress or recovery outcome beside the affected exchange. Keep Stop near progress. Distinguish retrying an exact unconfirmed request from starting a fresh continuation; neither happens automatically. Cancellation cannot undo an accepted change. Do not repeat the same outcome as assistant text, a status panel and permanent helper instructions.
+
 ## Collection and returning to work
 
-Customizations lists recognizable goals, current use and work in progress. Preserve explicit names. If there is no explicit name, a suggested name may describe verified current behavior; until then, describe current intent as a discussion. An exploratory first question must not become the permanent identity of a completed proposal.
+Customizations lists saved names as the primary identity, with trigger/scope, a short verified behavior description, current use and work in progress. Keep full rule paragraphs inside the item. Preserve explicit names; a suggestion never silently renames an item. An exploratory first question must not become the permanent identity of a completed proposal. Duplicate-name opening offers include enough trigger/scope/state context to choose deliberately, rather than relying on the name alone.
 
 Opening an item restores its own discussion. Use “See proposed change,” “What is on now,” and “Earlier versions” only when those destinations exist and have a clear purpose. Keep earlier conversations and version history distinguishable: one explains the discussion; the other explains what behavior changed. Restoring eligible earlier work makes a new proposal and must disclose the effect on current use before an action.
 
@@ -53,7 +59,7 @@ Owner switches never expose another person's messages, draft or late result. Bac
 
 ## Responsive and accessible behavior
 
-One reading column on phone and desktop; app-owned content remains in the conversation. Before/after task cards may sit side by side at wide widths and stack on a phone. Phones and short windows use normal page scrolling so headers and the composer do not crowd out the discussion. Larger windows give the conversation its own scroll area with the composer in a separate row. Provide a named route to the simulation and next steps. Keep current-use context easy to find without consuming most of the viewport.
+Keep one cohesive workspace and aligned reading/composer column, not a full-width shell surrounding a detached narrow chat. App-owned review stays in the conversation. Before/after task cards may sit side by side at wide widths and stack on a phone. Preserve the same hierarchy on desktop, short windows, mobile and browser zoom: compact exact target/state, one conversation/review scroll region, and a reachable growing composer. Do not leave a sticky generic status while the target name scrolls away. Do not recover space by reducing readable body type or hiding meaningful uncertainty. Rename, history, deliberate disable and technical operations belong under More rather than the main reading surface.
 
 Use semantic headings, field labels, visible keyboard focus and text outcomes that do not depend on color. Expand evidence under a named example, returning focus and reading position when it closes. Approval and activation completion must be perceivable without stealing focus from a newer edit. Test 320-pixel width and short landscape with real content, including long names and uncertainty.
 

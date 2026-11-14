@@ -13,15 +13,23 @@ export async function openDeveloperTools(page) {
 export async function openSavedChanges(page) {
   const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
   const heading = studio.getByRole('heading', { name: 'Simulation', exact: true });
-  const latest = studio.getByRole('button', { name: 'See current proposal', exact: true }).first();
-  if (await latest.isVisible()) await latest.click();
-  else if (!await heading.isVisible() || await studio.locator('.rs-preview').isVisible())
-    await studio.getByRole('button', { name: 'See proposed change', exact: true }).first().click();
-  await expect(heading).toBeVisible();
   const decision = studio.getByRole('article', { name: 'Current decision', exact: true });
+  const readOnly = decision.locator('.rs-review-status').filter({ hasText: 'read-only' });
+  if (!await heading.isVisible() || await studio.locator('.rs-preview').isVisible() || await readOnly.isVisible())
+    await studio.locator('#studio-view-saved').click();
+  await expect(heading).toBeVisible();
   await expect(decision.locator('.rs-review-status')).not.toHaveText('Checking saved results…');
   if (await decision.locator('.rs-compact-case, .rs-workflow-case').count()) await expandCheckedExamples(decision);
   return decision;
+}
+
+export async function openSimulation(page) {
+  const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
+  const hide = studio.getByRole('button', { name: 'Hide simulation', exact: true });
+  if (await hide.isVisible()) await hide.click();
+  await studio.getByRole('button', { name: 'Review', exact: true }).click();
+  await expect(studio.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
+  return openSavedChanges(page);
 }
 
 export async function expandCheckedExamples(decision) {

@@ -39,7 +39,7 @@ async function addTask(page, title) {
 }
 const send = async (page, text) => {
   await studio(page).getByLabel('Message to Daymark assistant', { exact: true }).fill(text);
-  await studio(page).getByRole('button', { name: 'Prepare changes', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
 };
 async function openDetails(page) {
   await studio(page).getByRole('button', { name: 'More', exact: true }).click();
@@ -98,7 +98,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
     expect((await read('extensions')).approved).toBe(false); expect((await read('extensions')).selection).toEqual(selection);
     expect(mutations).toEqual([]);
-    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 
     mkdirSync(resolve('build/screens'), { recursive: true });
     await mismatch.evaluate(node => node.scrollIntoView({ block: 'center' }));
@@ -112,7 +112,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(composer).toBeFocused();
     await expect(composer).toHaveValue('Keep this unsent correction');
     await decision(page).getByRole('button', { name: 'Hide simulation', exact: true }).click();
-    expect(fixture.requests).toHaveLength(5);
+    expect(fixture.requests).toHaveLength(6);
     await send(page, 'Correct the saved source so only completed tasks in the chosen project create the named task. Keep exactly the same independent expected examples.');
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
     const { current: repaired, transcript: repairedTranscript } = await read('authoring');
@@ -137,7 +137,7 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect((await read('extensions')).selection).toEqual(selection);
     await ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
-    await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
+    await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
     await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
     await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
     await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(repaired.review.revisionId);
@@ -149,8 +149,8 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     await expect(ui.getByLabel('I reviewed these sample results and want this advice for my tasks.')).toHaveCount(0);
     expect(mutations).toHaveLength(2);
-    expect(fixture.requests.map(item => item.name)).toEqual(Array.from({ length: 2 }, () => ['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']).flat());
-    expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(3_870_720);
+    expect(fixture.requests.map(item => item.name)).toEqual(Array.from({ length: 2 }, () => ['resolve_intent', 'discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']).flat());
+    expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(12 * 387072);
   } finally { await fixture.close(); }
 });
 
@@ -198,7 +198,7 @@ test('offline Studio resumes the same checked draft and preserves review when th
       return current?.version === checked.version + 2 && !['RUNNING', 'CANCELLING'].includes(current.status);
     }, { timeout: 15_000 }).toBe(true);
     const { current: resumed, transcript: resumedTranscript } = await read('authoring');
-    expect(fixture.requests.slice(callsBefore).map(item => item.name)).toEqual(['discover_catalog', 'text', 'discover_catalog', 'offer_review']);
+    expect(fixture.requests.slice(callsBefore).map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'text', 'resolve_intent', 'discover_catalog', 'offer_review']);
     expect(resumed).toMatchObject({ status: 'REVIEW_AVAILABLE', code: null });
     expect(resumed.id).toBe(checked.id);
     expect(resumed.review).toEqual(checked.review);
@@ -228,12 +228,12 @@ test('offline Studio resumes the same checked draft and preserves review when th
     await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
     await expect(ui.getByText('Submitted request', { exact: true })).toHaveCount(0);
     expect(recoveryRequests).toEqual([]);
-    expect(fixture.requests).toHaveLength(callsBefore + 4);
+    expect(fixture.requests).toHaveLength(callsBefore + 6);
 
     await expect(decision(page)).toHaveCount(0);
     const evidenceResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/${evidencePath}`);
     await expect(ui.getByText(fixture.metadata.resumedOffer, { exact: true })).toHaveCount(0);
-    await ui.getByText('The saved check is available to inspect.', { exact: true }).locator('..').getByRole('button', { name: 'See proposed change', exact: true }).click();
+    await ui.locator('#studio-view-saved').click();
     expect(await (await evidenceResponse).json()).toEqual(proof);
     await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     const state = await read('extensions');
@@ -274,7 +274,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await expect(dialog.getByLabel('Shared allowance (USD)', { exact: true })).toHaveValue('');
         await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
         await expect(dialog).toHaveCount(0);
-        await expect(studio(page).locator('.rs-chat-note')).toContainText('Ask about this proposal or describe a change.');
+        await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveAttribute('placeholder', 'Ask or describe a change…');
         expect(setupRequests).toHaveLength(1);
         expect(fixture.requests).toEqual([]);
         const stored = JSON.parse(readFileSync(join(fixture.directory, 'ai-authoring.json'), 'utf8'));
@@ -294,7 +294,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await page.getByLabel('Task title', { exact: true }).fill('Unsaved native title during offline authoring');
       await page.locator('#open-customizations').click();
       const ui = studio(page), panel = authoring(page);
-      await expect(ui.locator('.rs-chat-note')).toContainText('Ask about this proposal or describe a change.');
+      await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveAttribute('placeholder', 'Ask or describe a change…');
       expect(fixture.requests).toEqual([]);
       await expect(ui.locator('.rs-chat')).not.toContainText(provider);
       const selectedA = fixture.db.prepare("SELECT revision_id,generation FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get();
@@ -319,20 +319,20 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(page).toHaveURL(/#customization=[^&]+/);
       await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
       expect(turns).toBe(1);
-      expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+      expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
       await send(page, `Confirmed: create ${fixture.metadata.title} only after a completion in ${fixture.metadata.projectName}. Keep the independent matching, nonmatching and unavailable-task examples.`);
       await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
       await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
       if (provider === 'openai') {
         await page.setViewportSize({ width: 683, height: 384 });
-        await expect(ui.getByRole('button', { name: 'See proposed change', exact: true }).first()).toBeInViewport({ ratio: 1 });
+        await expect(ui.locator('#studio-view-saved')).toBeInViewport({ ratio: 1 });
         mkdirSync(resolve('build/screens'), { recursive: true });
         await page.screenshot({ path: resolve('build/screens', 'authoring-offer-short-finished.png'), fullPage: true });
         await page.setViewportSize({ width: 1440, height: 1000 });
       }
       expect(turns).toBe(2);
-      expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification',
-        'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+      expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification',
+        'resolve_intent', 'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
 
       const session = await (await page.request.get(`${fixture.origin}/api/session`)).json();
       const exactItem = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
@@ -344,7 +344,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(conversation.status).toBe('REVIEW_AVAILABLE'); expect(conversation.review.eligible).toBe(true);
       expect(conversation.version).toBe(2); expect(conversation.draft.draftVersion).toBe(2);
       expect(transcript.messages.filter(message => message.role === 'assistant' && message.text === fixture.metadata.question)).toHaveLength(1);
-      expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(8 * (provider === 'openai' ? 387072 : 77824));
+      expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(10 * (provider === 'openai' ? 387072 : 77824));
       const state = await read('extensions');
       const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
       expect(state.selection.revision?.id ?? null).toBe(selectedA.revision_id);
@@ -406,7 +406,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
       expect((await read('extensions')).selection.revision?.id ?? null).toBe(selectedA.revision_id);
       await ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true }).click();
-      await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
+      await expect(ui.locator('#studio-view-active')).toContainText('On: this version');
       await expect(ui.getByRole('article', { name: 'Advice is on', exact: true })).toHaveCount(0);
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeVisible();
       await expect(ui.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
@@ -467,7 +467,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await selectProject(page, fixture.metadata.projectName);
         await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
         await page.locator('#open-customizations').click();
-        expect(await ui.evaluate(node => getComputedStyle(node).overflowY)).toBe('auto');
+        await expect(ui.getByRole('log', { name: 'Studio conversation', exact: true })).toHaveCSS('overflow-y', 'auto');
         const manage = ui.getByRole('button', { name: 'More', exact: true });
         await manage.scrollIntoViewIfNeeded();
         await expect(manage).toBeInViewport({ ratio: 1 });
@@ -506,7 +506,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         expect((await read('authoring')).current.id).not.toBe(conversation.id);
         await expect(ui.getByText(fixture.metadata.question, { exact: true })).toHaveCount(2);
         await expect(panel.getByRole('button', { name: 'Retry submitted request', exact: true })).toHaveCount(0);
-        expect(fixture.requests.slice(callCount).map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+        expect(fixture.requests.slice(callCount).map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
         expect((await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
         expect(turns).toBe(3);
       }

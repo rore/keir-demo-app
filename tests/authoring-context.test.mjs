@@ -232,7 +232,7 @@ test('agent discovery sends static supported context and worked source/scenario 
   assert.match(requests[0].instructions, /Rename for any saved name, including a deliberately chosen literal default/);
   assert.match(requests[0].instructions, /Never infer name origin from its spelling/);
   assert.match(requests[0].instructions, /Naming is optional and the person saves it explicitly/);
-  assert.match(requests[0].instructions, /Turn off this customization \(Turn off on narrow screens\) is in the customization status strip/);
+  assert.match(requests[0].instructions, /Turn off this customization is under More/);
   assert.match(requests[0].instructions, /Authoring tools do not rename it/);
   assert.match(requests[0].instructions, /never claim a name was saved or invent a naming tool/);
   const receipt = JSON.parse(requests[1].input.find(item => item.type === 'function_call_output').output).result;

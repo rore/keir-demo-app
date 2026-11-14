@@ -10,7 +10,7 @@ const review = page => studio(page).getByRole('article', { name: 'Current decisi
 const behavior = page => studio(page).getByRole('article', { name: 'About this rule', exact: true });
 const composer = page => studio(page).getByLabel('Message to Daymark assistant', { exact: true });
 const turnOn = page => review(page).getByRole('button', { name: 'Turn on for tasks completed', exact: true });
-const reviewLink = page => studio(page).getByRole('button', { name: /^(See proposed change|See current proposal)$/ }).first();
+const reviewLink = page => studio(page).locator('#studio-view-saved');
 const decisions = page => review(page).getByRole('button', {
   name: /^(Approve this change|Turn on for tasks completed)$/, disabled: false,
 });
@@ -232,7 +232,8 @@ test('scrolling while a turn-off response is held leaves conversation focus in p
     await page.setViewportSize({ width: 390, height: 844 });
     await reviewLink(page).click();
     await expect(review(page).getByText('On for my tasks', { exact: true })).toBeVisible();
-    const log = studio(page);
+    await studio(page).getByRole('button', { name: 'More', exact: true }).click();
+    const log = studio(page).locator('.rs-messages');
     const disable = studio(page).getByRole('button', { name: 'Turn off this customization', exact: true });
     const url = `${origin}/api/${path}/disable`;
     await expect(disable).toBeEnabled();
@@ -243,7 +244,7 @@ test('scrolling while a turn-off response is held leaves conversation focus in p
     await disable.dispatchEvent('click');
     await hold.started;
     const top = await log.evaluate(element => element.scrollTop);
-    await log.hover();
+    await log.hover({ position: { x: 5, y: 5 } });
     await page.mouse.wheel(0, -320);
     await expect.poll(() => log.evaluate(element => element.scrollTop)).toBeLessThan(top);
     await expect(composer(page)).toBeFocused();

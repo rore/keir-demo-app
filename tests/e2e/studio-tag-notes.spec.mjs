@@ -3,11 +3,11 @@ import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 
 test('natural-language tag/notes rule reaches real compilation, saved review and every native create entry', async ({ page }) => {
   test.setTimeout(90_000);
-  const f = await startAuthoringFixture({ tagNotes: true });
+  const f = await startAuthoringFixture({ tagNotes: true, intentResolutions: ['prepare', 'prepare'] });
   const ui = page.getByRole('region', { name: 'Customization Studio', exact: true });
   const button = (name, scope = page) => scope.getByRole('button', { name, exact: true });
   const navigate = name => button(name, page.getByRole('navigation', { name: 'Main navigation', exact: true })).click();
-  const send = async text => { await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(text); await button('Prepare changes', ui).click(); };
+  const send = async text => { await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(text); await button('Send', ui).click(); };
   const counts = () => ['tasks', 'task_events', 'task_create_operations', 'task_effect_receipts']
     .map(table => f.db.prepare(`SELECT count(*) n FROM ${table}`).get().n);
   const selections = () => f.db.prepare('SELECT * FROM extension_selections ORDER BY owner_id,hook_id').all();
@@ -34,7 +34,7 @@ test('natural-language tag/notes rule reaches real compilation, saved review and
     expect(saved.ruleDescription.coverage).toBe('complete');
     expect(proof.passed).toBe(true); expect(proof.reports).toHaveLength(8);
     expect(proof.reports.every(row => row.report.calls.length === 0 && row.report.native.effects.length === 0)).toBe(true);
-    await button('See proposed change', ui).first().click();
+    await ui.locator('#studio-view-saved').click();
     await expect(ui.locator('.rs-rule-facts')).toContainText('more than 3 distinct normalized tags');
     await expect(ui.locator('.rs-rule-facts')).toContainText('no notes');
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 320, height: 740 }, { width: 683, height: 384 }]) {
@@ -43,7 +43,7 @@ test('natural-language tag/notes rule reaches real compilation, saved review and
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await button('View simulation', ui).click();
+    await ui.locator('#studio-view-saved').click();
     const review = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(review).toContainText('Example tasks; your tasks are unchanged.');
     await expect(review).toContainText('This example deliberately');
@@ -60,7 +60,7 @@ test('natural-language tag/notes rule reaches real compilation, saved review and
     await navigate('Customizations');
     await expect(page.getByRole('article', { name: 'Untitled customization', exact: true })).toContainText('more than 3 distinct normalized tags');
     await button('Open', page.getByRole('article', { name: 'Untitled customization', exact: true })).click();
-    await button('View what’s in use', ui).click();
+    await ui.locator('#studio-view-active').click();
     await expect(ui).toContainText('more than 3 distinct normalized tags');
     await navigate('Tasks');
     await button(f.metadata.projectName, page.getByRole('navigation', { name: 'Projects', exact: true })).click();

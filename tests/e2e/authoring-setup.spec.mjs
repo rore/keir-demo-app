@@ -97,12 +97,13 @@ async function enterStudio(page, origin, user = 'Maya', beforeNew = () => {}) {
 }
 
 async function openConfigure(page) {
-  const ui = studio(page), configure = ui.getByRole('button', { name: 'Configure', exact: true });
-  if (!await configure.isVisible()) {
+  const ui = studio(page), direct = ui.locator('#assistant-configure');
+  if (await direct.isVisible()) await direct.click();
+  else {
     await ui.getByRole('button', { name: 'More', exact: true }).click();
     await openDeveloperTools(page);
+    await ui.getByRole('region', { name: 'Assistant setup', exact: true }).getByRole('button', { name: 'Configure', exact: true }).click();
   }
-  await configure.click();
   return page.getByRole('dialog', { name: 'Set up the assistant', exact: true });
 }
 
@@ -414,12 +415,12 @@ test('a held old setup recovery read cannot overwrite a reopened successful save
     await next.getByRole('button', { name: 'Save settings', exact: true }).click();
     const saved = ui.getByRole('status').filter({ hasText: 'Settings saved. Send a message when you’re ready.' });
     await expect(saved).toBeVisible();
-    await expect(ui.locator('.rs-chat-note')).toContainText('Ask about this proposal or describe a change.');
+    await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveAttribute('placeholder', 'Ask or describe a change…');
     const delivered = page.waitForResponse(response => new URL(response.url()).pathname === '/api/authoring/setup' && response.request().method() === 'GET');
     releaseRead(); await (await delivered).finished();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect(saved).toBeVisible();
-    await expect(ui.locator('.rs-chat-note')).toContainText('Ask about this proposal or describe a change.');
+    await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveAttribute('placeholder', 'Ask or describe a change…');
     expect(calls.setupPosts).toHaveLength(2); expect(calls.turns).toHaveLength(0);
   } finally { releaseSave?.(); releaseRead?.(); }
 });

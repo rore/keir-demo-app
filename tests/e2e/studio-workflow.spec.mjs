@@ -97,6 +97,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       expect(checked.evidence.passed).toBe(true);
       await page.goto(`${fixture.origin}/#customization=${extensionId}`);
       await expect(rule.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
+      await studio.locator('#studio-view-saved').click();
       const summary = rule.locator('.rs-rule-summary');
       await expect(rule.locator('.rs-rule-facts')).toBeVisible();
       await expect(summary).toContainText(hookId === 'TaskCreated' ? 'When a new task is added' : 'When a task is completed');
@@ -114,7 +115,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       for (const fact of facts) await expect(rule).toContainText(fact);
       await details.getByText('Rule details', { exact: true }).click();
       await expect(rule).not.toContainText('A full summary');
-      await rule.getByRole('button', { name: 'View simulation', exact: true }).click();
+      await studio.locator('#studio-view-saved').click();
       const review = studio.getByRole('article', { name: 'Current decision' });
       await expandExamples(review);
       if (noChangeReason) await expect(review).toContainText(noChangeReason);
@@ -295,9 +296,9 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await expect(page.getByRole('article', { name: completion.extensionName })).toContainText('In use');
     await page.getByRole('article', { name: extension.name }).getByRole('button', { name: 'Continue changes' }).click();
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
-    await expect(studio.getByLabel('Customization status')).toContainText('For tasks added · Currently on: Existing intake rule');
+    await expect(studio.locator('#studio-customization-status')).toHaveText('On: Existing intake rule (another customization)');
     await expect(studio.getByRole('article', { name: 'About this rule' }).locator('.rs-rule-summary')).toContainText('set its priority to High');
-    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+    await studio.locator('#studio-view-saved').click();
     const review = studio.getByRole('article', { name: 'Current decision' });
     await expandExamples(review);
     await expect(review.getByText('Updated this task. Priority Normal → High.')).toBeVisible();
@@ -334,7 +335,8 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await expect(review.getByText(/This replaces “Existing intake rule” for this trigger/)).toBeVisible();
     expect(actions).toEqual(['approve']);
     await use.click();
-    await expect(studio.getByLabel('Customization status')).toContainText('Currently on: Intake priority');
+    await expect(studio.locator('#studio-title')).toHaveText('Intake priority');
+    await expect(studio.locator('#studio-view-active')).toHaveText('On: this version');
     expect(actions[1]).toMatchObject({ generation: 7, revisionId: draft.id, evidenceId: evidence.id });
   } finally { await fixture.close(); }
 });

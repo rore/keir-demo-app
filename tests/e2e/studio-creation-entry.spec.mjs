@@ -76,7 +76,7 @@ async function switchPerson(page, id) {
 
 test('top-level New starts a distinct customization after a real prior chat and saved item', async ({ page }) => {
   test.setTimeout(60_000);
-  const fixture = await startAuthoringFixture({ provider: 'anthropic' });
+  const fixture = await startAuthoringFixture({ provider: 'anthropic', intentResolutions: ['prepare', 'prepare', 'prepare'] });
   mkdirSync(evidenceDir, { recursive: true });
   const turns = [];
   page.on('request', request => { if (turnRequest(request)) turns.push(request.postDataJSON()); });
@@ -147,7 +147,7 @@ test('top-level New starts a distinct customization after a real prior chat and 
     await page.locator(`#edit-${prior.extensionId}`).click();
     const reopenA = studio(page);
     await reopenA.getByLabel('Message to Daymark assistant', { exact: true }).fill('Yes, keep the independent examples and show me Done for completed tasks.');
-    await reopenA.getByRole('button', { name: 'Prepare changes', exact: true }).click();
+    await reopenA.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(reopenA.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 25_000 });
     const bStateAfterEdit = await api(page, `extensions/${accepted.conversation.extensionId}`);
     const bSourceAfterEdit = await api(page, `extensions/${accepted.conversation.extensionId}/revisions/${savedB.draft.id}`);
@@ -260,7 +260,7 @@ test('a lost create receipt recovers by operation identity and reload does not r
     expect(conversations[0]).toMatchObject({ id: dropped.body.conversation.id, owner_id: 'maya', creation_operation_id: turn.operationId, status: 'AWAITING_USER' });
     expect(fixture.db.prepare('SELECT owner_id,extension_id,purpose FROM extension_conversation_links WHERE conversation_id=?')
       .get(dropped.body.conversation.id)).toEqual({ owner_id: 'maya', extension_id: extension.id, purpose: 'CREATE' });
-    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
 
     await page.reload();
     const reopened = studio(page), reopenedLog = reopened.getByRole('log', { name: 'Studio conversation', exact: true });
@@ -269,7 +269,7 @@ test('a lost create receipt recovers by operation identity and reload does not r
     expect(posts).toHaveLength(1);
     expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM extensions WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
     expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
-    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
 
     writeFileSync(resolve(evidenceDir, 'creation-recovery.json'), JSON.stringify({
       operationId: turn.operationId, extensionId: extension.id, conversationId: dropped.body.conversation.id,
@@ -366,7 +366,7 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
     await expect(log.getByText(fixture.metadata.question, { exact: true })).toHaveCount(1, { timeout: 20_000 });
     expect(posts).toHaveLength(1);
     expect(posts[0].operationId).toBe(turn.operationId);
-    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
     expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM extensions WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
     expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
     expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=?').get('sam').n).toBe(0);

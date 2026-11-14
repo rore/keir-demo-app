@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { openSimulation } from '../fixtures/studio-review.mjs';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -129,7 +130,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await composer(page).fill('Keep this unsent correction.');
     await studio(page).locator('#studio-view-saved').click();
     await expect(studio(page).getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
-    await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+    await openSimulation(page);
     await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
     await expect(review(page)).toContainText('Example tasks; your tasks are unchanged.');
     const examples = review(page).getByRole('article', { name: /^Example:/ });
@@ -182,7 +183,7 @@ test('a raw PASS guard proposal cannot override a mismatched host summary', asyn
   expect(first.report.consumption).toEqual(first.expected.consumption);
   expect(first.report.scenario.proposal.hasNotes).toBe(true);
   expect(mock.proof.summary.cases[0].verification).toBe('mismatched');
-  await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+  await studio(page).locator('#studio-view-saved').click();
   const example = review(page).getByRole('article', { name: 'Example: Client task with a due date', exact: true });
   await expect(example).toContainText('Notes present');
   await expect(example).toContainText('Allowed by this rule');
@@ -220,7 +221,7 @@ test('historical before-create evidence stays exact and read-only', async ({ pag
 
 test('unexpected unavailability stays inspectable without an approval action', async ({ page, demo }) => {
   const mock = await fixture(page, demo, { mismatch: true });
-  await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
+  await studio(page).locator('#studio-view-saved').click();
   const example = review(page).getByRole('article', { name: 'Example: Client task with a due date', exact: true });
   await expect(example).toContainText('Could not check');
   await expect(example).toContainText('Needs another check');
@@ -237,7 +238,7 @@ test('a delayed approval preserves short-screen reading, unread reply and compos
   const held = mock.holdApproval();
   await review(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
   await held.entered.promise;
-  const log = studio(page);
+  const log = studio(page).getByRole('log', { name: 'Studio conversation', exact: true });
   try {
     await composer(page).fill('Keep the newer unsent correction.');
     await log.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });

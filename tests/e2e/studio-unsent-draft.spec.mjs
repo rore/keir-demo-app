@@ -171,7 +171,8 @@ for (const [label, newer] of [['identical new input', 'Help me customize a task 
       expect(await api(page, `extensions/${id}`)).toEqual(saved);
       expect(requests.map(request => request.path)).toEqual(['/api/authoring/turn']);
       expect(requests[0].body.text).toBe(submitted);
-      expect(fixture.requests.map(request => request.name)).toEqual(['discover_catalog', 'ask_clarification']);
+      expect(fixture.requests.map(request => request.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
+      expect(requests[0].body.intent).toBe('auto');
     } finally { gate.resolve(); await page.close(); await fixture.close(); }
   });
 }
@@ -238,7 +239,7 @@ test('a new component recovering an accepted request keeps a restored newer iden
     expect(recoveries.length).toBeGreaterThanOrEqual(2);
     for (const request of recoveries) expect(request.body).toEqual(requests[0].body);
     expect(requests.every(request => ['/api/authoring/turn', '/api/authoring/recover'].includes(request.path))).toBe(true);
-    expect(fixture.requests.map(request => request.name)).toEqual(['discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(request => request.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
   } finally { gate.resolve(); await page.close(); await fixture.close(); }
 });
 
@@ -343,6 +344,6 @@ test('accepted text stays cleared across route remounts when removing its persis
     expect(discussion.transcript.messages.filter(message => message.role === 'user').map(message => message.text)).toEqual([submitted]);
     expect(requests.map(request => request.path)).toEqual(['/api/authoring/turn']);
     expect(requests[0].body.text).toBe(submitted);
-    expect(fixture.requests.map(request => request.name)).toEqual(['discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(request => request.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
   } finally { await page.close(); await fixture.close(); }
 });
