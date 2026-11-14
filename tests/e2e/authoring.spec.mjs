@@ -199,8 +199,8 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
   await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Suggest a task customization for my projects');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('Which project should this customization cover?', { exact: true })).toBeVisible({ timeout: 10_000 });
-  expect(Object.keys(calls.turns[0]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'operationId', 'target', 'text']);
-  expect(calls.turns[0]).toMatchObject({ conversationId: null, text: 'Suggest a task customization for my projects', expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'revise', extensionId: demo.extensionIds.maya, baseRevisionId: null, selectionGeneration: 0 } });
+  expect(Object.keys(calls.turns[0]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'intent', 'operationId', 'target', 'text']);
+  expect(calls.turns[0]).toMatchObject({ conversationId: null, intent: 'discuss', text: 'Suggest a task customization for my projects', expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'revise', extensionId: demo.extensionIds.maya, baseRevisionId: null, selectionGeneration: 0 } });
   expect(typeof calls.turns[0].operationId).toBe('string');
   expect(await ui.getByText('Checking the submitted task customization request.', { exact: true }).count()).toBe(1);
   expect(firstPolls).toBeGreaterThanOrEqual(2);
@@ -208,8 +208,8 @@ for (const width of [1440, 390]) test(`turns keep exact versions and stable serv
   await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Use open tasks as the first example');
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByText('What should the next example cover?', { exact: true })).toBeVisible({ timeout: 10_000 });
-  expect(Object.keys(calls.turns[1]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'operationId', 'target', 'text']);
-  expect(calls.turns[1]).toMatchObject({ conversationId: 'conversation-1', text: 'Use open tasks as the first example', expectedVersion: 1, expectedDraftVersion: 0, target: { kind: 'resume', extensionId: demo.extensionIds.maya } });
+  expect(Object.keys(calls.turns[1]).sort()).toEqual(['conversationId', 'expectedDraftVersion', 'expectedVersion', 'intent', 'operationId', 'target', 'text']);
+  expect(calls.turns[1]).toMatchObject({ conversationId: 'conversation-1', intent: 'discuss', text: 'Use open tasks as the first example', expectedVersion: 1, expectedDraftVersion: 0, target: { kind: 'resume', extensionId: demo.extensionIds.maya } });
   expect(typeof calls.turns[1].operationId).toBe('string');
   expect(calls.turns[1].operationId).not.toBe(calls.turns[0].operationId);
   expect(await ui.getByText('Checking the follow-up request.', { exact: true }).count()).toBe(1);
@@ -569,7 +569,7 @@ for (const code of ['SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'PROVIDER_RATE_LIMIT', 'C
   await expect(continuation).toBeEnabled();
   await continuation.click();
   await expect(ui.getByText('Ready for your next choice.', { exact: true })).toBeVisible();
-  expect(calls.turns).toEqual([{ conversationId: 'saved-discussion', operationId: expect.any(String), expectedVersion: 4,
+  expect(calls.turns).toEqual([{ conversationId: 'saved-discussion', intent: 'discuss', operationId: expect.any(String), expectedVersion: 4,
     expectedDraftVersion: 0, target: { kind: 'resume', extensionId: demo.extensionIds.maya },
     text: 'Continue from saved work. Ask before changing any independent examples.' }]);
   await expect(composer).toHaveValue('Keep this unsent follow-up');

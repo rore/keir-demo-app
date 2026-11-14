@@ -376,7 +376,7 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
     await expect(recovery).toHaveCount(1);
     await expect(recovery.getByRole('button', { name: 'Continue here from saved work', exact: true })).toBeDisabled();
     await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
-    expect(turns).toEqual([{ target: { kind: 'resume', extensionId }, conversationId: 'context-boundary', operationId: expect.any(String),
+    expect(turns).toEqual([{ target: { kind: 'resume', extensionId }, intent: 'discuss', conversationId: 'context-boundary', operationId: expect.any(String),
       text: 'Continue from saved work. Ask before changing any independent examples.', expectedVersion: 1, expectedDraftVersion: before.draftVersion }]);
     releaseSettled();
     await expect(recovery).toHaveCount(0);
