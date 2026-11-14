@@ -147,7 +147,7 @@ test('top-level New starts a distinct customization after a real prior chat and 
     await page.locator(`#edit-${prior.extensionId}`).click();
     const reopenA = studio(page);
     await reopenA.getByLabel('Message to Daymark assistant', { exact: true }).fill('Yes, keep the independent examples and show me Done for completed tasks.');
-    await reopenA.getByRole('button', { name: 'Send', exact: true }).click();
+    await reopenA.getByRole('button', { name: 'Prepare changes', exact: true }).click();
     await expect(reopenA.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 25_000 });
     const bStateAfterEdit = await api(page, `extensions/${accepted.conversation.extensionId}`);
     const bSourceAfterEdit = await api(page, `extensions/${accepted.conversation.extensionId}/revisions/${savedB.draft.id}`);

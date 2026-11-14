@@ -150,7 +150,7 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     await expect(studio(page).getByText(rejectedMessage, { exact: true })).toBeVisible();
     await expect.poll(() => fixture.requests.length).toBe(providerCalls.length + 2);
     expect(calls.turns).toHaveLength(3);
-    expect(calls.turns[2]).toEqual({ conversationId: null, operationId: expect.any(String), text: rejectedMessage,
+    expect(calls.turns[2]).toEqual({ conversationId: null, intent: 'discuss', operationId: expect.any(String), text: rejectedMessage,
       expectedVersion: 0, expectedDraftVersion: savedItem.state.draftVersion,
       target: { kind: 'revise', extensionId: savedItem.extensionId, baseRevisionId: savedItem.state.draft.id, selectionGeneration: savedItem.state.selection.generation } });
     expect(fixture.requests).toHaveLength(providerCalls.length + 2);
@@ -276,7 +276,7 @@ test('a revised customization opens its earlier discussion and continues in one 
     await composer.fill(followUp);
     await ui.getByRole('button', { name: 'Send', exact: true }).click();
     await expect.poll(async () => (await api(page, `authoring?extensionId=${extensionId}`)).current?.status).toBe('AWAITING_USER');
-    expect(calls.turns).toEqual([{ conversationId: null, operationId: expect.any(String), text: followUp,
+    expect(calls.turns).toEqual([{ conversationId: null, intent: 'discuss', operationId: expect.any(String), text: followUp,
       expectedVersion: 0, expectedDraftVersion: fresh.draftVersion,
       target: { kind: 'revise', extensionId, baseRevisionId: fresh.draft.id, selectionGeneration: fresh.selection.generation } }]);
     await expect(ui.getByText(text, { exact: true })).toHaveCount(1);

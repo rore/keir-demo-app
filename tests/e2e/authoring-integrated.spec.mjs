@@ -39,7 +39,7 @@ async function addTask(page, title) {
 }
 const send = async (page, text) => {
   await studio(page).getByLabel('Message to Daymark assistant', { exact: true }).fill(text);
-  await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
+  await studio(page).getByRole('button', { name: 'Prepare changes', exact: true }).click();
 };
 async function openDetails(page) {
   await studio(page).getByRole('button', { name: 'More', exact: true }).click();

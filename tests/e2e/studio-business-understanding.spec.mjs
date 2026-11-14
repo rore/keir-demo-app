@@ -13,7 +13,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
   const decision = studio.getByRole('article', { name: 'Current decision', exact: true });
   const send = async text => {
     await composer.fill(text);
-    await studio.getByRole('button', { name: 'Send', exact: true }).click();
+    await studio.getByRole('button', { name: 'Prepare changes', exact: true }).click();
   };
   const seeChange = async () => {
     await studio.getByRole('button', { name: 'See proposed change', exact: true }).first().click();
@@ -295,7 +295,7 @@ test('proposal links settle on an unobscured Summary while View simulation remai
     await studio.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(studio.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
     await composer.fill('Confirmed: every project, only when the new task has no due date. Use exactly 168 hours after addition.');
-    await studio.getByRole('button', { name: 'Send', exact: true }).click();
+    await studio.getByRole('button', { name: 'Prepare changes', exact: true }).click();
     await expect(studio.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
     const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     const { contextToken } = await (await page.request.get(fixture.origin + '/api/session')).json();

@@ -7,7 +7,7 @@ test('natural-language tag/notes rule reaches real compilation, saved review and
   const ui = page.getByRole('region', { name: 'Customization Studio', exact: true });
   const button = (name, scope = page) => scope.getByRole('button', { name, exact: true });
   const navigate = name => button(name, page.getByRole('navigation', { name: 'Main navigation', exact: true })).click();
-  const send = async text => { await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(text); await button('Send', ui).click(); };
+  const send = async text => { await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(text); await button('Prepare changes', ui).click(); };
   const counts = () => ['tasks', 'task_events', 'task_create_operations', 'task_effect_receipts']
     .map(table => f.db.prepare(`SELECT count(*) n FROM ${table}`).get().n);
   const selections = () => f.db.prepare('SELECT * FROM extension_selections ORDER BY owner_id,hook_id').all();

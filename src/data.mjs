@@ -707,7 +707,7 @@ export function taskService(db, { guard } = {}) {
       return project(owner, id);
     },
     listTasks(owner, id) { project(owner, id); return db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND project_id = ? ORDER BY created_at, id`).all(owner, id).map(taskDto); },
-    searchTasks(owner, id, input) {
+    searchTasks(owner, id, input, { allowAll = false } = {}) {
       project(owner, id);
       fields(input, ['q', 'tag', 'after']);
       const conditions = ['owner_id = ?', 'project_id = ?'];
@@ -722,7 +722,7 @@ export function taskService(db, { guard } = {}) {
         conditions.push('EXISTS (SELECT 1 FROM json_each(tasks.tags) WHERE value = ?)');
         args.push(tag(input.tag));
       }
-      if (conditions.length === 2) throw new AppError(400, 'Enter search text or a tag.');
+      if (conditions.length === 2 && allowAll !== true) throw new AppError(400, 'Enter search text or a tag.');
       if (Object.hasOwn(input, 'after')) {
         const after = input.after;
         if (typeof after !== 'string' || !after.isWellFormed() || !after || after.length > 128 || /[\p{Cc}\s]/u.test(after)) throw new AppError(400, 'Use a valid task search cursor.');
