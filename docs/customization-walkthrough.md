@@ -98,7 +98,7 @@ This demonstrates using an operation's returned answer in a condition. Skipping 
 
 > Before saving a new task with more than three tags, require notes.
 
-This example uses the **unpublished numeric candidate** staged in this checkout. It counts the list the host supplies, not a database total; it is not a feature of the published packages. See [package provenance](package-provenance.md) for the exact dependencies.
+This rule uses list counting and integer comparison from [Core 0.5.0](https://github.com/rore/keir-core/releases/tag/v0.5.0). It counts the list the host supplies, not a database total. See [package provenance](package-provenance.md) for the exact dependencies and the [Core examples](https://github.com/rore/keir-core/blob/main/examples/numeric/README.md) for Decimal calculations and rounding.
 
 | New task | Expected decision |
 | --- | --- |

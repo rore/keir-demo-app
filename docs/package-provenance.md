@@ -1,8 +1,10 @@
 # Package provenance
 
-This integration checkout stages the independently qualified **unpublished Core 0.5 candidate**, not a public release or deployment. The exact downloaded package input is Core `b9782d1cb7dd7106d44878f7199cbd4774e91510`, [Actions run 43431976777](https://github.com/rore/keir-core/actions/runs/43431976777), artifact `14039569337`. Active metadata uses `verified-candidate` and `release: null`. Focused source reviews passed. [Hosted run 43474838743](https://github.com/rore/keir-demo-app/actions/runs/43474838743) at Daymark `331f2d910bc8c7117415f978035a017dfaec794f` passed build, 606 Node tests (12 existing opt-in process/crash skips) and all 261 browser tests. These are scripted-provider host integration results, not live-model qualification, publication or deployment.
+Daymark uses the exact package and companion bytes now published in [Core 0.5.0](https://github.com/rore/keir-core/releases/tag/v0.5.0). They were originally adopted as independently qualified candidates. Metadata retains `verified-candidate` and `release: null` to record that adoption; publication does not rewrite those records or deploy the app.
 
-| Candidate asset | SHA-256 |
+The original downloaded package input was Core `b9782d1cb7dd7106d44878f7199cbd4774e91510`, [Actions run 43431976777](https://github.com/rore/keir-core/actions/runs/43431976777), artifact `14039569337`. Focused source reviews passed. [Hosted run 43474838743](https://github.com/rore/keir-demo-app/actions/runs/43474838743) at Daymark `331f2d910bc8c7117415f978035a017dfaec794f` passed build, 606 Node tests (12 existing opt-in process/crash skips) and all 261 browser tests. These are scripted-provider host integration results, not live-model qualification or deployment.
+
+| Pinned asset | SHA-256 |
 | --- | --- |
 | `keir-runtime-node-0.5.0.tgz` | `9c59e4722f4d85bcd0e57580a1cef9526f7ceb52670e345576e39ca29d489736` |
 | `keir-compiler-cli-0.5.0.zip` | `ec36271caaa55714257601c2f8bc7aa19f2ced76858f02b15021dacd3a138e76` |
@@ -14,14 +16,14 @@ Normal builds use the independently packaged vendored archive, not a sibling Cor
 
 The working tree pins the corrected archive from [companion-only run 43451868303](https://github.com/rore/keir-core/actions/runs/43451868303), source `9435dfef2ade61af2d7617754c761775502d68b5`. It replaces the earlier candidate that omitted a guide-linked offline index. This packet passed its 23 recipe checks, archive build, offline verification and exact-package checks upstream. Local adoption checks verify bytes and relative guide links; they do not establish Daymark execution.
 
-| Exact candidate input | Bytes | SHA-256 |
+| Exact pinned input | Bytes | SHA-256 |
 | --- | ---: | --- |
 | `keir-authoring-companion-v9.zip` | 246443 | `c1ca8b6f2f3c5089afca5e134d0b21ed2477a570141c36fcc1ea55a2f6c41867` |
 | Raw `manifest.json`, retained as `keir-authoring-companion-v9-manifest.json` | 7159 | `a98c013fe2221073f93b280f8bc0223b49bd298ff7bc910e69a2dec97387a74b` |
 | Unchanged `customer-authoring-guide-v9.md` | 11801 | `21615e93fc426f11eb756e850a4e0660d3a5cab55f69f47f5b3e818fc3fb1257` |
 | Included `docs/specs/README.md` | 12036 | `4bce42b59c998b3f8cde706ccba0628fa4e439d923524d3b838a98b8c1b06250` |
 
-All 35 payloads match the exact manifest and Git blobs. All 10 direct relative guide document links resolve inside the archive. The archive retains its full license and all eight versioned schemas under their original `schemas/` paths. The manifest maps the unchanged Core packages to numeric source/model/recipe `3/4/3` and retained `2/3/2`; both use producer 0.5.0 and artifact/scenario `/4`. Its `release` compatibility status does not mean public publication. Earlier guide editions and their original metadata remain unchanged.
+All 35 payloads match the exact manifest and Git blobs. All 10 direct relative guide document links resolve inside the archive. The archive retains its full license and all eight versioned schemas under their original `schemas/` paths. The manifest maps the unchanged Core packages to numeric source/model/recipe `3/4/3` and retained `2/3/2`; both use producer 0.5.0 and artifact/scenario `/4`. Its `release` status records package compatibility; public availability is established by the linked Core release, not that field. Earlier guide editions and their original metadata remain unchanged.
 
 ## Retained Core 0.4 release
 
