@@ -311,7 +311,7 @@ for (const status of [200, 503]) test(`a late earlier-page ${status} response ca
   } finally { release?.(); }
 });
 
-for (const approved of [false, true]) test(`a current context boundary owns recovery until its explicit continuation settles (${approved ? 'approved' : 'eligible'} proof)`, async ({ page, demo }, testInfo) => {
+for (const approved of [false, true]) test(`saved context-blocked work permits exact review and ordinary Send (${approved ? 'approved' : 'eligible'} proof)`, async ({ page, demo }, testInfo) => {
   await signIn(page, demo.origin);
   const admitted = demo.admit('maya', 'Retained checked proposal');
   let saved = await api(page, demo.origin, `extensions/${admitted.extensionId}/compile`, { hookId: TASK_HOOK, source: demo.metadata.source, draftVersion: 0 });
@@ -358,26 +358,26 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
     await openItem(page, extensionId);
     const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     const recovery = ui.getByRole('article', { name: 'Continue saved work', exact: true });
-    await expect(recovery).toHaveCount(1);
-    await expect(recovery.getByRole('button', { name: 'Continue here from saved work', exact: true })).toBeEnabled();
-    await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
+    await expect(recovery).toHaveCount(0);
+    await expect(ui.getByRole('button', { name: 'Continue here from saved work', exact: true })).toHaveCount(0);
+    await openSavedChanges(page);
+    await expect(ui.getByRole('article', { name: 'Current decision', exact: true }).getByRole('button', { name: approved ? 'Turn on for tasks completed' : 'Approve this change', exact: true })).toBeEnabled();
     await expect(ui.getByRole('button', { name: 'Continue current changes in a new conversation', exact: true })).toHaveCount(0);
-    await composer.fill('Keep this independent unsent correction');
+    await composer.fill('Explain the saved check without changing it.');
     expect(turns).toEqual([]);
-    // Saved approval remains intact; this unfinished discussion offers only explicit continuation.
-    if (approved) await page.screenshot({ path: testInfo.outputPath('context-limit-recovery-approved-proof.png'), fullPage: true });
-    await recovery.getByRole('button', { name: 'Continue here from saved work', exact: true }).click();
+    // Exact saved proof is independently usable before any provider request.
+    await page.screenshot({ path: testInfo.outputPath('context-limit-saved-review.png'), fullPage: true });
+    await ui.getByRole('button', { name: 'Send', exact: true }).click();
     if (!approved) {
       await expect(ui.getByRole('alert')).toContainText('Authoring progress could not be checked.');
-      await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
+      await expect(ui.getByRole('article', { name: 'Current decision', exact: true }).getByRole('button', { name: 'Approve this change', exact: true })).toBeDisabled();
       await ui.getByRole('button', { name: 'Check authoring status', exact: true }).click();
     }
     await heldPoll;
-    await expect(recovery).toHaveCount(1);
-    await expect(recovery.getByRole('button', { name: 'Continue here from saved work', exact: true })).toBeDisabled();
-    await expect(ui.getByRole('article', { name: 'Current decision', exact: true })).toHaveCount(0);
-    expect(turns).toEqual([{ target: { kind: 'resume', extensionId }, intent: 'discuss', conversationId: 'context-boundary', operationId: expect.any(String),
-      text: 'Continue from saved work. Ask before changing any independent examples.', expectedVersion: 1, expectedDraftVersion: before.draftVersion }]);
+    await expect(recovery).toHaveCount(0);
+    await expect(ui.getByRole('article', { name: 'Current decision', exact: true }).getByRole('button', { name: approved ? 'Turn on for tasks completed' : 'Approve this change', exact: true })).toBeDisabled();
+    expect(turns).toEqual([{ target: { kind: 'resume', extensionId }, intent: 'auto', conversationId: 'context-boundary', operationId: expect.any(String),
+      text: 'Explain the saved check without changing it.', expectedVersion: 1, expectedDraftVersion: before.draftVersion }]);
     releaseSettled();
     await expect(recovery).toHaveCount(0);
     await openSavedChanges(page);
@@ -386,6 +386,8 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
     await expect(recovery).toHaveCount(0);
     await expect(decision.getByRole('button', { name: approved ? 'Turn on for tasks completed' : 'Approve this change', exact: true })).toBeEnabled();
     if (approved) await page.screenshot({ path: testInfo.outputPath('context-limit-settled-decision.png'), fullPage: true });
+    await composer.fill('Keep this independent unsent correction');
+    await page.reload();
     await expect(composer).toHaveValue('Keep this independent unsent correction');
     expect(recoveries).toEqual(approved ? [turns[0]] : []);
     expect(turns).toHaveLength(1);
@@ -399,7 +401,7 @@ for (const approved of [false, true]) test(`a current context boundary owns reco
   } finally { releaseSettled?.(); }
 });
 
-test('reloading an accepted context continuation keeps the prior decision hidden until settlement', async ({ page, demo }, testInfo) => {
+test('reloading ordinary Send from context-blocked work keeps the prior decision hidden until settlement', async ({ page, demo }, testInfo) => {
   await signIn(page, demo.origin);
   const admitted = demo.admit('maya', 'Retained approved proposal');
   let saved = await api(page, demo.origin, `extensions/${admitted.extensionId}/compile`, { hookId: TASK_HOOK, source: demo.metadata.source, draftVersion: 0 });
@@ -425,7 +427,10 @@ test('reloading an accepted context continuation keeps the prior decision hidden
   });
   await openItem(page, extensionId);
   const ui = studio(page);
-  await ui.getByRole('article', { name: 'Continue saved work', exact: true }).getByRole('button', { name: 'Continue here from saved work', exact: true }).click();
+  await expect(ui.getByRole('article', { name: 'Continue saved work', exact: true })).toHaveCount(0);
+  expect(turns).toHaveLength(0);
+  await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Explain these saved examples.');
+  await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(ui.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
   expect(turns).toHaveLength(1);
   expect(turns[0]).toMatchObject({ target: { kind: 'resume', extensionId }, conversationId: 'reload-context-continuation', expectedVersion: 1 });

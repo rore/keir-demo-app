@@ -565,7 +565,19 @@ for (const code of ['SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'PROVIDER_RATE_LIMIT', 'C
     return;
   }
   if (code === 'BUDGET_EXHAUSTED') await expect(ui).toContainText('An earlier authoring policy stopped this saved run.');
-  if (code === 'CONTEXT_LIMIT') await expect(ui).toContainText('This run reached the assistant’s request size boundary.');
+   if (code === 'CONTEXT_LIMIT') {
+     await expect(ui).toContainText('This request could not fit safely within the authoring limits.');
+     await expect(continuation).toHaveCount(0);
+     await ui.getByRole('button', { name: 'Send', exact: true }).click();
+     await expect(ui.getByText('Ready for your next choice.', { exact: true })).toBeVisible();
+     expect(calls.turns).toEqual([{ conversationId: 'saved-discussion', intent: 'auto', operationId: expect.any(String), expectedVersion: 4,
+       expectedDraftVersion: 0, target: { kind: 'resume', extensionId: demo.extensionIds.maya }, text: 'Keep this unsent follow-up' }]);
+     await expect(composer).toHaveValue('');
+     await page.reload();
+     await expect(ui.getByText('Ready for your next choice.', { exact: true })).toBeVisible();
+     expect(calls.turns).toHaveLength(1); expect(calls.cancels).toHaveLength(0);
+     return;
+   }
   await expect(continuation).toBeEnabled();
   await continuation.click();
   await expect(ui.getByText('Ready for your next choice.', { exact: true })).toBeVisible();

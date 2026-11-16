@@ -133,13 +133,7 @@ test('real task scenario admission rejects malformed read-error formats without 
 
 for (const extra of ['', ' Please show the checked results before asking for my approval.']) test('offline authoring checks an exact suffix and repairs scenario syntax without dropping requested examples' + (extra ? ' with extra wording' : ''), async t => {
   const { db, lifecycle, project, other } = setup(t);
-  const byteLength = Buffer.byteLength;
   let largestRequest = 0;
-  t.mock.method(Buffer, 'byteLength', (value, ...args) => {
-    const size = byteLength(value, ...args);
-    if (typeof value === 'string' && value.startsWith('{"model":')) largestRequest = Math.max(largestRequest, size);
-    return size;
-  });
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-format-key' });
   const before = rows(db, nativeTables), calls = [];
   const suffix = ' – 🧪', expectedTitle = 'Re\u0301sumé 🚀 – 🧪';
@@ -154,9 +148,18 @@ for (const extra of ['', ' Please show the checked results before asking for my 
     assert.equal(url, 'https://api.openai.com/v1/responses');
     assert.equal(init.redirect, 'error');
     const body = JSON.parse(init.body), index = calls.length;
+    largestRequest = Math.max(largestRequest, Buffer.byteLength(init.body));
     assert.equal(body.tools.some(value => /approve|activate|select/.test(value.name)), false);
     const output = body.input.filter(value => value.type === 'function_call_output').at(-1);
-    const result = output ? JSON.parse(output.output) : null;
+    const data = body.input.findLast(value => value.role === 'user')?.content;
+    const renewed = data && JSON.parse(data).renewedContext;
+    const result = output ? JSON.parse(output.output) : renewed?.lastTool.result;
+    if (renewed && !output) {
+      assert.equal(body.input.length, 1);
+      assert.deepEqual(renewed.currentContext.currentProposal.cases, independent);
+      assert.equal(renewed.lastTool.name, 'simulate_draft');
+      assert.deepEqual(renewed.settledFacts.filter(tool => tool.name === 'propose_scenarios').map(tool => tool.result.remainingAttempts), [2, 1]);
+    }
     let name, args;
     if (index === 0) {
       assert.match(body.instructions, /exceeds 256 UTF-8 bytes after concatenation/);

@@ -24,7 +24,7 @@ const safeMessage = code => ({
   STALE_DRAFT: 'The draft changed. Read saved state before continuing.', STALE_CONVERSATION: 'The conversation changed. Read saved state before continuing.',
   RUN_INTERRUPTED: 'The previous run was interrupted. Check the current draft before explicitly continuing.',
   CANCELLED: 'Authoring stopped. Check saved state; a draft may already have been saved.',
-  CONTEXT_LIMIT: 'Progress is saved. Continue this discussion to work from the current draft and recent context.',
+  CONTEXT_LIMIT: 'This request could not fit safely within the authoring limits. Saved work is kept. You can inspect its checks or send a smaller request.',
   CONVERSATION_LIMIT: 'The owner conversation limit has been reached.', CONFIG_CHANGED: 'The AI configuration changed. Check saved state before sending again.',
   BUDGET_EXHAUSTED: 'This authoring run reached its resource limit.', REVIEW_NOT_READY: 'Run the current independent examples before offering review.',
   INVALID_TOOL_ARGUMENTS: 'The assistant could not finish preparing the example checks. Saved work is kept. Continue explicitly to try again.',
@@ -327,6 +327,11 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           if (!row || row.run_id !== ctx.runId || row.version !== state.version || row.cancel_requested || row.status !== 'RUNNING') stop('STALE_CONTEXT');
           lifecycle.assertAvailable(ctx.owner, ctx.extensionId);
         }
+        if (cp.phase === 'ADMIT' || cp.phase === 'DISPATCH' && cp.kind === 'tool') {
+          const current = lifecycle.state(ctx.owner, ctx.extensionId);
+          // Journal the immutable suite before any tool can replace its revision, even without discovery.
+          if (current.draft?.suiteDigest) state.scenarioSource = { revisionId: current.draft.id, suiteDigest: current.draft.suiteDigest };
+        }
         const previous = cp.phase === 'ADMIT' ? prior?.state ?? state : prior.state;
         const expectedIntent = ctx.resolvedIntent;
         if (state.resolvedIntent !== expectedIntent) {
@@ -368,9 +373,9 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
         const view = publicView(prior?.view ?? { messages: [], code: null, review: null }, state, ctx);
         const messages = view.messages; view.messages = [];
         // A completed effect keeps its definitive receipt even when its native chain is full.
-        if (cp.phase === 'RESULT' && length(saved) + length(ops) + length(view) > 262144) {
+        if (['RESULT', 'TERMINAL'].includes(cp.phase) && length(saved) + length(ops) + length(view) > 262144) {
           state.continuation = saved.continuation = undefined; state.pending = saved.pending = undefined;
-          state.contextFull = saved.contextFull = true;
+          if (cp.phase === 'RESULT') state.contextFull = saved.contextFull = true;
         }
         if (length(saved) + length(ops) + length(view) > 262144) stop('CONTEXT_LIMIT');
         if (messages.some(message => length(message) > 131072)) stop('BYTE_LIMIT');
@@ -502,6 +507,19 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           suiteDigest: proposal.suiteDigest, truncated: false } : null;
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.cases = null; currentProposal.truncated = true; }
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.source = null; currentProposal.truncated = true; }
+        let priorScenarios;
+        const reference = ctx.state.scenarioSource;
+        if (reference && !current.draft?.suiteDigest) {
+          if (!token(reference.revisionId) || !/^sha256:[0-9a-f]{64}$/.test(reference.suiteDigest)) stop('CONTEXT_LIMIT');
+          let saved;
+          try { saved = lifecycle.source(ctx.owner, reference.revisionId, ctx.extensionId); }
+          catch { stop('CONTEXT_LIMIT'); }
+          if (!object(saved) || saved.extensionId !== ctx.extensionId || saved.revisionId !== reference.revisionId
+              || saved.suiteDigest !== reference.suiteDigest || saved.truncated
+              || !Array.isArray(saved.cases) || !saved.cases.length || saved.cases.some(value => typeof value !== 'string')
+              || length(saved.cases) > 49152) stop('CONTEXT_LIMIT');
+          priorScenarios = { extensionId: ctx.extensionId, ...reference, cases: saved.cases };
+        }
         const recent = []; let truncated = false;
         for (const row of db.prepare('SELECT payload FROM authoring_messages WHERE conversation_id=? AND owner_id=? ORDER BY sequence DESC').iterate(ctx.id, ctx.owner)) {
           const { role, text } = JSON.parse(row.payload);
@@ -509,7 +527,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
           recent.unshift({ role, text });
         }
         return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...sharedPins, ...definitionFormats(definition.pins), selectedHook,
-          currentDraft: draftHandles(current), currentProposal, currentUse: currentUse(current), extension: current.extension, purpose: ctx.purpose,
+          currentDraft: draftHandles(current), currentProposal, ...(priorScenarios && { priorScenarios }),
+          currentUse: currentUse(current), extension: current.extension, purpose: ctx.purpose,
           supportedHooks: lifecycle.hostCatalog().hooks, conversationContext: { messages: recent, truncated },
           businessContext, projects: projects(ctx.owner),
           ...(selectedHook ? { hook, consumer, ...syntax(definition) } : {

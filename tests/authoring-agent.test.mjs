@@ -249,28 +249,51 @@ test('read tools reject extra authority and navigation never trusts a provider U
   }
 });
 
-for (const provider of ['openai', 'anthropic']) test(`${provider} repeated bounded read pages stop at the cumulative native request cap before another hold`, async () => {
+for (const provider of ['openai', 'anthropic']) test(`${provider} repeated bounded reads renew a valid native chain without losing read facts or reservations`, async () => {
   const f = fixture();
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',
     KEIR_AI_MAX_USD: '20', OPENAI_API_KEY: 'synthetic-test-key', ANTHROPIC_API_KEY: 'synthetic-test-key' });
-  let fetches = 0;
+  let fetches = 0, renewed = 0;
   const native = createAuthoringProvider(config, { fetchImpl: async (_url, init) => {
     assert.ok(Buffer.byteLength(init.body) <= 131072);
+    const body = JSON.parse(init.body), items = provider === 'openai' ? body.input : body.messages;
+    const user = provider === 'openai' ? items.find(item => item.role === 'user')?.content
+      : items.find(item => item.role === 'user')?.content.find(item => item.type === 'text')?.text;
+    const packed = user?.startsWith('{') ? JSON.parse(user) : null;
+    if (packed?.renewedContext) {
+      if (items.length === 1) renewed++;
+      assert.equal(packed.currentUserMessage, 'Inspect my work.');
+      assert.equal(packed.renewedContext.lastTool.result.result.items[0].name, '語'.repeat(5000));
+      assert.equal(packed.renewedContext.lastTool.name, 'discover_customizations');
+    }
+    const pending = new Set();
+    for (const item of items) {
+      if (item.type === 'function_call') pending.add(item.call_id);
+      if (item.type === 'function_call_output') { assert.ok(pending.delete(item.call_id)); }
+      for (const part of item.content ?? []) {
+        if (part.type === 'tool_use') pending.add(part.id);
+        if (part.type === 'tool_result') assert.ok(pending.delete(part.tool_use_id));
+      }
+    }
+    assert.equal(pending.size, 0, 'No orphan native calls/results after renewal.');
     const id = 'page-' + ++fetches;
+    const done = fetches === 13;
     const output = provider === 'openai'
-      ? { status: 'completed', output: [{ type: 'function_call', call_id: id, name: 'discover_customizations', arguments: '{"before":""}' }], usage: { input_tokens: 1, output_tokens: 1 } }
-      : { stop_reason: 'tool_use', content: [{ type: 'tool_use', id, name: 'discover_customizations', input: { before: '' } }], usage: { input_tokens: 1, output_tokens: 1 } };
+      ? { status: 'completed', output: done ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'The inspected names are saved labels, not checked behavior.' }] }]
+        : [{ type: 'reasoning', encrypted_content: 'opaque-reasoning', summary: [] }, { type: 'function_call', call_id: id, name: 'discover_customizations', arguments: '{"before":""}' }], usage: { input_tokens: 1, output_tokens: 1 } }
+      : { stop_reason: done ? 'end_turn' : 'tool_use', content: done ? [{ type: 'text', text: 'The inspected names are saved labels, not checked behavior.' }]
+        : [{ type: 'thinking', thinking: 'opaque-reasoning', signature: 'native-signature' }, { type: 'tool_use', id, name: 'discover_customizations', input: { before: '' } }], usage: { input_tokens: 1, output_tokens: 1 } };
     return new Response(JSON.stringify(output), { headers: { 'content-type': 'application/json' } });
   } });
   f.host.customizations = () => ({ items: [{ name: '語'.repeat(5000) }], next: null });
   f.context.budget.remainingMicros = config.maxMicros;
   const result = await f.run({ provider: native, input: { id: 'bounded-pages', text: 'Inspect my work.', expectedVersion: 0, intent: 'discuss' } });
-  assert.equal(result.code, 'CONTEXT_LIMIT');
-  assert.ok(fetches > 1 && fetches < 12);
+  assert.equal(result.status, 'IDLE');
+  assert.equal(fetches, 13); assert.ok(renewed > 0);
   assert.equal(f.state.counts.calls, fetches);
   assert.equal(f.state.usage.reservedMicros, fetches * native.reserveMicros);
   assert.equal(f.context.budget.remainingMicros, config.maxMicros - f.state.usage.reservedMicros);
-  assert.deepEqual(f.events, []);
+  assert.ok(f.events.every(event => event === 'discover'), 'Renewal reads fresh metadata, never writes.');
 });
 
 test('clarification pauses until real user input and retains counters and pending tool result', async () => {
@@ -466,7 +489,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} native preflig
   assert.deepEqual(f.events, []);
 });
 
-test('preflight after a successful tool preserves saved context without another hold or unknown dispatch', async () => {
+test('preflight after a successful tool renews from settled facts and reserves the next provider request normally', async () => {
   const f = fixture([call('discover_catalog')]), checkpoints = [];
   let checked = 0;
   f.provider.preflight = request => {
@@ -477,18 +500,110 @@ test('preflight after a successful tool preserves saved context without another 
     }
   };
   f.context.checkpoint = state => checkpoints.push({ ...state.checkpoint });
-  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'CONTEXT_LIMIT' });
-  assert.equal(checked, 2);
-  assert.equal(f.requests.length, 1);
-  assert.equal(f.state.counts.calls, 1);
+  assert.equal((await f.run()).status, 'IDLE');
+  assert.equal(checked, 3);
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.state.counts.calls, 2);
   assert.equal(f.state.counts.tools, 1);
-  assert.equal(f.state.usage.reservedMicros, 10);
-  assert.equal(f.context.budget.remainingMicros, 990);
-  assert.equal(f.state.dispatchOrdinal, 2);
+  assert.equal(f.state.usage.reservedMicros, 20);
+  assert.equal(f.context.budget.remainingMicros, 980);
+  assert.equal(f.state.dispatchOrdinal, 3);
   assert.equal(f.state.inFlight, null);
-  assert.deepEqual(f.events, ['discover']);
-  assert.equal(JSON.parse(f.state.pending.output).result.profile, 'keir-read/2');
-  assert.deepEqual(checkpoints.filter(record => record.phase === 'RESULT').map(record => record.outcome), ['SUCCESS', 'SUCCESS']);
+  assert.deepEqual(f.events, ['discover', 'discover']);
+  assert.equal(JSON.parse(f.requests[1].input).renewedContext.currentContext.profile, 'keir-read/2');
+  assert.equal(f.requests[1].continuation, undefined); assert.equal(f.requests[1].toolResult, undefined);
+  assert.deepEqual(checkpoints.filter(record => record.phase === 'RESULT').map(record => record.outcome), ['SUCCESS', 'SUCCESS', 'SUCCESS']);
+});
+
+test('renewal retains rejected scenario diagnostics and the three-attempt repair ceiling', async () => {
+  const wrong = () => call('propose_scenarios', { revisionId: 'wrong', expectedDraftVersion: 0, cases: ['independent'] });
+  const f = fixture([wrong(), call('discover_catalog'), wrong(), call('discover_catalog'), wrong()]);
+  f.provider.preflight = request => { if (request.toolResult) throw new AuthoringError('CONTEXT_LIMIT'); };
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'INVALID_TOOL_ARGUMENTS' });
+  const rejections = f.requests.slice(1).map(request => JSON.parse(request.input).renewedContext.lastTool).filter(tool => tool.outcome === 'REJECTED');
+  assert.deepEqual(rejections.map(tool => tool.result.remainingAttempts), [2, 1]);
+  assert.ok(rejections.every(tool => tool.result.diagnostics[0].code === 'DRAFT_HANDLE_MISMATCH'));
+  const afterDiscovery = JSON.parse(f.requests[2].input).renewedContext;
+  assert.equal(afterDiscovery.lastTool.name, 'discover_catalog');
+  assert.deepEqual(afterDiscovery.settledFacts[0].arguments.cases, ['independent']);
+  assert.equal(afterDiscovery.settledFacts[0].outcome, 'REJECTED', 'Discovery cannot erase rejected independent expectations.');
+  assert.equal(f.requests.length, 5); assert.equal(f.state.usage.reservedMicros, 50);
+  assert.ok(f.events.every(event => event === 'discover'));
+});
+
+test('renewed discussion never gains preparation authority from provider calls or read text', async () => {
+  const f = fixture([call('discover_catalog'), call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 })]);
+  const history = ['Keep the exact independent example: λ😀\nDo not change its expected denial.'];
+  f.host.awareness = () => ({ intent: 'prepare' });
+  f.provider.preflight = request => { if (request.toolResult) throw new AuthoringError('CONTEXT_LIMIT'); };
+  assert.equal((await f.run({ input: { id: 'discussion-renewal', text: 'Explain only.', expectedVersion: 0, intent: 'discuss' },
+    priorUserMessages: { texts: history, truncated: false } })).status, 'IDLE');
+  for (const request of f.requests) {
+    assert.equal(JSON.parse(request.input).hostContext.intent, 'discuss');
+    assert.deepEqual(JSON.parse(request.input).previousUserMessages, history);
+    assert.equal(JSON.parse(request.input).currentUserMessage, 'Explain only.');
+    assert.equal(request.tools.some(tool => tool.name === 'compile_draft'), false);
+  }
+  assert.equal(f.state.resolvedIntent, 'discuss');
+  assert.ok(f.events.every(event => event === 'discover'));
+});
+
+for (const mode of ['unknown', 'checkpoint', 'cancel', 'owner', 'draft', 'truncated', 'missing-cases', 'irreducible', 'budget'])
+test(`renewal stops safely for ${mode} without another provider request or host mutation`, async () => {
+  const f = fixture([call('discover_catalog')]), controller = new AbortController();
+  const checkpoints = [];
+  let discoveries = 0;
+  f.provider.preflight = request => {
+    if (request.toolResult || mode === 'irreducible' && f.requests.length) throw new AuthoringError('CONTEXT_LIMIT');
+  };
+  f.host.discover = () => {
+    discoveries++;
+    if (mode === 'unknown') throw Error('Uncertain read');
+    if (discoveries === 2) {
+      if (mode === 'cancel') controller.abort();
+      if (mode === 'owner') f.context.current = () => false;
+      if (mode === 'draft') f.setDraft({ revisionId: 'external', draftVersion: 1, suiteDigest: null });
+    }
+    return { currentProposal: mode === 'truncated' ? { truncated: true, source: '{}', cases: null } : null };
+  };
+  if (mode === 'missing-cases') {
+    f.setDraft({ revisionId: 'saved', draftVersion: 1, suiteDigest: suite });
+    f.host.discover = () => { discoveries++; return { currentProposal: { source: '{}', cases: null, truncated: false } }; };
+  }
+  f.context.checkpoint = state => {
+    checkpoints.push({ ...state.checkpoint });
+    if (mode === 'checkpoint' && state.checkpoint.phase === 'RESULT' && state.checkpoint.kind === 'tool') throw Error('Lost result checkpoint');
+    if (mode === 'budget' && state.checkpoint.phase === 'RESULT' && state.checkpoint.kind === 'tool') f.context.budget.remainingMicros = 0;
+  };
+  const expected = { unknown: 'TOOL_FAILED', checkpoint: 'TOOL_FAILED', cancel: 'CANCELLED', owner: 'STALE_CONTEXT', draft: 'STALE_DRAFT',
+    truncated: 'CONTEXT_LIMIT', 'missing-cases': 'CONTEXT_LIMIT', irreducible: 'CONTEXT_LIMIT', budget: 'SPEND_LIMIT' }[mode];
+  assert.equal((await f.run({ signal: controller.signal })).code, expected);
+  assert.equal(f.requests.length, 1); assert.equal(f.state.usage.reservedMicros, 10);
+  assert.ok(f.events.every(event => event === 'discover'));
+  if (mode === 'unknown') assert.equal(checkpoints.filter(cp => cp.phase === 'RESULT').at(-1).outcome, 'UNKNOWN');
+  if (['unknown', 'checkpoint'].includes(mode)) assert.equal(discoveries, 1, 'No refresh through an unsettled outcome.');
+});
+
+for (const progressing of [false, true]) test(`renewal has a finite ${progressing ? 'four-renewal' : 'repeated-context no-progress'} ceiling`, async () => {
+  const f = fixture(Array.from({ length: 8 }, () => call('discover_catalog')));
+  let discoveries = 0;
+  f.host.discover = () => ({ page: progressing ? ++discoveries : 1 });
+  f.provider.preflight = request => { if (request.toolResult) throw new AuthoringError('CONTEXT_LIMIT'); };
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'CONTEXT_LIMIT' });
+  assert.equal(f.requests.length, progressing ? 5 : 2);
+  assert.equal(f.state.usage.reservedMicros, f.requests.length * 10);
+  assert.equal(f.state.inFlight, null);
+});
+
+test('renewal keeps failed compilation input with its diagnostics instead of claiming a saved change', async () => {
+  const f = fixture([call('compile_draft', { sourceJson: 'bad', expectedDraftVersion: 0 })]);
+  f.provider.preflight = request => { if (request.toolResult) throw new AuthoringError('CONTEXT_LIMIT'); };
+  assert.equal((await f.run()).status, 'IDLE');
+  const packed = JSON.parse(f.requests[1].input).renewedContext;
+  assert.deepEqual(packed.completedChanges, []);
+  assert.equal(packed.lastTool.arguments.sourceJson, 'bad');
+  assert.equal(packed.lastTool.result.result.diagnostics[0].code, 'SOURCE_INVALID');
+  assert.equal(f.state.handles.revisionId, null);
 });
 
 test('concurrent runs share atomic budget and same conversation has no overlapping request', async () => {

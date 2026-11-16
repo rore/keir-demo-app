@@ -148,7 +148,7 @@ function authoringReason(code: string | null | undefined) {
   if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved work and review remain available.";
   if (["BUDGET_EXHAUSTED", "EXPIRED"].includes(code)) return "An earlier authoring policy stopped this saved run. Your discussion, proposal and examples are kept. You can explicitly continue here under the current settings and shared allowance.";
   if (code === "PROVIDER_RATE_LIMIT") return "Your AI provider reached a request or account limit. Your discussion and any saved draft are kept. Check provider usage or explicitly try again later. Nothing is retried automatically.";
-  if (code === "CONTEXT_LIMIT") return "This run reached the assistant’s request size boundary. Progress is saved. Explicitly continue here to use the current saved proposal and recent discussion; nothing is sent automatically.";
+  if (code === "CONTEXT_LIMIT") return "This request could not fit safely within the authoring limits. Saved work is kept. Inspect its checks or send a smaller request; nothing is sent automatically.";
   if (code === "CONFIG_CHANGED") return "Assistant settings changed. Your message is kept. Send it again when you’re ready.";
   if (code === "CONVERSATION_LIMIT") return "An earlier authoring policy stopped this request. Your saved conversations remain available.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
@@ -527,7 +527,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const [authoring, setAuthoring] = useState<Authoring | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [authoringError, setAuthoringError] = useState("");
-  const [contextContinuation, setContextContinuation] = useState<{ conversationId: string; expectedVersion: number } | null>(null);
   const [pendingTurn, setPendingTurn] = useState<Turn | null>(() => pendingRequests(ownerId).find(item => recoveryKey.endsWith(":" + item.entryId))?.turn ?? null);
   const restoredSubmission = useRef(pendingTurn && restoredDraft === null ? pendingTurn.operationId : null);
   const [retryTurn, setRetryTurn] = useState(false);
@@ -698,9 +697,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   const staleConversation = !!conversation && !!state?.extension && (conversation.extensionId !== state.extension.id
     || conversation.draft.draftVersion !== state.draftVersion || conversation.draft.revisionId !== (state.draft?.id ?? null)
     || conversation.draft.suiteDigest !== (state.draft?.suiteDigest ?? null));
-  const contextRecovery = (conversation?.status === "BLOCKED" && conversation.code === "CONTEXT_LIMIT"
-    || !!contextContinuation && contextContinuation.conversationId === conversation?.id)
-    && !staleConversation && !historyView;
   const earlierMessagesFailed = messagePageError?.scope === messageHistory.current?.scope && messagePageError?.before === messagesBefore;
   const disabled = !!busy || !trusted || activeAuthoring || !!pendingTurn;
   const sendDisabled = retired || disabled || historyView || activeView;
@@ -708,9 +704,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     && reviewSource.ownerId === savedReview.owner.id && reviewSource.revisionId === savedReview.revision.id && reviewSource.suiteDigest === savedReview.suiteDigest);
   const reviewedApproved = viewedCurrent && !!state?.approved && state.approvedEvidenceId === savedReview?.evidenceId && review === reviewKey;
   const reviewAllowed = !retired && !!decisionEvidenceId && !!state?.draft && !disabled && !staleConversation && !historyView
-    && !contextRecovery && !restart;
+    && !restart;
   const showSavedBehavior = !retired && !!state?.draft && !historyView && !restart;
-  const inlineAvailable = showSavedBehavior && !staleConversation && !contextRecovery;
+  const inlineAvailable = showSavedBehavior && !staleConversation;
   const failedEvidenceId = state?.evidence && !state.evidence.passed && state.evidence.revisionId === state.draft?.id ? state.evidence.id : null;
   const viewingCurrentFailure = viewedDraft && !!failedEvidenceId && savedReview?.evidenceId === failedEvidenceId;
   const newerEvidenceId = state?.evidence?.passed && state.evidence.id !== savedReview?.evidenceId ? state.evidence.id : null;
@@ -1399,7 +1395,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (!mounted.current || serial.current !== turn) return;
       apply(saved);
     }
-    setContextContinuation(old => old && (old.conversationId !== next.id || next.version > old.expectedVersion && !running(next)) ? null : old);
     if (!transcriptLoaded) {
       const itemScope = "item:" + next.extensionId;
       const incoming = next.messages.map(message => conversationMessage(next.id, message));
@@ -1463,7 +1458,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     requestedConversation.current = null;
     historyMode.current = false; setHistoryView(false); setConversation(null); setReview("");
     messageHistory.current = null; setMessagesBefore(null);
-    setContextContinuation(null);
     setMessages([]);
     initialized.current = false; setEntry("item");
     callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
@@ -1473,7 +1467,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
   function continueSaved() {
     if (!conversation || retired || !authoring?.availability.available || disabled || staleConversation) return;
     const operationId = crypto.randomUUID();
-    if (contextRecovery) setContextContinuation({ conversationId: conversation.id, expectedVersion: conversation.version });
     void submitAuthoring({ target: { kind: "resume", extensionId: extensionId.current! }, conversationId: conversation.id,
        operationId, text: "Continue from saved work. Ask before changing any independent examples.",
       expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion, intent: "discuss" });
@@ -1752,7 +1745,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       }
       if (operation === "restart") {
         historyMode.current = false; setHistoryView(false);
-        setConversation(null); setContextContinuation(null); setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
+        setConversation(null); setEvidence(null); setReview(""); setReviewSource(null); setInspection(null); setActiveView(false);
         callbacks.current.targeted({ extensionId: extensionId.current, conversationId: null });
       }
       const resultMessage = operation === "approve" && next.executionAvailability?.available === false
@@ -2072,7 +2065,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           {conversation?.review && !eligibleOffer && <article className="rs-message"><p>These saved examples do not support approval of the current changes.</p>
             <button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void (inlineAvailable && conversation.review!.evidenceId === failedEvidenceId
               ? openReview(conversation.review!.evidenceId) : showEvidence(conversation.review!.evidenceId))}>{conversation.review.evidenceId === latestCurrentEvidenceId ? "View checked examples" : "View earlier examples"}</button></article>}
-          {conversation && !contextRecovery && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
+          {conversation && ["CANCELLED", "BLOCKED", "INTERRUPTED"].includes(conversation.status) && <p role="status">{conversation.status === "BLOCKED" ? authoringReason(conversation.code) || authoringStatus.BLOCKED : `${authoringStatus[conversation.status]} ${authoringReason(conversation.code)}`}</p>}
           {["BUDGET_EXHAUSTED", "PROVIDER_RATE_LIMIT", "EXPIRED"].includes(conversation?.code ?? "") && !activeAuthoring && !staleConversation && !historyView && !retired && <button disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>{conversation?.code === "PROVIDER_RATE_LIMIT" ? "Try again from saved work" : "Continue here from saved work"}</button>}
           {state?.extension && ownActive && !historyView && !staleConversation && <article className="rs-message">
             <p>{!trusted || !state.selection.eligible ? "Daymark couldn’t check which version is in use."
@@ -2185,10 +2178,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           <div ref={chatEnd} />
         </div>
         {newMessages && <button className="rs-new-messages" onClick={() => { const log = conversationScroller(); if (log) log.scrollTop = log.scrollHeight; followConversation.current = true; setNewMessages(false); }}>New messages ↓</button>}
-          {contextRecovery && !retired && <article className="rs-message rs-decision rs-current-decision" aria-label="Continue saved work">
-            <p role="status">{contextContinuation && activeAuthoring ? "Continuing from saved work. Waiting for accepted work to settle." : authoringReason("CONTEXT_LIMIT")}</p>
-            <button className="rs-primary" disabled={disabled || !authoring?.availability.available} onClick={continueSaved}>Continue here from saved work</button>
-          </article>}
           {restart && <article id="studio-restart-confirm" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Start from version in use">
             <div className="rs-restart-body">
             <h3>Start changes from this version?</h3><p>Version in use: {restart.activeLabel}. Saved changes: {restart.draftLabel}. You’ll start from the version in use. Your unfinished changes and their discussion will stay in History. Your current setup will keep running.</p>

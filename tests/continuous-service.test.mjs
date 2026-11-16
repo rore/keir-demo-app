@@ -214,7 +214,7 @@ test('largest legal legacy message stays reachable with exact receipt even when 
   assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(), []);
 });
 
-for (const kind of ['provider', 'tool']) test(`context capacity preserves definitive ${kind} SUCCESS and usage before explicit same-chat continuation`, async t => {
+for (const kind of ['provider', 'tool']) test(`context capacity preserves definitive ${kind} SUCCESS and usage without manual continuation`, async t => {
   const db = openData(':memory:'), lifecycle = createLifecycle(db, { compiler: {} }), config = configuration('capacity-settings');
   let calls = 0;
   const service = createAuthoringService({ db, lifecycle, config, providerFactory: () => ({
@@ -229,22 +229,23 @@ for (const kind of ['provider', 'tool']) test(`context capacity preserves defini
   t.after(async () => { await service.close(); db.close(); });
   const accepted = await service.turn('maya', start(`capacity-${kind}`), lease);
   const stopped = await service.wait('maya', accepted.conversation.id);
-  assert.equal(stopped.status, 'BLOCKED'); assert.equal(stopped.code, 'CONTEXT_LIMIT');
-  assert.equal(calls, 1);
+  assert.equal(stopped.status, 'IDLE'); assert.equal(stopped.code, null);
+  const expectedCalls = kind === 'tool' ? 2 : 1;
+  assert.equal(calls, expectedCalls);
   const outcomes = () => db.prepare('SELECT kind,outcome FROM authoring_dispatches ORDER BY rowid').all().map(row => ({ ...row }));
-  assert.deepEqual(outcomes(), [{ kind: 'provider', outcome: 'SUCCESS' }, ...(kind === 'tool' ? [{ kind: 'tool', outcome: 'SUCCESS' }] : [])]);
-  assert.deepEqual(saved(db, stopped.id).usage, { inputTokens: 1, outputTokens: 1, reservedMicros: config.reserveMicros });
-  assert.equal(saved(db, stopped.id).counts.calls, 1);
+  assert.deepEqual(outcomes(), [{ kind: 'provider', outcome: 'SUCCESS' }, ...(kind === 'tool' ? [{ kind: 'tool', outcome: 'SUCCESS' }, { kind: 'provider', outcome: 'SUCCESS' }] : [])]);
+  assert.deepEqual(saved(db, stopped.id).usage, { inputTokens: expectedCalls, outputTokens: expectedCalls, reservedMicros: expectedCalls * config.reserveMicros });
+  assert.equal(saved(db, stopped.id).counts.calls, expectedCalls);
   assert.equal(saved(db, stopped.id).counts.tools, kind === 'tool' ? 1 : 0);
-  assert.equal(saved(db, stopped.id).continuation, undefined);
+  assert.deepEqual(saved(db, stopped.id).continuation, kind === 'tool' ? { provider: 'openai', items: [] } : undefined);
   assert.equal(saved(db, stopped.id).pending, undefined);
-  assert.equal(held(db), config.reserveMicros);
+  assert.equal(held(db), expectedCalls * config.reserveMicros);
   const continued = await turn(service, resume(stopped, `continue-capacity-${kind}`));
   assert.equal(continued.conversation.id, stopped.id);
-  assert.equal(calls, 2); assert.equal(held(db), 2 * config.reserveMicros);
+  assert.equal(calls, expectedCalls + 1); assert.equal(held(db), (expectedCalls + 1) * config.reserveMicros);
   assert.deepEqual(outcomes().at(-1), { kind: 'provider', outcome: 'SUCCESS' });
-  assert.equal(outcomes().length, kind === 'tool' ? 3 : 2);
-  assert.deepEqual(saved(db, stopped.id).usage, { inputTokens: 2, outputTokens: 2, reservedMicros: 2 * config.reserveMicros });
+  assert.equal(outcomes().length, kind === 'tool' ? 4 : 2);
+  assert.deepEqual(saved(db, stopped.id).usage, { inputTokens: expectedCalls + 1, outputTokens: expectedCalls + 1, reservedMicros: (expectedCalls + 1) * config.reserveMicros });
 });
 
 test('fresh operation IDs cannot collide with assistant message IDs or drop accepted user text', async t => {

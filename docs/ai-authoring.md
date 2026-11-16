@@ -10,7 +10,7 @@ Try asking, “What would complement the customizations I already have?” The a
 
 Use **Send** (or Enter) for questions and requests. Ask directly when you want the assistant to create or revise the opened draft or check examples. Questions and suggestions are discussion; if your intent is unclear, the assistant asks before preparing changes. An offered **Open** action opens an existing customization after checking access again. It does not repeat your earlier request there. Your previous conversation and unsent text are kept. Review the proposal and its examples before deciding: approval and turning a checked revision on remain separate choices.
 
-Generic **Continue** and **Try again** actions resume discussion only. Send a clear request for further draft or example-check work. Retrying an unconfirmed submitted request preserves that exact request's original intent. AI can misread natural language; inspect any prepared draft rather than treating the assistant's interpretation as approval.
+Daymark manages ordinary assistant context internally. You do not need to start another turn just to clear its working history. Saved messages and examples remain intact. Size and spending limits still apply; genuine failures remain visible. Generic **Continue** and **Try again** actions for other recoverable stops resume discussion only. Send a clear request for further draft or example-check work. Retrying an unconfirmed submitted request preserves that exact request's original intent. AI can misread natural language; inspect any prepared draft rather than treating the assistant's interpretation as approval.
 
 ## Configure a provider
 

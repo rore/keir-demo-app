@@ -623,7 +623,7 @@ test('independent wrong expectation remains byte-exact and review-ineligible wit
   assert.deepEqual(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection, selection);
 });
 
-test('oversized active native context settles BLOCKED with retained credit and allows explicit continuation', async t => {
+test('oversized terminal native context compacts with retained answer, credit and restart safety', async t => {
   const config = configFor(); let calls = 0, resultSaved = false, resultRow;
   const { db, service } = direct(t, { providerFactory: () => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros,
     async complete() {
@@ -639,7 +639,8 @@ test('oversized active native context settles BLOCKED with retained credit and a
   const blocked = await service.wait('maya', started.conversation.id);
   assert.equal(resultSaved, true, 'The provider result fits; only terminal state exceeds the byte limit.');
   assert.ok(Buffer.byteLength(resultRow.state) + Buffer.byteLength(resultRow.operations) + Buffer.byteLength(resultRow.view) <= 262144);
-  assert.equal(blocked.status, 'BLOCKED'); assert.equal(blocked.code, 'CONTEXT_LIMIT');
+  assert.equal(blocked.status, 'IDLE'); assert.equal(blocked.code, null);
+  assert.ok(blocked.messages.some(message => message.text === 'y'.repeat(1000)));
   assert.equal(reserved(db), config.reserveMicros);
   assert.equal(rowState(db).continuation, undefined); assert.equal(rowState(db).pending, undefined);
   const continued = await service.turn('maya', input(db, 'next', { conversationId: blocked.id, expectedVersion: 1 }), lease('session'));
