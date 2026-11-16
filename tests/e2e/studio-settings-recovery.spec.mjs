@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
@@ -189,7 +190,7 @@ test('one item shows its saved discussions and owner switching does not leak rec
     await expect(studio(page).getByText('Current saved discussion for this customization.', { exact: true })).toBeVisible();
     await expect(studio(page).getByLabel('Saved authoring conversation', { exact: true })).toHaveCount(0);
 
-    await page.getByLabel('Demo person', { exact: true }).selectOption('sam');
+    await switchPerson(page, 'sam');
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
     await navigate(page, 'Customizations');
     await page.getByRole('button', { name: 'New customization', exact: true }).click();
@@ -199,7 +200,7 @@ test('one item shows its saved discussions and owner switching does not leak rec
     expect(calls.setupPosts).toEqual([]);
     expect(fixture.requests).toEqual(providerCalls);
 
-    await page.getByLabel('Demo person', { exact: true }).selectOption('maya');
+    await switchPerson(page, 'maya');
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
     expect(await api(page, `extensions/${savedItem.extensionId}`)).toEqual(savedItem.state);
     expect((await api(page, `authoring?extensionId=${encodeURIComponent(savedItem.extensionId)}`)).conversations.map(item => item.id)).toContain(oldConversationId);

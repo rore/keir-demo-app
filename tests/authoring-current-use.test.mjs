@@ -118,7 +118,7 @@ test('discovery separates exact checked active v1 from a different customer task
   assert.match(context.businessContext.navigation, /Inspect saved source and examples.*not a comparison screen/);
   assert.match(context.businessContext.checking, /example tasks.*your tasks have not changed/);
   assert.match(requests[0].instructions, /After an example check, describe what would happen in that example and say “Your real tasks have not changed”/);
-  for (const label of ['See proposed change', 'About this rule', 'View simulation', 'Show example checks',
+  for (const label of ['See proposed change', 'Proposed behavior', 'Read full Summary', 'Simulation', 'All changes', 'My task', 'View simulation', 'Show example checks',
       'Hide simulation', 'See current proposal', 'Back to conversation',
       'Approve this change', 'Turn on for tasks added', 'Turn on for tasks completed']) assert.ok(context.businessContext.navigation.includes(label));
   assert.match(context.businessContext.navigation, /do not open or replace.*automatically|never open or replace.*automatically/);

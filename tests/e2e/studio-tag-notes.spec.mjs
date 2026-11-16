@@ -44,12 +44,13 @@ test('natural-language tag/notes rule reaches real compilation, saved review and
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
     await ui.locator('#studio-view-saved').click();
+    await button('View simulation', ui).click();
     const review = ui.getByRole('article', { name: 'Current decision', exact: true });
     await expect(review).toContainText('Example tasks; your tasks are unchanged.');
     await expect(review).toContainText('This example deliberately');
     await expect(review).toContainText('The rule did not run.');
     await expect(ui.locator('.rs-rule-facts')).toContainText('more than 3 distinct normalized tags');
-    await expect(review.getByText('Saving stopped as expected', { exact: true })).toBeVisible();
+    await expect(review.locator('.rs-case-overview').getByText('Saving stopped as expected', { exact: true })).toBeVisible();
     await button('Approve this change', review).click();
     expect(selections()).toEqual(originalSelections); expect(counts()).toEqual(before);
     await button('Turn on for new tasks', review).click();

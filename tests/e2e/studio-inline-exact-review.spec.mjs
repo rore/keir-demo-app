@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSummary } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { TASK_HOOK } from '../../src/extension-catalog.mjs';
@@ -59,6 +60,7 @@ async function expectProof(page, id) {
 }
 
 async function expectIllustration(page, expectedTitle) {
+  await openSummary(page);
   await expect(behavior(page).getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
   await expect(behavior(page)).toContainText(`Create a task titled “${expectedTitle}”`);
   await expect(behavior(page)).not.toContainText('A full summary');
@@ -93,6 +95,7 @@ test('the rule summary rejects artifact bytes that differ from the saved revisio
     const served = page.waitForResponse(response => response.url().endsWith(`/revisions/${input.revisionId}`));
     await openItem(page, extensionId);
     await served;
+    await openSummary(page);
     await expect(behavior(page)).toContainText('A full summary of this rule is unavailable.');
     await expect(behavior(page)).not.toContainText(changedTitle);
     await page.unroute(url);
@@ -121,6 +124,7 @@ test('a competing approval cannot substitute its proof during turn-on', async ({
     await expect(review(page)).toBeHidden();
     await composer(page).fill('Keep my unsent next change');
     await reviewLink(page).click();
+    await behavior(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
     await expect(turnOn(page)).toBeEnabled();
     await expectProof(page, proofA.id);
@@ -157,6 +161,7 @@ test('a competing approval cannot substitute its proof during turn-on', async ({
     expect(activateBodies).toEqual([requestA]);
 
     await reviewLink(page).click();
+    await behavior(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(turnOn(page)).toBeEnabled();
     await expectProof(page, proofB.id);
     const activated = page.waitForResponse(response => response.url() === url && response.request().method() === 'POST');
@@ -202,6 +207,7 @@ test('a held source read cannot offer a decision for an earlier draft when nothi
     });
     hold = await holdNext(page, `${origin}/api/${path}/revisions/${input.revisionId}`, { afterResponse: true });
     await reviewLink(page).click();
+    await behavior(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     await hold.started;
     const changed = await write('compile', { hookId: TASK_HOOK, source: metadata.source, draftVersion: input.draftVersion });
     expect(changed.draft.id).not.toBe(input.revisionId);
@@ -231,11 +237,12 @@ test('scrolling while a turn-off response is held leaves conversation focus in p
     await openItem(page, extensionId);
     await page.setViewportSize({ width: 390, height: 844 });
     await reviewLink(page).click();
+    await behavior(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(review(page).getByText('On for my tasks', { exact: true })).toBeVisible();
-    const log = studio(page);
+    const log = studio(page).getByRole('log');
     await expect(log).toHaveCSS('overflow-y', 'auto');
     await expect(studio(page).locator('.rs-preview')).toBeHidden();
-    const disable = studio(page).getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true });
+    const disable = studio(page).getByRole('button', { name: 'Turn off this customization', exact: true });
     const url = `${origin}/api/${path}/disable`;
     await expect(disable).toBeEnabled();
     await log.evaluate(element => { element.scrollTop = element.scrollHeight; });
@@ -295,8 +302,9 @@ test('a confirmed project mismatch distinguishes the expected and actual project
     }, { times: 1 });
 
     await reviewLink(page).click();
+    await behavior(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     const disclosure = review(page).locator('.rs-case-disclosure').first();
-    if (!await disclosure.evaluate(element => element.open)) await disclosure.locator('summary').click();
+    if (!await disclosure.evaluate(element => element.open)) await disclosure.locator(':scope > summary').click();
     await expect(disclosure).toHaveJSProperty('open', true);
     const outcomes = review(page).locator('dd');
     await expect(outcomes.filter({ hasText: /the expected example project/i })).toBeVisible();

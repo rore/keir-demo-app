@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -352,7 +353,7 @@ test('an owner switch fences a pending setup response and clears the old key fro
   const other = await context.newPage();
   try {
     await other.goto(demo.origin);
-    await other.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+    await switchPerson(other, 'leo');
     await expect(page.getByRole('button', { name: /^Continue as Leo/ })).toBeVisible();
     await expect(dialog).toHaveCount(0);
     release();
@@ -365,7 +366,7 @@ test('an owner switch fences a pending setup response and clears the old key fro
     await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await page.locator('#open-customizations').click();
     await expect(authoring(page)).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('leo');
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
     const conversation = ui.getByRole('log', { name: 'Studio conversation', exact: true });
     await expect(conversation).toContainText('What would you like Daymark to do for you?');
     await expect(conversation).not.toContainText('Keep this unsaved task title');

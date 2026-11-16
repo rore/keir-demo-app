@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
@@ -208,7 +209,7 @@ test('a delayed offer readback after switching demo person cannot navigate to th
     });
     await ui(page).getByRole('button', { name: 'Open “Task checks”', exact: true }).click();
     await waiting;
-    await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+    await switchPerson(page, 'leo');
     release();
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
     await expect(page.getByRole('heading', { name: 'Neighbourhood workshop', exact: true })).toBeVisible();

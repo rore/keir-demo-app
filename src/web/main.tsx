@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Temporal } from "temporal-polyfill";
 import "./styles.css";
 import Studio, { sha256, type Collection, type StudioTarget } from "./Studio";
@@ -171,6 +171,20 @@ function Brand() {
     </span>
   );
 }
+function dismissTool(event: KeyboardEvent<HTMLDetailsElement>) {
+  if (event.key !== "Escape") return;
+  event.preventDefault(); event.currentTarget.open = false;
+  event.currentTarget.querySelector("summary")?.focus();
+}
+
+function closeTaskFilter(form: HTMLFormElement | null) {
+  const filter = form?.querySelector<HTMLDetailsElement>(".task-filter");
+  if (!filter) return;
+  const restoreFocus = filter.contains(document.activeElement);
+  filter.open = false;
+  if (restoreFocus) filter.querySelector("summary")?.focus();
+}
+
 function App() {
   const createRecovery = useRef(new Map<string, CreateRecovery>());
   const [session, setSession] = useState<Session | null>(null);
@@ -1014,54 +1028,16 @@ function Workspace({
   }
   return (
     <div className="workspace">
-      <aside className="rail">
-        <Brand />
-        <nav className="destinations" aria-label="Main navigation">
-          <button aria-current={destination === "tasks" ? "page" : undefined} onClick={() => navigate("tasks")}>Tasks</button>
-          <button aria-current={destination !== "tasks" ? "page" : undefined} onClick={() => navigate("customizations")}>Customizations</button>
-        </nav>
-        <div className="rail-heading">
-          <span className="eyebrow">YOUR PROJECTS</span>
-          <button
-            className="icon-button"
-            aria-label="New project"
-            disabled={!projectsReady}
-            onClick={() => {
-              setNewProject(true);
-              setRename(false);
-              setProjectName("");
-              navigate("tasks");
-            }}
-          >
-            +
-          </button>
-        </div>
-        <nav aria-label="Projects">
-          {projects.map((item, index) => (
-            <button
-              key={item.id}
-              className={`project-link ${destination === "tasks" && item.id === projectId ? "selected" : ""}`}
-              onClick={() => { setProjectId(item.id); navigate("tasks"); }}
-            >
-              <span aria-hidden="true" className="project-symbol">
-                {String(index + 1).padStart(2, "0")}
-              </span>
-              {item.name}
-            </button>
-          ))}
-        </nav>
-        <div className="rail-bottom">
-          <span className="local-dot" aria-hidden="true" /> Saved on this device
-        </div>
-      </aside>
       <div className="workspace-body">
         <header className="workspace-top">
-          <span className="desktop-context">{destination === "tasks" ? "Tasks" : "Customizations"}</span>
-          <span className="mobile-brand"><Brand /></span>
-          <div className="user-tools">
-            <span className="small-avatar" aria-hidden="true">
-              {session.user.name[0]}
-            </span>
+          <Brand />
+          <nav className="destinations" aria-label="Main navigation">
+            <button aria-current={destination === "tasks" ? "page" : undefined} onClick={() => navigate("tasks")}>Tasks</button>
+            <button aria-current={destination !== "tasks" ? "page" : undefined} onClick={() => navigate("customizations")}>Customizations</button>
+          </nav>
+          <details className="user-tools tool-menu" onKeyDown={dismissTool}>
+            <summary>{session.user.name}<span aria-hidden="true">⌄</span></summary>
+            <div className="tool-menu-content">
             <label className="sr-only" htmlFor="person-select">
               Demo person
             </label>
@@ -1079,16 +1055,27 @@ function Workspace({
             <button className="quiet-button" onClick={signOut}>
               Sign out
             </button>
-          </div>
+            </div>
+          </details>
         </header>
-        <nav className="mobile-destinations" aria-label="Mobile navigation">
-          <label className="sr-only" htmlFor="destination-select">Destination</label>
-          <select id="destination-select" value={destination === "tasks" ? "tasks" : "customizations"} onChange={event => navigate(event.target.value as "tasks" | "customizations")}>
-            <option value="tasks">Tasks</option><option value="customizations">Customizations</option>
-          </select>
-        </nav>
         <main ref={taskScroller} className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}
           onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
+          <div className="task-page-heading">
+          <p className="eyebrow">{session.user.name}’s workspace</p>
+          <div className="project-title">
+            <h1 id="tasks-heading" tabIndex={-1}>{project?.name ?? "Tasks"}</h1>
+            {project && <button className="primary" onClick={openCreate} disabled={loading}>+ New task</button>}
+          </div>
+          <p className="project-subtitle">
+            {project ? loading ? "Loading tasks…" : `${open.length} open ${open.length === 1 ? "task" : "tasks"}` : "Start a project. Give your next idea a place to land."}
+          </p>
+          </div>
+          <div className="task-layout">
+          <aside className="task-projects" aria-label="Project context">
+          <nav className="project-list" aria-label="Projects">
+            {projects.map(item => <button key={item.id} className={`project-link${destination === "tasks" && item.id === projectId ? " selected" : ""}`}
+              onClick={() => { setProjectId(item.id); navigate("tasks"); }}>{item.name}</button>)}
+          </nav>
           <div className="mobile-projects">
             <label htmlFor="project-select">Project</label>
             <select
@@ -1102,25 +1089,19 @@ function Workspace({
                 </option>
               ))}
             </select>
-            <button
-              className="icon-button"
-              aria-label="Add project"
-              disabled={!projectsReady}
-              onClick={() => {
-                setNewProject(true);
-                setRename(false);
-                setProjectName("");
-              }}
-            >
-              +
-            </button>
           </div>
-          <div className="project-title">
-            <h1 id="tasks-heading" tabIndex={-1}>{project?.name ?? "Tasks"}</h1>
+          <details className="tool-menu project-tools" onKeyDown={dismissTool}>
+            <summary>Project tools <span aria-hidden="true">⌄</span></summary>
+            <div className="tool-menu-content">
+              <button className="quiet-button" disabled={!projectsReady} onClick={event => {
+                event.currentTarget.closest("details")?.removeAttribute("open");
+                setNewProject(true); setRename(false); setProjectName("");
+              }}>New project</button>
             {project && (
               <button
                 className="quiet-button"
-                onClick={() => {
+                onClick={event => {
+                  event.currentTarget.closest("details")?.removeAttribute("open");
                   setProjectName(project.name);
                   setRename(true);
                   setNewProject(false);
@@ -1129,12 +1110,10 @@ function Workspace({
                 Rename project
               </button>
             )}
-          </div>
-          <p className="project-subtitle">
-            {project
-              ? "Your tasks in this project."
-              : "Start a project. Give your next idea a place to land."}
-          </p>
+            </div>
+          </details>
+          </aside>
+          <section className="task-surface" aria-label="Project tasks">
           {(newProject || rename) && (
             <form className="project-form" onSubmit={saveProject}>
               <label htmlFor="project-name">
@@ -1204,26 +1183,34 @@ function Workspace({
           {project && (
             <form className="task-search-form" onSubmit={event => {
               event.preventDefault();
+              closeTaskFilter(event.currentTarget);
               const next = { q: filters.q.trim(), tag: filters.tag.trim() };
               if (next.q || next.tag) void fetchSearch(next, "submit");
             }}>
               <label>
                 Search tasks
-                <input id="task-search-text" type="search" value={filters.q} maxLength={120}
+                <input id="task-search-text" type="search" value={filters.q} maxLength={120} placeholder="Find a task…"
                   onChange={event => setFilters({ ...filters, q: event.target.value })} />
               </label>
+              <details className="tool-menu task-filter" onKeyDown={dismissTool}>
+              <summary>Filter <span aria-hidden="true">⌄</span>{filters.tag && <span className="sr-only">Tag filter entered</span>}</summary>
+              <div className="tool-menu-content">
               <label>
                 Filter by tag
                 <input type="text" value={filters.tag}
                   onChange={event => setFilters({ ...filters, tag: event.target.value })} />
               </label>
+              </div>
+              </details>
               <div className="task-search-actions">
                 <button className="primary" disabled={!filters.q.trim() && !filters.tag.trim()}>Search</button>
                 <button type="button" className="quiet-button" disabled={!search && !filters.q && !filters.tag}
-                  onClick={() => { resetSearch(); document.getElementById("task-search-text")?.focus(); }}>
+                  onClick={event => { closeTaskFilter(event.currentTarget.form); resetSearch(); document.getElementById("task-search-text")?.focus(); }}>
                   Clear
                 </button>
               </div>
+              {search && appliedFilters.current && <p className="task-applied-filters">Applied filters: {[appliedFilters.current.q && `Text “${appliedFilters.current.q}”`,
+                appliedFilters.current.tag && `Tag “${appliedFilters.current.tag}”`].filter(Boolean).join(" · ")}</p>}
             </form>
           )}
           {search && project ? (
@@ -1301,6 +1288,8 @@ function Workspace({
               Local demo
             </span>
           </footer>
+          </section>
+          </div>
         </main>
         {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange} open={target => void openStudio("overview", target)} projects={projects} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} />}
         {destination === "studio" && <main className="studio-main"><Studio key={studioTarget.entryId} request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
@@ -1570,7 +1559,8 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
         save(dueAt);
       }}
     >
-      <div className="detail-top">
+      <div className="detail-heading">
+        <h2 id="detail-title">{task ? "Task details" : "New task"}</h2>
         <button
           type="button"
           className="icon-button"
@@ -1580,12 +1570,12 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
           ×
         </button>
       </div>
-      <h2 id="detail-title">{task ? "Task details" : "New task"}</h2>
+      <div className="task-form-notices">
       {!task && error && <div ref={errorSummary} className="error" role="alert" tabIndex={-1}>{error}</div>}
       {recovery}
-      {task && <span className={`status-label ${task.status}`}>
-        {task.status === "completed" ? "✓ Completed" : "○ Up next"}
-      </span>}
+      </div>
+      <div className="task-form-layout">
+      <div className="task-form-copy">
       <label htmlFor="edit-title">Task title</label>
       <input
         id="edit-title"
@@ -1610,6 +1600,11 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
       <input id="edit-tags" value={draft.tags} aria-describedby="edit-tags-hint"
         onChange={event => setDraft({ ...draft, tags: event.target.value })} />
       <p id="edit-tags-hint" className="muted tag-hint">Separate tags with commas. Use up to 8 tags, each up to 32 characters.</p>
+      </div>
+      <aside className="task-form-meta" aria-label="Task metadata">
+      {task && <p className={`status-label ${task.status}`}>
+        {task.status === "completed" ? "✓ Completed" : "○ Up next"}
+      </p>}
       <label htmlFor="edit-priority">Priority</label>
       <select id="edit-priority" value={draft.priority}
         onChange={event => setDraft({ ...draft, priority: event.target.value as Task["priority"] })}>
@@ -1637,12 +1632,14 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
           })}
         </p>
       )}
+      </aside>
+      </div>
       {task && error && (
         <div className="error" role="alert">
           {error}
         </div>
       )}
-      {children}
+      {children && <div className="task-form-extras">{children}</div>}
       <div className="detail-actions">
         {closeNotice && <p className="detail-close-notice" role="status">{closeNotice}</p>}
         <button type="button" className="quiet-button" onClick={close}>

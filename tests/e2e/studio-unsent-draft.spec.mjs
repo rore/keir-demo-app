@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
@@ -82,13 +83,13 @@ test('drafts are isolated by person and auth session while same-session reload r
     await page.reload();
     expect((await api(page, 'session')).contextToken).toBe(tokens[0]);
     await expect(composer(page)).toHaveValue('First person’s private unsent question');
-    await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+    await switchPerson(page, 'leo');
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
     tokens.push((await api(page, 'session')).contextToken);
     await openItem(page, other);
     await expect(composer(page)).toHaveValue('');
     await composer(page).fill('Second person’s private unsent question');
-    await page.getByLabel('Demo person', { exact: true }).selectOption('maya');
+    await switchPerson(page, 'maya');
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
     tokens.push((await api(page, 'session')).contextToken);
     expect(tokens[2]).not.toBe(tokens[0]);

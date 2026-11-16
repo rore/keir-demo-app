@@ -1,5 +1,6 @@
 import { test as base, expect } from '@playwright/test';
-import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openWorkspaceTool, switchPerson } from '../fixtures/workspace-ui.mjs';
+import { openDeveloperTools, openSavedChanges, openSummary } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -74,10 +75,16 @@ async function appLockup(page) {
   await expect(brand).toHaveCount(1);
   await expect(brand.locator('.brand-name')).toHaveText('Daymark');
   await expect(brand.locator('.brand-subline')).toHaveText('A KEIR Demo');
-  const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
-  expect(subline.y).toBeGreaterThanOrEqual(name.y + name.height);
-  expect(subline.y - name.y - name.height).toBeLessThan(8);
-  expect(Math.abs(subline.x - name.x)).toBeLessThanOrEqual(1);
+  if (await brand.locator('..').evaluate(node => node.classList.contains('welcome-header'))) {
+    const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
+    expect(subline.y).toBeGreaterThanOrEqual(name.y + name.height);
+    expect(Math.abs(subline.x - name.x)).toBeLessThanOrEqual(1);
+  } else if (page.viewportSize().width > 900) {
+    const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
+    expect(subline.x).toBeGreaterThanOrEqual(name.x + name.width);
+    expect(subline.x - name.x - name.width).toBeLessThan(24);
+    expect(Math.abs(subline.y + subline.height / 2 - name.y - name.height / 2)).toBeLessThanOrEqual(4);
+  } else await expect(brand.locator('.brand-subline')).toBeHidden();
   await expect(page.getByText('Powered by Keir', { exact: true })).toHaveCount(0);
 }
 async function openDetails(page) {
@@ -95,8 +102,7 @@ async function enter(page, demo) {
   await expect(page.getByRole('heading', { name: 'The spring collection', exact: true })).toBeVisible();
 }
 async function destination(page, name) {
-  if (page.viewportSize().width <= 760) await page.getByLabel('Destination', { exact: true }).selectOption(name.toLowerCase());
-  else await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name, exact: true }).click();
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name, exact: true }).click();
 }
 async function overview(page) {
   await destination(page, 'Customizations');
@@ -126,7 +132,7 @@ async function prepareChoice(page, label) {
     state = await api(page, 'extensions/' + extensionId);
     targets.set(page, { owner: state.owner.id, id: state.extension.id });
     await page.evaluate(id => { location.hash = new URLSearchParams({ customization: id }).toString(); }, state.extension.id);
-    await expect(ui(page).getByRole('heading', { level: 2, name: state.extension.name, exact: true })).toBeVisible();
+    await expect(ui(page).getByRole('heading', { level: 1, name: state.extension.name, exact: true })).toBeVisible();
   }
   const projects = await api(page, 'projects');
   const project = projects[label === originalLabel ? 0 : Math.min(1, projects.length - 1)];
@@ -137,6 +143,7 @@ async function prepareChoice(page, label) {
   await expect.poll(async () => (await savedState(page)).draft?.id).toBe(proposed.draft.id);
   expect((await savedState(page)).draft.label).toBe(label);
   expect(proposed.draft.pins.modelRef.format).toBe('keir-dcm/4');
+  await openSummary(page);
   return proposed;
 }
 const choose = prepareChoice;
@@ -216,8 +223,15 @@ async function pageDown(page, locator) {
 }
 async function wheel(page, locator, delta) {
   const target = await locator.evaluate((node, amount) => Math.max(0, Math.min(node.scrollHeight - node.clientHeight, node.scrollTop + amount)), delta);
-  const box = await locator.boundingBox();
-  await locator.hover({ position: { x: 6, y: box.height / 2 } }); await page.mouse.wheel(0, delta);
+  const point = await locator.evaluate(node => {
+    const box = node.getBoundingClientRect(), x = Math.max(0, box.left) + 6;
+    const top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
+    const y = [bottom - 8, (top + bottom) / 2, top + 8].find(y =>
+      y > top && y < bottom && node.contains(document.elementFromPoint(x, y)));
+    return y === undefined ? null : { x, y };
+  });
+  expect(point, 'The scroller must have an unobscured pointer target').not.toBeNull();
+  await page.mouse.move(point.x, point.y); await page.mouse.wheel(0, delta);
   // Scroll metrics round fractional pane heights differently by one pixel.
   await expect.poll(async () => Math.abs(await scrollTop(locator) - target)).toBeLessThanOrEqual(1);
 }
@@ -231,12 +245,13 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await enter(page, demo);
   await expect(page).toHaveTitle('Daymark — tasks and customizations');
   await page.getByLabel('New task title').fill('Keep my quick-add');
+  await openWorkspaceTool(page, '.project-tools');
   await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('New project name', { exact: true }).fill('Keep this project draft');
   await openStudio(page);
   await expect(page.locator('.project-link.selected')).toHaveCount(0);
   await appLockup(page);
-  await expect(ui(page).getByRole('heading', { level: 2, name: (await savedState(page)).extension.name, exact: true })).toBeVisible();
+  await expect(ui(page).getByRole('heading', { level: 1, name: (await savedState(page)).extension.name, exact: true })).toBeVisible();
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   await expect(await editSaved(page)).toBeFocused();
   await destination(page, 'Tasks');
@@ -263,11 +278,14 @@ test('overflowing native projects and tasks scroll independently with stable nav
   const project = demo.db.prepare("SELECT id FROM projects WHERE owner_id='maya' ORDER BY created_at LIMIT 1").get().id;
   for (let i = 0; i < 80; i++) demo.db.prepare('INSERT INTO tasks (id, owner_id, project_id, title, notes, status, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(`overflow-task-${i}`, 'maya', project, `Overflow task ${i}`, '', 'open', now, now, null);
   await enter(page, demo);
-  const rail = page.locator('.rail'), header = page.locator('.workspace-top'), main = page.locator('.task-main'), projects = page.getByRole('navigation', { name: 'Projects' });
+  const rail = page.locator('.task-projects'), header = page.locator('.workspace-top'), main = page.locator('.task-main'), projects = page.getByRole('navigation', { name: 'Projects' });
   const geometry = { rail: await rail.boundingBox(), header: await header.boundingBox() };
   await wheel(page, main, 600); await expect.poll(() => scrollTop(main)).toBeGreaterThan(200);
   await expect.poll(() => scrollTop(projects)).toBe(0);
-  expect(await rail.boundingBox()).toEqual(geometry.rail); expect(await header.boundingBox()).toEqual(geometry.header);
+  const context = await rail.boundingBox();
+  expect(context.x).toBe(geometry.rail.x); expect(context.width).toBe(geometry.rail.width);
+  expect(context.y).toBeGreaterThanOrEqual(geometry.header.y + geometry.header.height);
+  expect(await header.boundingBox()).toEqual(geometry.header);
   const taskPosition = await pageDown(page, main);
   await wheel(page, projects, 500); await expect.poll(() => scrollTop(projects)).toBeGreaterThan(200);
   expect(await scrollTop(main)).toBe(taskPosition);
@@ -297,11 +315,11 @@ test('general start offers editable requests and distinguishes untouched from of
   await picture(page, 'general-start'); expect(await collection(page)).toEqual(before); expect(mutations).toBe(0);
   await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
   await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeFocused();
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('maya');
+  await switchPerson(page, 'maya');
   await openStudio(page);
   const beforeOff = await savedState(page);
   const status = ui(page).getByLabel('Customization status');
-  const disable = status.getByRole('button', { name: 'Turn off this customization', exact: true });
+  const disable = ui(page).getByRole('button', { name: 'Turn off this customization', exact: true });
   const request = page.waitForRequest(item => item.method() === 'POST' && new URL(item.url()).pathname.endsWith('/disable'));
   await disable.press('Enter');
   expect((await request).postDataJSON()).toEqual({ generation: beforeOff.selection.generation });
@@ -390,10 +408,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);
     await prepareChoice(page, proposedLabel); await composer.fill('Keep this unsent thought');
     const log = studio.getByRole('log');
-    const flowing = viewport.width <= 600 || viewport.height <= 500;
-    const scroller = flowing ? studio : log;
+    const scroller = log;
     await expect(scroller).toHaveCSS('overflow-y', 'auto');
-    if (flowing) await expect(log).toHaveCSS('overflow-y', 'visible');
+    await expect(studio).not.toHaveCSS('overflow-y', 'auto');
     if (viewport.height === 384) {
       const fetched = Promise.withResolvers(), release = Promise.withResolvers();
       const path = `**/api/extensions/${(await savedState(page)).extension.id}/simulate`;
@@ -414,13 +431,23 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const named = studio.locator('#studio-view-saved');
     await named.click(); const heading = studio.getByRole('heading', { name: 'Summary', exact: true });
     await expect(heading).toBeFocused();
+    const summary = log.getByRole('article', { name: 'About this rule', exact: true });
+    await expect(summary.getByRole('heading')).toHaveText('Summary');
+    await expect(summary.locator('.rs-rule-summary')).toContainText(`create a new task titled “${proposedLabel}”`);
+    if (viewport.width === 1440 || viewport.width === 390) {
+      await heading.scrollIntoViewIfNeeded();
+      await picture(page, `studio-saved-rule-${viewport.width}x${viewport.height}`);
+    }
+    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
     const results = studio.getByRole('article', { name: 'Current decision' });
     const action = results.getByRole('button', { name: 'Approve this change', exact: true });
     await expect(action).toBeEnabled();
-    await expect(log.getByRole('article', { name: 'About this rule', exact: true }).getByRole('heading')).toHaveText('Summary');
-    await expect(studio.getByRole('heading', { level: 1 })).toHaveText(`Create “${proposedLabel}” tasks`);
+    await expect(summary).toBeHidden();
+    await expect(results.getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
+    await expect(studio.getByRole('heading', { level: 1 })).toHaveText((await savedState(page)).extension.name);
     await expect(log.getByRole('article', { name: 'Current decision' })).toHaveCount(1);
-    if (!flowing) await expect(composer).toBeInViewport();
+    await composer.scrollIntoViewIfNeeded();
+    await expect(composer).toBeInViewport();
     const rows = results.getByRole('article', { name: /^Example:/ });
     await expect(rows).toHaveCount(6);
     await expect(results.locator('.rs-coverage')).toContainText('Not covered by this simulation');
@@ -428,15 +455,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(results.locator('.rs-coverage')).not.toContainText('An unconfirmed change may have happened');
     await expect(rows.nth(1)).toBeVisible();
     if (viewport.width === 1440 || viewport.width === 390) {
-      const summary = log.getByRole('article', { name: 'About this rule', exact: true });
-      await expect(summary.locator('.rs-rule-summary')).toContainText(`create a new task titled “${proposedLabel}”`);
-      await summary.evaluate(node => node.scrollIntoView({ block: 'start' }));
-      await picture(page, `studio-saved-rule-${viewport.width}x${viewport.height}`);
       const simulation = results.getByRole('heading', { name: 'Simulation', exact: true });
       await simulation.evaluate(node => node.scrollIntoView({ block: 'start' }));
       await picture(page, `studio-simulation-rows-${viewport.width}x${viewport.height}`);
     }
-    await expect(log.getByRole('article', { name: 'About this rule', exact: true }).locator('.rs-rule-summary')).toContainText(`create a new task titled “${proposedLabel}”`);
     if (viewport.height === 384) {
       await expect(studio.getByRole('button', { name: 'New messages ↓', exact: true })).toBeVisible();
       await expect(studio.locator('.rs-setup-notice')).toContainText('Set up the assistant');
@@ -445,20 +467,23 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         return available.height - button.height;
       }).toBeGreaterThanOrEqual(0);
     }
-    await action.evaluate((button, flowing) => {
-      const scroller = button.closest(flowing ? '.read-studio' : '[role="log"]');
-      const target = button.getBoundingClientRect(), bounds = scroller.getBoundingClientRect();
-      scroller.scrollTop += (target.top + target.bottom - bounds.top - bounds.bottom) / 2;
-    }, flowing);
+    await action.scrollIntoViewIfNeeded();
+    await action.click({ trial: true });
     await expect(action).toBeInViewport({ ratio: 0.99 });
-    if (flowing) await composer.scrollIntoViewIfNeeded();
+    if (viewport.height === 384) {
+      await composer.focus();
+      await expect(composer).toBeFocused();
+      await expect(composer).toHaveValue('Keep this unsent thought');
+    }
     await expect(composer).toBeInViewport({ ratio: 0.99 });
     if (viewport.height === 384) await picture(page, 'short-inline-unread-action-visible');
     const id = (await savedState(page)).evidence.id;
-    await results.getByRole('button', { name: 'Hide simulation', exact: true }).click(); await expect(named).toBeFocused();
+    await results.getByRole('button', { name: 'Hide simulation', exact: true }).click();
+    await expect(studio.getByRole('button', { name: 'View simulation', exact: true })).toBeFocused();
     await expect(studio.locator('.rs-preview')).toBeHidden(); await expect(studio.getByRole('separator')).toHaveCount(0);
     await page.keyboard.press('Tab'); expect(await page.evaluate(() => !!document.activeElement?.closest('.rs-preview'))).toBe(false);
     await named.click(); await expect(heading).toBeFocused();
+    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(action).toBeEnabled();
     await expect(rows.nth(1)).toBeVisible();
     await expect(composer).toHaveValue('Keep this unsent thought');
@@ -510,7 +535,7 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   demo.db.prepare("UPDATE extension_authored SET artifact=x'00' WHERE revision_id=(SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted')").run();
   await destination(page, 'Tasks'); await overview(page); await expect(await card(page)).toContainText('Couldn’t check what’s in use');
   await expect(await card(page)).not.toContainText('completed tasks: Done'); await picture(page, 'overview-unavailable');
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam'); await destination(page, 'Customizations');
+  await switchPerson(page, 'sam'); await destination(page, 'Customizations');
   await expect(page.locator('.customization-card')).toHaveCount(0); await page.getByRole('button', { name: 'New customization', exact: true }).click();
   await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect((await savedState(page)).selection.revision).toBeNull(); expect((await savedState(page)).draft).toBeNull();
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click(); await expect(page.locator('.customization-card')).toHaveCount(0); await picture(page, 'overview-off');
@@ -518,7 +543,7 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
 test('transcript and canvas own wheel and PageDown; arrivals preserve earlier reading and splitter keeps usable widths', async ({ page, demo }) => {
   await enter(page, demo); const fixture = await scriptLayoutAuthoring(page); await openStudio(page);
   const log = ui(page).getByRole('log'), canvas = ui(page).locator('.rs-canvas'), composer = ui(page).locator('.rs-composer');
-  const header = page.locator('.workspace-top'), rail = page.locator('.rail');
+  const header = page.locator('.workspace-top'), rail = page.locator('.destinations');
   for (let i = 0; i < 13; i++) { await ui(page).getByLabel('Message to Daymark assistant').fill(`Message ${i}: ${'Please explain this example. '.repeat(10)}`); await ui(page).getByRole('button', { name: 'Send', exact: true }).click(); }
   await expect.poll(() => fixture.turns.length).toBe(13); await expect(log.locator('.rs-yours')).toHaveCount(13);
   await expect(log.getByText(/Saved scripted response \d+\. What should I clarify\?/)).toHaveCount(13);
@@ -570,9 +595,9 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
   test(`narrow/short ${viewport.width}x${viewport.height} has direct entry, retained panes/composer and keyboard-reachable actions`, async ({ page, demo }) => {
     await page.setViewportSize(viewport); await enter(page, demo); const fixture = await scriptLayoutAuthoring(page); await openStudio(page); await appLockup(page);
     const studio = ui(page), log = studio.getByRole('log'), composer = studio.getByLabel('Message to Daymark assistant'); await composer.fill('Keep this unsent message');
-    await expect(studio).toHaveCSS('overflow-y', 'auto');
-    await expect(log).toHaveCSS('overflow-y', 'visible');
-    const disable = studio.getByLabel('Customization status').getByRole('button', { name: 'Turn off this customization', exact: true });
+    await expect(studio).not.toHaveCSS('overflow-y', 'auto');
+    await expect(log).toHaveCSS('overflow-y', 'auto');
+    const disable = studio.getByRole('button', { name: 'Turn off this customization', exact: true });
     await expect(disable).toBeEnabled();
     await disable.scrollIntoViewIfNeeded();
     await disable.focus(); await expect(disable).toBeFocused();
@@ -583,9 +608,9 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
     expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
     for (let i = 0; i < 5; i++) { await composer.fill(`Long example ${i} ${'explain this task '.repeat(14)}`); await studio.getByRole('button', { name: 'Send', exact: true }).click(); }
     await expect.poll(() => fixture.turns.length).toBe(5); await expect(studio.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
-    await composer.fill('Keep this unsent message'); await studio.evaluate(node => node.scrollTop = 0); await wheel(page, studio, 300);
-    await expect.poll(() => scrollTop(studio)).toBeGreaterThan(0); const logPosition = await scrollTop(studio);
-    expect(await scrollTop(log)).toBe(0);
+    await composer.fill('Keep this unsent message'); await log.evaluate(node => node.scrollTop = 0); await wheel(page, log, 300);
+    await expect.poll(() => scrollTop(log)).toBeGreaterThan(0); const logPosition = await scrollTop(log);
+    expect(await scrollTop(studio)).toBe(0);
     await picture(page, `studio-conversation-${viewport.width}x${viewport.height}`);
     await openDetails(page); await expect(studio.locator('.rs-chat')).toBeHidden(); await expect(disable).toBeInViewport({ ratio: 1 });
     await studio.getByText('Restore an earlier version', { exact: true }).click(); await studio.getByText('Selection history and exact identities', { exact: true }).click();
@@ -593,7 +618,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 900, height: 500 }
     await wheel(page, canvas, 300); await expect.poll(() => scrollTop(canvas)).toBeGreaterThan(0);
     await studio.getByRole('button', { name: 'Back to conversation', exact: true }).click(); await expect(composer).toHaveValue('Keep this unsent message');
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await expect(studio).toHaveCSS('overflow-y', 'auto'); expect(await scrollTop(studio)).toBe(logPosition); expect(await scrollTop(log)).toBe(0);
+    await expect(log).toHaveCSS('overflow-y', 'auto'); expect(await scrollTop(log)).toBe(logPosition); expect(await scrollTop(studio)).toBe(0);
     await studio.getByRole('button', { name: 'More', exact: true }).click();
     await expect(studio.getByRole('heading', { name: 'Versions and settings', exact: true })).toBeFocused();
     await expect(studio.getByRole('heading', { name: 'Versions and settings', exact: true })).toBeInViewport({ ratio: 1 });
@@ -609,17 +634,17 @@ test('late overview and Studio reads cannot repopulate an abandoned destination 
   const started = new Promise(done => { arrived = done; }), finished = new Promise(done => { delivered = done; });
   await page.route('**/api/extensions', async route => { const response = await route.fetch(); arrived(); await new Promise(done => { release = done; }); try { await route.fulfill({ response }); } catch {} delivered(); });
   try {
-    await destination(page, 'Customizations'); await started; await destination(page, 'Tasks'); await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
-    await expect(page.getByRole('heading', { name: 'Neighbourhood workshop', exact: true })).toBeVisible(); await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('maya');
+    await destination(page, 'Customizations'); await started; await destination(page, 'Tasks'); await switchPerson(page, 'leo');
+    await expect(page.getByRole('heading', { name: 'Neighbourhood workshop', exact: true })).toBeVisible(); await switchPerson(page, 'maya');
     release(); await finished; await page.unroute('**/api/extensions'); await expect(page.locator('.customization-card')).toHaveCount(0);
     await overview(page); const maya = await savedState(page); await expect(await card(page)).toContainText(maya.extension.name); await (await editSaved(page)).click();
-    await expect(ui(page).getByRole('heading', { level: 2, name: maya.extension.name, exact: true })).toBeVisible(); expect((await savedState(page)).owner.id).toBe('maya');
+    await expect(ui(page).getByRole('heading', { level: 1, name: maya.extension.name, exact: true })).toBeVisible(); expect((await savedState(page)).owner.id).toBe('maya');
     let releaseStudio, arrivedStudio; const studioStarted = new Promise(done => { arrivedStudio = done; }); const exact = `**/api/extensions/${maya.extension.id}`;
     await page.route(exact, async route => { const response = await route.fetch(); arrivedStudio(); await new Promise(done => { releaseStudio = done; }); try { await route.fulfill({ response }); } catch {} });
     await openDetails(page); await ui(page).getByRole('button', { name: 'Reload saved state', exact: true }).click(); await studioStarted;
-    await destination(page, 'Tasks'); await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo'); releaseStudio(); await page.unroute(exact);
+    await destination(page, 'Tasks'); await switchPerson(page, 'leo'); releaseStudio(); await page.unroute(exact);
     await openStudio(page); const leo = await savedState(page); expect(leo.owner.id).toBe('leo'); expect(leo.extension.id).not.toBe(maya.extension.id);
-    await expect(ui(page).getByRole('heading', { level: 2, name: leo.extension.name, exact: true })).toBeVisible(); await expect(ui(page).getByLabel('Customization status')).not.toContainText('Maya');
+    await expect(ui(page).getByRole('heading', { level: 1, name: leo.extension.name, exact: true })).toBeVisible(); await expect(ui(page).getByLabel('Customization status')).not.toContainText('Maya');
   } finally { release?.(); }
 });
 

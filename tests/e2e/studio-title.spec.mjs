@@ -23,15 +23,20 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }
       await page.setViewportSize(viewport);
       await page.goto(fixture.origin);
       await page.getByRole('button', { name: 'Continue as Maya' }).click();
-      await page.getByLabel('Destination', { exact: true }).selectOption('customizations');
+      await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
       await page.getByRole('article', { name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/, exact: true }).click();
       const heading = page.getByRole('heading', { name, exact: true });
       await expect(heading).toBeVisible();
       await expect(page.getByLabel('Customization status')).toContainText('On for my tasks');
-      await expect(page.getByRole('region', { name: 'Customization Studio', exact: true })).not.toContainText('Simulation');
-      const geometry = await heading.evaluate(node => ({ height: node.getBoundingClientRect().height,
-        line: parseFloat(getComputedStyle(node).lineHeight), width: node.getBoundingClientRect().width }));
-      expect(geometry.height).toBeLessThanOrEqual(geometry.line * 3 + 1);
+      await expect(page.getByRole('region', { name: 'Customization Studio', exact: true }).getByRole('article', { name: 'Current decision', exact: true })).toBeHidden();
+      const geometry = await heading.evaluate(node => ({ height: node.clientHeight, textHeight: node.scrollHeight,
+        line: parseFloat(getComputedStyle(node).lineHeight), clamp: getComputedStyle(node).webkitLineClamp, width: node.getBoundingClientRect().width }));
+      await page.screenshot({ path: test.info().outputPath('full-visible-saved-name.png') });
+      await test.info().attach('full-visible-name-geometry', { contentType: 'application/json', body: JSON.stringify(geometry) });
+      // Frozen R3 narrow/long uses four fully visible lines, not the old three-line name cap.
+      expect(geometry.height).toBeLessThanOrEqual(geometry.line * (viewport.width <= 600 ? 4 : 3) + 1);
+      expect(geometry.clamp).toBe('none');
+      expect(geometry.textHeight).toBeLessThanOrEqual(geometry.height + 1);
       expect(geometry.width).toBeGreaterThan(0);
       await expect(heading).toHaveAttribute('title', name);
       await page.getByRole('button', { name: 'More', exact: true }).scrollIntoViewIfNeeded();
@@ -40,6 +45,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 683, height: 384 }
       await expect(page.getByRole('button', { name: 'Back to Customizations', exact: true })).toBeInViewport({ ratio: 1 });
       await page.getByLabel('Message to Daymark assistant', { exact: true }).scrollIntoViewIfNeeded();
       await expect(page.getByLabel('Message to Daymark assistant', { exact: true })).toBeInViewport({ ratio: 1 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       mkdirSync(resolve('build/studio-title'), { recursive: true });
       await page.screenshot({ path: resolve(`build/studio-title/${viewport.width}x${viewport.height}.png`) });
       expect(fixture.requests).toHaveLength(0);

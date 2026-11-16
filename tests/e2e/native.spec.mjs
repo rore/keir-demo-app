@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { start } from '../../src/server.mjs';
+import { openWorkspaceTool, switchPerson } from '../fixtures/workspace-ui.mjs';
 
 async function freePort() {
   const reservation = createServer();
@@ -26,11 +27,12 @@ const pictures = resolve('build/screens');
 async function screenshot(page, name) { mkdirSync(pictures, { recursive: true }); await page.screenshot({ path: join(pictures, `${name}.png`), fullPage: true }); }
 async function signIn(page, name) {
   await page.getByRole('button', { name: `Continue as ${name}` }).click();
-  await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue(name.toLowerCase());
+  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue(name.toLowerCase());
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
 }
 async function newProject(page, name, mobile = false) {
-  await page.getByRole('button', { name: mobile ? 'Add project' : 'New project', exact: true }).click();
+  await openWorkspaceTool(page, '.project-tools');
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('New project name', { exact: true }).fill(name);
   await page.getByRole('button', { name: 'Save project', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible();
@@ -41,8 +43,10 @@ const searchHeading = page => page.getByRole('heading', { name: 'Search results'
 const taskButton = (page, name) => page.getByRole('button', { name, exact: true });
 async function search(page, text, tag = '') {
   await page.getByLabel('Search tasks', { exact: true }).fill(text);
+  await openWorkspaceTool(page, '.task-filter');
   await page.getByLabel('Filter by tag', { exact: true }).fill(tag);
   await taskButton(page, 'Search').click();
+  await expect(page.locator('.task-filter')).toHaveJSProperty('open', false);
 }
 
 for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height: 1000 }, phone: { width: 390, height: 844 } })) {
@@ -195,7 +199,7 @@ test('late native search responses cannot replace newer filter, project or owner
     try {
       if (scope === 'project') await sandbox.click();
       if (scope === 'owner') {
-        await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+        await switchPerson(page, 'leo');
         await expect(page.getByRole('heading', { level: 1, name: 'Neighbourhood workshop' })).toBeVisible();
       }
       await search(page, newerTask);
@@ -387,7 +391,7 @@ test('completion observations preserve edits and recover from failed or stale de
   await expect(outcome.getByRole('alert')).toHaveCount(0);
   await page.unroute('**/api/tasks/*/reaction');
   await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+  await switchPerson(page, 'leo');
   await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Complete Plan the Saturday session', exact: true }).click();
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
@@ -415,7 +419,7 @@ test('a completion observation pending across a user switch never enters the new
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await started;
   await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+  await switchPerson(page, 'leo');
   await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
   release();
   await finished;
@@ -435,6 +439,7 @@ test('three people create, rename, edit and complete tasks; all data survives re
     if (name === 'Maya') await screenshot(page, 'tasks-desktop');
     await newProject(page, `${name} project`);
     await expect(page.getByText('Room for something good.')).toBeVisible();
+    await openWorkspaceTool(page, '.project-tools');
     await page.getByRole('button', { name: 'Rename project' }).click();
     await page.getByLabel('Project name', { exact: true }).fill(`${name} notebook`);
     await page.getByRole('button', { name: 'Save project', exact: true }).click();
@@ -446,6 +451,7 @@ test('three people create, rename, edit and complete tasks; all data survives re
     await page.getByRole('button', { name: 'Save changes' }).click();
     await page.getByRole('button', { name: `Complete ${name} finished task`, exact: true }).click();
     await expect(page.getByRole('button', { name: `${name} finished task, completed`, exact: true })).toBeDisabled();
+    await openWorkspaceTool(page, '.user-tools');
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page.getByRole('button', { name: 'Continue as Maya' })).toBeVisible();
   }
@@ -456,6 +462,7 @@ test('three people create, rename, edit and complete tasks; all data survives re
     await page.getByRole('button', { name: new RegExp(`${name} notebook$`) }).click();
     await expect(page.getByRole('button', { name: `${name} finished task, completed`, exact: true })).toBeVisible();
     for (const other of ['Maya', 'Leo', 'Sam'].filter(other => other !== name)) await expect(page.getByText(`${other} finished task`, { exact: true })).toHaveCount(0);
+    await openWorkspaceTool(page, '.user-tools');
     await page.getByRole('button', { name: 'Sign out' }).click();
   }
 });
@@ -496,7 +503,7 @@ test('delayed old data cannot repopulate a switched scope and expired API cannot
   });
   await page.reload(); await intercepted;
   await expect(page.getByText('Gathering your tasks…')).toBeVisible(); await screenshot(page, 'loading-desktop');
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+  await switchPerson(page, 'leo');
   await page.unroute('**/api/projects/*/tasks'); release();
   await expect(page.getByRole('heading', { level: 1, name: 'Neighbourhood workshop' })).toBeVisible();
   await expect(page.getByText('Gather material references', { exact: true })).toHaveCount(0);
@@ -512,7 +519,7 @@ test('delayed old data cannot repopulate a switched scope and expired API cannot
 test('authentication transitions serialize across tabs even when the first cookie response is delayed', async ({ page, context, demo }) => {
   await page.goto(demo.origin); await signIn(page, 'Maya');
   const second = await context.newPage(); await second.goto(demo.origin);
-  await expect(second.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('maya');
+  await expect(second.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
   // Finish initial owner reads before the deliberately delayed cookie transition.
   await expect(second.getByRole('button', { name: 'Gather material references', exact: true })).toBeVisible();
   let release, observed;
@@ -522,11 +529,11 @@ test('authentication transitions serialize across tabs even when the first cooki
     if (route.request().method() !== 'POST') return route.continue();
     const response = await route.fetch(); observed(); await gate; await route.fulfill({ response });
   });
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo'); await intercepted;
-  await second.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam');
+  await switchPerson(page, 'leo'); await intercepted;
+  await switchPerson(second, 'sam');
   await expect(second.getByRole('status').filter({ hasText: 'Opening your space' })).toBeVisible();
   release();
-  await expect(second.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam');
+  await expect(second.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
   await expect(second.getByRole('heading', { level: 1, name: 'A quieter workspace' })).toBeVisible();
   expect(await second.evaluate(async () => (await (await fetch('/api/session')).json()).user.id)).toBe('sam');
   // Revoked initial reads and the cross-tab notification may report expiry in either order.
@@ -575,9 +582,10 @@ test('initial project list must finish before project creation becomes available
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
   await intercepted;
   try {
+    await openWorkspaceTool(page, '.project-tools');
     await expect(page.getByRole('button', { name: 'New project', exact: true })).toBeDisabled();
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.getByRole('button', { name: 'Add project', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'New project', exact: true })).toBeDisabled();
   } finally { release(); }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await newProject(page, 'Newest project');

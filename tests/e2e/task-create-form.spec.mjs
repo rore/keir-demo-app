@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { start } from '../../src/server.mjs';
 import { resetData } from '../../src/data.mjs';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 
 const test = base.extend({
   demo: async ({}, use) => {
@@ -39,7 +40,7 @@ const newer = { title: 'Review the brief', notes: 'Keep these newer notes.', tag
 async function signIn(page, origin) {
   await page.goto(origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
-  await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('maya');
+  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
 }
 async function fillDraft(page, values) {
@@ -221,7 +222,7 @@ test('late quick-add success preserves newer text and cannot reach another owner
   await page.locator('.quick-add').getByRole('button', { name: /^Add task/ }).click();
   await held.started;
   try {
-    await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+    await switchPerson(page, 'leo');
     await expect(page.getByRole('heading', { name: 'Neighbourhood workshop', exact: true })).toBeVisible();
     await quick.fill('Another person’s unsent task');
   } finally { await held.deliver(); }

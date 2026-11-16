@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -257,8 +258,8 @@ test('a late owned-task lookup cannot repopulate the next person’s workspace',
   });
   try {
     await page.getByRole('button', { name: 'Complete ' + source.title, exact: true }).click(); await started;
-    await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam');
-    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam');
+    await switchPerson(page, 'sam');
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
     release();
     await expect(page.getByRole('button', { name: /Open task:/ })).toHaveCount(0);
     await expect(page.getByText(created.title, { exact: true })).toHaveCount(0);

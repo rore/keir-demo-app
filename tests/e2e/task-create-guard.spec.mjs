@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { openSimulation } from '../fixtures/studio-review.mjs';
+import { openSimulation, openSummary, expandCheckedExamples } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { loadHost } from '../../src/extension-catalog.mjs';
@@ -88,6 +88,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
 
         await page.goto(`${fixture.origin}/#customization=${extensionId}`);
         const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
+        await openSummary(page);
         const about = studio.getByRole('article', { name: 'About this rule', exact: true });
         await expect(studio.getByLabel('Customization status')).toContainText('Checks before adding');
         await expect(about).toContainText('Before a new task is saved.');
@@ -102,6 +103,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         }
         const review = await openSimulation(page);
         await expect(review.getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
+        await expandCheckedExamples(review);
         await expect(review).toContainText('Example tasks; your tasks are unchanged.');
         const example = id => review.getByRole('article', { name: evidence.summary.cases.find(item => item.id === id)?.simulatedFailure
           ? 'Example: Safety check: required check unavailable' : `Example: New task example ${evidence.reports.findIndex(item => item.id === id) + 1}`, exact: true });
@@ -112,7 +114,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         await expect(unavailableExample).toContainText('Could not check');
         await expect(unavailableExample).toContainText('This example deliberately');
         await expect(unavailableExample).toContainText('The rule did not run.');
-        await expect(unavailableExample.getByText('Saving stopped as expected', { exact: true })).toBeVisible();
+        await expect(unavailableExample.locator('.rs-case-overview').getByText('Saving stopped as expected', { exact: true })).toBeVisible();
         await expect(review).not.toContainText('Needs another check');
         expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         await unavailableExample.scrollIntoViewIfNeeded();

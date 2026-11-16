@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -324,7 +325,7 @@ test('held status from an old owner cannot appear in the newly mounted Studio af
   await ui.getByRole('button', { name: 'Send', exact: true }).click();
   await held;
 
-  await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+  await switchPerson(page, 'leo');
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
   await page.locator('#open-customizations').click();
   await openSavedItem(page, demo.extensionIds.leo);
@@ -416,6 +417,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   const requested = [];
   page.on('request', request => { const path = new URL(request.url()).pathname; if (/^\/api\/extensions\/[^/]+\/evidence\//.test(path)) requested.push(path.split('/').at(-1)); });
   await offerButton.click();
+  if (eligible) await ui.getByRole('button', { name: 'View simulation', exact: true }).click();
   await expect(ui.getByRole('heading', { name: eligible ? 'Simulation' : 'Earlier examples', exact: true })).toBeVisible();
   expect(requested).toEqual([first.evidence.id]);
   expect((await (await page.request.get(demo.origin + '/api/extensions/' + demo.extensionIds.maya, { headers: { 'x-session-context': contextToken } })).json()).approved).toBe(false);

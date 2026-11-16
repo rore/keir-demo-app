@@ -28,7 +28,7 @@ async function createRequest(page, text) {
 }
 
 async function navigate(page, destination) {
-  await page.getByLabel('Destination', { exact: true }).selectOption(destination.toLowerCase());
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: destination, exact: true }).click();
 }
 
 test('untitled items show their request and returning from sample history resets collection scroll', async ({ page }) => {

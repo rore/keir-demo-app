@@ -44,6 +44,7 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
       expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     }
     await page.setViewportSize({width:1440,height:1000});await ui.locator('#studio-view-saved').click();
+    await button('View simulation',ui).click();
     const decision=ui.getByRole('article',{name:'Current decision',exact:true});
     await expect(button('Approve this change',decision)).toBeEnabled();
     await expect(decision).toContainText('Example tasks; your tasks are unchanged.');

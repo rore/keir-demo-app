@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { expandCheckedExamples, openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -92,7 +93,8 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await expect(mismatch.getByText('We could not finish checking', { exact: true }).first()).toBeVisible();
     await expect(decision(page).locator('.rs-review-status')).toHaveText('Check needs a correction');
     await expect(mismatch.getByText('Task created as intended', { exact: true })).toHaveCount(0);
-    await expect(mismatch.getByText('The simulation did not establish a write outcome.', { exact: true })).toBeVisible();
+    await expect(mismatch.locator('.rs-case-outcome')).toHaveText('The simulation did not establish a write outcome.');
+    await expect(mismatch.locator('.rs-case-support').getByText('The simulation did not establish a write outcome.', { exact: true })).toBeVisible();
     await expect(mismatch.getByText('No change.', { exact: true })).toBeVisible();
     await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
     await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
@@ -114,6 +116,8 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
     await decision(page).getByRole('button', { name: 'Hide simulation', exact: true }).click();
     expect(fixture.requests).toHaveLength(6);
     await send(page, 'Correct the saved source so only completed tasks in the chosen project create the named task. Keep exactly the same independent expected examples.');
+    await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeAttached({ timeout: 20_000 });
+    await ui.getByRole('button', { name: 'New messages ↓', exact: true }).click();
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
     const { current: repaired, transcript: repairedTranscript } = await read('authoring');
     expect(repaired.id).toBe(failed.id); expect(repaired.version).toBe(failed.version + 1); expect(repaired.review.eligible).toBe(true);
@@ -234,6 +238,7 @@ test('offline Studio resumes the same checked draft and preserves review when th
     const evidenceResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/${evidencePath}`);
     await expect(ui.getByText(fixture.metadata.resumedOffer, { exact: true })).toHaveCount(0);
     await ui.locator('#studio-view-saved').click();
+    await ui.getByRole('button', { name: 'View simulation', exact: true }).click();
     expect(await (await evidenceResponse).json()).toEqual(proof);
     await expect(decision(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     const state = await read('extensions');
@@ -390,9 +395,11 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       expect(evidenceRequests).toEqual([conversation.review.evidenceId]);
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
       await expect(decision(page)).toContainText('Example tasks; your tasks are unchanged.');
+      await decision(page).getByRole('button', { name: 'Hide simulation', exact: true }).click();
       await ui.getByRole('button', { name: 'Ask for a change', exact: true }).press('Enter');
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeFocused();
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep this unsent refinement while reviewing');
+      await openSavedChanges(page);
       await ui.getByText('Technical details for this version', { exact: true }).click();
       await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
       for (let index = 0; index < fixture.metadata.cases.length; index++)
@@ -467,7 +474,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await selectProject(page, fixture.metadata.projectName);
         await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
         await page.locator('#open-customizations').click();
-        await expect(ui).toHaveCSS('overflow-y', 'auto');
+        await expect(ui.getByRole('log')).toHaveCSS('overflow-y', 'auto');
         const manage = ui.getByRole('button', { name: 'More', exact: true });
         await manage.scrollIntoViewIfNeeded();
         await expect(manage).toBeInViewport({ ratio: 1 });
@@ -512,14 +519,14 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       }
       const requestsBeforeSwitch = fixture.requests.length;
       const heldBeforeSwitch = fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
-      await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+      await switchPerson(page, 'leo');
       await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
       const foreignSession = await (await page.request.get(`${fixture.origin}/api/session`)).json();
       const foreignTask = await page.request.get(`${fixture.origin}/api/tasks/${createdId}`, { headers: { 'x-session-context': foreignSession.contextToken } });
       expect(foreignTask.status()).toBe(404);
       const foreignOutcome = await page.request.get(`${fixture.origin}/api/tasks/${source.id}/reaction`, { headers: { 'x-session-context': foreignSession.contextToken } });
       expect(foreignOutcome.status()).toBe(404);
-      await page.getByLabel('Demo person', { exact: true }).selectOption('maya');
+      await switchPerson(page, 'maya');
       await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
       const returnedSession = await (await page.request.get(`${fixture.origin}/api/session`)).json();
       const retained = await page.request.get(`${fixture.origin}/api/tasks/${source.id}/reaction`, { headers: { 'x-session-context': returnedSession.contextToken } });

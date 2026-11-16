@@ -3,6 +3,7 @@ import { openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { seedTaskEffectBinding } from '../fixtures/task-effect-schema.mjs';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 
 const navigation = page => page.getByRole('navigation', { name: 'Main navigation' });
 const card = (page, id) => page.locator('.customization-card').filter({ has: page.locator('#edit-' + id) });
@@ -15,7 +16,7 @@ async function collection(page) {
 async function enter(page, fixture) {
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
-  await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('maya');
+  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
 }
 async function api(page, path, body, status = 200) {
   const response = await page.evaluate(async ({ path, body }) => {
@@ -128,9 +129,9 @@ test('busy feedback points to Stop and a foreign owner cannot delete the item', 
     await saved.locator('#customization-delete-confirm').click();
     await expect(saved.getByRole('alert')).toContainText('use Stop'); await expect(saved.locator('#customization-delete-confirm')).toBeDisabled();
     await page.unroute('**/api/extensions/*/delete');
-    await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam');
+    await switchPerson(page, 'sam');
     await expect(page.getByRole('navigation', { name: 'Projects', exact: true }).getByRole('button', { name: 'A quieter workspace', exact: true })).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam'); await collection(page);
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam'); await collection(page);
     await expect(card(page, item.id)).toHaveCount(0); await api(page, `extensions/${item.id}/delete`, deletionBody(state), 404);
     expect(fixture.db.prepare('SELECT deleted_at FROM extensions WHERE id=?').get(item.id).deleted_at).toBeNull();
     expect(fixture.requests).toHaveLength(0);
@@ -236,7 +237,7 @@ test('an owner switch fences the late confirmation snapshot before any deletion 
     });
     await card(page, item.id).getByRole('button', { name: 'Delete', exact: true }).click(); await accepted;
     await expect(page.locator('.customization-delete')).toHaveCount(0);
-    await page.getByLabel('Demo person', { exact: true }).selectOption('sam');
+    await switchPerson(page, 'sam');
     await expect(page.getByRole('navigation', { name: 'Projects', exact: true }).getByRole('button', { name: 'A quieter workspace', exact: true })).toBeVisible();
     await collection(page); release(); await finished;
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
@@ -257,8 +258,8 @@ test('an owner switch fences a late deletion response and its confirmation', asy
     await page.route('**/api/extensions/*/delete', async route => { const response = await route.fetch(); started(); await hold; await route.fulfill({ response }).catch(() => {}); });
     const saved = card(page, item.id); await saved.getByRole('button', { name: 'Delete', exact: true }).click(); await saved.locator('#customization-delete-confirm').click();
     await accepted;
-    await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam'); release();
-    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam'); await collection(page);
+    await switchPerson(page, 'sam'); release();
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam'); await collection(page);
     await expect(card(page, item.id)).toHaveCount(0); await expect(page.locator('.customization-delete')).toHaveCount(0);
     await expect(page.getByText(`“${item.name}” was deleted.`, { exact: true })).toHaveCount(0); expect(fixture.requests).toHaveLength(0);
   } finally { release(); await fixture.close(); }

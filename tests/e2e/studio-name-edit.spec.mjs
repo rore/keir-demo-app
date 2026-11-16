@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { openSavedChanges } from '../fixtures/studio-review.mjs';
+import { openSavedChanges, openSummary } from '../fixtures/studio-review.mjs';
 import { mkdirSync } from 'node:fs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
@@ -34,9 +34,14 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       const ui = studio(page), rename = ui.getByRole('button', { name: 'Rename', exact: true });
       const heading = ui.getByRole('heading', { name, exact: true });
       await expect(heading).toHaveAttribute('title', name);
-      const geometry = await heading.evaluate(node => ({ height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight) }));
-      expect(geometry.height).toBeLessThanOrEqual(geometry.line * 3 + 1);
+      const geometry = await heading.evaluate(node => ({ height: node.clientHeight, textHeight: node.scrollHeight,
+        line: parseFloat(getComputedStyle(node).lineHeight), clamp: getComputedStyle(node).webkitLineClamp }));
+      expect(geometry.height).toBeLessThanOrEqual(geometry.line * (viewport.width <= 600 ? 4 : 3) + 1);
+      expect(geometry.clamp).toBe('none');
+      expect(geometry.textHeight).toBeLessThanOrEqual(geometry.height + 1);
+      await ui.getByLabel('Message to Daymark assistant', { exact: true }).scrollIntoViewIfNeeded();
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeInViewport({ ratio: 1 });
+      await ui.getByRole('button', { name: 'More', exact: true }).scrollIntoViewIfNeeded();
       await expect(ui.getByRole('button', { name: 'More', exact: true })).toBeInViewport({ ratio: 1 });
       await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).scrollIntoViewIfNeeded();
       await expect(ui.getByRole('button', { name: 'Back to Customizations', exact: true })).toBeInViewport({ ratio: 1 });
@@ -51,6 +56,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       await input.fill('Unsent name'); await input.dispatchEvent('compositionstart'); await input.press('Enter');
       await expect(form).toBeVisible(); expect(renameRequests).toHaveLength(0);
       expect(fixture.db.prepare('SELECT name FROM extensions WHERE id=?').get(extensionId).name).toBe(name);
+      await input.press('Escape');
+      await expect(form).toBeVisible();
       await input.dispatchEvent('compositionend');
       await input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true });
       expect(renameRequests).toHaveLength(0);
@@ -84,12 +91,46 @@ test('a stale rename keeps typed text and refreshes the expected name before a f
     await expect(form.getByRole('alert')).toContainText('Your text is kept');
     await expect(form.getByRole('alert')).toContainText('The saved name is now “Changed in another view”');
     await expect(input).toHaveValue('My preferred name');
-    await expect(ui.getByRole('heading', { name: 'Changed in another view', exact: true })).toBeVisible();
+    await expect(ui.locator('#studio-title')).toHaveText('Changed in another view');
     await input.press('Enter');
     await expect(ui.getByRole('heading', { name: 'My preferred name', exact: true })).toBeVisible();
     await expect(ui.getByRole('button', { name: 'Rename', exact: true })).toBeFocused();
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
+});
+
+test('native rename keeps its focus trap and refuses Escape while a save is pending', async ({ page }) => {
+  const fixture = await startAuthoringFixture({ unconfigured: true });
+  const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Pending rename' });
+  const started = Promise.withResolvers(), held = Promise.withResolvers();
+  try {
+    await page.setViewportSize({ width: 683, height: 384 });
+    await openSaved(page, fixture, 'Pending rename');
+    const ui = studio(page), rename = ui.getByRole('button', { name: 'Rename', exact: true });
+    await rename.click();
+    const form = ui.getByRole('form', { name: 'Rename customization', exact: true }), input = form.getByLabel('Name', { exact: true });
+    await form.getByRole('button', { name: 'Cancel', exact: true }).focus();
+    // Native modal traversal may visit browser chrome/body, but never background page controls.
+    for (let index = 0; index < 5; index++) {
+      await page.keyboard.press('Tab');
+      expect(await page.evaluate(() => document.activeElement === document.body
+        || document.activeElement?.closest('dialog')?.getAttribute('aria-labelledby') === 'studio-name-heading')).toBe(true);
+    }
+    await input.fill('Confirmed new name');
+    await page.route('**/api/extensions/*/rename', async route => {
+      const response = await route.fetch(); started.resolve(); await held.promise; await route.fulfill({ response });
+    }, { times: 1 });
+    await form.getByRole('button', { name: 'Save', exact: true }).click();
+    await started.promise;
+    await page.keyboard.press('Escape');
+    await expect(form).toBeVisible();
+    await expect(form.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled();
+    held.resolve();
+    await expect(rename).toBeFocused();
+    await expect(ui.getByRole('heading', { name: 'Confirmed new name', exact: true })).toBeVisible();
+    expect(fixture.db.prepare('SELECT name FROM extensions WHERE id=?').get(extensionId).name).toBe('Confirmed new name');
+    expect(fixture.requests).toEqual([]);
+  } finally { held.resolve(); await page.close(); await fixture.close(); }
 });
 
 test('switching owners discards the prior owner rename text and fences its late result', async ({ page }) => {
@@ -105,8 +146,15 @@ test('switching owners discards the prior owner rename text and fences its late 
     await ui.getByLabel('Name', { exact: true }).fill('Private Maya name');
     await ui.getByRole('form', { name: 'Rename customization', exact: true }).getByRole('button', { name: 'Save', exact: true }).click();
     await requestStarted;
-    await page.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam');
-    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam');
+    // A modal correctly blocks the underlying account control. A cross-tab owner exit must still fence the result.
+    const otherTab = await page.context().newPage();
+    await otherTab.goto(fixture.origin);
+    await otherTab.locator('.user-tools > summary').click();
+    await otherTab.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam');
+    await expect(page.getByText('The demo person changed in another tab. Choose a person to continue.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: /^Continue as Sam/ }).click();
+    await otherTab.close();
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
     release();
     await expect(page.getByText('Private Maya name', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('form', { name: 'Rename customization', exact: true })).toHaveCount(0);
@@ -122,7 +170,7 @@ test('saved behavior illustrates task creation and checked examples keep authore
     const project = taskService(fixture.db).listProjects('sam')[0];
     const task = taskCustomizationFixture({ projectId: project.id, otherProjectId: 'other-project-example', title: 'Review completed work' });
     await page.goto(fixture.origin); await page.getByRole('button', { name: 'Continue as Sam' }).click();
-    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('sam');
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
     const post = (path, body) => page.evaluate(async ({ path, body }) => {
       const session = await (await fetch('/api/session')).json();
       const response = await fetch('/api/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Context': session.contextToken }, body: JSON.stringify(body) });
@@ -142,8 +190,9 @@ test('saved behavior illustrates task creation and checked examples keep authore
     await page.goto(fixture.origin + '/#customization=' + id);
     const ui = studio(page), decision = ui.getByRole('article', { name: 'Current decision', exact: true });
     const invitation = ui.locator('#studio-view-saved');
-    await openSavedChanges(page);
+    await openSummary(page);
     await expect(ui.getByRole('article', { name: 'About this rule', exact: true })).toContainText(task.metadata.title);
+    await openSavedChanges(page);
     const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
     const rows = proposed.getByRole('article', { name: /^Example:/ });
     await expect(rows).toHaveCount(cases.length);
@@ -157,7 +206,7 @@ test('saved behavior illustrates task creation and checked examples keep authore
     await decision.getByText('Technical details for this version', { exact: true }).click();
     await expect(exact).toContainText(saved.evidence.id);
     await decision.getByRole('button', { name: 'Hide simulation', exact: true }).click();
-    await expect(invitation).toBeFocused();
+    await expect(ui.getByRole('button', { name: 'View simulation', exact: true })).toBeFocused();
     expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });

@@ -9,19 +9,20 @@ for (const viewport of [{ width: 2000, height: 1040 }, { width: 1440, height: 90
     const name = 'Saved customization';
     admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name });
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
-    const frame = () => page.evaluate(() => Object.fromEntries(['.workspace', '.workspace-top', '.rail'].map(selector => {
+    const frame = () => page.evaluate(() => Object.fromEntries(['.workspace', '.workspace-top', '.destinations'].map(selector => {
       const element = document.querySelector(selector), rect = element.getBoundingClientRect();
       return [selector, getComputedStyle(element).display === 'none' ? null : { x: rect.x, y: rect.y, width: rect.width, height: rect.height }];
     })));
     const navigate = async destination => {
-      if (viewport.width < 760) await page.locator('#destination-select').selectOption(destination.toLowerCase());
-      else await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: destination, exact: true }).click();
+      await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: destination, exact: true }).click();
     };
     try {
       await page.setViewportSize(viewport);
       await page.goto(fixture.origin);
       await page.getByRole('button', { name: /^Continue as Maya/ }).click();
+      await page.locator('.user-tools > summary').click();
       await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
       const original = await frame();
       expect(original['.workspace'].x).toBe(0);
       expect(original['.workspace'].width).toBe(viewport.width);
@@ -34,7 +35,7 @@ for (const viewport of [{ width: 2000, height: 1040 }, { width: 1440, height: 90
       await expect(studio.getByRole('heading', { name, exact: true })).toBeVisible();
       await page.screenshot({ path: info.outputPath('existing-studio.png') });
       expect(await frame()).toEqual(original);
-      expect((await studio.boundingBox()).width).toBe((await page.locator('.studio-main').boundingBox()).width);
+      expect((await studio.boundingBox()).width).toBeLessThanOrEqual(960);
       await expect(studio.getByRole('button', { name: 'Send', exact: true })).toHaveCount(1);
       await studio.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep this unsent question.');
       await studio.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
@@ -43,7 +44,7 @@ for (const viewport of [{ width: 2000, height: 1040 }, { width: 1440, height: 90
       await page.getByRole('button', { name: 'New customization', exact: true }).click();
       await expect(studio.getByRole('heading', { name: 'New customization', exact: true })).toBeVisible();
       expect(await frame()).toEqual(original);
-      expect((await studio.boundingBox()).width).toBe((await page.locator('.studio-main').boundingBox()).width);
+      expect((await studio.boundingBox()).width).toBeLessThanOrEqual(960);
       await studio.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
       await expect(card).toBeVisible();
       await card.getByRole('button', { name: 'Open', exact: true }).click();

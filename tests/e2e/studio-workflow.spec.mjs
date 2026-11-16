@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSummary } from '../fixtures/studio-review.mjs';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
@@ -11,7 +12,7 @@ async function expandExamples(review) {
   const disclosures = review.locator('.rs-case-disclosure');
   await expect(disclosures.first()).toBeVisible();
   for (const disclosure of await disclosures.all()) {
-    if (await disclosure.getAttribute('open') === null) await disclosure.locator('summary').click();
+    if (await disclosure.getAttribute('open') === null) await disclosure.locator(':scope > summary').click();
   }
 }
 
@@ -33,7 +34,7 @@ test('workflow starters are capability gated and preserve the mounted composer a
     } }));
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-    await page.getByRole('combobox', { name: 'Destination', exact: true }).selectOption({ label: 'Customizations' });
+    await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
     await page.getByRole('button', { name: 'New customization', exact: true }).click();
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
     const composer = studio.getByLabel('Message to Daymark assistant', { exact: true });
@@ -96,6 +97,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       const checked = await write('simulate', { revisionId: saved.draft.id, draftVersion: saved.draftVersion });
       expect(checked.evidence.passed).toBe(true);
       await page.goto(`${fixture.origin}/#customization=${extensionId}`);
+      await openSummary(page);
       await expect(rule.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
       await studio.locator('#studio-view-saved').click();
       const summary = rule.locator('.rs-rule-summary');
@@ -115,7 +117,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       for (const fact of facts) await expect(rule).toContainText(fact);
       await details.getByText('Rule details', { exact: true }).click();
       await expect(rule).not.toContainText('A full summary');
-      await studio.locator('#studio-view-saved').click();
+      await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
       const review = studio.getByRole('article', { name: 'Current decision' });
       await expandExamples(review);
       if (noChangeReason) await expect(review).toContainText(noChangeReason);
@@ -126,7 +128,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
       if (workflow === 'onboarding') await expect(review).toContainText('Event 2026-03-07 16:00:00.417 UTC');
       expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
       if (noChangeReason) {
-        await review.getByText(noChangeReason).scrollIntoViewIfNeeded();
+        await review.locator('.rs-case-support').getByText(noChangeReason).scrollIntoViewIfNeeded();
         await page.screenshot({ path: testInfo.outputPath(`${workflow}-${width}.png`) });
       }
       if (workflow === 'onboarding') {
@@ -135,6 +137,7 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
           await route.fulfill({ response: exact, json: { ...saved, source: saved.source.replace('604800s', '60s') } });
         });
         await page.reload();
+        await openSummary(page);
         await expect(rule).toContainText('A full summary of this rule is unavailable.');
         await expect(rule).toContainText('The saved conditions can’t be summarized here.');
         await expect(rule).not.toContainText('168 hours');
@@ -169,6 +172,7 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
     for (const width of [1440, 320]) {
       await page.setViewportSize({ width, height: 844 });
       await page.goto(`${fixture.origin}/#customization=${extensionId}`);
+      await openSummary(page);
       await expect(rule.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
       await expect(rule.locator('.rs-rule-summary')).toContainText('create a new task with the triggering task’s title followed by “ - follow up” in the triggering task’s project');
       await expect(rule.locator('.rs-rule-summary')).toContainText('only if the triggering task is completed');
@@ -189,6 +193,7 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
         await route.fulfill({ response, json: forge(await response.json()) });
       });
       await page.reload();
+      await openSummary(page);
       await expect(rule).toContainText('A full summary of this rule is unavailable.');
       await expect(rule).not.toContainText('followed by');
       await page.unroute(path);
@@ -199,6 +204,7 @@ test('Studio summarizes the current YAML follow-up and keeps forged or unsupport
     });
     expect(unsupported.ok(), await unsupported.text()).toBe(true);
     await page.reload();
+    await openSummary(page);
     await expect(rule).toContainText('The full conditions could not be described.');
     await expect(rule).not.toContainText('this task is completed');
     await expect(rule).toContainText('A full summary of this rule is unavailable.');
@@ -297,16 +303,18 @@ test('workflow review keeps native outcomes and the two decisions distinct', asy
     await page.getByRole('article', { name: extension.name }).getByRole('button', { name: 'Continue changes' }).click();
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
     await expect(studio.getByLabel('Customization status')).toContainText('For tasks added · Currently on: Existing intake rule');
+    await openSummary(page);
     await expect(studio.getByRole('article', { name: 'About this rule' }).locator('.rs-rule-summary')).toContainText('set its priority to High');
     await studio.locator('#studio-view-saved').click();
+    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
     const review = studio.getByRole('article', { name: 'Current decision' });
     await expandExamples(review);
-    await expect(review.getByText('Updated this task. Priority Normal → High.')).toBeVisible();
+    await expect(review.locator('.rs-case-support').getByText('Updated this task. Priority Normal → High.')).toBeVisible();
     const idempotent = review.getByRole('article', { name: /Already current/ });
     await expect(idempotent).toContainText('Update confirmed. The task fields stayed the same.');
     await expect(idempotent).not.toContainText('→');
     const unknownBefore = review.getByRole('article', { name: /Before snapshot unavailable/ });
-    await expect(unknownBefore.getByText('Update confirmed.', { exact: true })).toBeVisible();
+    await expect(unknownBefore.locator('.rs-case-support').getByText('Update confirmed.', { exact: true })).toBeVisible();
     await expect(unknownBefore).not.toContainText('→');
     const lookups = review.getByRole('article', { name: /Three lookup results/ });
     const results = lookups.locator('p').filter({ hasText: /^Open-task check/ });

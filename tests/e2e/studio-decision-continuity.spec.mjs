@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { openDeveloperTools } from '../fixtures/studio-review.mjs';
+import { openDeveloperTools, openSummary } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { TASK_HOOK } from '../../src/extension-catalog.mjs';
@@ -55,6 +55,7 @@ async function openItem(page, id) {
 }
 async function openReview(page) {
   await studio(page).locator('#studio-view-saved').click();
+  await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
   await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
 }
 async function closeReview(page) {
@@ -62,6 +63,7 @@ async function closeReview(page) {
   await expect(review(page)).toBeHidden();
 }
 async function expectIllustration(page, title) {
+  await openSummary(page);
   const saved = studio(page).getByRole('article', { name: 'About this rule', exact: true });
   await expect(saved.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
   await expect(saved).toContainText(`Create a task titled “${title}”`);
@@ -141,11 +143,18 @@ test('saved review stays readable before its reachable actions at short, phone a
       await page.screenshot({ path: testInfo.outputPath(`review-summary-${viewport.width}x${viewport.height}.png`) });
       await action.evaluate(button => button.scrollIntoView({ block: 'center' }));
       await expect(action).toBeInViewport({ ratio: 0.99 });
-      expect(await action.evaluate(element => {
+      const reachability = await action.evaluate(element => {
         const box = element.getBoundingClientRect();
-        return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
-      })).toBe(true);
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return { reachable: element.contains(hit), box: box.toJSON(), hit: hit?.outerHTML.slice(0, 300),
+          frame: ['.studio-main', '.rs-header', '.rs-messages', '.rs-composer'].map(selector => {
+            const node = document.querySelector(selector);
+            return { selector, box: node.getBoundingClientRect().toJSON(), top: node.scrollTop, height: node.scrollHeight };
+          }) };
+      });
+      await testInfo.attach('action-reachability', { body: JSON.stringify(reachability), contentType: 'application/json' });
       await page.screenshot({ path: testInfo.outputPath(`review-actions-${viewport.width}x${viewport.height}.png`) });
+      expect(reachability).toMatchObject({ reachable: true });
       await closeReview(page);
     }
     expect(decisions).toEqual([]);
@@ -246,6 +255,8 @@ for (const operation of ['approve', 'activate']) test(`a late real ${operation} 
       ? { ...input(state), evidenceId: state.evidence.id } : { ...input(state), generation: state.selection.generation, evidenceId: state.evidence.id } }]);
     if (operation === 'activate') {
       await composer(page).press('Enter');
+      await expect(studio(page).getByText('Continued discussion 1', { exact: true })).toBeAttached();
+      await studio(page).getByRole('button', { name: 'New messages ↓', exact: true }).click();
       await expect(studio(page).getByText('Continued discussion 1', { exact: true })).toBeVisible();
       expect(turns).toHaveLength(1);
       expect(turns[0]).toMatchObject({ text: 'My next explicit request', target: { kind: 'revise', extensionId: state.extension.id,
@@ -261,9 +272,11 @@ for (const operation of ['approve', 'activate']) test(`a late real ${operation} 
   } finally { hold?.release(); await fixture.close(); }
 });
 
-for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preserves the viewed snapshot and disables its older actions`, async ({ page }) => {
+for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preserves the viewed snapshot and disables its older actions`, async ({ page }, testInfo) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   try {
+    await page.setViewportSize(change === 'run' ? { width: 390, height: 844 }
+      : change === 'selection' ? { width: 683, height: 384 } : { width: 1440, height: 1000 });
     const { path, state } = await seed(page, fixture, { selectionBaseline: change === 'selection' });
     let latest;
     const turns = await scriptTurns(page, async () => {
@@ -290,7 +303,7 @@ for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preser
     await expect(review(page)).toContainText('Evidence: ' + state.evidence.id);
     await composer(page).fill('Please continue checking my request');
     await composer(page).press('Enter');
-    await expect(studio(page).getByText('Continued discussion 1', { exact: true })).toBeVisible();
+    await expect(studio(page).getByText('Continued discussion 1', { exact: true })).toBeAttached();
     expect(turns).toHaveLength(1);
     if (change === 'draft') expect(latest.draft.id).not.toBe(state.draft.id);
     if (change === 'run') expect(latest.evidence.id).not.toBe(state.evidence.id);
@@ -298,8 +311,17 @@ for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preser
     await expect(review(page)).toBeVisible();
     await expect(review(page)).toContainText('Evidence: ' + state.evidence.id);
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true }).and(review(page).locator('button:enabled'))).toHaveCount(0);
+    const notice = studio(page).getByRole('button', { name: 'New messages ↓', exact: true });
+    await notice.focus();
+    await expect(notice).toBeInViewport({ ratio: 1 });
+    await page.screenshot({ path: testInfo.outputPath('pinned-review-before-explicit-return.png') });
+    await notice.press('Enter');
+    await expect(studio(page).getByText('Continued discussion 1', { exact: true })).toBeVisible();
+    await expect(composer(page)).toHaveValue('');
+    await expect(studio(page).locator('#studio-view-saved')).toBeFocused();
     await expect(studio(page).locator('#studio-view-saved')).toBeEnabled();
     await studio(page).locator('#studio-view-saved').click();
+    await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     if (!await review(page).getByLabel('Saved source for approval', { exact: true }).isVisible())
       await review(page).getByText('Technical details for this version', { exact: true }).click();

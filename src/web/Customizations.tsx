@@ -144,12 +144,16 @@ export default function Customizations({ request, changed, beforeSelectionChange
     } finally { if (lifetime.current === turn) { deletingRef.current = false; setDeleting(false); } }
   }
   return <main className="customizations-main" aria-labelledby="customizations-heading">
+    <div className="collection-heading">
+    <div><p className="eyebrow">Your workspace</p>
     <h1 id="customizations-heading" tabIndex={-1}>Customizations</h1>
-    <p className="page-intro">Make Daymark work your way. Start a change or return to a saved customization.</p>
+    <p className="page-intro">Make Daymark work your way. Start a change or return to a saved customization.</p></div>
+    <button id="new-customization" className="primary customization-start" onClick={() => open()}>New customization</button>
+    </div>
     {state?.executionAvailability?.available === false && <p role="status">{state.executionAvailability.message || "Task customizations cannot run in this installation yet. Your tasks still work."}</p>}
     {notice && <p role="status">{notice}</p>}
     {deleteNotice && <p role="status">{deleteNotice} <button className="quiet-button" onClick={() => setRetry(old => old + 1)}>Refresh collection</button></p>}
-    <button id="new-customization" className="primary customization-start" onClick={() => open()}>New customization</button>
+    <div className="customization-list">
     {error ? <div className="error" role="alert">Customizations could not be checked. <button onClick={() => setRetry(old => old + 1)}>Try again</button></div>
       : !state ? <p role="status">Loading your customizations…</p> : !state.items.length ? <p className="customization-empty">Your customizations will appear here.</p> : state.items.map(item => {
         const selection = state.selections ? state.selections[item.extension!.hookId ?? ""] : state.selection;
@@ -164,13 +168,17 @@ export default function Customizations({ request, changed, beforeSelectionChange
         const status = item.retired ? "Retired · history only" : selectedItem ? inUse ? changes ? item.approved ? "In use · Approved changes ready to turn on" : "In use · Changes in progress" : "In use" : "Couldn’t check what’s in use"
           : item.approved ? "Approved · Not on yet" : item.draft ? "Proposed change · Not on" : item.extension!.hookId ? "Not on" : "In discussion";
         return <article key={item.extension!.id} className="customization-card" aria-label={item.extension!.name}>
-          <div className="customization-copy">{!item.retired && taskTriggerGroup(item.extension!.hookId) && <p className="muted">{taskTriggerGroup(item.extension!.hookId)}</p>}<p className="customization-identity">Saved name</p><h2>{item.extension!.name}</h2>
+          <div className="customization-context">{!item.retired && taskTriggerGroup(item.extension!.hookId) && <p className="muted">{taskTriggerGroup(item.extension!.hookId)}</p>}
             <p className="customization-status"><span className={`state-badge ${inUse ? "in-use" : ""}`}>{status}</span></p>
+          </div>
+          <div className="customization-copy"><p className="customization-identity">Saved name</p><h2>{item.extension!.name}</h2>
             {item.retired && <p>This earlier customization cannot run or be resumed. Its saved source, examples and history remain available.</p>}
-            {!item.retired && behavior && <div className="customization-behavior"><h3>What’s in use: {behavior.title}</h3><p>{behavior.summary}
-              {!behavior.complete && " Open the conversation for the remaining details and limits."}</p></div>}
-            {!item.retired && proposed && <div className="customization-behavior"><h3>Proposed changes: {proposed.title}</h3><p>{proposed.summary}
-              {!proposed.complete && " Open the conversation for the remaining details and limits."}</p></div>}
+            {!item.retired && behavior && <div className="customization-behavior"><h3>What’s in use: {behavior.title}</h3><p>{behavior.complete ? [behavior.onlyWhen, behavior.then].filter(Boolean).join(" ") : behavior.summary}
+              {!behavior.complete && " Open the conversation for the remaining details and limits."}</p>
+              {behavior.complete && <details><summary>Full behavior and limits</summary><p>{behavior.summary}</p></details>}</div>}
+            {!item.retired && proposed && <div className="customization-behavior"><h3>Proposed changes: {proposed.title}</h3><p>{proposed.complete ? [proposed.onlyWhen, proposed.then].filter(Boolean).join(" ") : proposed.summary}
+              {!proposed.complete && " Open the conversation for the remaining details and limits."}</p>
+              {proposed.complete && <details><summary>Full behavior and limits</summary><p>{proposed.summary}</p></details>}</div>}
             {!item.retired && !behavior && inUse && <p>The behavior description is unavailable. Open the conversation to inspect what’s in use.</p>}
             {!item.retired && !proposed && item.draft && (!inUse || item.draft.id !== selected?.id) && <p>The proposed behavior description is unavailable. Open the conversation to inspect this proposal.</p>}
             {item.requestExcerpt && <details className="customization-discussion"><summary>Discussion started with</summary><p>{item.requestExcerpt}</p></details>}
@@ -188,6 +196,7 @@ export default function Customizations({ request, changed, beforeSelectionChange
           </section>}
         </article>;
       })}
+    </div>
     {(state?.next || loadedItems) && <button disabled={!!loadingMore || deleting} aria-disabled={!state?.next} onClick={() => void loadMore()}>{state?.next ? "Load more customizations" : "All customizations loaded"}</button>}
     {moreError && <p role="status">{moreError}</p>}
     {!!recoveries.length && <section aria-label="Submitted requests"><h2>Submitted requests</h2><p>Check what was saved before deciding whether to retry.</p>

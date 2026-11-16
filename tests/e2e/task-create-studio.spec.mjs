@@ -1,5 +1,5 @@
 import { test as base, expect } from '@playwright/test';
-import { openSimulation } from '../fixtures/studio-review.mjs';
+import { openSimulation, openSummary, expandCheckedExamples } from '../fixtures/studio-review.mjs';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +14,7 @@ const test = base.extend({ demo: async ({}, use) => {
   await new Promise((resolve, reject) => { reservation.once('error', reject); reservation.listen(0, '127.0.0.1', resolve); });
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
-  const server = await start({ directory, port });
+  const server = await start({ directory, port, staticRoot: process.env.KEIR_TEST_STATIC_ROOT });
   try { await use(server); } finally { await server.close(); rmSync(directory, { recursive: true, force: true }); }
 } });
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -107,9 +107,7 @@ async function fixture(page, demo, { mismatch = false, corruptPass = false, prop
   });
   await page.route('**/api/authoring**', route => route.fulfill({ json: { availability: { available: false, code: 'AI_NOT_CONFIGURED', provider: null, model: null },
     conversations: [{ id: conversation.id, extensionId: state.extension.id, purpose: 'REVISE', version: 1, status: conversation.status, runId: conversation.runId, operationId: conversation.operation.id }], current: conversation, next: null } }));
-  const mobile = (await page.viewportSize()).width < 761;
-  if (mobile) await page.getByLabel('Destination', { exact: true }).selectOption('customizations');
-  else await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
   await expect(page.getByText('Checks before adding', { exact: true })).toBeVisible();
   await expect(page.getByText('Actions after adding', { exact: true })).toBeVisible();
   await expect(page.getByText('Actions after completing', { exact: true })).toBeVisible();
@@ -122,6 +120,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
   test(`before-create review separates rule decisions, expected unavailability and activation on ${layout}`, async ({ page, demo }) => {
     await page.setViewportSize(viewport);
     const mock = await fixture(page, demo);
+    await openSummary(page);
     const behavior = studio(page).getByRole('article', { name: 'About this rule', exact: true });
     await expect(behavior).toContainText('Before a new task is saved.');
     await expect(behavior).toContainText('Your rules for tasks added or completed run afterward.');
@@ -132,14 +131,18 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(studio(page).getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
     await openSimulation(page);
     await expect(review(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeFocused();
+    await expandCheckedExamples(review(page));
     await expect(review(page)).toContainText('Example tasks; your tasks are unchanged.');
     const examples = review(page).getByRole('article', { name: /^Example:/ });
     await expect(examples).toHaveCount(4);
     await expect(examples.nth(0)).toContainText('Allowed by this rule');
     await expect(examples.nth(0)).toContainText('normal permission, validation and save checks');
-    for (const index of [0, 1, 2]) await expect(examples.nth(index).getByText('Matches', { exact: true })).toBeVisible();
+    for (const index of [0, 1, 2]) await expect(examples.nth(index).locator('.rs-case-overview').getByText('Matches', { exact: true })).toBeVisible();
     await expect(examples.nth(1)).toContainText('<strong>Add a due date</strong>');
-    await expect(examples.nth(1).locator('a,strong,input')).toHaveCount(0);
+    const literalMessages = examples.nth(1).locator('p').filter({ hasText: '<strong>Add a due date</strong>' });
+    await expect(literalMessages).toHaveCount(2);
+    for (const message of await literalMessages.all()) await expect(message.locator('a,strong,input')).toHaveCount(0);
+    await expect(examples.nth(1).locator('a,input')).toHaveCount(0);
     await expect(examples.nth(3)).toContainText('Could not check');
     await expect(examples.nth(3)).toContainText('Saving stopped as expected');
     await expect(examples.nth(3)).not.toContainText('This example deliberately');
@@ -171,6 +174,7 @@ test('a PASS label cannot qualify mismatching independent before-create expectat
   // Even a forged matched summary cannot bypass the existing decision-shape comparison.
   expect(mock.proof.summary.cases[0].verification).toBe('matched');
   await studio(page).locator('#studio-view-saved').click();
+  await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
   await expect(review(page)).toContainText('Needs another check');
   await expect(review(page)).toContainText('Approval is unavailable.');
   await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
@@ -183,13 +187,14 @@ test('a raw PASS guard proposal cannot override a mismatched host summary', asyn
   expect(first.report.consumption).toEqual(first.expected.consumption);
   expect(first.report.scenario.proposal.hasNotes).toBe(true);
   expect(mock.proof.summary.cases[0].verification).toBe('mismatched');
+  await openSummary(page);
   await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
   const example = review(page).getByRole('article', { name: 'Example: Client task with a due date', exact: true });
   await expect(example).toContainText('Notes present');
   await expect(example).toContainText('Allowed by this rule');
-  await expect(example.getByText('Needs another check', { exact: true })).toBeVisible();
+  await expect(example.locator('.rs-case-overview').getByText('Needs another check', { exact: true })).toBeVisible();
   await expect(example.getByText('Matches', { exact: true })).toHaveCount(0);
-  await expect(review(page)).toContainText('3 example decisions matched their expectations.');
+  await expect(review(page).locator('.rs-evidence-intro')).toContainText('3 / 4 example decisions matched.');
   await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
   expect(mock.mutations).toEqual([]);
 });
@@ -198,11 +203,12 @@ for (const summaryState of ['absent', 'unchecked']) test(`before-create results 
   const mock = await fixture(page, demo, { summaryState });
   expect(mock.proof.reports.every(item => item.report.status === 'PASS')).toBe(true);
   await studio(page).locator('#studio-view-saved').click();
+  await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
   const examples = review(page).getByRole('article', { name: /^Example:/ });
   await expect(examples).toHaveCount(4);
   await expect(examples.getByText('Matches', { exact: true })).toHaveCount(0);
   await expect(examples.getByText('Saving stopped as expected', { exact: true })).toHaveCount(0);
-  await expect(examples.getByText('Needs another check', { exact: true })).toHaveCount(4);
+  await expect(examples.locator('.rs-case-overview').getByText('Needs another check', { exact: true })).toHaveCount(4);
   await expect(examples.nth(3)).toContainText('Could not check');
   expect(mock.mutations).toEqual([]);
 });
@@ -221,6 +227,7 @@ test('historical before-create evidence stays exact and read-only', async ({ pag
 
 test('unexpected unavailability stays inspectable without an approval action', async ({ page, demo }) => {
   const mock = await fixture(page, demo, { mismatch: true });
+  await openSummary(page);
   await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
   const example = review(page).getByRole('article', { name: 'Example: Client task with a due date', exact: true });
   await expect(example).toContainText('Could not check');
@@ -235,10 +242,11 @@ test('a delayed approval preserves short-screen reading, unread reply and compos
   const mock = await fixture(page, demo);
   await composer(page).fill('Keep this unsent correction.');
   await studio(page).locator('#studio-view-saved').click();
+  await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
   const held = mock.holdApproval();
   await review(page).getByRole('button', { name: 'Approve this change', exact: true }).click();
   await held.entered.promise;
-  const log = studio(page);
+  const log = studio(page).getByRole('log');
   try {
     await composer(page).fill('Keep the newer unsent correction.');
     await log.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
@@ -249,7 +257,8 @@ test('a delayed approval preserves short-screen reading, unread reply and compos
   await expect(composer(page)).toBeFocused();
   await expect(studio(page).locator('.rs-setup-notice')).toBeVisible();
   await page.screenshot({ path: test.info().outputPath('before-create-unread-short.png') });
-  expect((await log.boundingBox()).height).toBeGreaterThanOrEqual(112);
+  expect((await studio(page).boundingBox()).height).toBeGreaterThanOrEqual(112);
+  expect((await log.boundingBox()).height).toBeGreaterThanOrEqual(44);
   await studio(page).getByRole('button', { name: 'New messages ↓', exact: true }).click();
   await expect(composer(page)).toHaveValue('Keep the newer unsent correction.');
 });

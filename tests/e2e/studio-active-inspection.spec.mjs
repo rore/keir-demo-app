@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
@@ -129,7 +130,7 @@ for (const change of ['owner', 'selection']) test(`a late active proof cannot su
     }, { times: 1 });
     await openActive(page); await seen;
     if (change === 'owner') {
-      await page.getByLabel('Demo person', { exact: true }).selectOption('sam');
+      await switchPerson(page, 'sam');
       await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
     } else {
       await api(page, path + '/activate', { revisionId: state.draft.id, draftVersion: state.draftVersion,

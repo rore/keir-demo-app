@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { switchPerson as changePerson } from '../fixtures/workspace-ui.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
@@ -7,7 +8,7 @@ import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 const nav = page => page.getByRole('navigation', { name: 'Main navigation' });
-const personSelect = page => page.getByRole('combobox', { name: 'Demo person', exact: true });
+const personSelect = page => page.getByLabel('Demo person', { exact: true });
 const turnRequest = request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/authoring/turn';
 const evidenceDir = resolve('build/studio-extension-creation');
 
@@ -69,8 +70,8 @@ async function noTurnRequest(page, timeout = 400) {
 
 async function switchPerson(page, id) {
   const select = personSelect(page);
-  if (await select.count()) await select.selectOption(id);
-  await expect(personSelect(page)).toBeVisible({ timeout: 15_000 });
+  if (await select.count()) await changePerson(page, id);
+  await expect(page.locator('.user-tools > summary')).toBeVisible({ timeout: 15_000 });
   await expect(personSelect(page)).toHaveValue(id, { timeout: 15_000 });
 }
 

@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { openWorkspaceTool, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { randomUUID } from 'node:crypto';
 import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
@@ -49,7 +50,9 @@ async function openDetails(page) {
   await openDeveloperTools(page);
 }
 async function tasks(page) {
+  const account = await openWorkspaceTool(page, '.user-tools');
   await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
+  await account.locator(':scope > summary').press('Escape');
   const destination = page.getByLabel('Destination', { exact: true });
   if (await destination.isVisible()) await destination.selectOption('tasks');
   else await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Tasks', exact: true }).click();
@@ -66,7 +69,7 @@ async function open(page) {
   await expect(studio(page).getByRole('button', { name: 'More', exact: true })).toBeEnabled();
   expect(await studio(page).locator('.rs-composer').evaluate(form => form.getBoundingClientRect().height)).toBeLessThan(180);
   if (page.viewportSize().width <= 760) {
-    await expect(studio(page)).toHaveCSS('overflow-y', 'auto');
+    await expect(studio(page).getByRole('log')).toHaveCSS('overflow-y', 'auto');
     await studio(page).locator('.rs-header').scrollIntoViewIfNeeded();
     const manage = studio(page).getByRole('button', { name: 'More', exact: true });
     await expect(manage).toBeInViewport({ ratio: 1 });
@@ -96,6 +99,7 @@ async function checkSaved(page, waitForReview = true) {
     if (waitForReview) await openSavedChanges(page);
     else {
       await studio(page).locator('#studio-view-saved').click();
+      await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
       await expect(studio(page).getByRole('heading', { name: 'Simulation', exact: true })).toBeVisible();
     }
   }
@@ -199,7 +203,7 @@ test('real task review separates typed assent, approval and use; native edits an
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved lifecycle title');
   expect(await nativeRequest(page, 'tasks/' + completed.source.id + '/reaction')).toEqual(completed.status);
   await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+  await switchPerson(page, 'leo');
   await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
   const other = await completedTask(page, 'Other owner lifecycle source');
   expect(other.status.state).toBe('NO_BINDING'); expect(other.status.receipt).toBeNull();
@@ -263,7 +267,7 @@ test('a held real reaction read survives a selection transition without replay o
 test('narrow Studio inspects current saved source and keeps a restored task choice after restart', async ({ page, demo }) => {
   await page.setViewportSize({ width: 390, height: 844 }); await enter(page, demo.origin);
   await page.getByRole('button', { name: 'Close task details' }).click();
-  await page.getByLabel('Destination', { exact: true }).selectOption('customizations');
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
   const saved = await savedLifecycle(page, demo.origin);
   await page.getByRole('article', { name: saved.extension.name, exact: true }).getByRole('button', { name: /^(Open|Continue changes)$/ }).click();
   const ui = studio(page);
@@ -428,7 +432,7 @@ for (const width of [1440, 390]) test(`real authored source, independent example
   await expect(page.locator('.status-label.open')).toHaveText('○ Up next');
   expect((await nativeRequest(page, 'tasks/' + completed.source.id + '/reaction')).outcome).toEqual(completed.status.outcome);
   await page.getByRole('button', { name: 'Close task details', exact: true }).click();
-  await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+  await switchPerson(page, 'leo');
   await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
   const other = await completedTask(page, 'Independent owner completion');
   expect(other.status.state).toBe('NO_BINDING'); expect(other.status.receipt).toBeNull();
@@ -519,12 +523,12 @@ test('a held exact-source review cannot enter a different owner or a re-entered 
     expect((await checkSaved(page, false)).evidence.passed).toBe(true);
     await started; await expect(decision(page).locator('.rs-review-status')).toHaveText('Checking saved results…');
     await expect(approval(page)).toHaveCount(0);
-    await other.goto(demo.origin); await other.getByLabel('Demo person', { exact: true }).selectOption('leo');
+    await other.goto(demo.origin); await switchPerson(other, 'leo');
     await expect(page.getByRole('button', { name: 'Continue as Leo' })).toBeVisible();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveCount(0);
     holdOldWorkspace = false;
     await page.getByRole('button', { name: 'Continue as Leo' }).click();
-    await page.getByLabel('Demo person', { exact: true }).selectOption('maya');
+    await switchPerson(page, 'maya');
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya'); await tasks(page);
     await page.getByRole('button', { name: 'Gather material references', exact: true }).click(); await open(page);
     release(); await finished; await page.unroute(sourceRoute);

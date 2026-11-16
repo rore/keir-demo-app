@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -44,7 +45,7 @@ async function openTaskForOwner(page) {
 async function enter(page, origin) {
   await page.goto(origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-  await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('maya');
+  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
   return openTaskForOwner(page);
 }
 async function complete(page, task) {
@@ -139,11 +140,11 @@ test('a held actual reaction response cannot enter another owner workspace after
     await hold.started;
     await details(page).getByLabel('Task title', { exact: true }).fill('Private unsent Maya race edit');
     await other.goto(demo.origin);
-    await other.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('leo');
+    await switchPerson(other, 'leo');
     await expect(page.getByRole('button', { name: /^Continue as Leo/ })).toBeVisible();
     hold.release(); await hold.finished;
     await page.getByRole('button', { name: /^Continue as Leo/ }).click();
-    await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveValue('leo');
+    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
     const leoTask = await openTaskForOwner(page);
     await page.getByRole('button', { name: leoTask.title, exact: true }).click();
     await expect(details(page).getByLabel('Task title', { exact: true })).toHaveValue(leoTask.title);

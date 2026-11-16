@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openSummary } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { TASK_HOOK } from '../../src/extension-catalog.mjs';
@@ -18,6 +19,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
   const seeChange = async () => {
     await studio.locator('#studio-view-saved').click();
     await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
+    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(decision.locator('.rs-review-status')).not.toHaveText('Checking saved results…');
   };
   const errors = [];
@@ -66,7 +68,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
     expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore);
 
     await composer.fill('Keep this unsent question about weekends.');
-    await seeChange();
+    await openSummary(page);
     await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
     const ruleSummary = studio.locator('.rs-rule-summary');
     await expect(ruleSummary).toContainText('When a new task is added in any project');
@@ -78,6 +80,8 @@ test('offline due-date conversation explains checked behavior and keeps approval
     await expect(ruleSummary).toContainText('A due date already present when the task is read is kept.');
     await expect(ruleSummary).toContainText('Leave its title, project, notes, status, priority, and tags unchanged.');
     await expect(ruleSummary).toContainText('Turning this on does not update tasks that were added earlier.');
+    await seeChange();
+    await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeHidden();
     const comparison = studio.locator('.rs-before-after').first();
     await expect(comparison).toContainText('Added:');
     await expect(comparison).toContainText('Jan 7, 2027');
@@ -90,8 +94,8 @@ test('offline due-date conversation explains checked behavior and keeps approval
       [2, 'Task already has a due date', 'Existing date kept'],
       [3, 'Task details temporarily unavailable', 'No change when task details were unavailable—as intended'],
     ]) {
-      await expect(cases.nth(index).locator('summary')).toContainText(situation);
-      await expect(cases.nth(index).locator('summary')).toContainText(result);
+      await expect(cases.nth(index).locator(':scope > summary')).toContainText(situation);
+      await expect(cases.nth(index).locator(':scope > summary')).toContainText(result);
       await expect(cases.nth(index).getByText('Matched this example', { exact: true })).toHaveCount(0);
     }
     await expect(cases.nth(3).getByText('Unchecked', { exact: true })).toHaveCount(0);
@@ -114,15 +118,17 @@ test('offline due-date conversation explains checked behavior and keeps approval
       await expect(composer).toHaveValue('Keep this unsent question about weekends.');
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      const messages = width <= 600 || height <= 500 ? studio : studio.locator('.rs-messages');
+      const messages = studio.locator('.rs-messages');
+      await openSummary(page);
       await messages.evaluate(element => { element.scrollTop = 0; });
       await studio.getByRole('heading', { name: 'Summary', exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
       await page.screenshot({ path: testInfo.outputPath(`due-date-overview-${width}.png`) });
+      await seeChange();
       await studio.locator('.rs-before-after').first().evaluate(element => element.scrollIntoView({ block: 'start' }));
       await page.screenshot({ path: testInfo.outputPath(`due-date-before-after-${width}.png`) });
       await decision.getByRole('heading', { name: 'Simulation', exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
       await page.screenshot({ path: testInfo.outputPath(`simulation-overview-${width}.png`) });
-      await cases.nth(3).locator('summary').focus();
+      await cases.nth(3).locator(':scope > summary').focus();
       await page.keyboard.press('Enter');
       await expect(cases.nth(3)).toHaveJSProperty('open', true);
       await expect(cases.nth(3)).toContainText('What we wanted');
@@ -186,7 +192,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
     const editedProof = await read(`extensions/${id}/evidence/${edited.current.review.evidenceId}`);
     expect(editedProof.reports[0].report.observed.updatedTasks[0].dueAt).toBe('2027-01-05T16:00:00.417Z');
     await composer.fill('Keep this unsent refinement for the next discussion.');
-    await seeChange();
+    await openSummary(page);
     await expect(studio.locator('.rs-rule-facts')).toContainText('120');
     await expect(composer).toHaveValue('Keep this unsent refinement for the next discussion.');
     await studio.locator('#studio-view-active').click();
@@ -236,6 +242,7 @@ test('a different supported behavior keeps its exact supplied name and truthful 
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
     const decision = studio.getByRole('article', { name: 'Current decision', exact: true });
     await expect(studio.getByRole('heading', { name, exact: true })).toBeVisible();
+    await openSummary(page);
     await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
     await expect(studio.locator('.rs-rule-summary')).toContainText(`create a new task titled “${name}”`);
     await expect(studio.locator('.rs-rule-summary')).toContainText(fixture.metadata.projectName);
@@ -250,6 +257,7 @@ test('a different supported behavior keeps its exact supplied name and truthful 
     await page.reload();
     const reopened = page.getByRole('region', { name: 'Customization Studio', exact: true });
     await expect(reopened.getByRole('heading', { name, exact: true })).toBeVisible();
+    await openSummary(page);
     await expect(reopened.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible();
     await expect(reopened.locator('.rs-rule-summary')).toContainText(`create a new task titled “${name}”`);
     const reopenedDecision = reopened.getByRole('article', { name: 'Current decision', exact: true });
@@ -264,7 +272,7 @@ test('a different supported behavior keeps its exact supplied name and truthful 
   } finally { await fixture.close(); }
 });
 
-test('proposal links settle on an unobscured Summary while View simulation remains a separate destination at desktop, narrow and short sizes', async ({ page }) => {
+test('proposal links settle on an unobscured Summary while View simulation remains a separate destination at desktop, narrow and short sizes', async ({ page }, info) => {
   test.setTimeout(90_000);
   const fixture = await startAuthoringFixture({ missingDue: true });
   const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
@@ -336,25 +344,41 @@ test('proposal links settle on an unobscured Summary while View simulation remai
           : studio.locator('.rs-message').getByRole('button', { name: 'See proposed change', exact: true });
         await expect(link).toHaveAccessibleName('See proposed change');
         if (viewport.width === 320 && invoker === 'header') {
-          await expect(link.locator('.rs-short-label')).toHaveText('Summary');
-          await expect(link.locator('.rs-short-label')).toBeVisible();
+          await expect(link).toHaveText('Proposed behavior');
+          await expect(link).toBeInViewport();
         }
         await link.click();
-        await Promise.all([proofArrived.promise, sourceArrived.promise]);
+        await sourceArrived.promise;
         gate.resolve();
         await expect(studio.locator('.rs-rule-summary')).toContainText('give it a due date exactly 7 days after it was added');
-        await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
+        await expect(decision).toBeHidden();
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         await expectDestination('Summary');
         await expect(composer).toHaveValue(draft);
         await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+        await proofArrived.promise;
+        await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
         await expectDestination('Simulation');
         await decision.getByRole('button', { name: 'Go to approval', exact: true }).click();
         await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         await expect(decision.locator('#studio-decision-step')).toBeFocused();
-        await decision.getByRole('button', { name: 'Approve this change', exact: true }).scrollIntoViewIfNeeded();
-        await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeInViewport({ ratio: 1 });
+        const approval = decision.getByRole('button', { name: 'Approve this change', exact: true });
+        const geometry = await approval.evaluate(node => ({
+          viewport: { width: innerWidth, height: innerHeight }, action: node.getBoundingClientRect().toJSON(),
+          frames: ['.workspace', '.studio-main', '.rs-header', '.rs-messages', '#studio-decision-step'].map(selector => {
+            const element = document.querySelector(selector);
+            return { selector, box: element.getBoundingClientRect().toJSON(), top: element.scrollTop, height: element.scrollHeight };
+          }),
+        }));
+        await info.attach(`go-approval-${viewport.width}-${invoker}-geometry`, { body: JSON.stringify(geometry), contentType: 'application/json' });
+        await page.screenshot({ path: info.outputPath(`go-approval-${viewport.width}-${invoker}.png`) });
+        await expect(approval).toBeInViewport({ ratio: 1 });
+        expect(await approval.evaluate(node => {
+          const box = node.getBoundingClientRect(), root = node.closest('.read-studio');
+          const header = root.querySelector('.rs-header'), sticky = getComputedStyle(header).position === 'sticky' ? header.getBoundingClientRect().bottom : 0;
+          return box.top >= sticky && node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+        })).toBe(true);
         await expect(composer).toHaveValue(draft);
         await page.unroute(proofPath); await page.unroute(sourcePath);
       }
@@ -369,28 +393,32 @@ test('proposal links settle on an unobscured Summary while View simulation remai
       proofArrived.resolve(); await gate.promise;
       try { await route.fulfill({ response }); } catch { /* Teardown can close a held page. */ }
     });
-    await page.reload();
+    // Keep the loaded same-proof snapshot visible while its explicit reread is held.
+    // A first-load placeholder has no overflow in the separate document view.
     await expect(studio.locator('.rs-rule-summary')).toContainText('give it a due date exactly 7 days after it was added');
     await studio.locator('#studio-view-saved').click();
-    await proofArrived.promise;
     await expectDestination('Summary');
-    const scroller = studio;
+    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+    await proofArrived.promise;
+    await expectDestination('Simulation');
+    await expect(decision.getByRole('button', { name: 'Go to approval', exact: true })).toBeDisabled();
+    const scroller = studio.locator('.rs-messages');
     await expect(scroller).toHaveCSS('overflow-y', 'auto');
-    const status = studio.locator(':scope > .rs-status-summary');
-    await expect(status).toHaveCSS('position', 'sticky');
+    const status = studio.locator('.rs-header');
     const bounds = await status.boundingBox();
     expect(bounds).not.toBeNull();
-    const point = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
-    expect(await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.rs-status-summary'), point)).toBe(true);
+    const logBounds = await scroller.boundingBox();
+    const point = { x: logBounds.x + 5, y: logBounds.y + 5 };
     const previousScroll = await scroller.evaluate(element => element.scrollTop);
     await page.mouse.move(point.x, point.y);
     await page.mouse.wheel(0, 120);
     await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(previousScroll + 20);
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const readingPosition = await scroller.evaluate(element => element.scrollTop);
-    const summary = studio.getByRole('heading', { name: 'Summary', exact: true });
+    const summary = decision.getByRole('heading', { name: 'Simulation', exact: true });
     const readingTop = await summary.evaluate(element => element.getBoundingClientRect().top);
     await expect(summary).toBeFocused();
+    expect(await status.boundingBox()).toEqual(bounds);
     gate.resolve();
     await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -408,11 +436,14 @@ test('proposal links settle on an unobscured Summary while View simulation remai
       pointerProof.resolve(); await pointerGate.promise;
       try { await route.fulfill({ response }); } catch { /* Teardown can close a held page. */ }
     });
-    await page.reload();
+    // Reuse the same visible snapshot so a real scrollbar/touch reading gesture is possible.
     await expect(studio.locator('.rs-rule-summary')).toContainText('give it a due date exactly 7 days after it was added');
     await studio.locator('#studio-view-saved').click();
-    await pointerProof.promise;
     await expectDestination('Summary');
+    await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
+    await pointerProof.promise;
+    await expectDestination('Simulation');
+    await expect(decision.getByRole('button', { name: 'Go to approval', exact: true })).toBeDisabled();
     // Dispatch on the real transcript scroller; changing scrollTop emulates the
     // browser's scrollbar movement without assuming OS scrollbar coordinates.
     await scroller.dispatchEvent('pointerdown', { pointerType: 'touch' });

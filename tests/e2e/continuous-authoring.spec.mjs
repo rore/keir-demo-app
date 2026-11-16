@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import { switchPerson } from '../fixtures/workspace-ui.mjs';
 import { openDeveloperTools, openSavedChanges } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
@@ -300,7 +301,7 @@ for (const status of [200, 503]) test(`a late earlier-page ${status} response ca
     await studio(page).getByLabel('Message to Daymark assistant', { exact: true }).fill('Private unsent correction');
     await studio(page).getByRole('button', { name: 'Load earlier messages', exact: true }).click();
     await held;
-    await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+    await switchPerson(page, 'leo');
     await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
     await openItem(page, demo.leoId);
     release();
@@ -536,7 +537,7 @@ test('a collection page held across an owner switch cannot replace the new owner
   await collection(page);
   await page.getByRole('button', { name: 'Load more customizations', exact: true }).click();
   await held;
-  await page.getByLabel('Demo person', { exact: true }).selectOption('leo');
+  await switchPerson(page, 'leo');
   await collection(page);
   release();
   await expect(page.locator('.customization-card').first()).toBeVisible();

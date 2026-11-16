@@ -4,7 +4,7 @@ Maya wants every completed task in **The spring collection** to leave her a new 
 
 The screenshots show the app with fictional, disposable data. Authoring responses are scripted using the [offline fixture](../tests/README.md#offline-configured-ai-fixture); compilation, simulation, approval, activation and the native task writes are real. No paid AI requests were made for this tour.
 
-The screenshots predate the single **Send** action. Current Studio keeps the restored layout and review navigation, with one Send for questions and requests. Saved behavior, example evidence and the separate approval/activation decisions are the same.
+The screenshots show the earlier header and full-summary default, before the single **Send** action and current composition. Current Studio shows chat with a read-only behavior overview on wide screens. **Proposed behavior** opens full Summary at any width. The instructions below describe current controls; saved behavior, example evidence and separate approval/activation decisions are unchanged.
 
 To try it yourself, [run Daymark locally](../README.md#run-locally), have **Java 21** available, choose **Maya**, and [configure an AI provider](ai-authoring.md#configure-a-provider). Provider requests can incur charges, and the conversation may differ. Use a fresh demo workspace and add a second project, such as **Other project**, to try the nonmatching behavior too.
 
@@ -22,17 +22,17 @@ The assistant asks whether this should apply only to that project. Confirm the b
 
 ## 2. Read the proposed behavior
 
-Choose **See proposed change**. Read **When**, **Only when** and **Then**: a completed task in **The spring collection** should create **Follow up** in that project. Other projects should create nothing. The original completion stays unchanged.
+Choose **Proposed behavior** in the subject toolbar or **See proposed change** in the conversation to open full Summary. On wide screens, **Read full Summary** also opens it from the overview beside chat. The heading above the conversation is its saved name. Read **When**, **Only when** and **Then** in Summary: a completed task in **The spring collection** should create **Follow up** in that project. Other projects should create nothing. The original completion stays unchanged.
 
 ![Summary of the proposed follow-up rule, marked Proposed change · Not on, with View simulation.](images/walkthrough/02-summary.png)
 
-*Ask for a change in the conversation if the proposal differs from your goal.*
+*Choose **Chat** at the top to discuss a change. Its accessible name is **Back to conversation**. Your unsent message and earlier place in chat are kept. Keyboard focus returns to the opening control or another visible control if it is unavailable. **All changes** instead returns to Customizations; **My task** returns to the invoking task when you entered from task details.*
 
 ## 3. Check the examples and approve
 
-Choose **View simulation**. Compare the intended action with what actually happened in each simulated situation. The matching example shows the task that started the rule alongside the separate **Created example task**. Only the recorded values are checked; the preview does not verify every task detail.
+Choose **View simulation** in Summary, or the toolbar's **Simulation** when available. Compare the intended action with what actually happened in each simulated situation. The matching example shows the task that started the rule alongside the separate **Created example task**. Only the recorded values are checked; the preview does not verify every task detail.
 
-Open the individual examples to read their intended and observed results. A task completed in **Other project** creates nothing. The remaining examples check an open task and missing, denied or temporarily unavailable task details.
+Open an individual example to see **Expected** and **Observed** together. **Exact scenario and results** provides its full supporting data. A task completed in **Other project** creates nothing. The remaining examples check an open task and missing, denied or temporarily unavailable task details.
 
 These are example tasks and simulated service responses: **your real saved tasks are unchanged**. A passing example means its observed result matched its expectation; an unavailable-task example can pass by correctly making no change.
 

@@ -192,7 +192,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         return scroller.scrollTop;
       });
       expect(reading).toBeGreaterThan(0);
-      const frame = () => page.evaluate(() => ['.workspace', '.workspace-top', '.rail'].map(selector => {
+      const frame = () => page.evaluate(() => ['.workspace', '.workspace-top', '.destinations'].map(selector => {
         const node = document.querySelector(selector);
         return getComputedStyle(node).display === 'none' ? null : node.getBoundingClientRect().toJSON();
       }));

@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { openSummary } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 
-for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600 }, { width: 390, height: 844 }]) {
+for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600 }, { width: 390, height: 844 }, { width: 683, height: 384 }]) {
   test(`one Send preserves real draft, active evidence and input through restored review at ${viewport.width}x${viewport.height}`, async ({ page }, info) => {
     test.setTimeout(90_000); page.setDefaultTimeout(15_000); await page.setViewportSize(viewport);
     // These are explicitly scripted test decisions, not a text classifier or a live-model qualification.
@@ -18,8 +19,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
     page.on('pageerror', error => errors.push(error.message));
     try {
       await page.goto(fixture.origin); await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-      if (viewport.width < 760) await page.locator('#destination-select').selectOption('customizations');
-      else await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
+      await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
       await page.getByRole('button', { name: 'New customization', exact: true }).click();
       await expect(studio.getByRole('button', { name: 'Send', exact: true })).toHaveCount(1);
       await expect(studio.getByRole('button', { name: 'Prepare changes', exact: true })).toHaveCount(0);
@@ -29,6 +29,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
       await expect(studio.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 30_000 });
       const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization'); expect(id).toBeTruthy();
       const checked = lifecycle.state('maya', id), originalSelection = checked.selection;
+      await openSummary(page);
       await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
       await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
       await expect(studio.locator('.rs-rule-facts')).toContainText('7 days');
@@ -41,7 +42,17 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
       const active = lifecycle.state('maya', id).selection;
       await decision.getByRole('button', { name: 'Hide simulation', exact: true }).click();
       await send(fixture.metadata.editRequest);
+      await expect(studio.getByText(fixture.metadata.editedOfferText, { exact: true })).toBeAttached({ timeout: 30_000 });
+      const newMessages = studio.getByRole('button', { name: 'New messages ↓', exact: true });
+      await composer.fill('Keep my next unsent question.');
+      await newMessages.focus();
+      await expect(newMessages).toBeFocused();
+      await expect(newMessages).toBeInViewport({ ratio: 1 });
+      await page.screenshot({ path: info.outputPath('new-messages-before-explicit-return.png') });
+      await newMessages.press('Enter');
       await expect(studio.getByText(fixture.metadata.editedOfferText, { exact: true })).toBeVisible({ timeout: 30_000 });
+      await expect(composer).toHaveValue('Keep my next unsent question.');
+      await expect(studio.locator('#studio-view-saved')).toBeFocused();
       expect(lifecycle.state('maya', id).selection).toEqual(active);
       await expect(studio.locator('#studio-customization-status')).toHaveText('Earlier version in use');
       await expect(studio.getByLabel('Customization status')).toContainText('Proposed change · Not on');
@@ -64,6 +75,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
       const beforeDiscussion = domain();
       await send('Could you explain why existing dates are kept?');
       await expect(studio.getByText(fixture.metadata.explanation, { exact: true })).toBeVisible(); expect(domain()).toEqual(beforeDiscussion);
+      await openSummary(page);
+      await expect(studio.locator('.rs-rule-facts')).toContainText('5 days');
       await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
       await expect(decision.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
       await expect(studio.locator('.rs-rule-facts')).toContainText('5 days');
@@ -81,6 +94,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
       await expect(studio.locator('#studio-view-active')).toBeFocused();
       await expect(studio.locator('.rs-rule-facts')).toContainText('5 days');
       await send('Yes');
+      await expect(studio.getByText('Do you want a draft change, or only to discuss it?', { exact: true })).toBeAttached();
+      await newMessages.focus(); await newMessages.press('Enter');
       await expect(studio.getByText('Do you want a draft change, or only to discuss it?', { exact: true })).toBeVisible();
       expect(domain()).toEqual(beforeActive);
       expect(fixture.requests.filter(request => request.name === 'resolve_intent').map(request => request.intent)).toEqual(['prepare', 'prepare', 'prepare', 'discuss', 'clarify']);

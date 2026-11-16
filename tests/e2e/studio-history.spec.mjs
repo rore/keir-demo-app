@@ -17,7 +17,7 @@ async function api(page, path, body) {
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384 }]) {
   const checked = viewport.width === 683;
-  test(`${checked ? 'checked' : 'unchecked'} displaced changes remain discoverable and read-only after restart and reload (${viewport.width}px)`, async ({ page }) => {
+  test(`${checked ? 'checked' : 'unchecked'} displaced changes remain discoverable and read-only after restart and reload (${viewport.width}px)`, async ({ page }, testInfo) => {
     const fixture = await startAuthoringFixture({ unconfigured: true });
     try {
       await page.setViewportSize(viewport);
@@ -47,6 +47,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       await page.goto(`${fixture.origin}/#customization=${state.extension.id}`);
       const ui = studio(page);
       await expect(ui.getByRole('heading', { name: 'History integration', exact: true })).toBeVisible();
+      const composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
+      const unsent = 'Keep this unsent request while considering a restart.';
+      await composer.fill(unsent);
       if (checked) {
         await openSavedChanges(page);
         await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
@@ -60,6 +63,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
         await confirmation.getByText('Saved version details', { exact: true }).click();
         await expect(confirmation).toContainText(`Saved draft version: ${displaced.draftVersion}`);
         await confirmation.getByText('Saved version details', { exact: true }).click();
+        await page.screenshot({ path: testInfo.outputPath('restart-confirmation.png') });
         await expect(confirmation.getByRole('button', { name: 'Start from this version', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(ui.getByRole('button', { name: 'Approve this change', exact: true })).toHaveCount(0);
@@ -67,7 +71,16 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
         await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toBeHidden();
         return confirmation;
       };
-      await (await beginRestart()).getByRole('button', { name: 'Cancel', exact: true }).click();
+      const cancelled = await beginRestart();
+      if (checked) {
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await page.setViewportSize(viewport);
+      }
+      await cancelled.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(ui.locator('#studio-view-active')).toBeVisible();
+      await expect(ui.locator('#studio-view-active')).toBeFocused();
+      await expect(ui.locator('#studio-view-active')).toBeInViewport({ ratio: 1 });
+      await expect(composer).toHaveValue(unsent);
       expect(await api(page, path)).toEqual(displaced);
       const confirmation = await beginRestart();
       const restarted = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/' + path + '/restart');
