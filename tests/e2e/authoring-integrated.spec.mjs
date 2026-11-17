@@ -22,7 +22,7 @@ function scopedPath(page, path, id = new URLSearchParams(new URL(page.url()).has
   return path;
 }
 async function navigate(page, destination) {
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
   const select = page.getByLabel('Destination', { exact: true });
   if (await select.isVisible()) await select.selectOption(destination.toLowerCase());
   else await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: destination, exact: true }).click();
@@ -483,7 +483,7 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(2);
       }
       await page.reload();
-      await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+      await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
       expect((await read('authoring')).current.review.evidenceId).toBe(conversation.review.evidenceId);
       expect((await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
       expect(fixture.requests.length).toBe(callCount); expect(turns).toBe(2);
@@ -520,14 +520,14 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       const requestsBeforeSwitch = fixture.requests.length;
       const heldBeforeSwitch = fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
       await switchPerson(page, 'leo');
-      await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
+      await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'leo');
       const foreignSession = await (await page.request.get(`${fixture.origin}/api/session`)).json();
       const foreignTask = await page.request.get(`${fixture.origin}/api/tasks/${createdId}`, { headers: { 'x-session-context': foreignSession.contextToken } });
       expect(foreignTask.status()).toBe(404);
       const foreignOutcome = await page.request.get(`${fixture.origin}/api/tasks/${source.id}/reaction`, { headers: { 'x-session-context': foreignSession.contextToken } });
       expect(foreignOutcome.status()).toBe(404);
       await switchPerson(page, 'maya');
-      await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+      await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
       const returnedSession = await (await page.request.get(`${fixture.origin}/api/session`)).json();
       const retained = await page.request.get(`${fixture.origin}/api/tasks/${source.id}/reaction`, { headers: { 'x-session-context': returnedSession.contextToken } });
       expect(retained.status()).toBe(200); expect(await retained.json()).toEqual(first);

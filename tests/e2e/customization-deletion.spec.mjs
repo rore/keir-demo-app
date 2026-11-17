@@ -16,7 +16,7 @@ async function collection(page) {
 async function enter(page, fixture) {
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
 }
 async function api(page, path, body, status = 200) {
   const response = await page.evaluate(async ({ path, body }) => {
@@ -131,7 +131,7 @@ test('busy feedback points to Stop and a foreign owner cannot delete the item', 
     await page.unroute('**/api/extensions/*/delete');
     await switchPerson(page, 'sam');
     await expect(page.getByRole('navigation', { name: 'Projects', exact: true }).getByRole('button', { name: 'A quieter workspace', exact: true })).toBeVisible();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam'); await collection(page);
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam'); await collection(page);
     await expect(card(page, item.id)).toHaveCount(0); await api(page, `extensions/${item.id}/delete`, deletionBody(state), 404);
     expect(fixture.db.prepare('SELECT deleted_at FROM extensions WHERE id=?').get(item.id).deleted_at).toBeNull();
     expect(fixture.requests).toHaveLength(0);
@@ -240,7 +240,7 @@ test('an owner switch fences the late confirmation snapshot before any deletion 
     await switchPerson(page, 'sam');
     await expect(page.getByRole('navigation', { name: 'Projects', exact: true }).getByRole('button', { name: 'A quieter workspace', exact: true })).toBeVisible();
     await collection(page); release(); await finished;
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
     await expect(card(page, item.id)).toHaveCount(0); await expect(page.locator('.customization-delete')).toHaveCount(0);
     expect(posts).toEqual([]);
     expect(fixture.db.prepare('SELECT deleted_at FROM extensions WHERE id=?').get(item.id).deleted_at).toBeNull();
@@ -259,7 +259,7 @@ test('an owner switch fences a late deletion response and its confirmation', asy
     const saved = card(page, item.id); await saved.getByRole('button', { name: 'Delete', exact: true }).click(); await saved.locator('#customization-delete-confirm').click();
     await accepted;
     await switchPerson(page, 'sam'); release();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam'); await collection(page);
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam'); await collection(page);
     await expect(card(page, item.id)).toHaveCount(0); await expect(page.locator('.customization-delete')).toHaveCount(0);
     await expect(page.getByText(`“${item.name}” was deleted.`, { exact: true })).toHaveCount(0); expect(fixture.requests).toHaveLength(0);
   } finally { release(); await fixture.close(); }

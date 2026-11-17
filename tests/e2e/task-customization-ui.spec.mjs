@@ -259,7 +259,7 @@ test('a late owned-task lookup cannot repopulate the next person’s workspace',
   try {
     await page.getByRole('button', { name: 'Complete ' + source.title, exact: true }).click(); await started;
     await switchPerson(page, 'sam');
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
     release();
     await expect(page.getByRole('button', { name: /Open task:/ })).toHaveCount(0);
     await expect(page.getByText(created.title, { exact: true })).toHaveCount(0);

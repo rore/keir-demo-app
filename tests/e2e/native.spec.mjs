@@ -27,7 +27,7 @@ const pictures = resolve('build/screens');
 async function screenshot(page, name) { mkdirSync(pictures, { recursive: true }); await page.screenshot({ path: join(pictures, `${name}.png`), fullPage: true }); }
 async function signIn(page, name) {
   await page.getByRole('button', { name: `Continue as ${name}` }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue(name.toLowerCase());
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', name.toLowerCase());
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
 }
 async function newProject(page, name, mobile = false) {
@@ -519,7 +519,7 @@ test('delayed old data cannot repopulate a switched scope and expired API cannot
 test('authentication transitions serialize across tabs even when the first cookie response is delayed', async ({ page, context, demo }) => {
   await page.goto(demo.origin); await signIn(page, 'Maya');
   const second = await context.newPage(); await second.goto(demo.origin);
-  await expect(second.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(second.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
   // Finish initial owner reads before the deliberately delayed cookie transition.
   await expect(second.getByRole('button', { name: 'Gather material references', exact: true })).toBeVisible();
   let release, observed;
@@ -533,12 +533,12 @@ test('authentication transitions serialize across tabs even when the first cooki
   await switchPerson(second, 'sam');
   await expect(second.getByRole('status').filter({ hasText: 'Opening your space' })).toBeVisible();
   release();
-  await expect(second.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
+  await expect(second.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
   await expect(second.getByRole('heading', { level: 1, name: 'A quieter workspace' })).toBeVisible();
   expect(await second.evaluate(async () => (await (await fetch('/api/session')).json()).user.id)).toBe('sam');
   // Revoked initial reads and the cross-tab notification may report expiry in either order.
   await expect(page.getByRole('alert')).toContainText(/changed in another tab|session changed/);
-  await expect(page.getByRole('combobox', { name: 'Demo person', exact: true })).toHaveCount(0);
+  await expect(page.locator('.person-choices button')).toHaveCount(0);
   await screenshot(page, 'session-changed-desktop');
 });
 

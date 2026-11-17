@@ -22,7 +22,7 @@ const input = state => ({ revisionId: state.draft.id, draftVersion: state.draftV
 async function seed(page, fixture, { approved = false, native = false, selectionBaseline = false } = {}) {
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
   if (native) {
     await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
     await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');

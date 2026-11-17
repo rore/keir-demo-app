@@ -150,11 +150,11 @@ test('switching owners discards the prior owner rename text and fences its late 
     const otherTab = await page.context().newPage();
     await otherTab.goto(fixture.origin);
     await otherTab.locator('.user-tools > summary').click();
-    await otherTab.getByRole('combobox', { name: 'Demo person', exact: true }).selectOption('sam');
+    await otherTab.locator('.person-choices button[value="sam"]').click();
     await expect(page.getByText('The demo person changed in another tab. Choose a person to continue.', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: /^Continue as Sam/ }).click();
     await otherTab.close();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
     release();
     await expect(page.getByText('Private Maya name', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('form', { name: 'Rename customization', exact: true })).toHaveCount(0);
@@ -170,7 +170,7 @@ test('saved behavior illustrates task creation and checked examples keep authore
     const project = taskService(fixture.db).listProjects('sam')[0];
     const task = taskCustomizationFixture({ projectId: project.id, otherProjectId: 'other-project-example', title: 'Review completed work' });
     await page.goto(fixture.origin); await page.getByRole('button', { name: 'Continue as Sam' }).click();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
     const post = (path, body) => page.evaluate(async ({ path, body }) => {
       const session = await (await fetch('/api/session')).json();
       const response = await fetch('/api/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Context': session.contextToken }, body: JSON.stringify(body) });

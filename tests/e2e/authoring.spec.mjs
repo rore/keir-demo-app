@@ -371,7 +371,7 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
   await page.setViewportSize({ width, height: width === 683 ? 384 : 1000 });
   await page.goto(demo.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
   const { contextToken } = await (await page.request.get(`${demo.origin}/api/session`)).json();
   const { source, suite, mutate: lifecycle } = await prepareTask(page, demo);
   const first = await lifecycle('simulate', { revisionId: suite.draft.id, draftVersion: suite.draftVersion });

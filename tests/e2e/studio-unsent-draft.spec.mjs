@@ -23,7 +23,7 @@ function seed(fixture, name, owner = 'maya') {
 async function enter(page, fixture) {
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
 }
 async function navigate(page, destination) {
   const mobile = page.getByLabel('Destination', { exact: true });
@@ -84,13 +84,13 @@ test('drafts are isolated by person and auth session while same-session reload r
     expect((await api(page, 'session')).contextToken).toBe(tokens[0]);
     await expect(composer(page)).toHaveValue('First person’s private unsent question');
     await switchPerson(page, 'leo');
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'leo');
     tokens.push((await api(page, 'session')).contextToken);
     await openItem(page, other);
     await expect(composer(page)).toHaveValue('');
     await composer(page).fill('Second person’s private unsent question');
     await switchPerson(page, 'maya');
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     tokens.push((await api(page, 'session')).contextToken);
     expect(tokens[2]).not.toBe(tokens[0]);
     await openItem(page, first);

@@ -211,7 +211,7 @@ test('a delayed offer readback after switching demo person cannot navigate to th
     await waiting;
     await switchPerson(page, 'leo');
     release();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'leo');
     await expect(page.getByRole('heading', { name: 'Neighbourhood workshop', exact: true })).toBeVisible();
     await expect(ui(page)).toHaveCount(0);
     expect(page.url()).not.toContain(f.first.extension.id);

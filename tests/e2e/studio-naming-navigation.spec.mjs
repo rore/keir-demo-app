@@ -38,7 +38,7 @@ test('untitled items show their request and returning from sample history resets
     await page.setViewportSize({ width: 683, height: 384 });
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     await expect(page.getByRole('heading', { name: 'The spring collection', exact: true })).toBeVisible();
 
     const firstRequest = 'Keep track of the materials I still need.';

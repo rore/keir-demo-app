@@ -20,7 +20,7 @@ async function api(page, path, body) {
 async function seed(page, fixture, activeAlternative = false) {
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
   const alternative = taskCustomizationFixture({ projectId: fixture.metadata.projectId, otherProjectId: fixture.metadata.otherProjectId, title: 'Plan customer next step' }).metadata;
   const current = activeAlternative ? alternative : fixture.metadata;
   const proposed = activeAlternative ? fixture.metadata : alternative;
@@ -131,7 +131,7 @@ for (const change of ['owner', 'selection']) test(`a late active proof cannot su
     await openActive(page); await seen;
     if (change === 'owner') {
       await switchPerson(page, 'sam');
-      await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
+      await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
     } else {
       await api(page, path + '/activate', { revisionId: state.draft.id, draftVersion: state.draftVersion,
         generation: active.generation, evidenceId: state.approvedEvidenceId });
@@ -158,7 +158,7 @@ for (const activeWorkflow of ['onboarding', 'intake']) test(`clock-change covera
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Timing coverage' });
     const path = 'extensions/' + extensionId, host = loadHost('TaskCreated');
     const options = { projectId: fixture.metadata.projectId, destinationProjectId: fixture.metadata.otherProjectId };
@@ -199,7 +199,7 @@ test('operator selection has an honest summary fallback without invented approva
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Operator current program' });
     const path = 'extensions/' + extensionId;
     const draft = await api(page, path + '/compile', { hookId: TASK_HOOK, source: fixture.metadata.source, draftVersion: 0 });

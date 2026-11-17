@@ -14,5 +14,5 @@ export async function openWorkspaceTool(page, selector) {
 
 export async function switchPerson(page, person) {
   await openWorkspaceTool(page, '.user-tools');
-  await page.getByLabel('Demo person', { exact: true }).selectOption(person);
+  await page.locator(`.person-choices button[value="${person}"]`).click();
 }

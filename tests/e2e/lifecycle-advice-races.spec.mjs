@@ -45,7 +45,7 @@ async function openTaskForOwner(page) {
 async function enter(page, origin) {
   await page.goto(origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
   return openTaskForOwner(page);
 }
 async function complete(page, task) {
@@ -144,7 +144,7 @@ test('a held actual reaction response cannot enter another owner workspace after
     await expect(page.getByRole('button', { name: /^Continue as Leo/ })).toBeVisible();
     hold.release(); await hold.finished;
     await page.getByRole('button', { name: /^Continue as Leo/ }).click();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'leo');
     const leoTask = await openTaskForOwner(page);
     await page.getByRole('button', { name: leoTask.title, exact: true }).click();
     await expect(details(page).getByLabel('Task title', { exact: true })).toHaveValue(leoTask.title);

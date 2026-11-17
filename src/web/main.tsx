@@ -490,7 +490,7 @@ function Workspace({
   createVisible.current = destination === "tasks" && createOpen;
   const resumeDetail = useRef(false);
   const destinationFocus = useRef<string | null>(null);
-  const taskScroller = useRef<HTMLElement>(null);
+  const taskScroller = useRef<HTMLDivElement>(null);
   const taskScroll = useRef(0);
   const [notice, setNotice] = useState("");
   const lifetime = useRef(new AbortController());
@@ -1038,28 +1038,27 @@ function Workspace({
           <details className="user-tools tool-menu" onKeyDown={dismissTool}>
             <summary>{session.user.name}<span aria-hidden="true">⌄</span></summary>
             <div className="tool-menu-content">
-            <label className="sr-only" htmlFor="person-select">
-              Demo person
-            </label>
-            <select
-              id="person-select"
-              value={session.user.id}
-              onChange={(event) => switchUser(event.target.value)}
-            >
+            <div className="person-choices" role="group" aria-label="Demo person">
               {users.map((user) => (
-                <option key={user.id} value={user.id}>
+                <button key={user.id} value={user.id} aria-pressed={user.id === session.user.id}
+                  onClick={event => {
+                    const menu = event.currentTarget.closest("details");
+                    menu?.removeAttribute("open");
+                    if (user.id !== session.user.id) switchUser(user.id);
+                    else menu?.querySelector("summary")?.focus();
+                  }}>
                   {user.name}
-                </option>
+                  {user.id === session.user.id && <span aria-hidden="true">✓</span>}
+                </button>
               ))}
-            </select>
+            </div>
             <button className="quiet-button" onClick={signOut}>
               Sign out
             </button>
             </div>
           </details>
         </header>
-        <main ref={taskScroller} className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}
-          onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
+        <main className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}>
           <div className="task-page-heading">
           <p className="eyebrow">{session.user.name}’s workspace</p>
           <div className="project-title">
@@ -1213,6 +1212,8 @@ function Workspace({
                 appliedFilters.current.tag && `Tag “${appliedFilters.current.tag}”`].filter(Boolean).join(" · ")}</p>}
             </form>
           )}
+          <div ref={taskScroller} className="task-content" tabIndex={0} role="region" aria-label="Task list"
+            onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
           {search && project ? (
             <section className="task-search-results" aria-labelledby="task-search-heading">
               <div className="list-heading">
@@ -1288,6 +1289,7 @@ function Workspace({
               Local demo
             </span>
           </footer>
+          </div>
           </section>
           </div>
         </main>

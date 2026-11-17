@@ -20,7 +20,7 @@ async function signIn(page, fixture, owner = 'maya') {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   } else await switchPerson(page, owner);
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue(owner);
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', owner);
   const session = await (await page.request.get(fixture.origin + '/api/session')).json();
   return { origin: fixture.origin, 'X-Session-Context': session.contextToken };
 }

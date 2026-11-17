@@ -51,7 +51,7 @@ const summary = current => ({ id: current.id, extensionId: current.extensionId, 
 async function signIn(page, origin) {
   await page.goto(origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
 }
 async function api(page, origin, path, body) {
   const session = await (await page.request.get(origin + '/api/session')).json();
@@ -302,7 +302,7 @@ for (const status of [200, 503]) test(`a late earlier-page ${status} response ca
     await studio(page).getByRole('button', { name: 'Load earlier messages', exact: true }).click();
     await held;
     await switchPerson(page, 'leo');
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'leo');
     await openItem(page, demo.leoId);
     release();
     await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('');

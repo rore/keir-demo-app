@@ -23,7 +23,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
       await page.setViewportSize(viewport);
       await page.goto(fixture.origin);
       await page.getByRole('button', { name: 'Continue as Maya' }).click();
-      await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+      await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
       const example = fixture.metadata;
       const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'History integration' });
       let state = await api(page, `extensions/${extensionId}/compile`, { hookId: 'TaskCompleted', source: example.source, label: 'History integration', draftVersion: 0 });

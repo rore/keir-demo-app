@@ -366,7 +366,7 @@ test('an owner switch fences a pending setup response and clears the old key fro
     await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await page.locator('#open-customizations').click();
     await expect(authoring(page)).toBeVisible();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('leo');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'leo');
     const conversation = ui.getByRole('log', { name: 'Studio conversation', exact: true });
     await expect(conversation).toContainText('What would you like Daymark to do for you?');
     await expect(conversation).not.toContainText('Keep this unsaved task title');

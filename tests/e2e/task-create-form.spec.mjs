@@ -40,7 +40,7 @@ const newer = { title: 'Review the brief', notes: 'Keep these newer notes.', tag
 async function signIn(page, origin) {
   await page.goto(origin);
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
 }
 async function fillDraft(page, values) {

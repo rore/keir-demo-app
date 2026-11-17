@@ -1,18 +1,18 @@
 # Walkthrough screenshot provenance
 
-These are unedited screenshots of Daymark at source revision [`2e8516927276d8313793b15e9717e88cde46988f`](https://github.com/rore/keir-demo-app/commit/2e8516927276d8313793b15e9717e88cde46988f). They replace the earlier walkthrough captures; Git history retains those originals. The screenshots are covered by the repository’s [Apache License 2.0](../../../LICENSE).
+These are unedited screenshots captured on 17 November 2026 from the reviewed Daymark usability correction based on [`c4d503a4c3f3c4898f1df30cdecb05fd7f3b2d25`](https://github.com/rore/keir-demo-app/commit/c4d503a4c3f3c4898f1df30cdecb05fd7f3b2d25). That link identifies the pre-correction base; the rendered asset and image hashes below identify this corrected capture set. The screenshots are covered by the repository’s [Apache License 2.0](../../../LICENSE).
 
 The flow uses fictional, disposable data and the [offline authoring fixture](../../../tests/fixtures/authoring-server.mjs). Assistant responses are scripted; the installed compiler, simulation, saved evidence, explicit human approval, separate activation and native task writes are real. No paid model requests were made. The user explicitly chooses the suggested name and saves it; the assistant does not rename the customization.
 
-The capture follows the [walkthrough](../../customization-walkthrough.md): request and clarification, proposed behavior, recorded simulation values, approved but not active, completion of a newly added task, and the actual saved follow-up task. The app uses its pinned Core 0.3.1 package bytes; this capture does not certify a deployment. The images contain no real customer data or provider settings.
+The capture follows the [walkthrough](../../customization-walkthrough.md): request and clarification, proposed behavior, recorded simulation values, approved but not active, completion of a newly added task, and the actual saved follow-up task. The app uses its pinned Core 0.5.0 compiler/runtime package bytes. Source and built-asset hashes were frozen before capture. The rendered JavaScript SHA-256 is `7e0aecdebb9eaf377b4c61bc8c4452d3dc9f5cd43ba3916245a27aa6d2c65954`; the stylesheet SHA-256 is `2381ad1877ea37437d5ec93ba1a99481343fe34ed66d48b53578037440947378`. The isolated fixture does not certify a live deployment or provider compatibility. The images contain no real customer data or provider settings.
 
-Captured with Playwright 1.64.1 and Chromium 156.0.8078.79 at a 1,440 × 1,000 CSS-pixel viewport. The checks also exercise narrow and short viewports; these desktop images do not certify physical devices or other browser engines.
+Captured with Playwright 1.64.1 and Chromium 156.0.8078.4 at a 1,440 × 1,000 CSS-pixel viewport in UTC. The capture verifies separate approval/activation, unchanged native tasks before activation, the real created task and its reload readback, and no new AI request during native execution. These desktop images do not certify narrow layouts, physical devices or other browser engines; the application’s existing browser suite covers its tested narrow/short viewports.
 
 | Image | Bytes | SHA-256 |
 | --- | ---: | --- |
-| [01-request.png](01-request.png) | 69,763 | `6a0e383b7bf2cc5bce933755b1c3e27a167f0ba475104d604c9a3a060dfdafcb` |
-| [02-summary.png](02-summary.png) | 127,126 | `062088cb0e919598d7a9a7177a0141cda46bd5d0c6437479986f635366d9a42a` |
-| [03-simulation.png](03-simulation.png) | 121,746 | `1167e2fc52d935215c2a109e94d8e27d1d240ca2c3f3ba34ff85395946e93968` |
-| [04-approved.png](04-approved.png) | 105,991 | `746f99fc3081d337a3730daa25e80d25217f39001588233014143993378fb7ce` |
-| [05-runtime.png](05-runtime.png) | 71,804 | `1c88cd72ead9584b29db05a237ff9975eed613a00d7af37b2e7142f016580ad4` |
-| [06-saved-task.png](06-saved-task.png) | 93,837 | `20f39017a4fb6d95b0dcc4bdd34779012a16ad23f2b36071d9588ec2200e8380` |
+| [01-request.png](01-request.png) | 38,168 | `ffb3f41033a69f10f0491bdbc904bfd512fe41362ccf40f98229ebcc3027a748` |
+| [02-summary.png](02-summary.png) | 57,680 | `3230c6f30780d0d248a9cd43ea8f2ed9b4e73a9193a79f9cfeb96ac2b82e3d02` |
+| [03-simulation.png](03-simulation.png) | 86,391 | `2447d62b766504de1f4db5210ac61745af7b80ba0df1b06057e34e0d7b64fe92` |
+| [04-approved.png](04-approved.png) | 82,456 | `e0f5303a58a6f6ec6e889d109e9074511e2f867990ba8a766543178213200a06` |
+| [05-runtime.png](05-runtime.png) | 52,984 | `0f00447cf56ca61f5f6a12ac34ba12a8bbac54b58ed6ac6d05a646b1deddfcd0` |
+| [06-saved-task.png](06-saved-task.png) | 51,806 | `e386574027c67ec0dea5ff7f754b4886b03f0966df40012c42a4b83303ed8e1b` |

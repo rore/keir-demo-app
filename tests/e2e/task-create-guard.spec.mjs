@@ -49,7 +49,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
         await page.setViewportSize(viewport);
         await page.goto(fixture.origin);
         await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-        await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue(owner);
+        await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', owner);
         const session = await (await page.request.get(fixture.origin + '/api/session')).json();
         const headers = { origin: fixture.origin, 'X-Session-Context': session.contextToken };
         const catalogResponse = await page.request.get(fixture.origin + '/api/extensions/catalog', { headers });

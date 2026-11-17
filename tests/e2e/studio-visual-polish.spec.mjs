@@ -202,6 +202,36 @@ test('closing a pending Simulation cannot reopen it or move returned chat focus'
   } finally { release?.(); await page.close(); await fixture.close(); }
 });
 
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384 },
+  { width: 1001, height: 700 }, { width: 626, height: 550 }]) {
+  test(`chat keeps readable space, input and usable actions at ${viewport.width}x${viewport.height}`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    const fixture = await prepare(page, { proof: viewport.height >= 700 });
+    try {
+      const input = composer(page);
+      await input.fill('Keep my first line.\nKeep my second line.');
+      await expect(input).toBeInViewport({ ratio: 1 });
+      await expect(ui(page).getByRole('button', { name: 'Send', exact: true })).toBeInViewport({ ratio: 1 });
+      await expect(log(page)).toBeInViewport({ ratio: 1 });
+      expect((await log(page).boundingBox()).height).toBeGreaterThanOrEqual(80);
+      if (viewport.width === 1440) {
+        const geometry = await measure(page);
+        expect(geometry.transcriptHeight).toBeGreaterThanOrEqual(690);
+        expect((await log(page).boundingBox()).width).toBeGreaterThanOrEqual(950);
+      }
+      const more = ui(page).getByRole('button', { name: 'More', exact: true });
+      await more.click();
+      await expect(ui(page).locator('#studio-more-heading')).toBeFocused();
+      await ui(page).locator('.rs-preview .rs-close-review').click();
+      await expect(more).toBeFocused();
+      await expect(input).toHaveValue('Keep my first line.\nKeep my second line.');
+      await expect(input).toBeInViewport({ ratio: 1 });
+      await page.screenshot({ path: info.outputPath('usable-chat.png') });
+      expect(fixture.errors).toEqual([]);
+    } finally { await page.close(); await fixture.close(); }
+  });
+}
+
 test('returning to chat skips an invoker that became disabled', async ({ page }) => {
   const fixture = await prepare(page);
   try {
@@ -213,6 +243,31 @@ test('returning to chat skips an invoker that became disabled', async ({ page })
     await expect(composer(page)).toBeFocused();
     await expect(summary(page)).toBeHidden();
     expect(fixture.posted).toEqual([]); expect(fixture.requests).toEqual([]);
+  } finally { await page.close(); await fixture.close(); }
+});
+
+test('short active chat keeps setup notice, current-use actions and composer reachable', async ({ page }, info) => {
+  await page.setViewportSize({ width: 683, height: 384 });
+  const fixture = await prepare(page);
+  try {
+    const input = { extensionId: fixture.state.extension.id, revisionId: fixture.state.draft.id,
+      draftVersion: fixture.state.draftVersion, evidenceId: fixture.state.evidence.id };
+    fixture.lifecycle.approve('maya', input, () => {});
+    fixture.lifecycle.activate('maya', { ...input, generation: fixture.state.selection.generation }, () => {});
+    await page.route('**/api/authoring**', route => route.fulfill({ json: {
+      availability: { available: false, code: 'AI_NOT_CONFIGURED' }, current: fixture.current,
+      conversations: [], next: null,
+    } }));
+    await page.reload();
+    const off = ui(page).getByRole('button', { name: 'Turn off this customization', exact: true });
+    await expect(off).toBeVisible();
+    await expect(ui(page).getByText('Set up the assistant to create or change a customization.', { exact: true })).toBeVisible();
+    await expect(composer(page)).toBeInViewport({ ratio: 1 });
+    await expect(ui(page).getByRole('button', { name: 'Configure', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(off).toBeInViewport({ ratio: 1 });
+    expect((await log(page).boundingBox()).height).toBeGreaterThanOrEqual(80);
+    await page.screenshot({ path: info.outputPath('short-active-setup.png') });
+    expect(fixture.errors).toEqual([]);
   } finally { await page.close(); await fixture.close(); }
 });
 

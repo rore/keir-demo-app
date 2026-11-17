@@ -32,7 +32,7 @@ async function seed(page, other, fixture) {
   const { origin, db, metadata } = fixture;
   await page.goto(origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
   const second = await api(other, origin, 'session', { userId: 'maya' });
   const first = await (await page.request.get(origin + '/api/session')).json();
   expect(second.user.id).toBe(first.user.id);

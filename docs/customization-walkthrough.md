@@ -4,7 +4,7 @@ Maya wants every completed task in **The spring collection** to leave her a new 
 
 The screenshots show the app with fictional, disposable data. Authoring responses are scripted using the [offline fixture](../tests/README.md#offline-configured-ai-fixture); compilation, simulation, approval, activation and the native task writes are real. No paid AI requests were made for this tour.
 
-The screenshots show the earlier header and full-summary default, before the single **Send** action and current composition. Current Studio shows chat with a read-only behavior overview on wide screens. **Proposed behavior** opens full Summary at any width. The instructions below describe current controls; saved behavior, example evidence and separate approval/activation decisions are unchanged.
+Studio starts with chat. **Proposed behavior** opens full Summary at any width without a permanent sidebar taking conversation space. Example checks, approval and turning the rule on remain separate steps.
 
 To try it yourself, [run Daymark locally](../README.md#run-locally), have **Java 21** available, choose **Maya**, and [configure an AI provider](ai-authoring.md#configure-a-provider). Provider requests can incur charges, and the conversation may differ. Use a fresh demo workspace and add a second project, such as **Other project**, to try the nonmatching behavior too.
 
@@ -20,9 +20,11 @@ The assistant asks whether this should apply only to that project. Confirm the b
 
 *The conversation establishes when to act, what to create, and where it belongs.*
 
+After the proposal is ready, choose **Rename**, enter **Create “Follow up” tasks**, and **Save**. This gives the customization the name used below; it does not change or approve the rule.
+
 ## 2. Read the proposed behavior
 
-Choose **Proposed behavior** in the subject toolbar or **See proposed change** in the conversation to open full Summary. On wide screens, **Read full Summary** also opens it from the overview beside chat. The heading above the conversation is its saved name. Read **When**, **Only when** and **Then** in Summary: a completed task in **The spring collection** should create **Follow up** in that project. Other projects should create nothing. The original completion stays unchanged.
+Choose **Proposed behavior** in the subject toolbar or **See proposed change** in the conversation to open full Summary. The heading above the conversation is its saved name. Read **When**, **Only when** and **Then** in Summary: a completed task in **The spring collection** should create **Follow up** in that project. Other projects should create nothing. The original completion stays unchanged.
 
 ![Summary of the proposed follow-up rule, marked Proposed change · Not on, with View simulation.](images/walkthrough/02-summary.png)
 

@@ -529,7 +529,7 @@ test('a held exact-source review cannot enter a different owner or a re-entered 
     holdOldWorkspace = false;
     await page.getByRole('button', { name: 'Continue as Leo' }).click();
     await switchPerson(page, 'maya');
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya'); await tasks(page);
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya'); await tasks(page);
     await page.getByRole('button', { name: 'Gather material references', exact: true }).click(); await open(page);
     release(); await finished; await page.unroute(sourceRoute);
     expect((await savedLifecycle(page, demo.origin)).approved).toBe(false);

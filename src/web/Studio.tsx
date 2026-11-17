@@ -2307,20 +2307,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           </div>
           <div ref={chatEnd} />
         </div>
-        {showSavedBehavior && trusted && <aside className="rs-behavior-aside" hidden={summaryOpen || reviewOpen} aria-label="Proposed behavior overview">
-          <p className="rs-kicker">{selectedDraft ? "What is on now" : state?.approved ? "Approved · Not on yet" : "Proposed behavior · Not on"}</p>
-          {displayedRule?.complete && <h2>{displayedRule.title}</h2>}
-          {displayedRule?.scope && <p>{displayedRule.scope}</p>}
-          {trigger && <dl className="rs-aside-facts">
-            <div><dt>When</dt><dd>{displayedRule?.when ?? (beforeCreate ? "Before a new task is saved." : trigger === "tasks added" ? "A task is added." : "A task is completed.")}</dd></div>
-            <div><dt>{beforeCreate ? "Stops saving when" : "Only when"}</dt><dd>{displayedRule?.onlyWhen ?? "The saved conditions can’t be summarized here."}</dd></div>
-            <div><dt>{beforeCreate ? "Message" : "Then"}</dt><dd>{displayedRule?.then ?? "Check the full Summary and exact rule for its requirements."}</dd></div>
-          </dl>}
-          {displayedRule?.unchanged && <p className="muted">{displayedRule.unchanged}</p>}
-          {displayedRule?.timing && <p className="muted">{displayedRule.timing}</p>}
-          {summaryPending ? <p role="status">Reading the saved rule…</p> : !fullWorkflowSummary && <p>A full summary of this rule is unavailable. Check the full Summary and exact examples before deciding.</p>}
-          <button onClick={openSummary}>Read full Summary →</button>
-        </aside>}
         </div>
         {newMessages && <button className="rs-new-messages" onClick={() => {
           if (documentReturn.current) closeDocument();

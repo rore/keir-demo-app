@@ -96,7 +96,7 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     const savedItem = await seedApprovedItem(page, fixture), calls = recordRequests(page);
     expect(fixture.requests).toEqual([]);
     await openStudio(page, savedItem.extensionId);
@@ -174,7 +174,7 @@ test('one item shows its saved discussions and owner switching does not leak rec
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     const savedItem = await seedApprovedItem(page, fixture);
     const oldConversationId = await createDiscussion(page, savedItem.extensionId, savedItem.state, 'Earlier discussion for this saved customization.');
     const currentConversationId = await createDiscussion(page, savedItem.extensionId, savedItem.state, 'Current saved discussion for this customization.');
@@ -191,7 +191,7 @@ test('one item shows its saved discussions and owner switching does not leak rec
     await expect(studio(page).getByLabel('Saved authoring conversation', { exact: true })).toHaveCount(0);
 
     await switchPerson(page, 'sam');
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('sam');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
     await navigate(page, 'Customizations');
     await page.getByRole('button', { name: 'New customization', exact: true }).click();
     await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('');
@@ -201,7 +201,7 @@ test('one item shows its saved discussions and owner switching does not leak rec
     expect(fixture.requests).toEqual(providerCalls);
 
     await switchPerson(page, 'maya');
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     expect(await api(page, `extensions/${savedItem.extensionId}`)).toEqual(savedItem.state);
     expect((await api(page, `authoring?extensionId=${encodeURIComponent(savedItem.extensionId)}`)).conversations.map(item => item.id)).toContain(oldConversationId);
     expect((await api(page, `authoring/conversations/${encodeURIComponent(oldConversationId)}`)).status).toBe('AWAITING_USER');
@@ -214,7 +214,7 @@ test('a revised customization opens its earlier discussion and continues in one 
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
-    await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+    await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     const { extensionId, state, proof } = await seedApprovedItem(page, fixture);
     const text = 'Earlier discussion for this saved customization.';
     const conversationId = await createDiscussion(page, extensionId, state, text);

@@ -18,7 +18,7 @@ async function read(page, path) {
 async function enter(page, fixture) {
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-  await expect(page.getByLabel('Demo person', { exact: true })).toHaveValue('maya');
+  await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
 }
 async function openItem(page, id) {
   const mobile = page.getByLabel('Destination', { exact: true });
