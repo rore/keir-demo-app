@@ -1,0 +1,45 @@
+[
+  {
+    "name": "request-review",
+    "entrypoint": "TaskCreated",
+    "steps": [
+      { "id": "task", "call": "tasks.get", "args": { "taskId": { "cel": "input.taskId" } } },
+      { "id": "root", "let": { "cel": "!has(task.parentTaskId)" } },
+      { "id": "child", "call": "tasks.create", "when": "root", "args": {
+        "projectId": { "cel": "task.projectId" },
+        "parentTaskId": { "cel": "task.id" },
+        "assigneeId": { "literal": "leo", "type": "UserId" },
+        "title": { "literal": "Review deliverable" }
+      } }
+    ],
+    "return": { "record": { "status": { "cel": "root ? \"CREATED\" : \"NO_OP\"" } } }
+  },
+  {
+    "name": "gate-deliverable-completion",
+    "entrypoint": "TaskBeforeComplete",
+    "steps": [
+      { "id": "children", "call": "tasks.childrenSummary", "args": {
+        "parentTaskId": { "cel": "input.taskId" },
+        "originEventId": { "cel": "input.creationEventId" }
+      } },
+      { "id": "ready", "let": { "cel": "children.exists && !children.anyIncomplete" } }
+    ],
+    "return": { "record": {
+      "decision": { "cel": "ready ? \"ALLOW\" : \"DENY\"" },
+      "message": { "cel": "ready ? \"\" : \"Complete the linked review first.\"" }
+    } }
+  },
+  {
+    "name": "route-intake",
+    "entrypoint": "TaskCreated",
+    "steps": [
+      { "id": "task", "call": "tasks.get", "args": { "taskId": { "cel": "input.taskId" } } },
+      { "id": "eligible", "let": { "cel": "!has(task.parentTaskId) && task.priority == \"high\"" } },
+      { "id": "patch", "call": "tasks.update", "when": "eligible", "args": {
+        "assigneeId": { "literal": "leo", "type": "UserId" },
+        "dueAt": { "cel": "input.occurredAt + duration(\"86400s\")" }
+      } }
+    ],
+    "return": { "record": { "status": { "cel": "eligible ? \"UPDATED\" : \"NO_OP\"" } } }
+  }
+]

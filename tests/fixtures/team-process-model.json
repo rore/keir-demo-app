@@ -1,0 +1,71 @@
+{
+  "format": "keir-dcm/4",
+  "domain": { "id": "daymark.team-proof", "version": "1" },
+  "hostKey": { "source": "requestKey", "type": "DaymarkAttempt" },
+  "types": {
+    "TaskId": { "kind": "nominal", "base": "String" },
+    "ProjectId": { "kind": "nominal", "base": "String" },
+    "UserId": { "kind": "nominal", "base": "String" },
+    "EventId": { "kind": "nominal", "base": "String" },
+    "Priority": { "kind": "enum", "values": ["normal", "high"] },
+    "TaskStatus": { "kind": "enum", "values": ["OPEN", "COMPLETED"] },
+    "Decision": { "kind": "enum", "values": ["ALLOW", "DENY"] },
+    "Task": { "kind": "record", "fields": {
+      "id": "TaskId", "projectId": "ProjectId", "priority": "Priority", "status": "TaskStatus",
+      "parentTaskId": { "type": "TaskId", "optional": true },
+      "assigneeId": { "type": "UserId", "optional": true },
+      "dueAt": { "type": "Timestamp", "optional": true }
+    } },
+    "TaskReference": { "kind": "record", "fields": { "id": "TaskId" } },
+    "ChildSummary": { "kind": "record", "fields": { "exists": "Boolean", "anyIncomplete": "Boolean" } },
+    "TaskCreatedInput": { "kind": "record", "fields": { "taskId": "TaskId", "occurredAt": "Timestamp" } },
+    "TaskCompletionInput": { "kind": "record", "fields": { "taskId": "TaskId", "creationEventId": "EventId" } },
+    "TaskDecision": { "kind": "record", "fields": { "decision": "Decision", "message": "String" } },
+    "TaskReport": { "kind": "record", "fields": { "status": "String" } }
+  },
+  "entrypoints": {
+    "TaskCreated": {
+      "trigger": "EVENT", "placement": "AFTER_COMMIT", "input": "TaskCreatedInput", "output": "TaskReport",
+      "consumer": { "id": "daymark.task.created", "version": "1", "kind": "EVENT_REPORT" },
+      "event": { "idType": "EventId", "sourceType": "TaskId" }
+    },
+    "TaskBeforeComplete": {
+      "trigger": "REQUEST", "placement": "BEFORE_COMMIT", "input": "TaskCompletionInput", "output": "TaskDecision",
+      "consumer": { "id": "daymark.task.beforeComplete", "version": "1", "kind": "DECISION" },
+      "event": { "idType": "EventId", "sourceType": "TaskId" },
+      "effectGrant": 0
+    }
+  },
+  "capabilities": {
+    "tasks.get": {
+      "version": "1", "effect": "READ", "result": "Task", "errors": ["ACCESS_DENIED", "TASK_NOT_FOUND"],
+      "parameters": { "actorId": { "type": "UserId", "binding": "host" }, "taskId": { "type": "TaskId", "binding": "agent" } }
+    },
+    "tasks.childrenSummary": {
+      "version": "1", "effect": "READ", "result": "ChildSummary", "errors": ["ACCESS_DENIED", "TASK_NOT_FOUND"],
+      "parameters": {
+        "actorId": { "type": "UserId", "binding": "host" },
+        "parentTaskId": { "type": "TaskId", "binding": "agent" },
+        "originEventId": { "type": "EventId", "binding": "agent", "optional": true }
+      }
+    },
+    "tasks.create": {
+      "version": "1", "effect": "WRITE", "result": "TaskReference", "errors": ["ACCESS_DENIED", "TASK_INVALID"],
+      "parameters": {
+        "actorId": { "type": "UserId", "binding": "host" },
+        "projectId": { "type": "ProjectId", "binding": "agent" },
+        "title": { "type": "String", "binding": "agent" },
+        "parentTaskId": { "type": "TaskId", "binding": "agent", "optional": true },
+        "assigneeId": { "type": "UserId", "binding": "agent", "optional": true }
+      }
+    },
+    "tasks.update": {
+      "version": "1", "effect": "WRITE", "result": "TaskReference", "errors": ["ACCESS_DENIED", "TASK_INVALID", "TASK_NOT_FOUND"],
+      "parameters": {
+        "actorId": { "type": "UserId", "binding": "host" },
+        "assigneeId": { "type": "UserId", "binding": "agent", "optional": true },
+        "dueAt": { "type": "Timestamp", "binding": "agent", "optional": true }
+      }
+    }
+  }
+}
