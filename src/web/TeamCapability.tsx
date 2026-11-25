@@ -8,7 +8,7 @@ type Example = { id: string; name: string; fault: string; actors: { id: string; 
   initialTasks: { ref: string; actor: string; title: string; priority?: string }[];
   actions: { op: string; actor?: string; ref: string; title?: string; priority?: string; expect: Record<string, string | number> }[] };
 type Agreement = { summary: string; claims: { hook: string; outcomes: { id: string; when: Record<string, unknown>; expect: Record<string, unknown> }[] }[] };
-type Revision = { revisionId: string; parameters: Parameters | null; agreement?: Agreement; manifest: { executableIdentity: string }; revoked: boolean };
+type Revision = { revisionId: string; parameters: Parameters | null; agreement?: Agreement; revoked: boolean };
 type Discussion = { availability: { available: boolean; code?: string | null }; conversation: { version: number; runId: string; status: string;
   agreement: Agreement | null; confirmRejected?: boolean; checkUnavailable?: boolean; messages: { id: string; role: string; text: string }[] } | null };
 type ChoiceInput = { operationId: string; expectedDraftVersion: number; revisionId: string; evidenceId: string; cases: Example[];
@@ -16,8 +16,8 @@ type ChoiceInput = { operationId: string; expectedDraftVersion: number; revision
 type ControlInput = { operationId: string; targetRevisionId: string; expectedSelectionRevisionId: string | null; expectedSelectionGeneration: number };
 type ActionKind = "approvals" | "activations" | "deactivations" | "revocations";
 type ActionInput = ChoiceInput | ControlInput;
-type Target = { revisionId: string; revokedAt: number | null };
-type RevisionPage = { items: (Target & { revoked: boolean; current: boolean; draft: boolean; openRoots: number; pendingEffects: number })[]; next: string | null };
+type ListedVersion = { revisionId: string; revoked: boolean; current: boolean; draft: boolean; openRoots: number; pendingEffects: number };
+type RevisionPage = { items: ListedVersion[]; next: string | null };
 type Receipt = { id: string; kind: ActionKind; operationId: string; actorId: string; revisionId: string;
   evidenceId?: string; approvalId?: string; generation?: number; input?: ActionInput & { kind: string } };
 type State = { draftVersion: number; draft: Revision | null; selected: Revision | null; evidence: { id: string; caseDigest: string } | null; examples: Example[];
@@ -30,12 +30,7 @@ type Request = <T>(path: string, method?: string, body?: object, signal?: AbortS
 const facts: Record<string, Record<string, string>> = {
   status: { open: "The task stays open", completed: "The task is complete" },
   children: { 0: "No linked task is added", 1: "One linked task is added" },
-  outcome: { COMPLETED: "The rule finished", FAILED: "The rule failed", UNCERTAIN: "The rule outcome is uncertain",
-    UNKNOWN: "No rule outcome was returned", NONE: "No rule outcome is recorded" },
-  receipt: { CONFIRMED: "The linked task was saved", NONE: "No linked task is confirmed" },
   decision: { ALLOW: "Completion is allowed", DENY: "The rule stops completion", BLOCKED: "Daymark blocks this attempt" },
-  effect: { CONFIRMED: "The linked task is confirmed saved", NONE: "The closed attempt saved no linked task",
-    UNRESOLVED: "The write has not been reconciled" },
 };
 const fact = (key: string, value: unknown) => facts[key]?.[String(value)] ?? "No supported observation was recorded";
 const identity = (value: unknown): string => JSON.stringify(value, (_, v) => v && typeof v === "object" && !Array.isArray(v)
@@ -57,8 +52,8 @@ function replyText(text: string) {
     : <Block key={i}>{lines.map((line, j) => <li key={j}>{inline(line)}</li>)}</Block>);
 }
 const actionMessages = { approvals: "Draft approved. It’s not on yet.", activations: "Turned on for new tasks.",
-  deactivations: "Turned off for new tasks. Started work keeps its existing rule.",
-  revocations: "Emergency revocation recorded for the exact revision. Saved work was not undone." };
+  deactivations: "Turned off for new tasks. Existing tasks keep the rule they started with.",
+  revocations: "The chosen version was permanently revoked. Saved work was not undone." };
 
 export default function TeamCapability({ project, request, scopeControl, back, backToTasks, operationScope }: {
   project: { id: string; name: string }; request: Request; scopeControl: ReactNode;
@@ -67,7 +62,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const [state, setState] = useState<State | null>(null), [members, setMembers] = useState<{ id: string; name: string }[]>([]);
   const [discussion, setDiscussion] = useState<Discussion | null>(null), [text, setText] = useState("");
   const [cases, setCases] = useState<Example[]>([]), [evidence, setEvidence] = useState<Evidence | null>(null);
-  const [source, setSource] = useState<unknown>(null), [error, setError] = useState(""), [busy, setBusy] = useState("");
+  const [error, setError] = useState(""), [busy, setBusy] = useState("");
   const [uncertain, setUncertain] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false), [setupNotice, setSetupNotice] = useState("");
   const setupGeneration = useRef(0), setupInvoker = useRef<HTMLElement>(null);
@@ -85,9 +80,9 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     } catch { return null; }
   });
   const [choiceReceipt, setChoiceReceipt] = useState<Receipt | null>(null), [choiceNotice, setChoiceNotice] = useState("");
-  const [choiceTarget, setChoiceTarget] = useState<Target | null>(null);
   const [revisionPage, setRevisionPage] = useState<RevisionPage | null>(null), [targetRevisionId, setTargetRevisionId] = useState("");
-  const [confirmation, setConfirmation] = useState<{ kind: "deactivations" | "revocations"; body: ControlInput } | null>(null);
+  const [versionOffset, setVersionOffset] = useState(0);
+  const [confirmation, setConfirmation] = useState<{ kind: "deactivations" | "revocations"; body: ControlInput; targetLabel?: string; counts?: string } | null>(null);
   const lifetime = useRef(new AbortController()), serial = useRef(0), edits = useRef(0);
   const heading = useRef<HTMLHeadingElement>(null), stateRef = useRef(state); stateRef.current = state;
   const latestReply = useRef<HTMLDivElement>(null), focusReply = useRef(false), positioned = useRef(false);
@@ -139,8 +134,8 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     if (lifetime.current.signal.aborted || (e as Error).name === "AbortError") return;
     const status = (e as { status?: number }).status;
     if ([401, 403, 404].includes(status ?? 0)) {
-      serial.current++; setState(null); setDiscussion(null); setEvidence(null); setSource(null); setCases([]); setMembers([]); setChoiceReceipt(null);
-      setRevisionPage(null); setTargetRevisionId(""); setConfirmation(null); setChoiceTarget(null); setSetupOpen(false); setSetupNotice("");
+      serial.current++; setState(null); setDiscussion(null); setEvidence(null); setCases([]); setMembers([]); setChoiceReceipt(null);
+      setRevisionPage(null); setTargetRevisionId(""); setConfirmation(null); setSetupOpen(false); setSetupNotice("");
     }
     setError(e instanceof Error ? e.message : "Saved Team state could not be read.");
   }
@@ -153,7 +148,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       const thread = await request<Discussion>(chat, "GET", undefined, lifetime.current.signal);
       if (read !== serial.current || lifetime.current.signal.aborted) return;
       if (initial || next.draft?.revisionId !== stateRef.current?.draft?.revisionId) {
-        setCases(next.examples); edits.current++; setSource(null); setEvidence(null);
+        setCases(next.examples); edits.current++; setEvidence(null);
       }
       setState(next); setMembers(access.members); setDiscussion(thread);
       await readRevisions(undefined, read);
@@ -165,7 +160,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     try {
       const page = await request<RevisionPage>(`${base}/revisions${after ? "?after=" + encodeURIComponent(after) : ""}`, "GET", undefined, lifetime.current.signal);
       if (read !== serial.current || lifetime.current.signal.aborted) return;
-      setRevisionPage(page); setTargetRevisionId("");
+      setRevisionPage(page); setTargetRevisionId(""); setVersionOffset(after ? versionOffset + (revisionPage?.items.length ?? 0) : 0);
     } catch (e) { if (read === serial.current) { setRevisionPage(null); failure(e); } }
   }
   async function readEvidence(id: string, current = state!, read = ++serial.current, restoreCases = false) {
@@ -209,7 +204,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     if (action === "confirm") {
       rememberPreparation(conversation!.runId);
       preparedFrom.current = { revisionId: state.draft?.revisionId ?? null };
-      setChoiceReceipt(null); setChoiceTarget(null); setChoiceNotice("");
+      setChoiceReceipt(null); setChoiceNotice("");
     }
     if (action === "turn") focusReply.current = true;
     setBusy(action); setError("");
@@ -234,7 +229,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     if (!state || busy || uncertain || pendingChoice) return;
     const read = ++serial.current, edit = edits.current, revisionId = state.draft?.revisionId;
     const submitted = { expectedDraftVersion: state.draftVersion, revisionId, cases: structuredClone(cases) };
-    setBusy("simulations"); setError(""); setSource(null);
+    setBusy("simulations"); setError("");
     try {
       const next = await request<State & { evidenceId?: string }>(`${base}/simulations`, "POST", submitted, lifetime.current.signal);
       if (read !== serial.current || lifetime.current.signal.aborted) return;
@@ -258,18 +253,18 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     const read = ++serial.current;
     setBusy("readback"); setError("");
     try {
-      const result = await request<{ receipt: Receipt | null; target?: Target }>(`${base}/operations/${pendingChoice.body.operationId}`, "GET", undefined, lifetime.current.signal);
+      const result = await request<{ receipt: Receipt | null }>(`${base}/operations/${pendingChoice.body.operationId}`, "GET", undefined, lifetime.current.signal);
       if (read !== serial.current || lifetime.current.signal.aborted) return;
       if (!result.receipt) {
         if (pendingChoice.rejected) {
-          rememberChoice(null); setChoiceNotice("The server rejected this action and no receipt is saved. Nothing was retried. Review current state before making a new choice.");
+          rememberChoice(null); setChoiceNotice("Daymark rejected the action and found no saved result. Nothing was retried. Check what’s in use before making a new choice.");
           await refresh();
-        } else setChoiceNotice("No receipt was found. That does not prove the original action never committed. No action was retried.");
+        } else setChoiceNotice("Daymark couldn’t find a saved result. The action may still have happened. Nothing was retried.");
         return;
       }
       if (result.receipt.operationId !== pendingChoice.body.operationId || identity(result.receipt.input) !== identity({ kind: pendingChoice.kind, ...pendingChoice.body }))
-        throw new Error("The saved receipt does not match this action. Nothing was retried.");
-      setChoiceReceipt(result.receipt); setChoiceTarget(result.target ?? null); setChoiceNotice(""); rememberChoice(null);
+        throw new Error("The saved result does not match this action. Nothing was retried.");
+      setChoiceReceipt(result.receipt); setChoiceNotice(""); rememberChoice(null);
       await refresh();
     } catch (e) { if (read === serial.current) failure(e); }
     finally { if (!lifetime.current.signal.aborted) setBusy(""); }
@@ -284,34 +279,41 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   }
   async function postChoice(kind: ActionKind, body: ActionInput) {
     const read = ++serial.current;
-    setBusy(kind); setError(""); setChoiceReceipt(null); setChoiceTarget(null); setChoiceNotice(""); rememberChoice({ kind, body });
+    setBusy(kind); setError(""); setChoiceReceipt(null); setChoiceNotice(""); rememberChoice({ kind, body });
     try {
-      const result = await request<{ receipt: Receipt; target?: Target }>(`${base}/${kind}`, "POST", body, lifetime.current.signal);
+      const result = await request<{ receipt: Receipt }>(`${base}/${kind}`, "POST", body, lifetime.current.signal);
       if (read !== serial.current || lifetime.current.signal.aborted) return;
       if (result.receipt.operationId !== body.operationId || identity(result.receipt.input) !== identity({ kind, ...body })) throw new Error("The reply did not identify this action.");
-      setChoiceReceipt(result.receipt); setChoiceTarget(result.target ?? null); rememberChoice(null);
+      setChoiceReceipt(result.receipt); rememberChoice(null);
       if (kind !== "revocations") choiceFocus.current = true;
       await refresh();
     } catch (e) {
       if (read === serial.current) {
         failure(e);
         if ((e as { status?: number }).status === 409) rememberChoice({ kind, body, rejected: true });
-        setChoiceNotice("The action reply was not confirmed. Check its saved receipt; do not resubmit.");
+        setChoiceNotice("The action reply was not confirmed. Check its saved result; do not submit it again.");
       }
     } finally { if (!lifetime.current.signal.aborted) setBusy(""); }
   }
+  const versionLabel = (item: ListedVersion, index: number) => `Version ${versionOffset + index + 1} in this list · ${
+    item.current ? "In use for new tasks" : item.draft ? "Latest saved draft" : "Earlier version"}${item.revoked ? " · Revoked" : ""}`;
+  const versionCounts = (item: ListedVersion) => `Open original tasks: ${item.openRoots}. Unfinished rule actions: ${item.pendingEffects}.`;
   function confirmControl(kind: "deactivations" | "revocations", invoker: HTMLButtonElement) {
     if (!state?.selection.available || state.selection.generation === null || busy || pendingChoice || confirmation) return;
     const target = kind === "deactivations" ? state.selection.revisionId : targetRevisionId;
-    if (!target || kind === "revocations" && !revisionPage?.items.some(r => r.revisionId === target && !r.revoked)) return;
+    const index = revisionPage?.items.findIndex(r => r.revisionId === target) ?? -1;
+    const version = revisionPage?.items[index];
+    if (!target || kind === "revocations" && (!version || version.revoked)) return;
     controlInvoker.current = invoker;
     setConfirmation({ kind, body: { operationId: crypto.randomUUID(), targetRevisionId: target,
-      expectedSelectionRevisionId: state.selection.revisionId, expectedSelectionGeneration: state.selection.generation } });
+      expectedSelectionRevisionId: state.selection.revisionId, expectedSelectionGeneration: state.selection.generation },
+      ...(kind === "revocations" && version && { targetLabel: versionLabel(version, index), counts: versionCounts(version) }) });
   }
   const matching = evidence && evidence.revisionId === state?.draft?.revisionId && identity(evidence.cases) === identity(cases);
-  const failedCase = evidence?.report.cases.find(c => c.events.some(event => event.mismatches.length));
+  const normalExamples = evidence?.report.cases.filter(c => evidence.cases.find(e => e.id === c.id)?.fault === "NONE");
+  const failedCase = matching ? normalExamples?.find(c => c.events.some(event => event.mismatches.length)) : undefined;
   const failedStep = failedCase?.events.findIndex(event => event.mismatches.length) ?? -1;
-  const firstMismatch = failedCase?.events[failedStep]?.mismatches[0];
+  const failedEvent = failedCase?.events[failedStep];
   const choiceEligible = !!matching && state?.evidence?.id === evidence?.id && state?.eligibility.eligible;
   const lifecycleBusy = !!pendingChoice || !!confirmation || authoring || ["turn", "confirm", "cancel", "approvals", "activations", "deactivations", "revocations", "readback"].includes(busy);
   const selectedAvailable = state?.selected && !state.selected.revoked && state.selected.revisionId === state.selection.revisionId;
@@ -328,14 +330,15 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     if (result.decision === "BLOCKED") return "Daymark could not complete the task.";
     if (typeof result.childTitle === "string" && result.childTitle) return `Adds “${result.childTitle}” for ${name(result.childAssigneeId)}.`;
     if (typeof result.children === "number") return `${fact("children", result.children)}.`;
-    if (typeof result.effect === "string") return `${fact("effect", result.effect)}.`;
     return typeof result.status === "string" ? `${fact("status", result.status)}.` : "No result available.";
   };
   const joined = (values: string[]) => new Intl.ListFormat("en", { type: "disjunction" }).format(values);
   const situation = (when: Record<string, unknown>, hook: string) => {
-    const facts = Object.entries(when).map(([key, value]) => {
-      const names = joined((Array.isArray(value) ? value : [value]).map(v => v === "absent" ? "missing" : String(v)));
-      return key === "priority" ? `priority is ${names}` : key === "childStatus" ? `the linked task is ${names}` : `the main task is ${names}`;
+    const facts = Object.entries(when).flatMap(([key, value]) => {
+      const values = Array.isArray(value) ? value : [value];
+      if (key === "priority" && ["low", "normal", "high"].every(priority => values.includes(priority))) return [];
+      const names = joined(values.map(v => v === "absent" ? "missing" : String(v)));
+      return [key === "priority" ? `priority is ${names}` : key === "childStatus" ? `the linked task is ${names}` : `the main task is ${names}`];
     });
     return facts.length ? `When ${facts.join(" and ")}` : hook === "TaskCreated" ? "For every new main task" : "For every main task checked at completion";
   };
@@ -366,17 +369,23 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     if (action.op === "complete") return `${person} ${business ? "finishes" : "tries to finish"} ${root === action.ref ? task : child ? `“${child}”` : `the linked task for ${task}`}`;
     return `${person} checks whether a linked task was saved for ${task}`;
   }
-  const observation = (op: string, result: Record<string, unknown>) => op === "reconcile" ? `${fact("effect", result.effect)}.`
-    : op === "create" ? `${fact("status", result.status)}.` : op === "dispatch" && result.outcome !== "COMPLETED"
-      ? `${fact("outcome", result.outcome)}. ${fact("receipt", result.receipt)}.` : describe(result);
-  const normalExamples = evidence?.report.cases.filter(c => c.passed && evidence.cases.find(e => e.id === c.id)?.fault === "NONE");
+  const observation = (op: string, result: Record<string, unknown>) => op === "create" ? `${fact("status", result.status)}.`
+    : op === "dispatch" && result.outcome !== "COMPLETED" ? "Daymark couldn’t confirm the expected task result." : describe(result);
   const hasChild = (c: Evidence["report"]["cases"][number]) => c.events.some(e => e.action === "dispatch"
     && e.observed.receipt === "CONFIRMED" && !!e.observed.childTitle);
   const preview = matching && evidence?.report.passed && state?.eligibility.eligible
     ? normalExamples?.find(c => hasChild(c) && c.events.some(e => e.action === "complete" && /\.(child|review)$/.test(e.ref) && e.observed.decision === "ALLOW"))
-      ?? normalExamples?.find(hasChild) : null;
+      ?? normalExamples?.find(hasChild)
+      ?? normalExamples?.[0] : null;
   const currentDraftOn = !!state?.draft && state.draft.revisionId === state.selection.revisionId;
   const showActive = currentDraftOn && !state?.draft?.revoked;
+  const approvalReason = !state?.evidence
+    ? conversation?.checkUnavailable ? "The draft was saved, but its examples couldn’t be checked." : "Check the saved draft before approving it."
+    : !matching ? "The current check couldn’t be read. Check the saved draft again before approving it."
+      : failedCase ? `The draft behaved differently in the example “${failedCase.name}”. Approval is blocked.`
+        : !evidence?.report.passed ? "Daymark couldn’t verify that the rule handles an interrupted attempt safely. Approval is blocked. Review the requested behavior or check again."
+          : !state.eligibility.eligible ? "The examples matched, but they didn’t verify all the required behavior or current project access. Approval is blocked. Check who’s involved or revise the rule and check again."
+            : "These are not the latest saved checks. Read the saved state before approving.";
   const recoveryNeeded = state && (pendingChoice || uncertain || preparationUnknown);
   function closeSetup(unconfirmed: boolean) {
     const generation = ++setupGeneration.current;
@@ -471,17 +480,14 @@ export default function TeamCapability({ project, request, scopeControl, back, b
                <p role="status"><strong>{state.draft.revoked ? "Revoked" : showActive ? "On for new tasks" : state.approval ? "Approved · Not on yet" : "Draft · Not on"}</strong>
                  {!showActive && <><br />{currentUse}</>}</p>
                {state.draft.revoked && <p>This saved draft is revoked. It cannot run, be approved or be activated. Prepare a fresh revision to replace it.</p>}
-               {!state.draft.revoked && !choiceEligible && <p>{!state.evidence && conversation?.checkUnavailable
-                 ? "The draft was saved, but its examples couldn’t be checked."
-                 : firstMismatch ? `The draft behaved differently in the example “${failedCase!.name}”. Approval is blocked.`
-                   : state.eligibility.reason || "Reading the saved examples."}</p>}
+                {!state.draft.revoked && !choiceEligible && <p>{approvalReason}</p>}
               {showActive && <button className="rs-primary" onClick={backToTasks}>Back to project Tasks</button>}
               {!matching || !choiceEligible ? <button className={showActive ? undefined : "rs-primary"} disabled={!!busy || uncertain || lifecycleBusy || state.draft.revoked}
                onClick={() => void run()}>{busy === "simulations" ? "Checking examples…" : "Check examples"}</button>
                : !state.approval ? <button className="rs-primary" disabled={!!busy || uncertain || lifecycleBusy}
                  onClick={() => void choose("approvals")}>Approve this draft</button>
                 : state.draft.revisionId !== state.selection.revisionId && <>
-                 <p>{selectedAvailable ? "This replaces the customization in use for new tasks. " : ""}Started work keeps its rule.</p>
+                  <p>{selectedAvailable ? "This replaces the customization in use for new tasks. " : ""}Existing tasks keep the rule they started with.</p>
                  <button className="rs-primary" disabled={!state.selection.available || !!busy || uncertain || lifecycleBusy}
                    onClick={() => void choose("activations")}>Turn on for new tasks</button>
                 </>}
@@ -496,18 +502,14 @@ export default function TeamCapability({ project, request, scopeControl, back, b
                     || event.action === "complete" && event.observed.decision === "ALLOW")
                   && <li key={i}>{actionLabel(preview, i, true)}.</li>)}</ol>
               </article></details>}
-              <details open={firstMismatch ? true : undefined}><summary>Details · all {evidence.report.cases.length} checks</summary>
-               {evidence.report.cases.map(c => <article key={c.id} className="rs-example">
-                 <h4>{c.name}</h4>
-                  {evidence.cases.find(example => example.id === c.id)?.fault === "BEFORE_WRITE" && <p>Example setup: The write is interrupted before it saves.</p>}
-                  {evidence.cases.find(example => example.id === c.id)?.fault === "LOST_REPLY" && <p>Example setup: The task is saved but the reply is lost.</p>}
-                   <ol>{c.events.map((event, i) => <li key={i}><strong>{actionLabel(c, i)}</strong>
-                    {event.mismatches.length ? <><p>Expected: {observation(event.action, event.expected)}</p><p>In the example: {observation(event.action, event.observed)}</p></>
-                      : <p>{observation(event.action, event.observed)}</p>}</li>)}</ol>
-                 {!c.passed && <p>This example needs a correction before approval.</p>}
-               </article>)}
-                <details><summary>Exact example results</summary><pre>{JSON.stringify(evidence, null, 2)}</pre></details>
-              </details>
+               {failedCase && failedEvent && <article className="rs-example" aria-label="What didn’t match">
+                 <h4>What didn’t match</h4>
+                 <p>{actionLabel(failedCase, failedStep)}</p>
+                 <p>Expected: {observation(failedEvent.action, failedEvent.expected)}</p>
+                 <p>In the example: {observation(failedEvent.action, failedEvent.observed)}</p>
+                 {observation(failedEvent.action, failedEvent.expected) === observation(failedEvent.action, failedEvent.observed)
+                   && <p>Daymark couldn’t verify the details of that result.</p>}
+               </article>}
            </section>}
           </>}
             {state.draft && !conversation?.agreement && <details className="team-more" open={authoring ? true : undefined}>
@@ -516,7 +518,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
             {state.selection.available && selectedAvailable && <section className="team-control" aria-label="Stop current use">
                <h3>Current customization</h3>
                {!showActive && <p>{currentUse}</p>}
-               <p>Turn this off to stop using it on new tasks. Started work keeps its existing rule.</p>
+                <p>Turn this off to stop using it on new tasks. Existing tasks keep the rule they started with.</p>
                <button disabled={!!busy || lifecycleBusy}
                   onClick={e => confirmControl("deactivations", e.currentTarget)}>Turn off for new tasks</button>
              </section>}
@@ -524,43 +526,26 @@ export default function TeamCapability({ project, request, scopeControl, back, b
              {choiceReceipt && !pendingChoice && !choiceNotice && <section aria-label="Saved Team action">
                <p role="status">{choiceReceipt.kind === "activations" && state.selection.activation?.id !== choiceReceipt.id
                  ? "That activation is historical. Current use has changed." : actionMessages[choiceReceipt.kind]}</p>
-               <details><summary>Saved action details</summary>
-                 {choiceTarget && <p>Target: {choiceTarget.revisionId} · {choiceTarget.revokedAt === null ? "Not revoked" : "Revoked"}</p>}
-                 <pre>{JSON.stringify(choiceReceipt, null, 2)}</pre></details>
-             </section>}
-             {(!revisionPage || revisionPage.items.length > 0) && <details className="team-control"><summary>Emergency revocation</summary>
-               <p>Project admins only. Revoke a specific version if it must stop affecting unfinished work. To stop using it only for new tasks, turn it off instead.</p>
-               <p>This blocks future effects and completion of unfinished main tasks using that version. Linked reviews can still be completed. It doesn’t undo saved work or change other versions. Revocation is permanent.</p>
-               <p>Older versions can still affect tasks. The counts below are advisory, and unfinished effects can belong to completed tasks.</p>
-              {!revisionPage ? <><p>The revision list is unavailable.</p><button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>Read revision list</button></> : <>
-                <label htmlFor="team-revocation-target">Exact revision to revoke</label>
-                <select id="team-revocation-target" value={targetRevisionId} disabled={!!busy || lifecycleBusy} onChange={e => setTargetRevisionId(e.target.value)}>
-                  <option value="">Choose an exact revision</option>
-                  {revisionPage.items.map(r => <option key={r.revisionId} value={r.revisionId}>{r.revisionId} · {r.revoked ? "revoked" : "not revoked"}{r.current ? " · current" : ""}{r.draft ? " · draft" : ""}</option>)}
-                </select>
-                {revisionPage.items.filter(r => r.revisionId === targetRevisionId).map(r => <p key={r.revisionId} role="status">
-                  Exact target: {r.revisionId}. {r.revoked ? "Revoked" : "Not revoked"}. {r.current ? "Currently selected" : "Not selected"}. {r.draft ? "Saved draft" : "Not the saved draft"}.
-                  {" "}Open deliverables: {r.openRoots}. Pending or started effects: {r.pendingEffects}.
-                </p>)}
-                <button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>First revisions</button>
-                <button disabled={!revisionPage.next || !!busy || lifecycleBusy} onClick={() => void readRevisions(revisionPage.next!)}>Next revisions</button>
+              </section>}
+              {(!revisionPage || revisionPage.items.length > 0) && <details className="team-control"><summary>Advanced: emergency revocation</summary>
+                <p>Project admins only. Permanently stop one version if it must stop affecting existing tasks. To stop using the current version only for new tasks, turn it off instead.</p>
+                <p>Revoking a version stops its future actions and prevents unfinished original tasks that use it from being completed. Linked reviews can still be completed. Saved work and other versions are unchanged.</p>
+                <p>Earlier versions can still affect tasks. The counts are a guide: a completed task can still have an unfinished rule action.</p>
+               {!revisionPage ? <><p>The version list is unavailable.</p><button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>Read version list</button></> : <>
+                 <label htmlFor="team-revocation-target">Version to revoke</label>
+                 <select id="team-revocation-target" value={targetRevisionId} disabled={!!busy || lifecycleBusy} onChange={e => setTargetRevisionId(e.target.value)}>
+                   <option value="">Choose a saved version</option>
+                   {revisionPage.items.map((r, i) => <option key={r.revisionId} value={r.revisionId}>{versionLabel(r, i)} · {r.openRoots} open, {r.pendingEffects} unfinished</option>)}
+                 </select>
+                 {revisionPage.items.map((r, i) => r.revisionId === targetRevisionId && <p key={r.revisionId} role="status">
+                   {versionLabel(r, i)}. {versionCounts(r)}
+                 </p>)}
+                 {versionOffset > 0 && <button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>Back to first versions</button>}
+                 {revisionPage.next && <button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions(revisionPage.next!)}>More versions</button>}
                 <button disabled={!targetRevisionId || !!busy || lifecycleBusy || revisionPage.items.find(r => r.revisionId === targetRevisionId)?.revoked}
                   onClick={e => confirmControl("revocations", e.currentTarget)}>Review emergency revocation</button>
                </>}
                {confirmation?.kind === "revocations" && controlConfirmation()}
-             </details>}
-             {(state.draft || state.selection.revisionId || !state.selection.available) && <details className="team-control"><summary>Support diagnostics</summary>
-               <details><summary>Exact current-use receipt</summary><pre>{JSON.stringify(state.selection, null, 2)}</pre></details>
-               {state.draft && <details><summary>Rule details</summary><p>{state.draft.manifest.executableIdentity}</p><p>Revision: {state.draft.revisionId}</p>
-                 <button onClick={async () => {
-                   const read = ++serial.current, revisionId = state.draft!.revisionId, edit = edits.current;
-                   try {
-                     const value = await request(`${base}/revisions/${revisionId}`, "GET", undefined, lifetime.current.signal);
-                     if (read === serial.current && !lifetime.current.signal.aborted && stateRef.current?.draft?.revisionId === revisionId && edit === edits.current) setSource(value);
-                   } catch (e) { if (read === serial.current) failure(e); }
-                 }}>Inspect exact source and artifacts</button>
-                 {source != null && <pre aria-label="Exact Team source and artifacts">{JSON.stringify(source, null, 2)}</pre>}
-               </details>}
              </details>}
        </>}
      </div>
@@ -574,13 +559,13 @@ export default function TeamCapability({ project, request, scopeControl, back, b
      const stopping = confirmation.kind === "deactivations";
      return <section className="team-feedback" role="group" aria-label="Confirm Team control">
        <h3 ref={controlHeading} tabIndex={-1}>{stopping ? "Turn off for new tasks?" : "Confirm emergency revocation"}</h3>
-       {stopping ? <p>Started work keeps its existing rule.</p> : <>
-         <p>Exact target revision: {confirmation.body.targetRevisionId}</p>
-         <p>This revision will be permanently revoked. Its future effects and completion of unfinished main tasks will be blocked. Saved work and other versions are unaffected.</p>
+        {stopping ? <p>Existing tasks keep the rule they started with.</p> : <>
+          <p>{confirmation.targetLabel}. {confirmation.counts}</p>
+          <p>This version will be permanently revoked. Its future actions will stop and unfinished original tasks using it can’t be completed. Saved work and other versions are unchanged.</p>
        </>}
        <button disabled={!!busy} onClick={() => setConfirmation(null)}>Cancel</button>
        <button disabled={!!busy || !!pendingChoice} onClick={() => { setConfirmation(null); void postChoice(confirmation.kind, confirmation.body); }}>
-         {stopping ? "Confirm stop for new tasks" : "Revoke this exact revision"}
+          {stopping ? "Confirm stop for new tasks" : "Permanently revoke this version"}
        </button>
      </section>;
    }

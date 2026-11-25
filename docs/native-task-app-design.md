@@ -37,7 +37,7 @@ Select the Team project in **Customizations** and choose **New customization**, 
 
 Choose **Confirm this behavior** to compile and save the exact draft, then automatically check its independently recorded expectations. An intentionally unused completion rule is saved as an absent binding, not a missing artifact. The checks run the saved artifacts through native services in disposable in-memory stores with synthetic people, tasks and interruptions. Real tasks and current use do not change. Use **Check examples** to recheck an existing draft, not as a separate first step.
 
-Review **Examples** and expand **Details** for all checks and the exact results. A mismatch shows the expected and observed behavior. A missing, stale or insufficient check blocks approval even if some examples pass. Changed behavior needs a fresh agreement, revision and check. Earlier scripted revisions still use their saved lifecycle and strict six-example qualification; that is not the contract for new authored drafts.
+Under **Examples**, open **See how it works** for a business example. If a business example fails, Studio shows what it expected and what happened. A missing, stale or insufficient check blocks approval even if some examples pass. Changed behavior needs a fresh agreement, revision and check. Earlier scripted revisions still use their saved lifecycle and strict six-example qualification; that is not the contract for new authored drafts.
 
 Choose **Approve this draft** to record approval of the exact revision and its latest eligible evidence. A newer check needs a new approval, even if it passes. Separately choose **Turn on for new tasks** to select that revision. Already-started work keeps its saved rule or explicit no-policy choice. A new draft or a failed check does not replace the rule in use.
 
@@ -45,11 +45,11 @@ Choose **Back to project Tasks**. After a rule denies completion, the row and Ta
 
 #### Read back or stop Team use
 
-After an unconfirmed preparation or example check, use the readback control shown by Studio. After an unconfirmed approval, activation, deactivation or revocation, choose **Check saved action**. It looks up the original receipt without resubmitting. Expand **Saved action details** to inspect the receipt. If the receipt is missing or not visible, neither **Support diagnostics → Exact current-use receipt** nor the current target state proves what happened. Do not repeat an unconfirmed action or silently change its target.
+After an unconfirmed preparation or example check, use the readback control shown by Studio. After an unconfirmed approval, activation, deactivation or revocation, choose **Check saved action**. It checks the original action without resubmitting. If Daymark cannot find the saved result, the current state alone does not prove what happened. Do not repeat an unconfirmed action or change its target. Raw evidence and receipts remain available through the existing technical interfaces.
 
 When a customization is on, choose **Turn off for new tasks**, then **Confirm stop for new tasks**. Started work keeps its pinned rule unless that revision is revoked. New tasks save a no-policy choice until another rule is selected.
 
-Under **Emergency revocation**, choose the **Exact revision to revoke**. Use **Next revisions** if needed, then choose **Review emergency revocation** and check the target and consequences before choosing **Revoke this exact revision**. The list includes older, dormant and native revisions. Counts are advisory: pending effects can belong to completed tasks.
+Under **Advanced: emergency revocation**, choose the **Version to revoke**. Use **More versions** if needed, then choose **Review emergency revocation**. Check the selected version and consequences before choosing **Permanently revoke this version**. The list includes earlier versions. Counts are a guide: completed tasks may still have unfinished rule actions.
 
 Revocation permanently blocks that revision's future effects and completion of unfinished main tasks pinned to it. It clears the selection only if that exact revision is selected. Completed work, saved children and receipts are not undone. Verified linked tasks can still be completed. To replace a revoked draft, propose fresh behavior in the conversation, confirm and check it, then approve and turn it on separately. There is no repair, restore or repinning action. The manual fixture below is separate from Studio.
 

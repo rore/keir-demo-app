@@ -214,7 +214,7 @@ for (const width of [1440, 390]) {
       await studioButton('New customization').click();
       await expect(page.getByRole('button', { name: 'Turn off for new tasks', exact: true })).toHaveCount(0);
       await checkSetup();
-      await expect(page.getByText('Emergency revocation', { exact: true })).toHaveCount(0);
+      await expect(page.getByText('Advanced: emergency revocation', { exact: true })).toHaveCount(0);
       await page.screenshot({ path: info.outputPath('team-studio-unconfigured.png') });
       await switchPerson(page, 'leo');
       await expect(page.getByRole('button', { name: 'Write the brief', exact: true })).toBeVisible();

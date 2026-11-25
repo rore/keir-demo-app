@@ -1705,11 +1705,10 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
     {reaction?.outcome?.classification && !["COMPLETED", "UNCERTAIN"].includes(reaction.outcome.classification) && <p>{creation ? "The customization did not finish successfully. Your task is kept." : "The customization did not finish successfully. Your completed task is kept."}</p>}
     {created && <button type="button" className="quiet-button" aria-label={`Open task: ${created.title}`} onClick={() => openCreated(created)}>{linkedNextAction ? "Open linked task" : "Open task"}</button>}
     {error && <p role="alert">{error}</p>}
-    <div className="task-reaction-actions">{(reaction?.team && !confirmedReceipt || !reaction?.team) &&
-      <button type="button" className="quiet-button" aria-disabled={checking} onClick={() => void read(reaction?.team === true && !!uncertain)}>{reaction?.team ? "Check again" : "Check result"}</button>}
+    <div className="task-reaction-actions">{(!reaction?.team || !confirmedReceipt || !!error) &&
+      <button type="button" className="quiet-button" aria-disabled={checking} onClick={() => void read(reaction?.team === true && !!uncertain && !confirmedReceipt)}>{reaction?.team ? "Check again" : "Check result"}</button>}
       {!reaction?.team && (uncertain || reaction?.state === "STARTED") && <button type="button" className="quiet-button" disabled={checking} onClick={() => void read(true)}>Reconcile saved observation</button>}</div>
-    {reaction && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
-      {reaction.team && <p>Rules when this task started: {reaction.revisionId ?? "No policy"}.</p>}
+    {reaction && !reaction.team && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
       {confirmedReceipt && <p>{update ? "A saved native receipt confirms the update." : "A saved native receipt confirms that a task was created."}</p>}
       {update && !unchanged && <dl>
         {update.before.priority !== update.after.priority && <><dt>Priority</dt><dd>{update.before.priority} → {update.after.priority}</dd></>}

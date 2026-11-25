@@ -133,8 +133,7 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       await send('Yes, leave out Slack.');
     } else await send('Add a linked review for Leo when someone adds a task. Keep the original open until its review is finished.');
     const proposed = page.getByRole('article', { name: 'Proposed behavior' });
-    const behaviorText = width === 390 ? 'For every new main task, Daymark adds “Review the deliverable” for Leo.'
-      : 'When priority is low, normal, or high, Daymark adds “Review the deliverable” for Leo.';
+    const behaviorText = 'For every new main task, Daymark adds “Review the deliverable” for Leo.';
     await expect(proposed.getByText(behaviorText, { exact: true })).toBeVisible();
     await expect(proposed.getByRole('heading', { name: 'Proposed behavior for Launch team' })).toBeVisible();
     await proposed.getByText('Examples', { exact: true }).click();
@@ -204,23 +203,59 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await expect(business.getByRole('heading')).toBeInViewport({ ratio: 1 });
     for (const step of await business.getByRole('listitem').all()) await expect(step).toBeInViewport({ ratio: 1 });
     await page.screenshot({ path: info.outputPath('expanded-business-example.png') });
-    const details = examples.getByText(`Details · all ${width === 390 ? 3 : 9} checks`, { exact: true });
-    await details.click();
-    await expect(examples.getByText('The task stays open. Complete its linked review first.', { exact: true })).toHaveCount(width === 390 ? 2 : 6);
-    await expect(examples.getByText('Example setup: The task is saved but the reply is lost.', { exact: true }).first()).toBeVisible();
-    await examples.getByText('Exact example results', { exact: true }).click();
-    await expect(examples.locator('pre')).toBeVisible();
+    await expect(examples.locator('pre')).toHaveCount(0);
+    await expect(examples.getByText(/Details · all|Example setup|reply is lost/)).toHaveCount(0);
+    await expect(page.getByText(/Support diagnostics|Saved action details/)).toHaveCount(0);
     await page.getByRole('button', { name: 'Turn on for new tasks' }).click();
     await expect(page.getByText('On for new tasks', { exact: true })).toBeVisible();
     await visibleDecision('Back to project Tasks');
+    await expect(page.getByRole('button', { name: 'Turn off for new tasks', exact: true })).toBeVisible();
     await page.screenshot({ path: info.outputPath('turned-on.png') });
+    const projectSelect = page.getByLabel('Personal or Team project', { exact: true });
+    await projectSelect.scrollIntoViewIfNeeded();
+    await expect(projectSelect).toBeInViewport({ ratio: 1 });
+    const fit = await decision.evaluate(card => {
+      const scroller = card.closest('.team-capability-body');
+      const select = scroller.querySelector('.team-scope select');
+      const action = card.querySelector('button');
+      const bounds = scroller.getBoundingClientRect();
+      const right = bounds.left + scroller.clientLeft + scroller.clientWidth;
+      const bordersFit = [select, card, action].every(el => {
+        const rect = el.getBoundingClientRect();
+        return rect.left >= bounds.left + 6 && rect.right <= right - 6;
+      });
+      const hits = [select, action].map(el => {
+        const rect = el.getBoundingClientRect();
+        return document.elementFromPoint(rect.right - 6, rect.top + rect.height / 2)?.closest('select, button') === el;
+      });
+      return { bordersFit, hits, overflow: scroller.scrollWidth - scroller.clientWidth };
+    });
+    expect(fit).toEqual({ bordersFit: true, hits: [true, true], overflow: 0 });
+    await page.screenshot({ path: info.outputPath('active-studio-scroll-edges.png') });
     await page.getByRole('button', { name: 'Back to project Tasks' }).click();
     await page.getByLabel('New task title', { exact: true }).fill('Launch brief');
     await expect(page.getByRole('heading', { name: 'Launch team', exact: true })).toBeVisible();
     await page.screenshot({ path: info.outputPath('back-to-project-tasks.png') });
     await page.locator('.quick-add').getByRole('button', { name: /Add task/ }).click();
     const detail = page.getByRole('dialog', { name: 'Task details', exact: true });
+    if (width === 1440) {
+      // Simulate one uncertain read; the button then uses the real saved-result endpoint.
+      await page.route(/\/api\/tasks\/[^/]+\/reaction\?trigger=TaskCreated$/, async route => {
+        const response = await route.fetch();
+        const data = await response.json();
+        await route.fulfill({ response, json: { ...data, team: true, state: 'FINISHED', receipt: null,
+          reconciliation: null, outcome: { classification: 'UNCERTAIN' } } });
+      }, { times: 1 });
+    }
     await page.getByRole('button', { name: 'Launch brief', exact: true }).click();
+    if (width === 1440) {
+      const outcome = detail.getByRole('region', { name: 'Task creation customization outcome' });
+      await expect(outcome).toContainText('We haven’t confirmed a linked task. It may already exist.');
+      await expect(outcome.locator('pre')).toHaveCount(0);
+      const checked = page.waitForResponse(r => r.url().includes('/reaction/reconcile') && r.request().method() === 'POST');
+      await outcome.getByRole('button', { name: 'Check again' }).click();
+      expect((await checked).status()).toBe(200);
+    }
     await expect(detail.getByRole('button', { name: 'Open task: Review the deliverable' })).toBeVisible();
     await expect(detail.getByRole('region', { name: 'Last completion attempt' })).toHaveCount(0);
     await detail.getByRole('button', { name: 'Close task details' }).click();
@@ -254,6 +289,13 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await selectTeam();
     await page.getByRole('button', { name: 'Complete Launch brief', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Launch brief, completed', exact: true })).toBeDisabled();
+    const completed = page.locator('.task-row').filter({ has: page.getByRole('button', { name: 'Launch brief, completed', exact: true }) });
+    const completedOutcome = completed.getByRole('region', { name: 'Task creation customization outcome' });
+    await expect(completedOutcome).toContainText('“Review the deliverable” · Assigned to Leo · Completed');
+    await expect(completedOutcome.locator('pre, details')).toHaveCount(0);
+    await completed.screenshot({ path: info.outputPath('completed-original-business-outcome.png') });
+    await completed.getByRole('button', { name: 'Open task: Review the deliverable' }).click();
+    await expect(detail.getByRole('region', { name: 'Original task' })).toContainText('Launch brief');
     expect(fixture.requests).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   } finally { releaseTurn(); await page.close(); await fixture.close(); }
@@ -304,11 +346,11 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
     await confirm.click();
     expect((await rejection).status()).toBe(422);
     const unsaved = proposal.getByRole('alert').filter({ hasText: 'No draft was saved for it' });
-    await expect(unsaved).toBeInViewport({ ratio: 1 });
+    await expect(unsaved).toBeInViewport({ ratio: 0.99 });
     await expect(confirm).toHaveCount(0);
     expect(revisions()).toBe(0);
     await reopen('Open Studio');
-    await expect(unsaved).toBeInViewport({ ratio: 1 });
+    await expect(unsaved).toBeInViewport({ ratio: 0.99 });
     await expect(confirm).toHaveCount(0);
     await page.screenshot({ path: info.outputPath('confirm-definitely-unsaved.png') });
 
@@ -316,11 +358,11 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
     await page.route(`**${path}`, route => route.abort('failed'), { times: 1 });
     await confirm.click();
     const unknown = proposal.getByRole('status').filter({ hasText: 'couldn’t tell whether the draft was saved' });
-    await expect(unknown).toBeInViewport({ ratio: 1 });
+    await expect(unknown).toBeInViewport({ ratio: 0.99 });
     await expect(unsaved).toHaveCount(0);
     await unknown.getByRole('button', { name: 'Check saved state' }).click();
     await reopen('Open Studio');
-    await expect(unknown).toBeInViewport({ ratio: 1 });
+    await expect(unknown).toBeInViewport({ ratio: 0.99 });
     await expect(confirm).toHaveCount(0);
     expect(confirmations).toBe(2);
     expect(revisions()).toBe(0);

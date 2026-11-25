@@ -1,5 +1,5 @@
 .read-studio { --rs-gutter: 28px; color: var(--ink); flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; font-size: 16px; line-height: 1.55; }
-.team-capability-body { flex: 1; overflow-y: auto; min-height: 0; padding: 0 0 28px; overflow-wrap: anywhere; }
+.team-capability-body { flex: 1; overflow-y: auto; scrollbar-gutter: stable; min-width: 0; min-height: 0; padding: 0 8px 28px; overflow-wrap: anywhere; }
 .team-capability-body > * { max-width: 960px; margin-inline: auto; }
 .team-capability-body .team-examples :is(details, summary), .team-more { font-size: inherit; }
 .team-capability-body .team-examples li + li { margin-top: 12px; }
@@ -27,7 +27,6 @@
 .team-capability-body .team-control { margin-top: 16px; padding: 12px 0; border-top: 1px solid var(--line); }
 .team-control > summary { font-weight: 600; }
 .team-control > p { margin-top: 8px; }
-.team-control pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .team-capability .rs-header h1:focus { outline: none; }
 .team-capability-body section { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 18px; }
 .team-capability-body label { display: grid; gap: 4px; min-width: 0; }

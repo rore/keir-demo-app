@@ -90,10 +90,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
       await openStudio(page);
       await expect(result.getByRole('heading', { name: 'Some examples did not match' })).toBeVisible();
-      const raw = result.getByText('Exact example results', { exact: true }).locator('..');
-      await raw.locator('summary').click();
-      await expect(raw.locator('pre')).toContainText(saved.id);
-      await expect(raw.locator('pre')).toContainText('"decision": "ALLOW"');
+      await expect(result.getByRole('article', { name: 'What didn’t match' })).toContainText('Expected: Completion is allowed.');
+      await expect(result.locator('pre')).toHaveCount(0);
+      await expect(result).not.toContainText(saved.id);
       expect(JSON.parse(saved.cases).find(c => c.id === 'success').actions[2].expect.decision).toBe('ALLOW');
       expect(fixture.db.prepare('SELECT passed FROM team_evidence WHERE id=?').get(saved.id).passed).toBe(0);
       expect(fixture.db.prepare('SELECT revision_id FROM team_selections WHERE project_id=?').get(project.id).revision_id).toBeNull();
@@ -102,23 +101,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     } finally { await page.close(); await fixture.close(); }
   });
 
-  test(`late source/evidence, member loss and unconfirmed simulation reply at ${viewport.width}`, async ({ page }) => {
+  test(`late evidence, member loss and unconfirmed simulation reply at ${viewport.width}`, async ({ page }) => {
     const fixture = await startAuthoringFixture({ unconfigured: true });
     try {
       await page.setViewportSize(viewport);
-      const { project, personalId } = await setup(page, fixture.origin);
+      const { project } = await setup(page, fixture.origin);
       await prepare(fixture, project);
       await openStudio(page);
-      await page.getByText('Support diagnostics', { exact: true }).click();
-      await page.getByText('Rule details', { exact: true }).click();
-      const source = await held(page, `**/api/projects/${project.id}/capability/revisions/*`);
-      await page.getByRole('button', { name: 'Inspect exact source and artifacts', exact: true }).click();
-      await source.started;
-      await scope(page).selectOption(personalId); source.release();
-      await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeVisible();
-      await expect(page.getByLabel('Exact Team source and artifacts', { exact: true })).toHaveCount(0);
-      await scope(page).selectOption(project.id);
-      await openStudio(page);
+      await expect(page.getByText('Support diagnostics', { exact: true })).toHaveCount(0);
       let posts = 0;
       page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/capability/simulations')) posts++; });
       await page.route(`**/api/projects/${project.id}/capability/simulations`, async route => {
