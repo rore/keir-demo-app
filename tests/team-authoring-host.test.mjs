@@ -10,7 +10,7 @@ import { createTeamCapability } from '../src/team-capability.mjs';
 import { teamProjectService } from '../src/team-native.mjs';
 import { teamAuthoringHost, teamConversationTools, teamConversationHandlers } from '../src/team-authoring-host.mjs';
 import { expandTeamOffer } from '../src/team-business-offer.mjs';
-import { triageOffer, linkedOffer, linkedSourceLookalike, triageProposal, offerSources } from './fixtures/team-authored.mjs';
+import { triageOffer, linkedOffer, linkedSourceLookalike, triageProposal, offerSources, nestedOfferCalls, allowMissingReview } from './fixtures/team-authored.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { teamModel, teamModelBytes } from '../src/team-runtime.mjs';
 import { digest, json } from '../src/extension-catalog.mjs';
@@ -30,7 +30,10 @@ const read = (capability, id) => capability.state('maya', id);
 const picked = (c, op) => c.events.filter(e => e.action === op);
 
 test('the same structural tool offers conditional triage and a linked handoff without write or native mechanics in model context', async t => {
-  const db = openData(':memory:'), capability = createTeamCapability(db), id = project(db);
+  const compiler = createCompiler({ modelBytes: teamModelBytes });
+  let hostCompiles = 0;
+  const db = openData(':memory:'), id = project(db);
+  const capability = createTeamCapability(db, { compiler: { compile(...args) { hostCompiles++; return compiler.compile(...args); } } });
   t.after(async () => { await capability.close(); db.close(); });
   const host = hostFor(db, capability, id);
   const triage = triageOffer({ priority: 'low', title: 'Check the intake notes', assigneeId: 'sam' });
@@ -41,16 +44,21 @@ test('the same structural tool offers conditional triage and a linked handoff wi
   gate.steps.unshift(readTask);
   gate.steps.at(-1).let.cel = `task.priority != "low" || (${gate.steps.at(-1).let.cel})`;
   linked.TaskBeforeComplete.source = JSON.stringify(gate);
+  linked.TaskBeforeComplete.requireFinishedReviewFor = ['low'];
   for (const outcome of linked.TaskBeforeComplete.outcomes) outcome.when.priority = ['low'];
   linked.TaskBeforeComplete.outcomes.push({ when: { priority: ['normal', 'high'], linkedTask: ['absent'] }, expected: { allow: true, message: null } });
 
   const plain = offerSources(triage, true), wrongPin = offerSources(linked, false);
-  const compiler = createCompiler({ modelBytes: teamModelBytes });
+  const nested = nestedOfferCalls(linked);
   for (const hook of ['TaskCreated', 'TaskBeforeComplete']) {
     const failed = await compiler.compile(Buffer.from(wrongPin[hook].source));
     assert.ok(failed.diagnostics.some(({ code, path }) => code === 'FIELD_UNKNOWN' && path === '/source/domain'));
+    const unwrapped = JSON.parse(nested[hook].source);
+    unwrapped.name = 'test-program';
+    const shape = await compiler.compile(Buffer.from(JSON.stringify(unwrapped)));
+    assert.ok(shape.diagnostics.some(({ path }) => path === '/source/steps/0/args'), JSON.stringify(shape.diagnostics));
   }
-  for (const [index, offer] of [plain, wrongPin].entries()) {
+  for (const [index, offer] of [plain, nestedOfferCalls(wrongPin)].entries()) {
     const context = { ownerId: 'maya', sessionId: 'session', conversationId: 'conversation', runId: `run${index}`,
       budget: { remainingMicros: 100 }, current: () => true, checkpoint: () => {} };
     let count = 0;
@@ -76,13 +84,14 @@ test('the same structural tool offers conditional triage and a linked handoff wi
       input: { id: 'request', expectedVersion: 0, intent: 'auto', text: 'Set up the requested follow-up.' } });
     assert.equal(result.status, 'AWAITING_USER', result.code);
     assert.equal(count, 2);
+    assert.equal(hostCompiles, index, 'Neither offer compiles before the separate human action');
     assert.equal(read(capability, id).draftVersion, index);
     assert.equal(db.prepare('SELECT count(*) AS n FROM team_evidence').get().n, index);
     assert.equal(JSON.parse(result.proposal.bindings.TaskCreated).name, 'daymark-creation');
     if (index) assert.equal(JSON.parse(result.proposal.bindings.TaskBeforeComplete).name, 'daymark-completion');
     for (const hook of ['TaskCreated', 'TaskBeforeComplete']) {
       if (!offer[hook]) { assert.equal(result.proposal.bindings[hook], null); continue; }
-      const { steps, return: returns } = JSON.parse(offer[hook].source);
+      const { steps, return: returns } = JSON.parse((index ? linked : plain)[hook].source);
       const actual = JSON.parse(result.proposal.bindings[hook]);
       assert.deepEqual(actual, {
         language: 'keir/3', name: hook === 'TaskCreated' ? 'daymark-creation' : 'daymark-completion', entrypoint: hook,
@@ -90,6 +99,7 @@ test('the same structural tool offers conditional triage and a linked handoff wi
       });
     }
     const saved = await host.save(result.proposal, { draft: host.readDraft() });
+    assert.equal(hostCompiles, index ? 3 : 1);
     const proof = await host.simulate(saved.revisionId, saved.draftVersion);
     assert.equal(proof.eligible, true, JSON.stringify(proof.summary.qualification));
     assert.equal(read(capability, id).selected, null);
@@ -132,7 +142,7 @@ test('business offers reject privacy-safe shape, reachability and scope errors b
     ['OUTCOME_UNREACHABLE', p => { p.TaskBeforeComplete.outcomes.push({
       when: { priority: ['low'], linkedTask: ['completed'] }, expected: { allow: true, message: null },
     }); p.TaskBeforeComplete.outcomes[1].when.priority = ['normal', 'high'];
-    p.TaskCreated = triageOffer({ priority: 'normal' }).TaskCreated; }],
+    p.TaskCreated = triageOffer({ priority: 'normal' }).TaskCreated; p.TaskBeforeComplete.requireFinishedReviewFor = null; }],
   ]) {
     const offer = linkedOffer();
     change(offer);
@@ -140,6 +150,45 @@ test('business offers reject privacy-safe shape, reachability and scope errors b
       error.code === 'INVALID_TOOL_ARGUMENTS' && error.diagnostics[0].code === code, code);
   }
   assert.throws(() => expandTeamOffer(linkedOffer(), 'leo', members), { code: 'INVALID_TOOL_ARGUMENTS' });
+});
+
+test('call steps reject mixed or malformed forms before Confirm', () => {
+  for (const [patch, field] of [
+    [step => { delete step.args; }, 'args'],
+    [step => { step.args = []; }, 'args'],
+    [step => { step.call = { capability: step.call, args: {} }; }, 'call'],
+    [step => { step.call = { capability: step.call }; delete step.args; }, 'call'],
+    [step => { step.call = { capability: step.call, args: {}, extra: 'private' }; delete step.args; }, 'call'],
+    [step => { step.call = 'private'; }, 'call'],
+  ]) {
+    const offer = linkedOffer(), source = JSON.parse(offer.TaskCreated.source);
+    patch(source.steps[0]);
+    offer.TaskCreated.source = JSON.stringify(source);
+    assert.throws(() => expandTeamOffer(offer, 'maya', members), error => {
+      assert.deepEqual(error.diagnostics, [{ code: 'SOURCE_CALL_SHAPE_INVALID', path: `/TaskCreated/source/steps/0/${field}` }]);
+      return true;
+    });
+  }
+});
+
+test('a finished-review requirement rejects an absent-review loophole but preserves an explicit exception', async t => {
+  const db = openData(':memory:'), capability = createTeamCapability(db), id = project(db);
+  t.after(async () => { await capability.close(); db.close(); });
+  const host = hostFor(db, capability, id);
+  const offer = nestedOfferCalls(allowMissingReview(linkedOffer()));
+  assert.throws(() => host.expandOffer(offer), error => {
+    assert.deepEqual(error.diagnostics, [{ code: 'FINISHED_REVIEW_REQUIRED', path: '/TaskBeforeComplete/outcomes' }]);
+    return true;
+  });
+  assert.equal(read(capability, id).draft, null);
+  offer.TaskBeforeComplete.requireFinishedReviewFor = null;
+  const draft = await host.save(host.expandOffer(offer), { draft: host.readDraft() });
+  const checked = await host.simulate(draft.revisionId, draft.draftVersion);
+  assert.equal(checked.eligible, true, JSON.stringify(checked.summary.qualification));
+  const { cases } = capability.evidence('maya', id, checked.evidenceId).report;
+  const decisions = Object.fromEntries(cases.filter(c => c.id.includes('before-link') || c.id.includes('handoff'))
+    .flatMap(c => picked(c, 'complete').filter(e => e.ref === 'work').map(e => [e.before.childStatus, e.observed.decision])));
+  assert.deepEqual(decisions, { absent: 'ALLOW', open: 'DENY', completed: 'ALLOW' });
 });
 
 test('offer checks catch the known source shapes without compiling or replacing the business behavior', () => {
@@ -205,7 +254,7 @@ test('a completion-only offer checks that task creation has no hook or side effe
   offer.TaskCreated = null;
   const source = JSON.parse(offer.TaskBeforeComplete.source);
   source.steps = [JSON.parse(triageOffer().TaskCreated.source).steps[0], { id: 'ready', let: { cel: 'task.priority != "high"' } }];
-  offer.TaskBeforeComplete = { source: JSON.stringify(source), outcomes: [
+  offer.TaskBeforeComplete = { source: JSON.stringify(source), requireFinishedReviewFor: null, outcomes: [
     { when: { priority: ['high'], linkedTask: null }, expected: { allow: false, message: null } },
     { when: { priority: ['normal', 'low'], linkedTask: null }, expected: { allow: true, message: null } },
   ] };

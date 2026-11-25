@@ -10,15 +10,17 @@ const nullable = schema => ({ anyOf: [schema, absent] });
 const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 // The wire schema uses the providers' shared strict subset. Host validation owns upper bounds.
 const choices = values => nullable({ type: 'array', minItems: 1, items: { type: 'string', enum: values } });
-const binding = (when, expected) => nullable(object({
-  source: { ...text, description: 'JSON string containing only steps and return. Daymark supplies the program metadata.' },
+const binding = (when, expected, extra = {}) => nullable(object({
+  source: { ...text, description: 'JSON string with steps and return. A capability step is {"id":"step","call":"capability.name","args":{...}}, plus an optional when ID on creation. A value step has id and let. Daymark supplies the program metadata.' },
   outcomes: { type: 'array', minItems: 1, description: 'At most eight disjoint outcomes.', items: object({ when: object(when), expected: object(expected) }) },
+  ...extra,
 }));
 export const teamOfferFields = {
   summary: { ...text, description: 'One line describing the business behavior, including any chosen defaults.' },
   [created]: binding({ priority: choices(teamPriorities) }, { linkedTask: nullable(object({ title: text, assigneeId: text })) }),
   [completing]: binding({ priority: choices(teamPriorities), linkedTask: choices(teamChildStates) },
-    { allow: { type: 'boolean' }, message: nullable({ ...text, description: 'Exact explanation when blocked, or null if not specified.' }) }),
+    { allow: { type: 'boolean' }, message: nullable({ ...text, description: 'Exact explanation when blocked, or null if not specified.' }) },
+    { requireFinishedReviewFor: { ...choices(teamPriorities), description: 'Priorities the person says may finish only after their own linked review is done. Use all three priorities for every new task. Use null if no such prerequisite was requested. Missing and open reviews both block for these priorities.' } }),
 };
 const validate = new Ajv({ ownProperties: true }).compile(object(teamOfferFields));
 
@@ -35,16 +37,37 @@ const allowed = { decision: 'ALLOW', status: 'completed' };
 const emptyEffect = { outcome: 'COMPLETED', children: 0, receipt: 'NONE' };
 // Accept older full-source offers, but only these known metadata fields are host-owned.
 const sourceFields = ['steps', 'return', 'language', 'name', 'domain', 'entrypoint'];
-const hasSourceFields = program => program && typeof program === 'object' && !Array.isArray(program)
+const record = value => value && typeof value === 'object' && !Array.isArray(value);
+const hasSourceFields = program => record(program)
   && Object.keys(program).every(key => sourceFields.includes(key))
   && Object.hasOwn(program, 'steps') && Object.hasOwn(program, 'return');
 
 // Catch only visible source-contract violations. Compilation and checked-expression coverage happen after confirmation.
 function offerSource(program, hook, outcomes) {
   const path = `/${hook}/source`;
-  if (!Array.isArray(program.steps) || program.steps.length > 8
-      || program.steps.some(step => !step || typeof step !== 'object' || Array.isArray(step))) reject('SOURCE_STEPS_INVALID', `${path}/steps`);
-  const taskReads = new Set(program.steps.filter(step => step.call === 'tasks.get').map(step => step.id));
+  if (!Array.isArray(program.steps) || program.steps.length > 8) reject('SOURCE_STEPS_INVALID', `${path}/steps`);
+  const steps = program.steps.map((step, i) => {
+    const field = `${path}/steps/${i}`;
+    if (!record(step) || typeof step.id !== 'string' || !step.id.trim()) reject('SOURCE_STEP_INVALID', field);
+    if (Object.hasOwn(step, 'onError')) reject('SOURCE_ERROR_BRANCH_UNSUPPORTED', `${field}/onError`);
+    const isCall = Object.hasOwn(step, 'call');
+    const keys = isCall ? ['id', 'call', 'args', 'when'] : ['id', 'let', 'when'];
+    if (Object.keys(step).some(key => !keys.includes(key)) || !isCall && !Object.hasOwn(step, 'let'))
+      reject('SOURCE_STEP_INVALID', field);
+    if (Object.hasOwn(step, 'when') && (typeof step.when !== 'string' || !step.when.trim()))
+      reject('SOURCE_STEP_INVALID', `${field}/when`);
+    if (!isCall) return step;
+    let { call, args } = step;
+    if (record(call)) {
+      if (Object.hasOwn(step, 'args') || Object.keys(call).length !== 2 || !Object.hasOwn(call, 'capability') || !Object.hasOwn(call, 'args'))
+        reject('SOURCE_CALL_SHAPE_INVALID', `${field}/call`);
+      ({ capability: call, args } = call);
+    }
+    if (typeof call !== 'string' || !Object.hasOwn(teamModel.capabilities, call)) reject('SOURCE_CALL_SHAPE_INVALID', `${field}/call`);
+    if (!record(args)) reject('SOURCE_CALL_SHAPE_INVALID', `${field}/args`);
+    return { ...step, call, args };
+  });
+  const taskReads = new Set(steps.filter(step => step.call === 'tasks.get').map(step => step.id));
   const taskIds = new Set(['input.taskId', ...[...taskReads].map(id => `${id}.id`)]);
   const cel = value => typeof value?.cel === 'string' ? value.cel.trim() : null;
   const checkFields = (value, field) => {
@@ -58,11 +81,10 @@ function offerSource(program, hook, outcomes) {
       return part;
     });
   };
-  for (const [i, step] of program.steps.entries()) {
+  for (const [i, step] of steps.entries()) {
     const field = `${path}/steps/${i}`;
     checkFields(step, field);
     if (hook === completing && Object.hasOwn(step, 'when')) reject('COMPLETION_STEP_GUARD', `${field}/when`);
-    if (Object.hasOwn(step, 'onError')) reject('SOURCE_ERROR_BRANCH_UNSUPPORTED', `${field}/onError`);
     if (step.call === 'tasks.get' && cel(step.args?.taskId) !== 'input.taskId')
       reject('TASK_READ_NOT_ORIGINAL', `${field}/args/taskId`);
     if (step.call === 'tasks.childrenSummary' && (hook !== completing
@@ -73,7 +95,7 @@ function offerSource(program, hook, outcomes) {
   }
   checkFields(program.return, `${path}/return`);
   const source = json({ language: 'keir/3', name: `daymark-${slug(hook)}`, entrypoint: hook,
-    domain: { ...teamModel.domain, fingerprint: digest(json(teamModel)) }, steps: program.steps, return: program.return });
+    domain: { ...teamModel.domain, fingerprint: digest(json(teamModel)) }, steps, return: program.return });
   if (Buffer.byteLength(source) > 65536) reject('SOURCE_INVALID', path);
   return source;
 }
@@ -155,7 +177,9 @@ export function expandTeamOffer(input, actor, members) {
     return matching[0];
   };
   const examples = [];
-  const usePriority = claims.some(c => c.outcomes.some(o => o.when.priority));
+  const reviewRequired = input[completing]?.requireFinishedReviewFor ?? [];
+  if (new Set(reviewRequired).size !== reviewRequired.length) reject('CONDITION_DUPLICATE', `/${completing}/requireFinishedReviewFor`);
+  const usePriority = claims.some(c => c.outcomes.some(o => o.when.priority)) || reviewRequired.length > 0 && reviewRequired.length < teamPriorities.length;
   const priorities = usePriority ? teamPriorities : ['normal'];
   const by = member => ({ id: member.id === actor ? 'author' : 'teammate', userId: member.id, role: member.role });
   const cover = (hook, outcome) => outcome ? { covers: { claimId: slug(hook), outcomeId: outcome.id } } : {};
@@ -177,9 +201,12 @@ export function expandTeamOffer(input, actor, members) {
     });
     const completion = state => {
       const outcome = choose(completing, { priority, childStatus: state });
+      if (reviewRequired.includes(priority) && outcome?.expect.decision !== (state === 'completed' ? 'ALLOW' : 'DENY'))
+        reject('FINISHED_REVIEW_REQUIRED', `/${completing}/outcomes`);
       if (outcome) decisions.add(outcome.expect.decision);
       return complete(outcome);
     };
+    if (!child && reviewRequired.includes(priority)) reject('REQUIRED_REVIEW_NOT_CREATED', `/${completing}/requireFinishedReviewFor`);
     if (!child) {
       add('original', 'No linked task is added', [dispatch, completion('absent')]);
       continue;

@@ -87,7 +87,7 @@ export function linkedOffer() {
     TaskCreated: { source: bindings.TaskCreated, outcomes: [
       { when: { priority: null }, expected: { linkedTask: { title: 'Review the deliverable', assigneeId: 'leo' } } },
     ] },
-    TaskBeforeComplete: { source: bindings.TaskBeforeComplete, outcomes: [
+    TaskBeforeComplete: { source: bindings.TaskBeforeComplete, requireFinishedReviewFor: ['low', 'normal', 'high'], outcomes: [
       { when: { priority: null, linkedTask: ['absent', 'open'] }, expected: { allow: false, message: 'Complete its linked review first.' } },
       { when: { priority: null, linkedTask: ['completed'] }, expected: { allow: true, message: null } },
     ] },
@@ -119,5 +119,28 @@ export function offerSources(offer, behaviorOnly) {
     }
     result[hook].source = json({ ...(behaviorOnly ? {} : envelope), steps, return: returns });
   }
+  return result;
+}
+
+// Reproduce only the observed wire shape; never use this as a source producer.
+export function nestedOfferCalls(offer) {
+  const result = structuredClone(offer);
+  for (const hook of ['TaskCreated', 'TaskBeforeComplete']) {
+    if (!result[hook]) continue;
+    const program = JSON.parse(result[hook].source);
+    program.steps = program.steps.map(({ call, args, ...step }) => call ? { ...step, call: { capability: call, args } } : step);
+    result[hook].source = json(program);
+  }
+  return result;
+}
+
+// Reproduce the separate intent error: absence was mistaken for a finished review.
+export function allowMissingReview(offer) {
+  const result = structuredClone(offer), gate = result.TaskBeforeComplete;
+  const program = JSON.parse(gate.source);
+  program.steps.find(step => step.id === 'ready').let.cel = '!linked.anyIncomplete';
+  gate.source = json(program);
+  gate.outcomes[0].when.linkedTask = ['open'];
+  gate.outcomes[1].when.linkedTask = ['absent', 'completed'];
   return result;
 }

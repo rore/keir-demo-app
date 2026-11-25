@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
-import { linkedOffer, linkedSourceLookalike, offerSources } from '../fixtures/team-authored.mjs';
+import { allowMissingReview, linkedOffer, nestedOfferCalls, offerSources } from '../fixtures/team-authored.mjs';
 import { navigate, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { taskService } from '../../src/data.mjs';
 import { teamProjectService } from '../../src/team-native.mjs';
@@ -15,7 +15,9 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
   const requests = [];
   const question = 'I can add a linked review for a teammate, do that only for high-priority tasks, and keep the original open until the review is done.';
   const help = `${question}\n- Add a **linked review**\n- Use a \`fixed title\` <img src=x onerror=alert(1)>`;
-  const narrowing = 'Daymark can’t send email. Should I prepare the linked review without email?';
+  const narrowing = 'Daymark can’t send Slack messages. Should I prepare the linked review without Slack?';
+  const reviewOffer = nestedOfferCalls(offerSources(linkedOffer(), true));
+  if (width === 1440) reviewOffer.TaskCreated.outcomes[0].when.priority = ['low', 'normal', 'high'];
   const fixture = await startAuthoringFixture({ authoringOverride: {
     config: { status: 'ready', provider: 'openai', model: 'fixture', reserveMicros: OPENAI_RESERVE_MICROS, maxMicros: 4_000_000 },
     providerFactory: config => ({
@@ -26,9 +28,9 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
         expect(request.tools.map(tool => tool.name)).toEqual(['offer_proposal']);
         expect(JSON.parse(request.toolResult.output)).toMatchObject({
           ok: false, saved: false, remainingAttempts: 1,
-          diagnostics: [{ code: 'TASK_FIELD_UNSUPPORTED', path: '/TaskCreated/source/steps/1' }],
+          diagnostics: [{ code: 'FINISHED_REVIEW_REQUIRED', path: '/TaskBeforeComplete/outcomes' }],
         });
-        const corrected = reply('offer_proposal', offerSources(linkedOffer(), false));
+        const corrected = reply('offer_proposal', reviewOffer);
         corrected.calls[0].id = 'corrected-offer';
         return corrected;
       }
@@ -46,17 +48,18 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       expect(result.businessContext.restriction).toContain('never starts another creation rule');
       expect(request.instructions).toContain('Do not ask the user to choose before answering basic capability questions');
       expect(request.instructions).not.toContain('Show business output, ordered calls, trace and receipts separately');
+      expect(request.instructions).toContain('Missing is not done: deny both absent and open');
       if (input.hostContext.intent === 'discuss') {
         expect(request.tools.some(tool => tool.name === 'offer_proposal')).toBe(false);
         return { calls: [], text: help, usage: { inputTokens: 1, outputTokens: 1 } };
       }
-      if (input.currentUserMessage.includes('email reminders')) return reply('ask_clarification', { question: narrowing });
-      if (input.currentUserMessage === 'Yes, leave out the email.') {
+      if (input.currentUserMessage.includes('Slack messages')) return reply('ask_clarification', { question: narrowing });
+      if (input.currentUserMessage === 'Yes, leave out Slack.') {
         expect(input.clarificationContext).toBe(narrowing);
-        expect(input.previousUserMessages.at(-1)).toContain('email reminders');
+        expect(input.previousUserMessages.at(-1)).toContain('Slack messages');
       }
-      if (width === 1440) return reply('offer_proposal', offerSources(linkedOffer(), true));
-      return reply('offer_proposal', linkedSourceLookalike());
+      if (width === 1440) return reply('offer_proposal', reviewOffer);
+      return reply('offer_proposal', allowMissingReview(reviewOffer));
     },
   }) } });
   const project = taskService(fixture.db).createProject('maya', { name: 'Launch team', mode: 'TEAM' });
@@ -123,24 +126,28 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await expect(helpReply.locator('code')).toHaveText('fixed title');
     await expect(helpReply.getByText('<img src=x onerror=alert(1)>', { exact: false })).toBeVisible();
     await expect(helpReply.locator('img, .rs-message')).toHaveCount(0);
-    await send('Ask Leo to review new tasks and block completion until their linked review is done. Also send email reminders.');
-    await expect(page.getByText(narrowing, { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Confirm this behavior' })).toHaveCount(0);
-    await send('Yes, leave out the email.');
+    if (width === 390) {
+      await send('Add a linked review for Leo to every new task. The original may only be finished after its review is done. Also send Slack messages.');
+      await expect(page.getByText(narrowing, { exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Confirm this behavior' })).toHaveCount(0);
+      await send('Yes, leave out Slack.');
+    } else await send('Add a linked review for Leo when someone adds a task. Keep the original open until its review is finished.');
     const proposed = page.getByRole('article', { name: 'Proposed behavior' });
-    await expect(proposed.getByText('For every new main task, Daymark adds “Review the deliverable” for Leo.', { exact: true })).toBeVisible();
+    const behaviorText = width === 390 ? 'For every new main task, Daymark adds “Review the deliverable” for Leo.'
+      : 'When priority is low, normal, or high, Daymark adds “Review the deliverable” for Leo.';
+    await expect(proposed.getByText(behaviorText, { exact: true })).toBeVisible();
     await expect(proposed.getByRole('heading', { name: 'Proposed behavior for Launch team' })).toBeVisible();
     await proposed.getByText('Examples', { exact: true }).click();
     await expect(proposed.getByText(/The task stays open\. Complete its linked review first\./)).toBeVisible();
     await proposed.getByText('Examples', { exact: true }).click();
     expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(0);
-    expect(requests).toHaveLength(width === 390 ? 8 : 6);
+    expect(requests).toHaveLength(width === 390 ? 8 : 4);
     expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(requests.length * OPENAI_RESERVE_MICROS);
     if (width === 390) {
       await page.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
       await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
       const latest = page.getByRole('log', { name: 'Latest messages', exact: true });
-      await expect(latest).toContainText('Yes, leave out the email.');
+      await expect(latest).toContainText('Yes, leave out Slack.');
       await expect(latest).toBeInViewport({ ratio: 1 });
       const confirm = proposed.getByRole('button', { name: 'Confirm this behavior' });
       await expect(confirm).toBeInViewport({ ratio: 1 });
@@ -165,7 +172,7 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await expect(page.getByRole('button', { name: 'Approve this draft' })).toBeEnabled();
     expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(1);
     const decision = page.getByRole('region', { name: 'Review and current use' });
-    const behavior = decision.getByText('For every new main task, Daymark adds “Review the deliverable” for Leo.', { exact: true });
+    const behavior = decision.getByText(behaviorText, { exact: true });
     const consequence = decision.getByText('When the linked task is completed, the main task can be completed.', { exact: true });
     await expect(behavior).toBeVisible();
     await expect(decision.getByRole('heading', { name: 'Proposed customization' })).toBeFocused();
@@ -188,7 +195,7 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await examples.getByText('See how it works', { exact: true }).click();
     const business = examples.getByRole('article').filter({ has: page.getByRole('heading', { name: 'One example in Launch team' }) });
     await expect(business.getByRole('listitem')).toHaveText([
-      'Maya adds “Example original task” (normal priority).',
+      `Maya adds “Example original task” (${width === 390 ? 'normal' : 'low'} priority).`,
       'Daymark adds “Review the deliverable” for Leo.',
       'Leo finishes “Review the deliverable”.',
       'Maya finishes “Example original task”.',
@@ -197,10 +204,10 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await expect(business.getByRole('heading')).toBeInViewport({ ratio: 1 });
     for (const step of await business.getByRole('listitem').all()) await expect(step).toBeInViewport({ ratio: 1 });
     await page.screenshot({ path: info.outputPath('expanded-business-example.png') });
-    const details = examples.getByText('Details · all 3 checks', { exact: true });
+    const details = examples.getByText(`Details · all ${width === 390 ? 3 : 9} checks`, { exact: true });
     await details.click();
-    await expect(examples.getByText('The task stays open. Complete its linked review first.', { exact: true })).toHaveCount(2);
-    await expect(examples.getByText('Example setup: The task is saved but the reply is lost.', { exact: true })).toBeVisible();
+    await expect(examples.getByText('The task stays open. Complete its linked review first.', { exact: true })).toHaveCount(width === 390 ? 2 : 6);
+    await expect(examples.getByText('Example setup: The task is saved but the reply is lost.', { exact: true }).first()).toBeVisible();
     await examples.getByText('Exact example results', { exact: true }).click();
     await expect(examples.locator('pre')).toBeVisible();
     await page.getByRole('button', { name: 'Turn on for new tasks' }).click();

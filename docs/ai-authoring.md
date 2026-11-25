@@ -18,7 +18,7 @@ A current project admin uses Studio to discuss one Team project's rule. Check th
 
 The isolated Team review fixture uses scripted replies for two request shapes: linked review and high-priority triage. It exercises the real compiler, isolated native checks and task lifecycle. It does not qualify live interpretation, provider quality or arbitrary requests.
 
-For new Team offers, Daymark supplies the source language, program name, model pin, and hook from the host. The assistant supplies the rule steps, return value, and independent business outcomes. Older full-source offers still work if their hook matches; Daymark replaces only the declared program metadata and rejects extra top-level fields. This does not rewrite saved rules.
+For new Team offers, Daymark supplies the source language, program name, model pin, and hook from the host. The assistant supplies the rule steps, return value, and independent business outcomes. Daymark validates call steps and converts an unambiguous nested `call` into a capability name with separate `args`. It rejects conflicting forms before confirmation. For a declared requirement to wait until the linked review is done, it checks that both a missing and an open review block completion. An explicit exception is a different rule. Older full-source offers still work if their hook matches; Daymark replaces only the declared program metadata and rejects extra top-level fields. This does not rewrite saved rules.
 
 ## Configure a provider
 
