@@ -6,6 +6,8 @@ import { AuthoringError, createAuthoringProvider } from './authoring-provider.mj
 import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './authoring-agent.mjs';
 import { authoringExample, businessContext, evidenceSummary } from './authoring-example.mjs';
 import { createAuthoringContext } from './authoring-context.mjs';
+import { createTeamAuthoringTurns } from './team-authoring-turns.mjs';
+import { projectAccess } from './team-native.mjs';
 
 export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_INVALID', 'AI_CREDENTIALS_MISSING', 'HOST_UNAVAILABLE', 'LEGACY_CUSTOMIZATION_RETIRED',
   'AUTHORING_GUIDE_UNAVAILABLE',
@@ -45,7 +47,7 @@ const resourcePolicy = 'continuous-ai-authoring/3';
 const readableDefinition = id => id === TASK_DEFINITION || id === 'daymark.task-completed/3';
 
 // One app/data owner. The database journals work; the map contains only live cancellation/settlement handles.
-export function createAuthoringService({ db, lifecycle, config = readAuthoringConfig(), fetchImpl,
+export function createAuthoringService({ db, lifecycle, teamCapability, teamProjects, config = readAuthoringConfig(), fetchImpl,
   checkpointFault = () => {}, providerFactory = value => createAuthoringProvider(value, { fetchImpl }) }) {
   const live = new Map(); let closing = false; const definitions = new Map();
   for (const hook of TASK_HOOKS) {
@@ -75,8 +77,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     try { return { state: JSON.parse(row.state), operations: JSON.parse(row.operations), view: JSON.parse(row.view) }; }
     catch { throw error(503, 'HOST_RESULT_INVALID'); }
   };
-  function availability(guideReady) {
-    let code = closing ? 'HOST_UNAVAILABLE' : config.status !== 'ready' ? config.code : definitions.size !== TASK_HOOKS.length ? 'HOST_UNAVAILABLE' : null;
+  function availability(guideReady, team = false) {
+    let code = closing ? 'HOST_UNAVAILABLE' : config.status !== 'ready' ? config.code : !team && definitions.size !== TASK_HOOKS.length ? 'HOST_UNAVAILABLE' : null;
     if (code === null && !(guideReady ?? loadAuthoringInstructions())) code = 'AUTHORING_GUIDE_UNAVAILABLE';
     return { available: code === null, code, provider: config.status === 'ready' ? config.provider : null,
       model: config.status === 'ready' ? config.model : null };
@@ -108,8 +110,8 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
   function projects(owner, before = '') {
     const scope = encode(['projects', owner]), anchor = before === '' ? null : parseCursor(before, scope);
     if (anchor && (Object.keys(anchor).length !== 3 || typeof anchor.createdAt !== 'string' || !token(anchor.id)
-        || !db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=? AND created_at=?').get(owner, anchor.id, anchor.createdAt))) throw error(400, 'INVALID_TOOL_ARGUMENTS');
-    const rows = db.prepare(`SELECT id,CAST(name AS BLOB) AS name,created_at FROM projects WHERE owner_id=?${anchor ? ' AND (created_at<? OR (created_at=? AND id<?))' : ''} ORDER BY created_at DESC,id DESC LIMIT 21`)
+        || !db.prepare("SELECT 1 FROM projects WHERE owner_id=? AND id=? AND created_at=? AND mode='PERSONAL'").get(owner, anchor.id, anchor.createdAt))) throw error(400, 'INVALID_TOOL_ARGUMENTS');
+    const rows = db.prepare(`SELECT id,CAST(name AS BLOB) AS name,created_at FROM projects WHERE owner_id=? AND mode='PERSONAL'${anchor ? ' AND (created_at<? OR (created_at=? AND id<?))' : ''} ORDER BY created_at DESC,id DESC LIMIT 21`)
       .all(owner, ...(anchor ? [anchor.createdAt, anchor.createdAt, anchor.id] : []));
     const page = rows.slice(0, 20), last = page.at(-1);
     return { projects: page.map(row => ({ id: row.id, name: Buffer.from(row.name).toString('utf8') })),
@@ -685,8 +687,22 @@ export function createAuthoringService({ db, lifecycle, config = readAuthoringCo
     }
     return read(owner, id);
   }
+  const team = teamCapability && createTeamAuthoringTurns({
+    db, capability: teamCapability, projects: teamProjects, live, safeMessage, codeFor,
+    access(actor, projectId, lease) {
+      if (closing || !lease || !token(lease.sessionId) || lease.current() !== true) throw error(401, 'STALE_CONTEXT');
+      if (projectAccess(db, actor, projectId, true).mode !== 'TEAM') throw error(404, 'STALE_CONTEXT');
+    },
+    availability: ready => availability(ready, true),
+    provider: () => providerFactory(config),
+    budget: () => Math.max(0, config.maxMicros - effectiveHeld()),
+    reserve(micros) {
+      if (!integer(micros) || micros !== config.reserveMicros || effectiveHeld() + micros > config.maxMicros) stop('SPEND_LIMIT');
+      db.prepare('UPDATE authoring_budget SET reserved_micros=? WHERE id=1').run(held() + micros);
+    },
+  });
   return {
-    list, read, turn, cancel, availability, messages: messagePage, transcript,
+    list, read, turn, cancel, availability, messages: messagePage, transcript, team,
     assertItemIdle(owner, extensionId) {
       if ([...live.values()].some(ctx => ctx.owner === owner && ctx.extensionId === extensionId)) {
         const failure = new AppError(409, 'Open this customization and use Stop, then wait for authoring to settle before deleting it.');

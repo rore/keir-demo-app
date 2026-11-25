@@ -1,0 +1,30 @@
+[
+  {
+    "name": "request-review",
+    "entrypoint": "TaskCreated",
+    "steps": [
+      { "id": "task", "call": "tasks.get", "args": { "taskId": { "cel": "input.taskId" } } },
+      { "id": "child", "call": "tasks.create", "args": {
+        "projectId": { "cel": "task.projectId" },
+        "parentTaskId": { "cel": "task.id" },
+        "assigneeId": { "literal": "leo", "type": "UserId" },
+        "title": { "literal": "Review deliverable" }
+      } }
+    ],
+    "return": { "record": { "status": { "literal": "CREATED" } } }
+  },
+  {
+    "name": "gate-deliverable-completion",
+    "entrypoint": "TaskBeforeComplete",
+    "steps": [
+      { "id": "children", "call": "tasks.childrenSummary", "args": {
+        "parentTaskId": { "cel": "input.taskId" }, "originEventId": { "cel": "input.creationEventId" }
+      } },
+      { "id": "ready", "let": { "cel": "children.exists && !children.anyIncomplete" } }
+    ],
+    "return": { "record": {
+      "decision": { "cel": "ready ? \"ALLOW\" : \"DENY\"" },
+      "message": { "cel": "ready ? \"\" : \"Complete the linked review first.\"" }
+    } }
+  }
+]

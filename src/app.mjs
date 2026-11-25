@@ -7,6 +7,9 @@ import { realpathSync } from 'node:fs';
 import { AppError, USERS, taskService } from './data.mjs';
 import { createTaskDispatcher } from './task-effects.mjs';
 import { createTaskCreateGuard } from './task-create-guard.mjs';
+import { createTeamRuntime } from './team-runtime.mjs';
+import { taskAccess, teamProjectService } from './team-native.mjs';
+import { createTeamCapability } from './team-capability.mjs';
 import { TASK_HOOK, TASK_EVENT_HOOKS } from './extension-catalog.mjs';
 import { createLifecycle } from './extension-lifecycle.mjs';
 import { createAuthoringService, AUTHORING_CODES } from './authoring-service.mjs';
@@ -30,12 +33,16 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   }
   const lifecycle = createLifecycle(db, { compiler });
   guard ??= createTaskCreateGuard({ db, lifecycle, commitReserveMs: 100 });
-  const service = taskService(db, { guard });
+  const team = createTeamRuntime({ db });
+  const service = taskService(db, { guard, team });
+  const teamProjects = teamProjectService(db);
+  const capability = createTeamCapability(db);
   const effects = createTaskDispatcher({ db, lifecycle, guard });
   const settings = createAuthoringSettings({ file: authoringSettingsFile, config: authoring.config });
-  const ai = createAuthoringService({ db, lifecycle, ...authoring, config: settings.config });
-  app.addHook('onClose', async () => { await Promise.all([ai.close(), effects.close(), guard.close?.()]); });
-  const wakeEffects = () => setImmediate(() => { void effects.wake().catch(() => {}); });
+  const ai = createAuthoringService({ db, lifecycle, ...authoring, config: settings.config, teamCapability: capability, teamProjects });
+  app.addHook('preClose', async () => { await capability.close(); });
+  app.addHook('onClose', async () => { await Promise.all([ai.close(), effects.close(), team.close(), guard.close?.()]); });
+  const wakeEffects = () => setImmediate(() => { void effects.wake().catch(() => {}); void team.wake().catch(() => {}); });
   app.addHook('onReady', async () => { wakeEffects(); });
   await app.register(cookie);
   app.decorateRequest('scope', null);
@@ -228,7 +235,71 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
       session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request), { signal }));
     authorize(request); return lifecycleResponse(result);
   });
-  app.post('/api/projects', (request, reply) => { const result = service.createProject(authorize(request).userId, request.body); reply.code(201); return result; });
+  app.post('/api/projects', (request, reply) => {
+    const result = service.createProject(authorize(request).userId, request.body, { authorize: () => authorize(request).userId });
+    reply.code(201); return result;
+  });
+  app.get('/api/projects/:id/members', request => {
+    noQuery(request); return teamProjects.members(authorize(request).userId, request.params.id);
+  });
+  app.post('/api/projects/:id/members', request => {
+    noQuery(request);
+    return teamProjects.addMember(authorize(request).userId, request.params.id, request.body, () => authorize(request).userId);
+  });
+  app.get('/api/projects/:id/capability', request => {
+    noQuery(request); const actor = authorize(request).userId;
+    return capability.state(actor, request.params.id, () => authorize(request).userId);
+  });
+  app.get('/api/projects/:id/authoring', request => {
+    noQuery(request);
+    return lifecycleResponse(ai.team.read(authorize(request).userId, request.params.id, authoringLease(request)));
+  });
+  app.post('/api/projects/:id/authoring/turn', { bodyLimit: 49152 }, async (request, reply) => {
+    noQuery(request);
+    const result = await ai.team.turn(authorize(request).userId, request.params.id, request.body, authoringLease(request));
+    reply.code(202);
+    return lifecycleResponse(result);
+  });
+  app.post('/api/projects/:id/authoring/cancel', { bodyLimit: 2048 }, request => {
+    noQuery(request);
+    return lifecycleResponse(ai.team.cancel(authorize(request).userId, request.params.id, request.body, authoringLease(request)));
+  });
+  app.post('/api/projects/:id/authoring/confirm', { bodyLimit: 2048 }, async (request, reply) => {
+    noQuery(request);
+    const actor = authorize(request).userId, lease = authoringLease(request);
+    const result = await withSignal(request, reply, signal => ai.team.confirm(actor, request.params.id, request.body, lease, signal));
+    return lifecycleResponse(result);
+  });
+  app.get('/api/projects/:id/capability/revisions', request => {
+    const actor = authorize(request).userId;
+    return capability.revisions(actor, request.params.id, request.query, () => authorize(request).userId);
+  });
+  for (const [path, method] of [['revisions', 'source'], ['evidence', 'evidence']]) {
+    app.get(`/api/projects/:id/capability/${path}/:recordId`, request => {
+      noQuery(request); const actor = authorize(request).userId;
+      return capability[method](actor, request.params.id, request.params.recordId, () => authorize(request).userId);
+    });
+  }
+  for (const [path, method, bodyLimit] of [['proposals', 'propose', 16384], ['simulations', 'simulate', 32768]]) {
+    app.post(`/api/projects/:id/capability/${path}`, { bodyLimit }, async (request, reply) => {
+      noQuery(request); const actor = authorize(request).userId;
+      const result = await withSignal(request, reply, signal => capability[method](
+        actor, request.params.id, request.body, () => authorize(request).userId, { signal }));
+      authorize(request); return result;
+    });
+  }
+  app.get('/api/projects/:id/capability/operations/:operationId', request => {
+    noQuery(request); const actor = authorize(request).userId;
+    return capability.readOperation(actor, request.params.id, request.params.operationId, () => authorize(request).userId);
+  });
+  for (const [path, method] of [['approvals', 'approve'], ['activations', 'activate'], ['deactivations', 'deactivate'], ['revocations', 'revoke']]) {
+    app.post(`/api/projects/:id/capability/${path}`, { bodyLimit: ['deactivations', 'revocations'].includes(path) ? 2048 : 40960 }, async (request, reply) => {
+      noQuery(request); const actor = authorize(request).userId;
+      const result = await withSignal(request, reply, signal => capability[method](
+        actor, request.params.id, request.body, () => authorize(request).userId, { signal }));
+      authorize(request); return result;
+    });
+  }
   app.patch('/api/projects/:id', request => service.renameProject(authorize(request).userId, request.params.id, request.body));
   app.get('/api/projects/:id/tasks', request => service.listTasks(authorize(request).userId, request.params.id));
   app.get('/api/projects/:id/tasks/search', request => service.searchTasks(authorize(request).userId, request.params.id, request.query));
@@ -238,11 +309,16 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     if (Object.keys(request.query).some(key => key !== 'trigger') || !TASK_EVENT_HOOKS.includes(hook)) throw new AppError(400, 'Choose a task trigger.');
     return hook;
   };
-  app.get('/api/tasks/:id/reaction', request => effects.status(authorize(request).userId, request.params.id, reactionHook(request)));
+  app.get('/api/tasks/:id/reaction', request => {
+    const actor = authorize(request).userId, hook = reactionHook(request);
+    return taskAccess(db, actor, request.params.id).project.mode === 'TEAM'
+      ? team.status(actor, request.params.id, hook) : effects.status(actor, request.params.id, hook);
+  });
   app.post('/api/tasks/:id/reaction/reconcile', request => {
     const session = authorize(request), hook = reactionHook(request);
     if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new AppError(400, 'Checking a saved outcome takes no fields.');
-    return effects.reconcile(session.userId, request.params.id, hook);
+    return taskAccess(db, session.userId, request.params.id).project.mode === 'TEAM'
+      ? team.reconcile(session.userId, request.params.id, hook) : effects.reconcile(session.userId, request.params.id, hook);
   });
   app.post('/api/tasks', async (request, reply) => {
     const owner = authorize(request).userId;
@@ -257,10 +333,11 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
       { authorize: () => authorize(request).userId });
   });
   app.patch('/api/tasks/:id', request => service.editTask(authorize(request).userId, request.params.id, request.body));
-  app.post('/api/tasks/:id/complete', request => {
+  app.post('/api/tasks/:id/complete', async (request, reply) => {
     const session = authorize(request);
     if (!request.body || Object.keys(request.body).length) throw new AppError(400, 'Completion takes no fields.');
-    const result = service.completeTask(session.userId, request.params.id);
+    const result = await withSignal(request, reply, signal => service.completeTask(session.userId, request.params.id,
+      { signal, authorize: () => authorize(request).userId }));
     wakeEffects();
     return result;
   });

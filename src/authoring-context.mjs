@@ -92,7 +92,10 @@ export function createAuthoringContext({ db, lifecycle, owner, extensionId, inte
       const filters = { query: input.query.trim(), tag: input.tag.trim().normalize('NFC').toLowerCase(), includeNotes: input.includeNotes };
       const query = { ...(filters.query && { q: filters.query }), ...(filters.tag && { tag: filters.tag }), ...(input.after && { after: input.after }) };
       let page;
-      try { page = native.searchTasks(owner, input.projectId, query, { allowAll: true }); }
+      try {
+        if (!db.prepare("SELECT 1 FROM projects WHERE id=? AND owner_id=? AND mode='PERSONAL'").get(input.projectId, owner)) return unavailable('TASKS_UNAVAILABLE');
+        page = native.searchTasks(owner, input.projectId, query, { allowAll: true });
+      }
       catch (cause) {
         if (cause instanceof AppError && cause.status === 400) invalid();
         return unavailable('TASKS_UNAVAILABLE');

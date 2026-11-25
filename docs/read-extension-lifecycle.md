@@ -1,7 +1,7 @@
 <a id="customization-lifecycle-reference"></a>
 # Daymark host integration
 
-Daymark implements Keir in a task-management application. Use this reference when building or changing that integration. For the user journey, start with the [walkthrough](customization-walkthrough.md); for provider keys, costs and privacy, use [AI setup](ai-authoring.md).
+Daymark implements Keir in a task-management application. This reference describes its Personal customization contract. For Team project bindings, evidence and lifecycle, see the [Team project reference](native-task-app-design.md#team-projects). For provider keys, costs and privacy, use [AI setup](ai-authoring.md).
 
 ## Host responsibilities
 
@@ -46,6 +46,8 @@ Disable and deletion invalidate selection and durably revoke captured admissions
 Test actual native ownership, receipt, revocation, deadline and process-restart behavior separately from synthetic checks; see [verification](../tests/README.md). Process-crash evidence does not establish arbitrary power-loss durability or live-provider/persona acceptance. Qualification is bounded by its recorded packages, platform and checks.
 
 ## Authoring service
+
+This tool and draft-mutation flow is for Personal Studio. [Team Studio](native-task-app-design.md#author-a-team-customization) uses a project-scoped offer and a separate authenticated confirmation to save and check the draft.
 
 The model can suggest source and help prepare examples. It cannot approve, activate, complete a native task or grant native authority. Treat model-written examples as proposals; agree on wanted behavior independently of observed results.
 

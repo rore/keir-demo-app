@@ -31,7 +31,7 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
   function authority(context, deadline) {
     if (!withinDeadline(context, deadline)) return false;
     if (!db.prepare('SELECT 1 FROM users WHERE id=?').get(context.owner)
-        || !db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=?').get(context.owner, context.projectId)
+        || !db.prepare("SELECT 1 FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'").get(context.owner, context.projectId)
         || json(selection(context.owner)) !== context.selectionIdentity || !lifecycle.current(context.captured)
         || !lifecycle.admissionCurrent(context.admission)) return false;
     const execution = lifecycle.execution(context.owner, context.captured.revisionId, context.extensionId);

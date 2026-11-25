@@ -512,6 +512,11 @@ p {
   display:block;
   margin-bottom:10px;
 }
+.project-form select { max-width:100%; min-height:44px; }
+.project-form .form-line select { flex:1; min-width:0; }
+.team-members { overflow-wrap:anywhere; }
+.team-members .member-content { display:grid; gap:12px; padding:20px 28px; }
+.team-members form { gap:10px; }
 .form-line {
   display:flex;
   gap:8px;
@@ -643,6 +648,7 @@ p {
 .task-row-content { flex: 1; min-width: 0; }
 .task-row-content .task-open { width: 100%; }
 .task-reaction { margin-top: 12px; padding: 12px; border-left: 3px solid var(--green); background: #f0f2eb; font-size: 14px; overflow-wrap: anywhere; }
+.task-completion-hold { padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: #f0f2eb; overflow-wrap: anywhere; }
 .task-reaction p + p { margin-top: 8px; }
 .task-reaction-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .task-reaction details { margin-top: 8px; }

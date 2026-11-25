@@ -4,6 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { AUTHORING_TOOLS, createAuthoringState, runAuthoringTurn } from '../src/authoring-agent.mjs';
+import { AUTHORING_TOOLS as KEIR_TOOLS, runAuthoringTurn as runKeirTurn, tool } from '../src/keir-authoring-agent.mjs';
 import { AuthoringError, createAuthoringProvider } from '../src/authoring-provider.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 
@@ -173,6 +174,43 @@ function fixture(steps = [], initial = {}) {
     input: { id: 'input' + (state.version + 1), text: 'Create a read-only rule.', expectedVersion: state.version }, ...options });
   return { context, state, host, provider, requests, events, run, setDraft: value => { draft = value; } };
 }
+
+test('Keir authoring uses another host contract and scoped tools without Daymark routing', async () => {
+  const source = '{"entrypoint":"InvoicePosted","operation":"invoice.flag"}';
+  const f = fixture([
+    call('discover_catalog'), call('list_labels'),
+    call('compile_draft', { hookId: 'InvoicePosted', sourceJson: source, expectedDraftVersion: 0 }),
+  ]);
+  const contract = { supportedHooks: ['InvoicePosted'], fields: ['amount'], capabilities: ['invoice.flag'] };
+  f.host.discover = () => contract;
+  const compile = f.host.compile;
+  f.host.compile = (bytes, version, signal, hook) => {
+    assert.equal(hook, 'InvoicePosted');
+    assert.equal(bytes.toString(), source);
+    return compile(bytes, version, signal);
+  };
+  const definition = tool('list_labels', 'List permitted invoice labels.', {});
+  const tools = [...KEIR_TOOLS, definition];
+  const hostTools = { list_labels: { readOnly: true, run: () => ({ output: ['Needs review'] }) } };
+  const run = (fixture, text) => runKeirTurn({ ...fixture, tools, hostTools,
+    input: { id: 'input1', text, expectedVersion: 0 } });
+  await run(f, 'Flag posted invoices over 500 for review.');
+  assert.equal(f.state.handles.revisionId, 'revision1');
+  assert.deepEqual(JSON.parse(f.requests[1].toolResult.output).result, contract);
+  assert.deepEqual(JSON.parse(f.requests[2].toolResult.output).result, ['Needs review']);
+  assert.doesNotMatch(f.requests[0].instructions.split('\n\n# Customer authoring guide')[0], /Daymark|TaskBeforeCreate|search_tasks/);
+  assert.ok(!f.requests[0].tools.some(item => item.name === 'search_tasks'));
+
+  const unsupported = fixture([call('discover_catalog'), call('ask_clarification', {
+    question: 'I can flag invoices for review but cannot email anyone. Would a label work instead?',
+  })]);
+  unsupported.host.discover = () => contract;
+  const result = await run(unsupported, 'Email me when a large invoice is posted.');
+  assert.equal(result.status, 'AWAITING_USER');
+  assert.match(result.message, /cannot email/);
+  assert.equal(unsupported.state.handles.revisionId, null);
+  assert.equal(f.requests[0].instructions, unsupported.requests[0].instructions);
+});
 
 test('real loop compiles, repairs, replaces scenarios, consumes returned IDs and offers only host evidence', async () => {
   const f = fixture([

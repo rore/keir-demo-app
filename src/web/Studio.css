@@ -1,4 +1,29 @@
 .read-studio { --rs-gutter: 28px; color: var(--ink); flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; font-size: 16px; line-height: 1.55; }
+.team-capability-body { flex: 1; overflow-y: auto; min-height: 0; padding: 0 12px 28px; overflow-wrap: anywhere; }
+.team-capability-body > * { max-width: 720px; margin-inline: auto; }
+.team-capability-body .team-examples :is(details, summary), .team-more { font-size: inherit; }
+.team-capability-body .team-examples li + li { margin-top: 12px; }
+.team-capability-body .team-more { margin-top: 24px; }
+.team-capability-body .rs-chat { padding: 12px; border: 1px solid var(--line); border-radius: 12px; margin: 0 auto 16px; }
+.team-capability-body .rs-composer { padding: 6px 0 0; border: 0; }
+.team-capability-body .team-decision { margin-top: 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.team-capability-body .team-decision h2 { margin: 0 0 8px; }
+.team-capability-body .team-behavior { margin-block: 12px; }
+.team-capability-body .team-project-name { color: var(--muted); font-size: 14px; }
+.team-capability .team-capability-body .rs-header { position: static; margin-bottom: 8px; }
+.team-capability .team-scope { grid-column: 1 / -1; min-width: 0; }
+.team-capability .team-scope .project-form { margin: 0; }
+.team-capability .team-scope select { min-width: 0; max-width: 100%; }
+@media (max-width: 600px) {
+  .team-capability .team-scope .project-form { padding: 8px 12px; }
+  .team-capability .team-scope .form-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .team-capability .team-scope button { padding-inline: 10px; }
+}
+.team-capability .rs-header h1:focus { outline: none; }
+.team-capability-body section { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 18px; }
+.team-capability-body label { display: grid; gap: 4px; min-width: 0; }
+.team-capability-body :is(input,textarea,select) { max-width: 100%; min-width: 0; width: 100%; padding: 10px; }
+.team-capability-body button { margin: 8px 8px 8px 0; }
 .read-studio button { min-height: 44px; border: 1px solid var(--control); background: #fff; border-radius: 8px; padding: 10px 16px; font-size: 14px; }
 .read-studio button:hover:not(:disabled) { background: #e9ede5; }
 .read-studio button:disabled { opacity: .55; }

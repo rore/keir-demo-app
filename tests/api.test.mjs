@@ -53,6 +53,13 @@ test('an admitted owner A completion keeps its exact native context after the br
   const ownRead = await app.inject(request('GET', `/api/tasks/${result.value.id}`, switchedBack));
   assert.equal(ownRead.statusCode, 200); assert.equal(ownRead.json().title, 'Owner A result');
   assert.equal(effects.status('maya', eventId).originalKey, captured.originalKey);
+  const completionReaction = await app.inject(request('GET', `/api/tasks/${source.json().id}/reaction`, switchedBack));
+  assert.equal(completionReaction.statusCode, 200);
+  assert.deepEqual(completionReaction.json().receipt, result, 'Personal completion keeps its own effect projection');
+  const creationReaction = await app.inject(request('GET', `/api/tasks/${source.json().id}/reaction?trigger=TaskCreated`, switchedBack));
+  assert.equal(creationReaction.statusCode, 200);
+  assert.equal(creationReaction.json().state, 'NO_BINDING');
+  assert.equal(creationReaction.json().receipt, null);
 });
 const jsonHeaders = { origin, 'content-type': 'application/json' };
 async function signIn(app, userId, context) {

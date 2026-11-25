@@ -1,6 +1,6 @@
-# Walkthrough: create a follow-up when a task is completed
+# Personal walkthrough: create a follow-up when a task is completed
 
-Maya wants every completed task in **The spring collection** to leave her a new **Follow up** task in the same project. This tour follows that customization from a plain-language request to its saved result in Daymark. You can read it without running the app.
+Maya wants every completed task in her Personal project **The spring collection** to leave her a new **Follow up** task in that project. This tour follows the request to its saved result without running the app. For a shared project, see [Team Studio](native-task-app-design.md#author-a-team-customization).
 
 The screenshots show the app with fictional, disposable data. Authoring responses are scripted using the [offline fixture](../tests/README.md#offline-configured-ai-fixture); compilation, simulation, approval, activation and the native task writes are real. No paid AI requests were made for this tour.
 

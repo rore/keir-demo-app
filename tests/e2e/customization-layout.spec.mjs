@@ -274,7 +274,7 @@ test('normal navigation preserves native forms and returns to the actual overvie
 
 test('overflowing native projects and tasks scroll independently with stable navigation and retained task position', async ({ page, demo }) => {
   const now = new Date().toISOString();
-  for (let i = 0; i < 60; i++) demo.db.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?)').run(`overflow-project-${i}`, 'maya', `Overflow project ${i}`, now, now);
+  for (let i = 0; i < 60; i++) demo.db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at) VALUES (?, ?, ?, ?, ?)').run(`overflow-project-${i}`, 'maya', `Overflow project ${i}`, now, now);
   const project = demo.db.prepare("SELECT id FROM projects WHERE owner_id='maya' ORDER BY created_at LIMIT 1").get().id;
   for (let i = 0; i < 80; i++) demo.db.prepare('INSERT INTO tasks (id, owner_id, project_id, title, notes, status, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(`overflow-task-${i}`, 'maya', project, `Overflow task ${i}`, '', 'open', now, now, null);
   await enter(page, demo);

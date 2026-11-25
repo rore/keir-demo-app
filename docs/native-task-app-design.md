@@ -6,6 +6,8 @@ This contributor reference records the native-service guarantees behind Daymark'
 
 Daymark uses React/TypeScript with Vite, a small same-origin Fastify API/static host and `node:sqlite` native services. No ORM, SSR, cloud database or generic transport framework. Studio uses the same app shell and the authoring/lifecycle APIs; see the [implementation map](../src/README.md). Node 24.14.1 is the existing qualification runtime; its SQLite API is experimental and must be documented and tested, not described as stable or made a reason to upgrade installed tools. Pin actual qualified packages in the lockfile.
 
+Daymark is a reference host for a Keir authoring agent. [Reusable turn logic](../src/keir-authoring-agent.mjs) handles intent, tool calls and exact draft handles without depending on task hooks. An [offline alternate-host check](../tests/authoring-agent.test.mjs) exercises that separation. This is code inside the reference app, not a packaged SDK or portable Studio UI. Daymark supplies the [Personal instructions and bindings](../src/authoring-agent.mjs), the [Team catalog and scoped tools](../src/team-authoring-host.mjs), and [authenticated Team turns, confirmation and automatic checks](../src/team-authoring-turns.mjs). The host owns the durable conversation and spending journal, permission checks, native data and evidence. People approve drafts and turn them on; the assistant cannot do either or write live tasks.
+
 Bind loopback only. Built startup serves the native app from one local process. Native app startup does not require AI, Java, a core sibling checkout or a browser download. Three explicitly fictional demo identities represent three independent customer scopes; use Maya, Leo and Sam for consistency with the separate Studio prototype.
 
 ## Session and request context
@@ -21,7 +23,55 @@ Bind loopback only. Built startup serves the native app from one local process. 
 
 Projects have an opaque stable ID, server-owned user, required trimmed name (1–80 characters) and creation/update timestamps. Tasks have an opaque ID, a project, title (1–120), notes (0–4000), status `open` or `completed`, creation/update timestamps and a completion timestamp exactly when completed. Ownership is immutable. Derive task ownership through its project, or enforce an owner-consistent composite foreign key; independent disagreeing owner fields are not acceptable.
 
-Native operations create/list/rename projects and create/list/get/edit/complete tasks. Completion is idempotent. Reopening, deletion and sharing are outside this slice. Use parameterized owner-scoped queries, `NOT NULL`/status checks and enabled/verified foreign keys on every connection. Make seed and multi-statement operations transactional. Invalid operations leave prior data unchanged.
+Native operations create/list/rename projects and create/list/get/edit/complete tasks. Completion is idempotent under current access. Reopening and deletion are outside this slice. Personal queries stay owner-scoped; Team access checks current project membership separately. Use parameterized queries, `NOT NULL`/status checks and enabled/verified foreign keys on every connection. Make seed and multi-statement operations transactional. Invalid operations leave prior data unchanged.
+
+### Team projects
+
+Schema 15 adds Personal-default project mode, Team membership, task creator/assignee and immutable child origin. Existing data stays Personal. Upgrades do not seed shared projects or change saved Personal selections, drafts, events, receipts or settings.
+
+In **Project tools → New project**, choose **Team**. New projects default to Personal. The creator becomes the first Team admin. In **Manage members**, an admin can add an existing demo user; members can use **View members**. The project starts with no policy. Current members can read the membership list through `GET /api/projects/:id/members`; only a current admin can add an existing user through `POST` on that route.
+
+#### Author a Team customization
+
+Select the Team project, then choose **Customizations → Open Studio**. A current admin can describe the rule in the conversation. For example, ask Daymark to create a linked review for Leo on every new main task in this project and hold completion until that review is done. Check the project, assignee, matching tasks and completion behavior in the proposal. Open **Exact expected outcomes** to see the full expectations before confirming. Resolve material ambiguity and explicitly agree before dropping or replacing an unsupported part. The Team catalog does not schedule reminders, set automatic due dates or update the original task. Members cannot open Studio or read draft source or evidence. Live discussion needs a [configured provider](ai-authoring.md#configure-a-provider).
+
+Choose **Confirm this behavior** to compile and save the exact draft, then automatically check its independently recorded expectations. An intentionally unused completion rule is saved as an absent binding, not a missing artifact. The checks run the saved artifacts through native services in disposable in-memory stores with synthetic people, tasks and interruptions. Real tasks and current use do not change. Use **Check examples** to recheck an existing draft, not as a separate first step.
+
+Review **Examples** and expand **Details** for all checks and the exact results. A mismatch shows the expected and observed behavior. A missing, stale or insufficient check blocks approval even if some examples pass. Changed behavior needs a fresh agreement, revision and check. Earlier scripted revisions still use their saved lifecycle and strict six-example qualification; that is not the contract for new authored drafts.
+
+Choose **Approve this draft** to record approval of the exact revision and its latest eligible evidence. A newer check needs a new approval, even if it passes. Separately choose **Turn on for new tasks** to select that revision. Already-started work keeps its saved rule or explicit no-policy choice. A new draft or a failed check does not replace the rule in use.
+
+Choose **Back to project Tasks**. Add or complete work in the ordinary Tasks view. After a rule denies completion, Task details shows the last attempt's reason. A verified linked task can be opened from there, with its current assignee and status. A linked task alone does not establish a hold, and an earlier denial does not prove a hold still applies. If linked creation is unconfirmed, use **Check again** to read the saved result. This does not rerun the rule or prove that no task was created.
+
+#### Read back or stop Team use
+
+After an unconfirmed preparation or check, use **More → Read saved state** or the recovery control shown by Studio. Do not resubmit an uncertain save. After an unconfirmed approval, activation, deactivation or revocation, choose **Check saved action** to look up the original receipt without resubmitting. **Exact saved action** can show the receipt in the saved-draft view when no proposal is awaiting confirmation. If the receipt is missing or not visible, neither **More → Exact current-use receipt** nor the current target state proves what happened to the original action. Do not repeat an unconfirmed action. If you know the selection or target has changed and intend to make a new choice, read the current state and explicitly confirm the exact target for that new action. Do not retarget automatically.
+
+Under **More → Stop using this selection**, choose **Stop using for new Team tasks**, check the exact selected revision and choose **Confirm stop for new tasks**. Started work keeps its pinned rule unless that revision is revoked. New tasks save a no-policy choice until another rule is selected.
+
+Under **More → Emergency revocation**, choose the **Exact revision to revoke**. Use **Next revisions** if needed, then choose **Review emergency revocation** and check the target and consequences before choosing **Revoke this exact revision**. The list includes older, dormant and native revisions. Counts are advisory: pending effects can belong to completed tasks.
+
+Revocation permanently blocks that revision's future effects and completion of unfinished main tasks pinned to it. It clears the selection only if that exact revision is selected. Completed work, saved children and receipts are not undone. Verified linked tasks can still be completed. To replace a revoked draft, propose fresh behavior in the conversation, confirm and check it, then approve and turn it on separately. There is no repair, restore or repinning action. The manual fixture below is separate from Studio.
+
+### Disposable native policy preview
+
+The separate fixture below manually installs two compiled revisions to demonstrate native policy execution. It is not the Team Studio lifecycle. The three-operation Team catalog supports task reads, a provenance-filtered child summary and one linked create. Policy source chooses the child's title and assignee. Effects never admit another creation event.
+
+In a separate checkout with qualified Node 24.14.1, Java 21 and dependencies, build and create a **new disposable directory**:
+
+```sh
+npm run build
+node scripts/team-native-fixture.mjs .data
+node src/server.mjs --data-dir .data --port 3179
+```
+
+The fixture refuses any existing directory. Do not use it with saved or live data. Sign in as Maya, choose **Shared collection**, and add a task. Its details link to the created review. Early completion is denied. Switch to Leo, choose the same project, complete the assigned review, then return as Maya and complete the original task. No provider call is used.
+
+Current members can read, search and create. An admin or the assignee may edit/complete assigned work. For unassigned work, an admin or the creator may act. Storage `owner_id` remains the project's storage key, not the acting member. Create replay and reaction/reconciliation reads recheck current membership. Personal adapters and authoring projections cannot read or write Team data.
+
+Each root saves an explicit no-policy marker or an immutable revision in its creation transaction. Selection changes and deactivation affect new roots only. A required but missing hook blocks completion. Revocation blocks covered execution. Completion evaluates the real read-only runtime outside SQLite, then rechecks current session, membership, assignment, saved pin, deadline, revocation and read facts inside its native transaction.
+
+A claimed creation runs at most once. The native child, immutable origin and original-key receipt commit together. Reconciliation reads that key without invoking Keir. Runtime outcome and native observation stay separate. An open or unconfirmed attempt stays unresolved. A closed, fenced no-write attempt stays blocked when the pinned gate requires a child; this preview has no repair or retry action.
 
 ### Priority and due time
 

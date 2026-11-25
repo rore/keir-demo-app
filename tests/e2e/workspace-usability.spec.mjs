@@ -77,7 +77,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 683, height: 384
   test(`project tool popup opens in view without moving fixed controls at ${viewport.width}x${viewport.height}`, async ({ page }) => {
     const fixture = await startAuthoringFixture({ unconfigured: true });
     const now = new Date().toISOString();
-    for (let i = 0; i < 40; i++) fixture.db.prepare('INSERT INTO projects VALUES (?,?,?,?,?)')
+    for (let i = 0; i < 40; i++) fixture.db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at) VALUES (?,?,?,?,?)')
       .run(`menu-project-${i}`, 'maya', `Additional project ${i}`, now, now);
     try {
       await page.setViewportSize(viewport);

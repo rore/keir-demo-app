@@ -7,13 +7,14 @@ import { resolve, join, dirname } from 'node:path';
 import { loadHost, definitionForPins, definitionKey, definitionFormats, digest, json, TASK_HOOK } from './extension-catalog.mjs';
 import { taskEffectProofMatches } from './task-effect-simulation.mjs';
 import { normalizeTaskTag, normalizeTaskTags, parseWorkflowTagsText, validOpenMatchInput, normalizeWorkflowTitle } from './task-workflow-values.mjs';
+import { addTeamProjects, addTeamCapabilities, addTeamLifecycle, addTeamControls, teamTables, projectAccess, taskAccess, admitTeamRoot } from './team-native.mjs';
 
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
   'legacy_extension_selections', 'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
 const authoringHistoryTables = ['authoring_dispatches', 'authoring_messages', 'authoring_operations'];
 const taskEffectTables = ['task_create_operations', 'task_effect_receipts', 'task_events'];
 const createdHook = 'TaskCreated';
-const schemaVersion = 14;
+const schemaVersion = 18;
 const addTaskFields = `
   ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high'));
   ALTER TABLE tasks ADD COLUMN due_at TEXT
@@ -335,7 +336,7 @@ function seedRows(db) {
     selection.run(user.id, createdHook);
     selection.run(user.id, 'TaskBeforeCreate');
     const projectId = randomUUID();
-    db.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?)').run(projectId, user.id, user.project, now, now);
+    db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at) VALUES (?, ?, ?, ?, ?)').run(projectId, user.id, user.project, now, now);
     user.tasks.forEach((title, index) => {
       db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -357,7 +358,7 @@ function readBytes(path, length, position = 0) {
 }
 
 function supportedVersion(version, allowUpgrade) {
-  return version === schemaVersion || allowUpgrade && (version === 10 || version === 11 || version === 12 || version === 13);
+  return version === schemaVersion || allowUpgrade && (version === 10 || version === 11 || version === 12 || version === 13 || version === 14 || version === 15 || version === 16 || version === 17);
 }
 
 function inspectDataFile(path, allowUpgrade = false) {
@@ -393,6 +394,10 @@ function assertDatabase(db, allowUpgrade = false) {
       if (version >= 12) expected.exec(rebuildTaskWorkflow);
       if (version >= 13) expected.exec(cutoverTaskWorkflow);
       if (version >= 14) expected.exec(addTaskCreateGuard);
+       if (version >= 15) expected.exec(addTeamProjects);
+       if (version >= 16) expected.exec(addTeamCapabilities);
+       if (version >= 17) expected.exec(addTeamLifecycle);
+       if (version >= 18) expected.exec(addTeamControls);
       schemaIdentities.set(version, schemaIdentity(expected));
     }
     finally { expected.close(); }
@@ -428,7 +433,8 @@ function preflightData(path, allowUpgrade) {
   return true;
 }
 
-export function openData(path, { allowUpgrade = true } = {}) {
+export function openData(path, { allowUpgrade = true, seed = true } = {}) {
+  if (typeof seed !== 'boolean' || !seed && path !== ':memory:') throw new Error('Empty initialization is only allowed in memory.');
   const existing = path !== ':memory:' && preflightData(path, allowUpgrade);
   const db = new DatabaseSync(path);
   try {
@@ -448,7 +454,11 @@ export function openData(path, { allowUpgrade = true } = {}) {
           loadHost();
           db.exec(cutoverTaskWorkflow);
         }
-        db.exec(addTaskCreateGuard);
+        if (version < 14) db.exec(addTaskCreateGuard);
+        if (version < 15) db.exec(addTeamProjects);
+        if (version < 16) db.exec(addTeamCapabilities);
+        if (version < 17) db.exec(addTeamLifecycle);
+        db.exec(addTeamControls);
         db.exec('PRAGMA user_version=' + schemaVersion);
         assertDatabase(db);
       });
@@ -459,8 +469,12 @@ export function openData(path, { allowUpgrade = true } = {}) {
       db.exec(rebuildTaskWorkflow);
       db.exec(cutoverTaskWorkflow);
       db.exec(addTaskCreateGuard);
+      db.exec(addTeamProjects);
+      db.exec(addTeamCapabilities);
+      db.exec(addTeamLifecycle);
+      db.exec(addTeamControls);
       db.exec('INSERT INTO authoring_budget VALUES (1, 0)');
-      seedRows(db);
+      if (seed) seedRows(db);
       db.exec('PRAGMA user_version=' + schemaVersion);
     });
     return db;
@@ -488,7 +502,7 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
       throw new Error('Backup verification failed; original data retained.', { cause: error });
     }
     try {
-      for (const table of ['users', 'projects', 'tasks', ...taskEffectTables, ...lifecycleTables, ...authoringHistoryTables, 'authoring_conversations', 'authoring_budget']) {
+      for (const table of ['users', 'projects', 'tasks', ...teamTables, ...taskEffectTables, ...lifecycleTables, ...authoringHistoryTables, 'authoring_conversations', 'authoring_budget']) {
         // Read text as bytes because SQLite's Node text reader can stop at embedded NUL.
         const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(({ name, type }) => type === 'TEXT' ? `CAST(${name} AS BLOB) AS ${name}` : name);
         const sql = `SELECT ${columns.join(',')} FROM ${table} ORDER BY rowid`;
@@ -496,6 +510,9 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
       }
     } finally { copy.close(); }
     transaction(db, () => {
+      // Task origins and admission receipts reference each other; reset deletes both atomically.
+      db.exec('PRAGMA defer_foreign_keys=ON');
+      for (const table of teamTables) db.exec(`DELETE FROM ${table}`);
       for (const table of taskEffectTables) db.exec(`DELETE FROM ${table}`);
       db.exec('UPDATE extensions SET draft_revision_id=NULL');
       for (const table of authoringHistoryTables) db.exec(`DELETE FROM ${table}`);
@@ -517,9 +534,12 @@ function text(value, label, max, required = true) {
   if ((required && !result) || result.length > max) throw new AppError(400, `${label} must be ${required ? '1' : '0'}–${max} characters.`);
   return result;
 }
-const projectColumns = 'id, name, created_at AS createdAt, updated_at AS updatedAt';
-const taskColumns = 'id, project_id AS projectId, title, notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt, tags, priority, due_at AS dueAt';
-const taskDto = row => ({ ...row, tags: JSON.parse(row.tags) });
+const projectColumns = 'id, name, created_at AS createdAt, updated_at AS updatedAt, mode';
+const taskColumns = 'id, project_id AS projectId, title, notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt, tags, priority, due_at AS dueAt, creator_id AS creatorId, assignee_id AS assigneeId, (SELECT name FROM users WHERE users.id=tasks.assignee_id) AS assigneeName, parent_task_id AS parentTaskId, origin_event_id AS originEventId';
+const taskDto = ({ creatorId, assigneeId, assigneeName, parentTaskId, originEventId, ...row }) => ({
+  ...row, tags: JSON.parse(row.tags),
+  ...(creatorId !== null ? { creatorId, assigneeId, assigneeName, parentTaskId, originEventId } : {}),
+});
 
 function tag(value) {
   try { return normalizeTaskTag(value); }
@@ -545,10 +565,10 @@ function taskDueAt(value) {
   throw new AppError(400, 'Use a valid UTC due time in YYYY-MM-DDTHH:mm:ss.sssZ format.');
 }
 
-function insertTask(db, owner, projectId, title, notes, savedTags = '[]', priority = 'normal', dueAt = null, now = new Date().toISOString()) {
+function insertTask(db, owner, projectId, title, notes, savedTags = '[]', priority = 'normal', dueAt = null, now = new Date().toISOString(), creator = null) {
   const id = randomUUID();
-  db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at,tags,priority,due_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, projectId, title, notes, 'open', now, now, null, savedTags, priority, dueAt);
+  db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at,tags,priority,due_at,creator_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, projectId, title, notes, 'open', now, now, null, savedTags, priority, dueAt, creator);
   return id;
 }
 
@@ -586,17 +606,25 @@ const createGuardError = (message, denied = false, stale = false) => Object.assi
 });
 const guardSelection = (db, owner) => db.prepare("SELECT * FROM extension_selections WHERE owner_id=? AND hook_id='TaskBeforeCreate'").get(owner);
 
-async function prepareTaskCreate(db, owner, proposal, guard, context = {}) {
+function taskCreateLease(db, owner, context) {
   const clock = context.deadline?.clock ?? { nowMs: () => Math.floor(performance.now()) };
   const deadline = context.deadline ?? { clock, expiresAtMs: clock.nowMs() + 1000 };
   const started = clock.nowMs();
-  function authority() {
+  function validate() {
     const now = clock.nowMs();
     if (typeof owner !== 'string' || !owner || !db.prepare('SELECT 1 FROM users WHERE id=?').get(owner)
       || context.authorize && context.authorize() !== owner) throw new AppError(401, 'Your demo session changed. Sign in again.');
     if (context.signal?.aborted || !Number.isSafeInteger(now) || now < started || !Number.isSafeInteger(deadline.expiresAtMs)
       || now >= deadline.expiresAtMs) throw createGuardError('The task check expired. Your entries are kept.', false, true);
-    if (!db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=?').get(owner, proposal.projectId)) throw notFound();
+  }
+  return { clock, deadline, started, validate };
+}
+
+async function prepareTaskCreate(db, owner, proposal, guard, context = {}) {
+  const { clock, deadline, started, validate: lease } = taskCreateLease(db, owner, context);
+  function authority() {
+    lease();
+    if (!db.prepare("SELECT 1 FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'").get(owner, proposal.projectId)) throw notFound();
   }
   authority();
   const selection = guardSelection(db, owner);
@@ -651,7 +679,7 @@ async function prepareTaskCreate(db, owner, proposal, guard, context = {}) {
   };
 }
 
-export function taskService(db, { guard } = {}) {
+export function taskService(db, { guard, team } = {}) {
   function operationId(value) {
     if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value))
       throw new AppError(400, 'Use a valid task creation ID.');
@@ -683,35 +711,51 @@ export function taskService(db, { guard } = {}) {
       { operationId: id, ...result });
   }
   function project(owner, id) {
-    const row = db.prepare(`SELECT ${projectColumns} FROM projects WHERE owner_id = ? AND id = ?`).get(owner, id);
-    if (!row) throw notFound();
-    return row;
+    const scope = projectAccess(db, owner, id);
+    const row = db.prepare(`SELECT ${projectColumns} FROM projects WHERE id=?`).get(id);
+    return scope.mode === 'TEAM' ? { ...row, role: scope.role } : row;
   }
   function task(owner, id) {
-    const row = db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND id = ?`).get(owner, id);
-    if (!row) throw notFound();
-    return taskDto(row);
+    taskAccess(db, owner, id);
+    return taskDto(db.prepare(`SELECT ${taskColumns} FROM tasks WHERE id=?`).get(id));
   }
   return {
-    listProjects: owner => db.prepare(`SELECT ${projectColumns} FROM projects WHERE owner_id = ? ORDER BY created_at, id`).all(owner),
-    createProject(owner, input) {
-      fields(input, ['name']);
+    listProjects: owner => db.prepare(`SELECT ${projectColumns} FROM projects WHERE
+      (mode='PERSONAL' AND owner_id=?) OR (mode='TEAM' AND EXISTS
+        (SELECT 1 FROM project_members WHERE project_id=projects.id AND user_id=?)) ORDER BY created_at,id`).all(owner, owner)
+      .map(row => row.mode === 'TEAM' ? { ...row, role: projectAccess(db, owner, row.id).role } : row),
+    createProject(owner, input, context = {}) {
+      fields(input, ['name', 'mode']);
+      const mode = Object.hasOwn(input, 'mode') ? input.mode : 'PERSONAL';
+      if (!['PERSONAL', 'TEAM'].includes(mode))
+        throw new AppError(400, 'Choose Personal or Team.');
       const name = text(input.name, 'Project name', 80), id = randomUUID(), now = new Date().toISOString();
-      db.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?)').run(id, owner, name, now, now);
-      return project(owner, id);
+      return transaction(db, () => {
+        authorizeCreate(owner, context);
+        db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at,mode) VALUES (?, ?, ?, ?, ?, ?)').run(id, owner, name, now, now, mode);
+        if (mode === 'TEAM') {
+          db.prepare("INSERT INTO project_members(project_id,user_id,role) VALUES (?,?,'ADMIN')").run(id, owner);
+          db.prepare('INSERT INTO team_selections(project_id,revision_id) VALUES (?,NULL)').run(id);
+          db.prepare('INSERT INTO team_drafts(project_id) VALUES (?)').run(id);
+        }
+        authorizeCreate(owner, context);
+        return project(owner, id);
+      });
     },
     renameProject(owner, id, input) {
       fields(input, ['name']);
-      project(owner, id);
-      db.prepare('UPDATE projects SET name = ?, updated_at = ? WHERE owner_id = ? AND id = ?').run(text(input.name, 'Project name', 80), new Date().toISOString(), owner, id);
-      return project(owner, id);
+      return transaction(db, () => {
+        const scope = projectAccess(db, owner, id, true);
+        db.prepare('UPDATE projects SET name = ?, updated_at = ? WHERE owner_id = ? AND id = ?').run(text(input.name, 'Project name', 80), new Date().toISOString(), scope.owner_id, id);
+        return project(owner, id);
+      });
     },
-    listTasks(owner, id) { project(owner, id); return db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND project_id = ? ORDER BY created_at, id`).all(owner, id).map(taskDto); },
+    listTasks(owner, id) { const scope = projectAccess(db, owner, id); return db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND project_id = ? ORDER BY created_at, id`).all(scope.owner_id, id).map(taskDto); },
     searchTasks(owner, id, input, { allowAll = false } = {}) {
-      project(owner, id);
+      const scope = projectAccess(db, owner, id);
       fields(input, ['q', 'tag', 'after']);
       const conditions = ['owner_id = ?', 'project_id = ?'];
-      const args = [owner, id];
+      const args = [scope.owner_id, id];
       if (Object.hasOwn(input, 'q')) {
         if (typeof input.q !== 'string' || !input.q.isWellFormed() || /\p{Cc}/u.test(input.q)) throw new AppError(400, 'Use search text without control characters.');
         const query = text(input.q, 'Search text', 120);
@@ -726,7 +770,7 @@ export function taskService(db, { guard } = {}) {
       if (Object.hasOwn(input, 'after')) {
         const after = input.after;
         if (typeof after !== 'string' || !after.isWellFormed() || !after || after.length > 128 || /[\p{Cc}\s]/u.test(after)) throw new AppError(400, 'Use a valid task search cursor.');
-        const anchor = db.prepare('SELECT created_at FROM tasks WHERE owner_id = ? AND project_id = ? AND id = ?').get(owner, id, after);
+        const anchor = db.prepare('SELECT created_at FROM tasks WHERE owner_id = ? AND project_id = ? AND id = ?').get(scope.owner_id, id, after);
         if (!anchor) throw notFound();
         conditions.push('(created_at, id) > (?, ?)');
         args.push(anchor.created_at, after);
@@ -738,7 +782,8 @@ export function taskService(db, { guard } = {}) {
     getTask: task,
     getTaskForCustomization(owner, id) {
       // SQLite TEXT reads stop at embedded NUL; the model must see the saved title without truncation.
-      const row = db.prepare('SELECT id, project_id AS projectId, status, CAST(title AS BLOB) AS title, tags, priority, due_at AS dueAt FROM tasks WHERE owner_id=? AND id=?').get(owner, id);
+      const row = db.prepare(`SELECT id, project_id AS projectId, status, CAST(title AS BLOB) AS title, tags, priority, due_at AS dueAt FROM tasks
+        WHERE owner_id=? AND id=? AND EXISTS(SELECT 1 FROM projects WHERE projects.id=tasks.project_id AND mode='PERSONAL')`).get(owner, id);
       if (!row) throw notFound();
       return { ...row, title: Buffer.from(row.title).toString('utf8'), tags: JSON.parse(row.tags) };
     },
@@ -751,7 +796,7 @@ export function taskService(db, { guard } = {}) {
       };
       checkDeadline();
       const result = db.prepare(`SELECT EXISTS(SELECT 1 FROM tasks WHERE owner_id=projects.owner_id AND project_id=projects.id
-        AND status='open' AND title COLLATE BINARY=?) AS matches FROM projects WHERE owner_id=? AND id=?`).get(exactTitle, owner, projectId);
+        AND status='open' AND title COLLATE BINARY=?) AS matches FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'`).get(exactTitle, owner, projectId);
       checkDeadline();
       if (!result) throw notFound();
       return { matches: Boolean(result.matches) };
@@ -767,12 +812,19 @@ export function taskService(db, { guard } = {}) {
       const proposal = normalizeCreate(input);
       const candidate = Buffer.from(json(proposal));
       authorizeCreate(owner, context);
-      project(owner, proposal.projectId);
+      const scope = projectAccess(db, owner, proposal.projectId);
       const prior = savedOperation(owner, id, context, candidate);
       if (prior) return returnOperation(id, prior);
       let gate, failure;
-      try { gate = await prepareTaskCreate(db, owner, proposal, guard, { ...context,
-        requestKey: Object.freeze({ type: 'demo.TaskWorkflowKey/1', value: id }) }); }
+      try {
+        if (scope.mode === 'TEAM') {
+          const lease = taskCreateLease(db, owner, context);
+          const validate = () => { lease.validate(); projectAccess(db, owner, scope.id); };
+          validate();
+          gate = { validate, validateAfterWrite: validate };
+        } else gate = await prepareTaskCreate(db, owner, proposal, guard, { ...context,
+          requestKey: Object.freeze({ type: 'demo.TaskWorkflowKey/1', value: id }) });
+      }
       catch (error) { failure = error; }
       const result = transaction(db, () => {
         authorizeCreate(owner, context);
@@ -788,8 +840,10 @@ export function taskService(db, { guard } = {}) {
           try {
             gate.validate();
             const now = new Date().toISOString();
-            const taskId = insertTask(db, owner, proposal.projectId, proposal.title, proposal.notes, JSON.stringify(proposal.tags), proposal.priority, proposal.dueAt, now);
-            captureTaskEvent(db, owner, createdHook, taskId, now);
+            const current = projectAccess(db, owner, proposal.projectId);
+            const taskId = insertTask(db, current.owner_id, proposal.projectId, proposal.title, proposal.notes, JSON.stringify(proposal.tags), proposal.priority, proposal.dueAt, now, current.mode === 'TEAM' ? owner : null);
+            if (current.mode === 'TEAM') admitTeamRoot(db, owner, taskId, id, now);
+            else captureTaskEvent(db, owner, createdHook, taskId, now);
             gate.validateAfterWrite();
             terminal = { state: 'CREATED', task: task(owner, taskId) };
             record(terminal);
@@ -809,7 +863,8 @@ export function taskService(db, { guard } = {}) {
     },
     editTask(owner, id, input) {
       fields(input, ['title', 'notes', 'tags', 'priority', 'dueAt']);
-      task(owner, id);
+      return transaction(db, () => {
+      const { row } = taskAccess(db, owner, id, true);
       const savedTags = Object.hasOwn(input, 'tags') ? tags(input.tags) : null;
       const priority = Object.hasOwn(input, 'priority') ? taskPriority(input.priority) : null;
       const hasDueAt = Object.hasOwn(input, 'dueAt');
@@ -819,10 +874,16 @@ export function taskService(db, { guard } = {}) {
       const notes = editText ? text(input.notes, 'Notes', 4000, false) : null;
       db.prepare(`UPDATE tasks SET title=coalesce(?,title), notes=coalesce(?,notes), tags=coalesce(?,tags),
         priority=coalesce(?,priority), due_at=CASE WHEN ? THEN ? ELSE due_at END, updated_at=?
-        WHERE owner_id=? AND id=?`).run(title, notes, savedTags, priority, Number(hasDueAt), dueAt, new Date().toISOString(), owner, id);
+        WHERE owner_id=? AND id=?`).run(title, notes, savedTags, priority, Number(hasDueAt), dueAt, new Date().toISOString(), row.owner_id, id);
       return task(owner, id);
+      });
     },
-    completeTask(owner, id) {
+    completeTask(owner, id, context = {}) {
+      const scope = taskAccess(db, owner, id, true);
+      if (scope.project.mode === 'TEAM') {
+        if (!team) throw new AppError(503, 'The Team completion check is unavailable.');
+        return team.complete(owner, id, context);
+      }
       return transaction(db, () => {
         task(owner, id);
         const now = new Date().toISOString();
@@ -901,6 +962,7 @@ export function taskEffectService(db, options = {}) {
       JOIN extension_revisions r ON r.id=l.revision_id AND r.owner_id=l.owner_id
       JOIN extension_authored a ON a.revision_id=r.id AND a.owner_id=r.owner_id
       WHERE v.event_id=? AND v.owner_id=? AND v.revoked_at IS NULL AND e.deleted_at IS NULL
+        AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.mode='PERSONAL')
         AND (v.hook_id='TaskCreated' OR t.status='completed') AND e.hook_id=v.hook_id AND r.provenance='customer'`).get(row.event_id, row.owner_id);
       if (!saved) return false;
       const identity = JSON.parse(saved.identity), artifact = JSON.parse(Buffer.from(saved.artifact).toString('utf8'));
@@ -944,7 +1006,7 @@ export function taskEffectService(db, options = {}) {
   function applyWorkflowWrite(owner, row, capability, input, proposal) {
     try {
       if (capability === 'tasks.create') {
-        const project = db.prepare('SELECT 1 FROM projects WHERE owner_id=? AND id=?').get(owner, input.projectId);
+        const project = db.prepare("SELECT 1 FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'").get(owner, input.projectId);
         if (!project) return { response: rejection('PROJECT_NOT_FOUND') };
         const { title, notes, tags: savedTags, priority, dueAt } = proposal;
         // The native insert is shared with human creation. Only the human path captures TaskCreated.

@@ -554,7 +554,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         const original = originals.find(example => example.id === item.id);
         if (!original) return item;
         const projectName = id => typeof id === 'string'
-          ? db.prepare('SELECT name FROM projects WHERE owner_id=? AND id=?').get(owner, id)?.name ?? 'Example project' : undefined;
+          ? db.prepare("SELECT name FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'").get(owner, id)?.name ?? 'Example project' : undefined;
         const decorate = rows => rows === null ? null : rows?.map(value => ({ ...value, projectName: projectName(value.projectId) }));
         const scenario = item.report.scenario;
         return { ...item, expected: { ...item.expected, createdTasks: decorate(item.expected.createdTasks) },

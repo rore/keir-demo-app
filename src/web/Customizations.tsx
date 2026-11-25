@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Collection, State, StudioTarget } from "./Studio";
 import { pendingRequests, taskTriggerGroup } from "./Studio";
 import { describeRule } from "./rule-description";
 
-export default function Customizations({ request, changed, beforeSelectionChange, open, projects, focusAction = "", notice = "" }: {
+export default function Customizations({ request, changed, beforeSelectionChange, open, projects, focusAction = "", notice = "", scopeControl }: {
   request: <T>(path: string, method?: string, body?: object) => Promise<T>;
   changed: (generation: number) => void;
   beforeSelectionChange: () => void;
@@ -11,6 +11,7 @@ export default function Customizations({ request, changed, beforeSelectionChange
   projects: { id: string; name: string }[];
   focusAction?: string;
   notice?: string;
+  scopeControl?: ReactNode;
 }) {
   const [state, setState] = useState<Collection | null>(null);
   const [loadingMore, setLoadingMore] = useState("");
@@ -150,6 +151,7 @@ export default function Customizations({ request, changed, beforeSelectionChange
     <p className="page-intro">Make Daymark work your way. Start a change or return to a saved customization.</p></div>
     <button id="new-customization" className="primary customization-start" onClick={() => open()}>New customization</button>
     </div>
+    {scopeControl}
     {state?.executionAvailability?.available === false && <p role="status">{state.executionAvailability.message || "Task customizations cannot run in this installation yet. Your tasks still work."}</p>}
     {notice && <p role="status">{notice}</p>}
     {deleteNotice && <p role="status">{deleteNotice} <button className="quiet-button" onClick={() => setRetry(old => old + 1)}>Refresh collection</button></p>}

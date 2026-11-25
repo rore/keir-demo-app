@@ -50,7 +50,7 @@ function scriptedProvider({ onCall = () => {}, question = 'Would creating a task
 async function api(t, { provider, checkpointFault, compiler: appCompiler = compiler } = {}) {
   const db = openData(':memory:');
   for (const [id, name] of [[fixture.metadata.projectId, 'Customer project'], [fixture.metadata.otherProjectId, 'Other project']])
-    db.prepare('INSERT INTO projects VALUES (?,?,?,?,?)').run(id, 'maya', name, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at) VALUES (?,?,?,?,?)').run(id, 'maya', name, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
   const app = await createApp({ db, origin, compiler: appCompiler, authoring: {
     config, providerFactory: provider?.providerFactory ?? scriptedProvider().providerFactory, checkpointFault,
   } });

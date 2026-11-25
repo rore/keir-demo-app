@@ -4,9 +4,10 @@ import { readFileSync } from 'node:fs';
 import { mock } from 'node:test';
 
 const runtime = await import('@keir/runtime-node');
-const boundVersions = [];
+const boundModels = [];
+const personalVersions = () => boundModels.filter(model => model.id === 'demo.tasks').map(model => model.version);
 mock.module('@keir/runtime-node', { namedExports: { ...runtime, bindModel(dcmBytes) {
-  boundVersions.push(JSON.parse(dcmBytes).domain.version);
+  boundModels.push(JSON.parse(dcmBytes).domain);
   return { boundModel: null, diagnostic: { code: 'ADMISSION_INVALID', path: '' } };
 } } });
 
@@ -37,7 +38,9 @@ try {
   const login = await request('POST', '/api/session', { token: bootstrap.json().contextToken, body: { userId: 'maya' } });
   assert.equal(login.statusCode, 200, login.body);
   const auth = { token: login.json().contextToken, cookie: login.cookies.find(value => value.name === 'keir_demo_session').value };
-  assert.deepEqual(boundVersions, ['6'], 'the dispatcher rejects the numeric model; the guard binds only an actual selected definition');
+  assert.deepEqual(personalVersions(), ['6'], 'the Personal dispatcher rejects its model; the guard binds only an actual selected definition');
+  assert.deepEqual(boundModels.filter(model => model.id === 'daymark.team'), [{ id: 'daymark.team', version: '1' }],
+    'Team binding availability is independent of the Personal dispatcher and guard');
   for (const path of ['/api/extensions', `/api/extensions/${extensionId}`]) {
     const response = await request('GET', path, auth);
     assert.equal(response.statusCode, 200, response.body);
@@ -85,7 +88,7 @@ try {
   assert.equal(blocked.statusCode, 503, blocked.body);
   assert.equal(blocked.json().code, 'CHECK_UNAVAILABLE');
   assert.equal(blocked.json().state, 'NOT_CREATED');
-  assert.deepEqual(boundVersions, ['6', '5'], 'both actual bindings reject; the guard uses its exact retained selection');
+  assert.deepEqual(personalVersions(), ['6', '5'], 'both Personal bindings reject; the guard uses its exact retained selection');
   for (const [table, rows] of Object.entries(beforeGuard)) assert.deepEqual(db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), rows);
   console.log('binding unavailable: review visible; activation and rollback refused; disable and native CRUD available');
 } finally {

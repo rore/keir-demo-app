@@ -2,7 +2,7 @@
 
 `data.mjs` owns native task services, SQLite constraints and data lifecycle. `app.mjs` exposes the same owner-scoped operations behind Fastify session/Origin checks. `server.mjs` owns loopback startup and the shared exclusive data lock. `web/` contains the React/TypeScript native workspace; Vite builds it into `dist/`.
 
-The Keir integration uses the independently packaged Node runtime and Java compiler:
+The Personal customization path uses the independently packaged Node runtime and Java compiler:
 
 | Responsibility | Implementation |
 | --- | --- |
@@ -15,4 +15,6 @@ The Keir integration uses the independently packaged Node runtime and Java compi
 | Saved revisions, evidence, approval and selection | [extension-lifecycle.mjs](extension-lifecycle.mjs) |
 | Host UI and customization conversation | [web/main.tsx](web/main.tsx), [web/Customizations.tsx](web/Customizations.tsx), [web/Studio.tsx](web/Studio.tsx) |
 
-Adapters call native services with trusted host-bound identity. AI proposes source and scenarios; Daymark validates tools, owns human approval and activation, and authorizes real operations. The proposed [reusable Studio boundary](../docs/studio-embedding.md) is not a separately packaged component.
+Adapters call native services with trusted host-bound identity. AI proposes source and scenarios; Daymark validates tools and authorizes real operations. People approve and turn on rules through Daymark. The proposed [reusable Studio boundary](../docs/studio-embedding.md) is not a separately packaged component.
+
+Personal and Team share [Keir turn logic](keir-authoring-agent.mjs) inside this app. The [Team project reference](../docs/native-task-app-design.md#team-projects) describes the separate project-scoped authoring tools, durable journal and native lifecycle.

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { describeRule, type RuleCondition, type RuleDescription } from "./rule-description";
+import StudioComposer from "./StudioComposer";
 import "./Studio.css";
 
 type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; ruleDescription?: RuleDescription; pins: { artifactDigest?: string; rawSourceDigest?: string; compiledSourceDigest?: string; modelRef?: { format?: string } }; provenance: "operator" | "customer" };
@@ -2325,14 +2326,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!restart && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
         {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
-        <form hidden={retired || historyView || !!restart} className="rs-composer" onSubmit={submit}><label className="sr-only" htmlFor="studio-message">Message to Daymark assistant</label>
-          <textarea id="studio-message" maxLength={8192} rows={1} value={text} onFocus={() => { readingRevision.current++; }} onChange={e => { readingRevision.current++; editText(e.target.value); setStarterNotice(""); }} placeholder="Ask or describe a change…"
-            onKeyDown={event => {
-              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-              event.preventDefault();
-              if (!event.repeat && !sendDisabled && authoring?.availability.available && text.trim() && !locked.current) event.currentTarget.form?.requestSubmit();
-            }} />
-          <button disabled={!authoring?.availability.available || sendDisabled || !text.trim()}>Send</button></form>
+        <StudioComposer hidden={retired || historyView || !!restart} submit={submit} text={text}
+          canSend={!sendDisabled && !!authoring?.availability.available && !!text.trim()}
+          isLocked={() => locked.current}
+          onFocus={() => { readingRevision.current++; }}
+          change={value => { readingRevision.current++; editText(value); setStarterNotice(""); }} />
         {!retired && !restart && draftStorageUnavailable && draftText && <p className="rs-setup-notice" role="status">This browser could not keep this draft for reload. Your text is kept in this tab while you stay signed in.</p>}
         <p hidden={retired || !!restart} className="rs-chat-note">{authoring?.availability.available ? "Ask about this proposal or describe a change." : "You decide whether to approve and turn on a change."}</p>
       </section>

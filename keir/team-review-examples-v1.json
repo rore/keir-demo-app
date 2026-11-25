@@ -1,0 +1,62 @@
+[
+  {
+    "id": "success", "name": "Linked review unlocks the deliverable", "fault": "NONE",
+    "actors": [{"id":"author","role":"ADMIN"},{"id":"reviewer","role":"MEMBER"}], "initialTasks": [],
+    "actions": [
+      {"op":"create","actor":"author","ref":"root","title":"Synthetic deliverable","expect":{"status":"open"}},
+      {"op":"dispatch","ref":"root","expect":{"children":1,"outcome":"COMPLETED","receipt":"CONFIRMED"}},
+      {"op":"complete","actor":"author","ref":"root","expect":{"decision":"DENY","status":"open"}},
+      {"op":"complete","actor":"reviewer","ref":"root.review","expect":{"decision":"ALLOW","status":"completed"}},
+      {"op":"complete","actor":"author","ref":"root","expect":{"decision":"ALLOW","status":"completed"}}
+    ]
+  },
+  {
+    "id": "early-deny", "name": "An unfinished review blocks completion", "fault": "NONE",
+    "actors": [{"id":"author","role":"ADMIN"},{"id":"reviewer","role":"MEMBER"}], "initialTasks": [],
+    "actions": [
+      {"op":"create","actor":"author","ref":"root","title":"Early deliverable","expect":{"status":"open"}},
+      {"op":"dispatch","ref":"root","expect":{"children":1,"outcome":"COMPLETED","receipt":"CONFIRMED"}},
+      {"op":"complete","actor":"author","ref":"root","expect":{"decision":"DENY","status":"open"}}
+    ]
+  },
+  {
+    "id": "wrong-origin", "name": "Another deliverable's review cannot unlock this one", "fault": "NONE",
+    "actors": [{"id":"author","role":"ADMIN"},{"id":"reviewer","role":"MEMBER"}], "initialTasks": [],
+    "actions": [
+      {"op":"create","actor":"author","ref":"root","title":"First deliverable","expect":{"status":"open"}},
+      {"op":"create","actor":"author","ref":"other","title":"Unrelated deliverable","expect":{"status":"open"}},
+      {"op":"dispatch","ref":"root","expect":{"children":1,"outcome":"COMPLETED","receipt":"CONFIRMED"}},
+      {"op":"complete","actor":"reviewer","ref":"other.review","expect":{"decision":"ALLOW","status":"completed"}},
+      {"op":"complete","actor":"author","ref":"root","expect":{"decision":"DENY","status":"open"}}
+    ]
+  },
+  {
+    "id": "absent-write", "name": "No dispatched review means no permission to finish", "fault": "NONE",
+    "actors": [{"id":"author","role":"ADMIN"},{"id":"reviewer","role":"MEMBER"}], "initialTasks": [],
+    "actions": [
+      {"op":"create","actor":"author","ref":"root","title":"Undispatched deliverable","expect":{"status":"open"}},
+      {"op":"complete","actor":"author","ref":"root","expect":{"decision":"DENY","status":"open","children":0}}
+    ]
+  },
+  {
+    "id": "lost-reply", "name": "A lost reply keeps the real committed receipt", "fault": "LOST_REPLY",
+    "actors": [{"id":"author","role":"ADMIN"},{"id":"reviewer","role":"MEMBER"}], "initialTasks": [],
+    "actions": [
+      {"op":"create","actor":"author","ref":"root","title":"Reply-loss deliverable","expect":{"status":"open"}},
+      {"op":"dispatch","ref":"root","expect":{"children":1,"outcome":"UNCERTAIN","receipt":"CONFIRMED"}},
+      {"op":"reconcile","actor":"author","ref":"root","expect":{"effect":"CONFIRMED","children":1}},
+      {"op":"complete","actor":"author","ref":"root","expect":{"decision":"DENY","status":"open"}}
+    ]
+  },
+  {
+    "id": "fenced-no-write", "name": "A fenced failed write stays blocked without retry", "fault": "BEFORE_WRITE",
+    "actors": [{"id":"author","role":"ADMIN"},{"id":"reviewer","role":"MEMBER"}], "initialTasks": [],
+    "actions": [
+      {"op":"create","actor":"author","ref":"root","title":"No-write deliverable","expect":{"status":"open"}},
+      {"op":"dispatch","ref":"root","expect":{"children":0,"outcome":"UNCERTAIN","receipt":"NONE"}},
+      {"op":"reconcile","actor":"author","ref":"root","expect":{"effect":"NONE","children":0}},
+      {"op":"dispatch","ref":"root","expect":{"children":0,"outcome":"UNCERTAIN","receipt":"NONE"}},
+      {"op":"complete","actor":"author","ref":"root","expect":{"decision":"DENY","status":"open"}}
+    ]
+  }
+]
