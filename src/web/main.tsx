@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type Keyb
 import { Temporal } from "temporal-polyfill";
 import "./styles.css";
 import Studio, { sha256, type Collection, type StudioTarget } from "./Studio";
-import Customizations from "./Customizations";
+import Customizations, { CustomizationsPage } from "./Customizations";
 import TeamCapability from "./TeamCapability";
 import { normalizeTaskTags } from "../task-workflow-values.mjs";
 
@@ -52,6 +52,7 @@ type Task = {
   status: "open" | "completed";
   completedAt: string | null;
   creatorId?: string;
+  assigneeId?: string | null;
   assigneeName?: string | null;
   parentTaskId?: string | null;
   originEventId?: string | null;
@@ -168,15 +169,15 @@ async function api<T>(
   return data;
 }
 
-function Brand() {
+function Brand({ welcome = false }: { welcome?: boolean }) {
   return (
-    <span className="brand" aria-label="Daymark, A KEIR Demo">
+    <span className="brand">
       <span className="brand-mark" aria-hidden="true">
         ✓
       </span>
       <span className="brand-copy">
         <span className="brand-name">Daymark</span>
-        <span className="brand-subline">A KEIR Demo</span>
+        {welcome && <span className="brand-subline">A Keir demo</span>}
       </span>
     </span>
   );
@@ -295,7 +296,7 @@ function App() {
     return (
       <div className="welcome">
         <header className="welcome-header">
-          <Brand />
+          <Brand welcome />
           <span className="eyebrow">THE LOCAL DEMO</span>
         </header>
         <main className="welcome-main">
@@ -364,9 +365,6 @@ function App() {
             </p>
           </section>
         </main>
-        <footer className="welcome-footer">
-          <span>Made for the work in front of you.</span>
-        </footer>
       </div>
     );
   return (
@@ -486,6 +484,7 @@ function Workspace({
       scope.current = nextScope;
     }
     setMembersOpen(false); setUnavailableTeam(false);
+    setRename(false);
     setTasks([]); setDetail(null); setCompletionHold(null); resetSearch(); setBusy(false);
     projectIntent.current = id;
     setProjectId(id);
@@ -542,7 +541,7 @@ function Workspace({
   createVisible.current = destination === "tasks" && createOpen;
   const resumeDetail = useRef(false);
   const destinationFocus = useRef<string | null>(null);
-  const taskScroller = useRef<HTMLDivElement>(null);
+  const taskScroller = useRef<HTMLElement>(null);
   const taskScroll = useRef(0);
   const [notice, setNotice] = useState("");
   const lifetime = useRef(new AbortController());
@@ -591,7 +590,8 @@ function Workspace({
   ) => api<T>(path, session.contextToken, method, body, signal, createId);
   async function studioRequest<T>(path: string, method?: string, body?: object, signal?: AbortSignal) {
     const capturedScope = scope.current;
-    if (capturedScope.startsWith("TEAM:") && /^(extensions|authoring)(\/|\?|$)/.test(path))
+    // Setup is shared; Personal drafts and authoring remain outside Team scope.
+    if (capturedScope.startsWith("TEAM:") && path !== "authoring/setup" && /^(extensions|authoring)(\/|\?|$)/.test(path))
       throw new Error("Personal customization routes are not available in Team scope.");
     const scopedSignal = AbortSignal.any([lifetime.current.signal, scopeLifetime.current.signal, ...(signal ? [signal] : [])]);
     try {
@@ -869,6 +869,7 @@ function Workspace({
         setProjectMode("PERSONAL");
         setRename(false);
         setNotice("Project saved.");
+        requestAnimationFrame(() => document.getElementById("tasks-heading")?.focus());
       },
     );
   }
@@ -1081,7 +1082,7 @@ function Workspace({
           disabled={busy || task.status === "completed"}
           onClick={() => complete(task)}
         >
-          {task.status === "completed" ? "✓" : ""}
+          <span aria-hidden="true">✓</span>
         </button>
         <div className="task-row-content"><button
           id={"task-open-" + task.id}
@@ -1096,8 +1097,9 @@ function Workspace({
         >
           <span>{task.title}</span>
           {task.notes && <small>{task.notes}</small>}
+          <span className="task-chevron" aria-hidden="true">›</span>
         </button>
-        {task.assigneeName && <small className="muted">Assigned to {task.assigneeName}</small>}
+        {task.assigneeName && <small className="task-assignee">Assigned to {task.assigneeName}{task.assigneeId === session.user.id && " (you)"}</small>}
         {task.status === "open" && completionHold?.taskId === task.id && <p className="task-completion-hold">
           <strong>This task stayed open.</strong> The rule said: “{completionHold.message}”
         </p>}
@@ -1108,13 +1110,20 @@ function Workspace({
         </small>}
         {recentCompletion === task.id && detail?.id !== task.id && <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} creation={!!task.creatorId} />}
         </div>
-        <span className="task-chevron" aria-hidden="true">
-          ↗
-        </span>
       </li>
     );
   }
-  const scopeControl = <div className="project-form">
+  const projectOptions = (showType = false) => (["PERSONAL", "TEAM"] as const).map(mode => {
+    const group = projects.filter(item => (item.mode === "TEAM" ? "TEAM" : "PERSONAL") === mode);
+    const label = mode === "TEAM" ? "Team" : "Personal";
+    return group.length > 0 && <optgroup key={mode} label={`${label} projects`}>
+      {group.map(item => <option key={item.id} value={item.id}>{item.name}{showType ? ` · ${label}` : ""}</option>)}
+    </optgroup>;
+  });
+  function startProject() {
+    setNewProject(true); setRename(false); setProjectName(""); setProjectMode("PERSONAL");
+  }
+  const scopeControl = <div className="customization-scope">
     <label htmlFor="customization-project">Customization scope</label>
     <div className="form-line">
       <select id="customization-project" value={projectId} onChange={event => {
@@ -1124,14 +1133,13 @@ function Workspace({
         history.pushState(null, "", location.pathname + location.search + (selected.mode === "TEAM"
           ? "#teamProject=" + encodeURIComponent(selected.id) : "#personal=1"));
       }}>
-        {projects.map(item => <option key={item.id} value={item.id}>{item.name} · {item.mode === "TEAM" ? "Team" : "Personal"}</option>)}
+        {projectOptions(true)}
       </select>
-      {project?.mode === "TEAM" && <button className="quiet-button" onClick={() => setMembersOpen(true)}>View members</button>}
       {project?.mode !== "TEAM" && personalReturn.current && <button className="quiet-button" onClick={() => {
         rememberStudio(personalReturn.current!); setDestination("studio");
       }}>Return to Personal Studio</button>}
     </div>
-    {project?.mode !== "TEAM" && <p className="muted">Personal customizations belong to you, across your Personal projects.</p>}
+    {project?.mode !== "TEAM" && <p className="muted">Personal customizations belong to you across your Personal projects.</p>}
   </div>;
   return (
     <div className="workspace">
@@ -1165,49 +1173,22 @@ function Workspace({
             </div>
           </details>
         </header>
-        <main className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}>
+          <main ref={taskScroller} className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={0}
+            onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
           <div className="task-page-heading">
-          <p className="eyebrow">{session.user.name}’s workspace</p>
           <div className="project-title">
-            <h1 id="tasks-heading" tabIndex={-1}>{project?.name ?? "Tasks"}</h1>
-            {project && <button className="primary" onClick={openCreate} disabled={loading}>+ New task</button>}
-          </div>
-          <p className="project-subtitle">
-            {project ? loading ? "Loading tasks…" : `${open.length} open ${open.length === 1 ? "task" : "tasks"}` : "Start a project. Give your next idea a place to land."}
-          </p>
-          </div>
-          <div className="task-layout">
-          <aside className="task-projects" aria-label="Project context">
-          {project?.mode === "TEAM" && <><p className="muted">Team project · shared tasks</p><p className="muted">{project.role === "ADMIN" ? "Project admin" : "Member"}</p></>}
-          <nav className="project-list" aria-label="Projects">
-            {projects.map(item => <button key={item.id} className={`project-link${destination === "tasks" && item.id === projectId ? " selected" : ""}`}
-              onClick={() => { selectProject(item.id); navigate("tasks"); }}>{item.name}</button>)}
-          </nav>
-          <div className="mobile-projects">
-            <label htmlFor="project-select">Project</label>
-            <select
-              id="project-select"
-              value={projectId}
-              onChange={(event) => { selectProject(event.target.value); navigate("tasks"); }}
-            >
-              {projects.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <details className="tool-menu project-tools" onKeyDown={dismissTool}>
-            <summary>Project tools <span aria-hidden="true">⌄</span></summary>
+            <div className="project-name">
+              {project && <span className="project-type">{project.mode === "TEAM" ? "Team project" : "Personal project"}</span>}
+              <h1 id="tasks-heading" tabIndex={-1}>{project?.name ?? "Tasks"}</h1>
+            </div>
+          {project?.mode === "TEAM" && project.role !== "ADMIN" ? <button className="quiet-button" onClick={() => setMembersOpen(true)}>View members</button>
+            : project && <details className="tool-menu project-tools" onKeyDown={dismissTool}>
+            <summary>Project settings <span aria-hidden="true">⌄</span></summary>
             <div className="tool-menu-content">
-              <button className="quiet-button" disabled={!projectsReady} onClick={event => {
-                event.currentTarget.closest("details")?.removeAttribute("open");
-                setNewProject(true); setRename(false); setProjectName(""); setProjectMode("PERSONAL");
-              }}>New project</button>
             {project?.mode === "TEAM" && <button className="quiet-button" onClick={event => {
               const menu = event.currentTarget.closest("details");
               menu?.removeAttribute("open"); menu?.querySelector("summary")?.focus(); setMembersOpen(true);
-            }}>{project.role === "ADMIN" ? "Manage members" : "View members"}</button>}
+             }}>Manage members</button>}
             {project && (project.mode !== "TEAM" || project.role === "ADMIN") && (
               <button
                 className="quiet-button"
@@ -1222,7 +1203,30 @@ function Workspace({
               </button>
             )}
             </div>
-          </details>
+          </details>}
+          </div>
+          </div>
+          <div className="task-layout">
+          <aside className="task-projects" aria-label="Project context">
+          <nav className="project-list" aria-label="Projects">
+            {(["PERSONAL", "TEAM"] as const).map(mode => {
+              const group = projects.filter(item => (item.mode === "TEAM" ? "TEAM" : "PERSONAL") === mode);
+              const label = mode === "TEAM" ? "Team projects" : "Personal projects";
+              return group.length > 0 && <div key={mode} role="group" aria-label={label}>
+                <p className="project-group-label" aria-hidden="true">{label}</p>
+                {group.map(item => <button key={item.id} aria-current={destination === "tasks" && item.id === projectId ? "true" : undefined}
+                  className={`project-link${destination === "tasks" && item.id === projectId ? " selected" : ""}`}
+                  onClick={() => { selectProject(item.id); navigate("tasks"); }}>{item.name}</button>)}
+              </div>;
+            })}
+          </nav>
+          {project && <div className="mobile-projects">
+            <label className="sr-only" htmlFor="project-select">Project</label>
+            <select id="project-select" value={projectId} onChange={(event) => { selectProject(event.target.value); navigate("tasks"); }}>
+              {projectOptions()}
+            </select>
+          </div>}
+          <button id="new-project" className="quiet-button project-create" disabled={!projectsReady} onClick={startProject}>New project</button>
           </aside>
           <section className="task-surface" aria-label="Project tasks">
           {(newProject || rename) && (
@@ -1230,7 +1234,7 @@ function Workspace({
               {newProject && <><label htmlFor="project-mode">Who is this for?</label>
                 <select id="project-mode" value={projectMode} onChange={event => setProjectMode(event.target.value as "PERSONAL" | "TEAM")}>
                   <option value="PERSONAL">Personal · only you</option><option value="TEAM">Team · shared tasks</option>
-                </select><p className="muted">Team projects start with you as admin and no active capability. Existing projects are not converted.</p></>}
+                 </select><p className="muted">You can invite teammates to a Team project after creating it.</p></>}
               <label htmlFor="project-name">
                 {rename ? "Project name" : "New project name"}
               </label>
@@ -1250,8 +1254,9 @@ function Workspace({
                 <button
                   type="button"
                   className="quiet-button"
-                  onClick={() => {
-                    setNewProject(false);
+                   onClick={() => {
+                     (newProject ? document.getElementById("new-project") : document.querySelector<HTMLElement>(".project-tools > summary"))?.focus();
+                     setNewProject(false);
                     setRename(false);
                   }}
                 >
@@ -1276,7 +1281,6 @@ function Workspace({
           </div>
           {project && (
             <form className="quick-add" onSubmit={addTask}>
-              <span aria-hidden="true">+</span>
               <label className="sr-only" htmlFor="new-task">
                 New task title
               </label>
@@ -1286,7 +1290,7 @@ function Workspace({
                 onChange={(event) => changeCreateDraft({ ...createDraft, title: event.target.value })}
                 required
                 maxLength={120}
-                placeholder="What would you like to get done?"
+                 placeholder="New task title"
               />
               <button type="button" className="quiet-button" onClick={openCreate} disabled={loading}>Details</button>
               <button className="primary" disabled={busy || loading || !!createAttempt}>
@@ -1303,7 +1307,7 @@ function Workspace({
               if (next.q || next.tag) void fetchSearch(next, "submit");
             }}>
               <label>
-                Search tasks
+                 <span className="sr-only">Search tasks</span>
                 <input id="task-search-text" type="search" value={filters.q} maxLength={120} placeholder="Find a task…"
                   onChange={event => setFilters({ ...filters, q: event.target.value })} />
               </label>
@@ -1328,8 +1332,7 @@ function Workspace({
                 appliedFilters.current.tag && `Tag “${appliedFilters.current.tag}”`].filter(Boolean).join(" · ")}</p>}
             </form>
           )}
-          <div ref={taskScroller} className="task-content" tabIndex={0} role="region" aria-label="Task list"
-            onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
+           <div className="task-content" role="region" aria-label="Task list">
           {search && project ? (
             <section className="task-search-results" aria-labelledby="task-search-heading">
               <div className="list-heading">
@@ -1357,30 +1360,20 @@ function Workspace({
             <>
               <div className="list-heading">
                 <h2>
-                  Up next <span>{open.length}</span>
+                   Open tasks <span>{open.length}</span>
                 </h2>
               </div>
               {open.length ? (
                 <ul className="task-list">{open.map(taskRow)}</ul>
               ) : (
                 <div className="empty">
-                  <span aria-hidden="true">✳</span>
-                  <h2>
-                    {completed.length
-                      ? "A little breathing room."
-                      : "Room for something good."}
-                  </h2>
-                  <p>
-                    {completed.length
-                      ? "Everything here is done. Enjoy the pause, or add your next step."
-                      : "Your first task starts just above. Keep it small."}
-                  </p>
+                   <p>{completed.length ? "All tasks in this project are complete." : "No tasks yet. Add the first one above."}</p>
                 </div>
               )}
               {completed.length > 0 && (
                 <section className="completed-section">
                   <h2>
-                    Done & dusted <span>{completed.length}</span>
+                     Completed <span>{completed.length}</span>
                   </h2>
                   <ul className="task-list">{completed.map(taskRow)}</ul>
                 </section>
@@ -1388,38 +1381,17 @@ function Workspace({
             </>
           ) : (
             <div className="empty">
-              <span aria-hidden="true">✳</span>
-              <h2>Make a little room.</h2>
-              <button
-                className="primary"
-                disabled={!projectsReady}
-                onClick={() => { setProjectMode("PERSONAL"); setNewProject(true); }}
-              >
-                Create your first project
-              </button>
+               <p>{projectsReady ? "Create a project to start adding tasks." : "Loading projects…"}</p>
             </div>
           )}
-          <footer className="task-footer">
-            <span>
-              <span className="local-dot" aria-hidden="true" />
-              Local demo
-            </span>
-          </footer>
           </div>
           </section>
           </div>
         </main>
-        {destination === "customizations" && (!projectsReady ? <main className="customizations-main"><p role="status">Checking project access…</p></main>
-          : unavailableTeam ? <main className="customizations-main">{scopeControl}<p role="alert">That Team project is not available. Choose an accessible scope.</p></main>
-          : project?.mode === "TEAM" ? <main className="customizations-main" aria-labelledby="customizations-heading">
-            <h1 id="customizations-heading" tabIndex={-1}>Team customizations</h1>{scopeControl}
-            <TeamMembers key={session.contextToken + project.id} project={project} users={users} request={studioRequest} />
-             <section className="project-form" aria-label="Customization Studio">
-               <h2>Customize this project</h2>
-               <p>Describe what should happen in {project.name}. A project admin can check examples, approve a draft, and turn it on.</p>
-               <button className="primary" disabled={project.role !== "ADMIN"} onClick={() => { studioEntrySerial.current++; setDestination("studio"); }}>Open Studio</button>
-            </section>
-          </main>
+        {destination === "customizations" && (!projectsReady ? <CustomizationsPage><p role="status">Checking project access…</p></CustomizationsPage>
+          : unavailableTeam ? <CustomizationsPage scopeControl={scopeControl}><p role="alert">That Team project is not available. Choose an accessible scope.</p></CustomizationsPage>
+          : project?.mode === "TEAM" ? <TeamCustomizations key={session.contextToken + project.id} project={project}
+            request={studioRequest} scopeControl={scopeControl} open={() => { studioEntrySerial.current++; setDestination("studio"); }} />
           : <Customizations key="personal" request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange} open={target => void openStudio("overview", target)} projects={projects.filter(item => item.mode !== "TEAM")} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} scopeControl={scopeControl} />)}
         {destination === "studio" && projectsReady && project?.mode === "TEAM" && !unavailableTeam &&
           <main className="studio-main"><TeamCapability key={session.contextToken + project.id}
@@ -1528,8 +1500,46 @@ function Workspace({
   );
 }
 
+function timeZoneLabel(timeZone: string) {
+  return new Intl.DateTimeFormat(undefined, { timeZone, timeZoneName: "longGeneric" }).formatToParts()
+    .find(part => part.type === "timeZoneName")?.value ?? timeZone;
+}
+
+function TeamCustomizations({ project, request, scopeControl, open }: {
+  project: Project; request: Parameters<typeof TeamMembers>[0]["request"]; scopeControl: ReactNode; open: () => void;
+}) {
+  const [access, setAccess] = useState<"ADMIN" | "MEMBER" | "unavailable" | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let controller: AbortController;
+    const refresh = () => {
+      controller?.abort();
+      controller = new AbortController();
+      const { signal } = controller;
+      setAccess(null);
+      void request<Members>(`projects/${project.id}/members`, "GET", undefined, signal).then(({ project: current }) => {
+        if (signal.aborted) return;
+        setAccess(current.id === project.id && current.mode === "TEAM" && (current.role === "ADMIN" || current.role === "MEMBER") ? current.role : "unavailable");
+      }).catch(() => { if (!signal.aborted) setAccess("unavailable"); });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => { controller.abort(); window.removeEventListener("focus", refresh); };
+  }, [project.id, retry]);
+  return <CustomizationsPage scopeControl={scopeControl}
+    action={<button className="primary customization-start" disabled={access !== "ADMIN"} onClick={open}>Open Studio</button>}>
+    <section className="customization-list" aria-label="Team customization access">
+      {access === "unavailable" ? <p className="customization-empty" role="alert">This Team project could not be accessed.{" "}
+        <button className="quiet-button" onClick={() => setRetry(value => value + 1)}>Check access again</button></p>
+        : <p className="customization-empty" role="status">{access === "ADMIN" ? `Start or continue a customization for ${project.name}. A customization that’s turned on can affect everyone’s new tasks in this project.`
+          : access === "MEMBER" ? "You can work on Team tasks. Only a project admin can edit, approve or turn on this project’s customization."
+            : "Checking project access…"}</p>}
+    </section>
+  </CustomizationsPage>;
+}
+
 function TeamMembers({ project, users, request, close }: {
-  project: Project; users: User[]; close?: () => void;
+  project: Project; users: User[]; close: () => void;
   request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
 }) {
   const [state, setState] = useState<Members | null>(null);
@@ -1554,7 +1564,7 @@ function TeamMembers({ project, users, request, close }: {
   }
   useEffect(() => {
     const trigger = document.activeElement as HTMLElement | null;
-    if (close) dialog.current?.showModal();
+    dialog.current?.showModal();
     void refresh();
     const focus = () => { if (!dialog.current || dialog.current.open) void refresh(); };
     window.addEventListener("focus", focus);
@@ -1562,7 +1572,7 @@ function TeamMembers({ project, users, request, close }: {
       lifetime.current.abort(); serial.current++;
       window.removeEventListener("focus", focus);
       dialog.current?.close();
-      if (close && trigger?.isConnected) trigger.focus();
+      if (trigger?.isConnected) trigger.focus();
     };
   }, [project.id]);
   async function add(event: FormEvent) {
@@ -1579,13 +1589,14 @@ function TeamMembers({ project, users, request, close }: {
       if (!lifetime.current.signal.aborted && turn === serial.current) { setState(null); setError("The member was not confirmed. Refresh current access before trying again."); }
     } finally { if (!lifetime.current.signal.aborted) setBusy(false); }
   }
-  const content = <>
-    <div className="detail-heading"><h2 id={close ? "team-members-title" : undefined}>{project.name} · Team</h2>
-      {close && <button type="button" className="icon-button" aria-label="Close members" onClick={close}>×</button>}</div>
+  return <dialog ref={dialog} className="detail team-members" aria-labelledby="team-members-title"
+    onCancel={event => { event.preventDefault(); close(); }} onClose={close}>
+    <div className="detail-heading"><h2 id="team-members-title">{project.name} · Team</h2>
+      <button type="button" className="icon-button" aria-label="Close members" onClick={close}>×</button></div>
     <div className="member-content">{error ? <p className="error" role="alert">{error}</p> : !state ? <p role="status">Checking current membership…</p> : <>
       <p>{state.project.role === "ADMIN" ? "Project admin" : "Member"} · Current access</p>
       <ul>{state.members.map(member => <li key={member.id}>{member.name} · {member.role === "ADMIN" ? "Admin" : "Member"}</li>)}</ul>
-      {close && state.project.role === "ADMIN" && <form onSubmit={add}>
+      {state.project.role === "ADMIN" && <form onSubmit={add}>
         <label htmlFor="existing-member">Existing demo person</label>
         <select id="existing-member" value={userId} onChange={event => setUserId(event.target.value)} required>
           <option value="">Choose a person</option>
@@ -1595,10 +1606,8 @@ function TeamMembers({ project, users, request, close }: {
       {state.project.role === "MEMBER" && <p className="muted">Only a project admin can add members or manage Team capabilities.</p>}
     </>}</div>
     <div className="detail-actions"><button type="button" className="quiet-button" disabled={busy} onClick={() => void refresh()}>Refresh access</button>
-      {close && <button type="button" className="quiet-button" onClick={close}>Done</button>}</div>
-  </>;
-  return close ? <dialog ref={dialog} className="detail team-members" aria-labelledby="team-members-title" onCancel={close} onClose={close}>{content}</dialog>
-    : <section className="project-form team-members" aria-label="Current Team access">{content}</section>;
+      <button type="button" className="quiet-button" onClick={close}>Done</button></div>
+  </dialog>;
 }
 
 function TaskReaction({ source, request, confirmed, openCreated, creation = false, bound }: {
@@ -1859,7 +1868,7 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
       </div>
       <aside className="task-form-meta" aria-label="Task metadata">
       {task && <p className={`status-label ${task.status}`}>
-        {task.status === "completed" ? "✓ Completed" : "○ Up next"}
+        {task.status === "completed" ? "✓ Completed" : "○ Open"}
       </p>}
       {task?.assigneeName && <p>Assigned to {task.assigneeName}</p>}
       <label htmlFor="edit-priority">Priority</label>
@@ -1874,7 +1883,7 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
         value={draft.dueTime} aria-invalid={dueTimeError ? true : undefined}
         aria-describedby={dueTimeError ? "edit-due-zone edit-due-error" : "edit-due-zone"}
         onChange={event => editDueTime(event.target.value)} />
-      <p id="edit-due-zone" className="muted tag-hint">Time zone: {draft.dueZone}.
+      <p id="edit-due-zone" className="muted tag-hint">Times use {timeZoneLabel(draft.dueZone)}.
         {task?.dueAt && !draft.dueTimeEdited && <> Saved time: {formatDueTime(task.dueAt, draft.dueZone)}.</>}
       </p>
       {task?.dueAt && !draft.dueTime && !draft.dueTimeEdited &&

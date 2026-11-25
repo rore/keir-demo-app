@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import StudioComposer from "./StudioComposer";
+import { AssistantSetup, canConfigureAssistant } from "./Studio";
 import "./Studio.css";
 
 type Parameters = { reviewerId: string; title: string; intent: string };
@@ -8,7 +9,7 @@ type Example = { id: string; name: string; fault: string; actors: { id: string; 
   actions: { op: string; actor?: string; ref: string; title?: string; priority?: string; expect: Record<string, string | number> }[] };
 type Agreement = { summary: string; claims: { hook: string; outcomes: { id: string; when: Record<string, unknown>; expect: Record<string, unknown> }[] }[] };
 type Revision = { revisionId: string; parameters: Parameters | null; agreement?: Agreement; manifest: { executableIdentity: string }; revoked: boolean };
-type Discussion = { availability: { available: boolean }; conversation: { version: number; runId: string; status: string;
+type Discussion = { availability: { available: boolean; code?: string | null }; conversation: { version: number; runId: string; status: string;
   agreement: Agreement | null; checkUnavailable?: boolean; messages: { id: string; role: string; text: string }[] } | null };
 type ChoiceInput = { operationId: string; expectedDraftVersion: number; revisionId: string; evidenceId: string; cases: Example[];
   approvalId?: string; expectedSelectionGeneration?: number };
@@ -39,8 +40,8 @@ const facts: Record<string, Record<string, string>> = {
 const fact = (key: string, value: unknown) => facts[key]?.[String(value)] ?? "No supported observation was recorded";
 const identity = (value: unknown): string => JSON.stringify(value, (_, v) => v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
-const actionMessages = { approvals: "Approval recorded. This did not activate the draft.", activations: "Activation recorded.",
-  deactivations: "Deactivation recorded. Started work keeps its existing rule.",
+const actionMessages = { approvals: "Draft approved. It’s not on yet.", activations: "Turned on for new tasks.",
+  deactivations: "Turned off for new tasks. Started work keeps its existing rule.",
   revocations: "Emergency revocation recorded for the exact revision. Saved work was not undone." };
 
 export default function TeamCapability({ project, request, scopeControl, back, backToTasks, operationScope }: {
@@ -52,6 +53,8 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const [cases, setCases] = useState<Example[]>([]), [evidence, setEvidence] = useState<Evidence | null>(null);
   const [source, setSource] = useState<unknown>(null), [error, setError] = useState(""), [busy, setBusy] = useState("");
   const [uncertain, setUncertain] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false), [setupNotice, setSetupNotice] = useState("");
+  const setupGeneration = useRef(0), setupInvoker = useRef<HTMLElement>(null);
   const [unconfirmedPreparation, setUnconfirmedPreparation] = useState<string | null>(null);
   const operationKey = operationScope ? `daymark-team-action:${operationScope}:${project.id}` : null;
   const [pendingChoice, setPendingChoice] = useState<{ kind: ActionKind; body: ActionInput; rejected?: boolean } | null>(() => {
@@ -95,7 +98,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     const status = (e as { status?: number }).status;
     if ([401, 403, 404].includes(status ?? 0)) {
       serial.current++; setState(null); setDiscussion(null); setEvidence(null); setSource(null); setCases([]); setMembers([]); setChoiceReceipt(null);
-      setRevisionPage(null); setTargetRevisionId(""); setConfirmation(null); setChoiceTarget(null);
+      setRevisionPage(null); setTargetRevisionId(""); setConfirmation(null); setChoiceTarget(null); setSetupOpen(false); setSetupNotice("");
     }
     setError(e instanceof Error ? e.message : "Saved Team state could not be read.");
   }
@@ -228,7 +231,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       if (read !== serial.current || lifetime.current.signal.aborted) return;
       if (result.receipt.operationId !== body.operationId || identity(result.receipt.input) !== identity({ kind, ...body })) throw new Error("The reply did not identify this action.");
       setChoiceReceipt(result.receipt); setChoiceTarget(result.target ?? null); rememberChoice(null);
-      if (kind === "approvals" || kind === "activations") choiceFocus.current = true;
+      if (kind !== "revocations") choiceFocus.current = true;
       await refresh();
     } catch (e) {
       if (read === serial.current) {
@@ -315,6 +318,23 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       ?? normalExamples?.find(hasChild) : null;
   const currentDraftOn = !!state?.draft && state.draft.revisionId === state.selection.revisionId;
   const showActive = currentDraftOn && !state?.draft?.revoked;
+  const recoveryNeeded = state && (pendingChoice || uncertain || conversation?.runId === unconfirmedPreparation);
+  function closeSetup(unconfirmed: boolean) {
+    const generation = ++setupGeneration.current;
+    setSetupOpen(false);
+    if (unconfirmed) {
+      setSetupNotice("Saving could not be confirmed. Checking current settings without resubmitting.");
+      const current = () => setupGeneration.current === generation && !lifetime.current.signal.aborted;
+      void request("authoring/setup", "GET", undefined, lifetime.current.signal).then(() => {
+        if (!current()) return;
+        setSetupNotice("Current settings checked. Whether the key was replaced remains unconfirmed.");
+        void refresh();
+      }).catch(() => { if (current()) setSetupNotice("Settings could not be checked. Open Configure to check again."); });
+    }
+    requestAnimationFrame(() => {
+      if (!lifetime.current.signal.aborted) (setupInvoker.current?.getClientRects().length ? setupInvoker.current : heading.current)?.focus();
+    });
+  }
   const transcript = <div className="team-transcript" aria-live="polite">{conversation?.messages.map(message => <article key={message.id}
     className={`rs-message ${message.role === "user" ? "rs-user" : "rs-assistant"}`}>
     <p><strong>{message.role === "user" ? "You" : "Daymark"}</strong></p><p>{message.text}</p>
@@ -322,11 +342,17 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const composer = <>
     {authoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping…" : "Working on your request…"}</span>
       <button disabled={!!busy || conversation?.status === "CANCELLING"} onClick={() => void chatAction("cancel")}>Stop</button></div>}
-    {discussion && !discussion.availability.available && <p role="status">The assistant is unavailable. You can still review saved work.</p>}
+     {discussion && !discussion.availability.available && <div className="rs-setup-notice">
+       <p role="status">{canConfigureAssistant(discussion.availability) ? "Set up the assistant to create or change a customization." : "The assistant is unavailable. You can still review saved work."}</p>
+       {canConfigureAssistant(discussion.availability) && <button disabled={!!busy || !!pendingChoice} onClick={event => {
+         setupInvoker.current = event.currentTarget; ++setupGeneration.current; setSetupOpen(true);
+       }}>Configure</button>}
+     </div>}
+     {setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
     <StudioComposer text={text} change={setText} canSend={!!discussion?.availability.available && !lifecycleBusy && !busy && !!text.trim()}
       submit={event => { event.preventDefault(); void chatAction("turn"); }} />
   </>;
-  return <div className="read-studio team-capability">
+  return <section className="read-studio team-capability" aria-label="Customization Studio">
     <div className="team-capability-body">
     <header className="rs-header">
       <h1 ref={heading} tabIndex={-1}>Customization Studio</h1>
@@ -334,13 +360,15 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       </div>
       <div className="team-scope">{scopeControl}</div>
     </header>
-      {error && <p role="alert">{error}</p>}
-      {uncertain && <div role="status"><p>The reply was not confirmed. Do not resubmit. Read saved state to inspect its draft and report identities. Another operation may have saved them.</p>
+      {error && <div className="team-feedback" role="alert">{error}
+        {!recoveryNeeded && <button disabled={!!busy} onClick={() => void refresh()}>Check saved state</button>}</div>}
+      {!state && !error && <p role="status">Checking saved work…</p>}
+      {uncertain && <div className="team-feedback" role="status"><p>The reply was not confirmed. Check the saved examples; this does not run them again. Another action may have saved the results.</p>
         <button onClick={() => void refresh()}>Check saved result</button>
         <button onClick={() => { setUncertain(false); setError(""); }}>I checked saved state</button></div>}
       {state && <>
          {(pendingChoice || choiceNotice) && <section aria-label="Saved Team action">
-          {pendingChoice && <><p>This action is still unconfirmed. Its original operation ID is kept for readback only; nothing is automatically resubmitted.</p>
+           {pendingChoice && <><p>This action is still unconfirmed. Check whether it was saved. Nothing will be sent again.</p>
             <button disabled={!!busy} onClick={() => void checkChoice()}>Check saved action</button></>}
            {choiceNotice && <p role="status">{choiceNotice}</p>}
          </section>}
@@ -367,7 +395,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
           </section>}
           {state.draft && !conversation?.agreement && <>
              <section ref={decision} aria-label="Review and current use" className="team-decision">
-               <h2 ref={draftHeading} tabIndex={-1}>{state.draft.agreement ? "Proposed customization" : "Earlier saved customization"}</h2>
+               <h2 ref={draftHeading} tabIndex={-1}>{showActive ? "Customization in use" : state.draft.agreement ? "Proposed customization" : "Earlier saved customization"}</h2>
                <p className="team-project-name">{project.name} · Team</p>
                {state.draft.agreement ? behavior(state.draft.agreement) : <p>{scriptedSummary(state.draft.parameters)}</p>}
                <p role="status"><strong>{state.draft.revoked ? "Revoked" : showActive ? "On for new tasks" : state.approval ? "Approved · Not on yet" : "Draft · Not on"}</strong>
@@ -388,23 +416,6 @@ export default function TeamCapability({ project, request, scopeControl, back, b
                    onClick={() => void choose("activations")}>Turn on for new tasks</button>
                 </>}
             </section>
-            {choiceReceipt && !pendingChoice && !choiceNotice && <section aria-label="Saved Team action">
-              <p role="status">{choiceReceipt.kind === "activations" && state.selection.activation?.id !== choiceReceipt.id
-                ? "That activation is historical. Current use has changed." : actionMessages[choiceReceipt.kind]}</p>
-              {choiceTarget && <p>Target: {choiceTarget.revisionId} · {choiceTarget.revokedAt === null ? "Not revoked" : "Revoked"}</p>}
-              <details><summary>Exact saved action</summary><pre>{JSON.stringify(choiceReceipt, null, 2)}</pre></details>
-            </section>}
-           <details><summary>Rule details</summary><p>{state.draft.manifest.executableIdentity}</p><p>Revision: {state.draft.revisionId}</p>
-            <p>Current-use revision: {state.selected?.revisionId ?? "None"}</p>
-            <button onClick={async () => {
-              const read = ++serial.current, revisionId = state.draft!.revisionId, edit = edits.current;
-              try {
-                const value = await request(`${base}/revisions/${revisionId}`, "GET", undefined, lifetime.current.signal);
-                if (read === serial.current && !lifetime.current.signal.aborted && stateRef.current?.draft?.revisionId === revisionId && edit === edits.current) setSource(value);
-              } catch (e) { if (read === serial.current) failure(e); }
-            }}>Inspect exact source and artifacts</button>
-            {source != null && <pre aria-label="Exact Team source and artifacts">{JSON.stringify(source, null, 2)}</pre>}
-          </details>
            {evidence && <section aria-label="Examples" className="team-examples">
              <h3>{matching && evidence.report.passed ? "Examples matched" : matching ? "Some examples did not match" : "Earlier example results"}</h3>
              <p>Examples only · No real tasks changed.</p>
@@ -432,20 +443,25 @@ export default function TeamCapability({ project, request, scopeControl, back, b
             {state.draft && !conversation?.agreement && <details className="team-more" open={authoring ? true : undefined}>
               <summary>Continue the conversation</summary>{transcript}{composer}
             </details>}
-           <details className="team-more"><summary>More</summary>
-             <button onClick={() => void refresh()}>Read saved state</button>
-            <details><summary>Exact current-use receipt</summary><pre>{JSON.stringify(state.selection, null, 2)}</pre></details>
-            <section aria-label="Stop current use">
-              <h3>Stop using this selection</h3>
-              <p>Deactivation stops only new Team tasks from using the selected revision. Started work keeps its pinned rule and can still run it.</p>
-              <p>Exact selected revision: {state.selection.revisionId ?? "None"}</p>
-              <button disabled={!state.selection.available || !state.selection.revisionId || !!busy || lifecycleBusy}
-                 onClick={e => confirmControl("deactivations", e.currentTarget)}>Stop using for new Team tasks</button>
-             </section>
-            <details><summary>Emergency revocation</summary>
-              <p>Revoke one exact revision to stop its future effects and completion of unfinished deliverables pinned to it. This is not deactivation.</p>
-              <p>Saved children, receipts and completed work are not undone. Verified linked reviews can still be completed. Other revisions are unaffected. There is no restore or repinning here.</p>
-              <p>All persisted project revisions are listed, including older, dormant, revoked and native revisions. Counts are advisory; pending effects can belong to completed tasks.</p>
+            {state.selection.available && selectedAvailable && <section className="team-control" aria-label="Stop current use">
+               <h3>Current customization</h3>
+               {!showActive && <p>{currentUse}</p>}
+               <p>Turn this off to stop using it on new tasks. Started work keeps its existing rule.</p>
+               <button disabled={!!busy || lifecycleBusy}
+                  onClick={e => confirmControl("deactivations", e.currentTarget)}>Turn off for new tasks</button>
+             </section>}
+             {confirmation?.kind === "deactivations" && controlConfirmation()}
+             {choiceReceipt && !pendingChoice && !choiceNotice && <section aria-label="Saved Team action">
+               <p role="status">{choiceReceipt.kind === "activations" && state.selection.activation?.id !== choiceReceipt.id
+                 ? "That activation is historical. Current use has changed." : actionMessages[choiceReceipt.kind]}</p>
+               <details><summary>Saved action details</summary>
+                 {choiceTarget && <p>Target: {choiceTarget.revisionId} · {choiceTarget.revokedAt === null ? "Not revoked" : "Revoked"}</p>}
+                 <pre>{JSON.stringify(choiceReceipt, null, 2)}</pre></details>
+             </section>}
+             {(!revisionPage || revisionPage.items.length > 0) && <details className="team-control"><summary>Emergency revocation</summary>
+               <p>Project admins only. Revoke a specific version if it must stop affecting unfinished work. To stop using it only for new tasks, turn it off instead.</p>
+               <p>This blocks future effects and completion of unfinished main tasks using that version. Linked reviews can still be completed. It doesn’t undo saved work or change other versions. Revocation is permanent.</p>
+               <p>Older versions can still affect tasks. The counts below are advisory, and unfinished effects can belong to completed tasks.</p>
               {!revisionPage ? <><p>The revision list is unavailable.</p><button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>Read revision list</button></> : <>
                 <label htmlFor="team-revocation-target">Exact revision to revoke</label>
                 <select id="team-revocation-target" value={targetRevisionId} disabled={!!busy || lifecycleBusy} onChange={e => setTargetRevisionId(e.target.value)}>
@@ -460,20 +476,42 @@ export default function TeamCapability({ project, request, scopeControl, back, b
                 <button disabled={!revisionPage.next || !!busy || lifecycleBusy} onClick={() => void readRevisions(revisionPage.next!)}>Next revisions</button>
                 <button disabled={!targetRevisionId || !!busy || lifecycleBusy || revisionPage.items.find(r => r.revisionId === targetRevisionId)?.revoked}
                   onClick={e => confirmControl("revocations", e.currentTarget)}>Review emergency revocation</button>
-              </>}
-            </details>
-            {confirmation && <section role="group" aria-label="Confirm Team control">
-              <h3 ref={controlHeading} tabIndex={-1}>{confirmation.kind === "deactivations" ? "Confirm deactivation" : "Confirm emergency revocation"}</h3>
-              <p>Exact target revision: {confirmation.body.targetRevisionId}</p>
-              <p>{confirmation.kind === "deactivations" ? "Only new Team tasks stop using this selection. Started work keeps its existing rule."
-                : "This revision will be permanently revoked. Its future effects and unfinished covered deliverables will be blocked. Existing work is not undone. A different selected revision stays selected."}</p>
-              <button disabled={!!busy} onClick={() => setConfirmation(null)}>Cancel</button>
-              <button disabled={!!busy || !!pendingChoice} onClick={() => { const saved = confirmation; setConfirmation(null); void postChoice(saved.kind, saved.body); }}>
-                {confirmation.kind === "deactivations" ? "Confirm stop for new tasks" : "Revoke this exact revision"}
-              </button>
-             </section>}
-           </details>
-      </>}
-    </div>
-  </div>;
+               </>}
+               {confirmation?.kind === "revocations" && controlConfirmation()}
+             </details>}
+             {(state.draft || state.selection.revisionId || !state.selection.available) && <details className="team-control"><summary>Support diagnostics</summary>
+               <details><summary>Exact current-use receipt</summary><pre>{JSON.stringify(state.selection, null, 2)}</pre></details>
+               {state.draft && <details><summary>Rule details</summary><p>{state.draft.manifest.executableIdentity}</p><p>Revision: {state.draft.revisionId}</p>
+                 <button onClick={async () => {
+                   const read = ++serial.current, revisionId = state.draft!.revisionId, edit = edits.current;
+                   try {
+                     const value = await request(`${base}/revisions/${revisionId}`, "GET", undefined, lifetime.current.signal);
+                     if (read === serial.current && !lifetime.current.signal.aborted && stateRef.current?.draft?.revisionId === revisionId && edit === edits.current) setSource(value);
+                   } catch (e) { if (read === serial.current) failure(e); }
+                 }}>Inspect exact source and artifacts</button>
+                 {source != null && <pre aria-label="Exact Team source and artifacts">{JSON.stringify(source, null, 2)}</pre>}
+               </details>}
+             </details>}
+       </>}
+     </div>
+     {setupOpen && state && <AssistantSetup team request={request} close={closeSetup} beginSave={() => { ++setupGeneration.current; }} saved={() => {
+       closeSetup(false); setSetupNotice("Settings saved. Send a message when you’re ready."); void refresh();
+     }} />}
+   </section>;
+
+   function controlConfirmation() {
+     if (!confirmation) return null;
+     const stopping = confirmation.kind === "deactivations";
+     return <section className="team-feedback" role="group" aria-label="Confirm Team control">
+       <h3 ref={controlHeading} tabIndex={-1}>{stopping ? "Turn off for new tasks?" : "Confirm emergency revocation"}</h3>
+       {stopping ? <p>Started work keeps its existing rule.</p> : <>
+         <p>Exact target revision: {confirmation.body.targetRevisionId}</p>
+         <p>This revision will be permanently revoked. Its future effects and completion of unfinished main tasks will be blocked. Saved work and other versions are unaffected.</p>
+       </>}
+       <button disabled={!!busy} onClick={() => setConfirmation(null)}>Cancel</button>
+       <button disabled={!!busy || !!pendingChoice} onClick={() => { setConfirmation(null); void postChoice(confirmation.kind, confirmation.body); }}>
+         {stopping ? "Confirm stop for new tasks" : "Revoke this exact revision"}
+       </button>
+     </section>;
+   }
 }

@@ -5,8 +5,7 @@ import { teamProjectService } from '../../src/team-native.mjs';
 
 async function createTeam(page, name) {
   await navigate(page, 'Tasks');
-  const tools = await openWorkspaceTool(page, '.project-tools');
-  await tools.getByRole('button', { name: 'New project', exact: true }).click();
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
   await expect(page.getByLabel('Who is this for?', { exact: true })).toHaveValue('PERSONAL');
   await page.getByLabel('Who is this for?', { exact: true }).selectOption('TEAM');
   await page.getByLabel('New project name', { exact: true }).fill(name);
@@ -73,9 +72,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await addLeo(page, team.name);
       expect(fixture.db.prepare('SELECT revision_id FROM team_selections WHERE project_id=?').get(team.id).revision_id).toBeNull();
       await navigate(page, 'Customizations');
-      await expect(page.getByRole('heading', { name: 'Team customizations', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Open Studio', exact: true })).toBeEnabled();
-      await expect(page.getByRole('region', { name: 'Current Team access', exact: true })).toContainText('Project admin');
+      await expect(page.getByRole('region', { name: 'Team customization access', exact: true })).toContainText('everyone’s new tasks');
+      await expect(page.getByText('Leo · Member', { exact: true })).toHaveCount(0);
       await page.screenshot({ path: info.outputPath('team-scoped-entry.png') });
       await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Customization Studio', exact: true })).toBeFocused();
@@ -85,7 +85,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeVisible();
       await page.goBack();
       teamActive = true;
-      await expect(page.getByRole('heading', { name: 'Team customizations', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
       await expect(page.getByLabel('Customization scope', { exact: true })).toHaveValue(team.id);
       teamActive = false;
       await page.getByLabel('Customization scope', { exact: true }).selectOption(personalId);
@@ -96,7 +96,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       teamActive = true;
       await switchPerson(page, 'leo');
       await expect(page.getByRole('heading', { name: team.name, exact: true })).toBeVisible();
-      await expect(page.getByText('Member', { exact: true })).toBeVisible();
+      await expect(page.getByText('Team project', { exact: true })).toBeVisible();
+      await expect(page.getByText('Member', { exact: true })).toHaveCount(0);
       await page.getByLabel('New task title', { exact: true }).fill('Member native work');
       await page.locator('.quick-add').getByRole('button', { name: /Add task/ }).click();
       await expect(page.getByRole('button', { name: 'Member native work', exact: true })).toBeVisible();
@@ -106,10 +107,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByRole('button', { name: 'Member native work, completed', exact: true })).toBeDisabled();
       await navigate(page, 'Customizations');
       await expect(page.getByRole('button', { name: 'Open Studio', exact: true })).toBeDisabled();
-      const access = page.getByRole('region', { name: 'Current Team access', exact: true });
+      const access = page.getByRole('region', { name: 'Team customization access', exact: true });
       await expect(access).toContainText('Only a project admin');
       teamProjectService(fixture.db).removeMember('maya', team.id, 'leo');
-      await access.getByRole('button', { name: 'Refresh access', exact: true }).click();
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect(access.getByRole('alert')).toContainText('could not be accessed');
       await expect(page.getByRole('button', { name: 'New customization', exact: true })).toHaveCount(0);
       await page.screenshot({ path: info.outputPath('team-access-removed.png') });
@@ -133,7 +134,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await navigate(page, 'Customizations'); await collection.started;
       await page.getByLabel('Customization scope', { exact: true }).selectOption(a.id);
       collection.release();
-      await expect(page.getByRole('heading', { name: 'Team customizations', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'New customization', exact: true })).toHaveCount(0);
       await navigate(page, 'Tasks');
       const tasks = await hold(page, `**/api/projects/${personal.id}/tasks`);
@@ -146,13 +147,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await navigate(page, 'Customizations'); await members.started;
       await page.getByLabel('Customization scope', { exact: true }).selectOption(b.id);
       members.release();
-      const access = page.getByRole('region', { name: 'Current Team access', exact: true });
-      await expect(access.getByRole('heading', { name: 'Team B · Team', exact: true })).toBeVisible();
-      await expect(access.getByText('Maya · Admin', { exact: true })).toBeVisible();
+      const access = page.getByRole('region', { name: 'Team customization access', exact: true });
+      await expect(access.getByRole('status')).toContainText('Team B');
       await expect(access.getByText('Leo · Member', { exact: true })).toHaveCount(0);
       await page.getByLabel('Customization scope', { exact: true }).selectOption(a.id);
       const person = await hold(page, `**/api/projects/${a.id}/members`);
-      await access.getByRole('button', { name: 'Refresh access', exact: true }).click(); await person.started;
+      await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await person.started;
       await switchPerson(page, 'sam'); person.release();
       await expect(page.getByRole('heading', { name: 'A quieter workspace', exact: true })).toBeVisible();
       await expect(page.getByText('Leo · Member', { exact: true })).toHaveCount(0);

@@ -9,10 +9,15 @@ test.use({ hasTouch: true });
 
 for (const width of [1440, 390]) test(`one Team conversation to linked task at ${width}px`, async ({ page }, info) => {
   const reply = (name, args) => ({ calls: [{ id: name, name, arguments: args }], text: '', usage: { inputTokens: 1, outputTokens: 1 } });
+  let holdTurn = width === 390, releaseTurn;
+  const heldTurn = new Promise(resolve => { releaseTurn = resolve; });
   const fixture = await startAuthoringFixture({ authoringOverride: { providerFactory: config => ({
     reserveMicros: config.reserveMicros, maxMicros: config.maxMicros,
     complete: async request => {
-      if (request.tools[0].name === 'resolve_intent') return reply('resolve_intent', { intent: 'prepare', question: '' });
+      if (request.tools[0].name === 'resolve_intent') {
+        if (holdTurn) { holdTurn = false; await heldTurn; }
+        return reply('resolve_intent', { intent: 'prepare', question: '' });
+      }
       if (!request.toolResult) return reply('discover_catalog', {});
       const { result } = JSON.parse(request.toolResult.output);
       expect(result.businessContext.members.map(p => p.id).sort()).toEqual(['leo', 'maya']);
@@ -62,6 +67,14 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       await scope.tap();
       await page.keyboard.press('Escape');
       await page.screenshot({ path: info.outputPath('team-scope-touch.png') });
+      await page.getByLabel('Message to Daymark assistant').fill('I want to change the review process.');
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
+      await page.getByRole('button', { name: 'Stop', exact: true }).click();
+      await expect(page.getByText('Stopping…', { exact: true })).toBeVisible();
+      releaseTurn();
+      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Confirm this behavior' })).toHaveCount(0);
+      expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(0);
     }
     await page.getByLabel('Message to Daymark assistant').fill('Ask Leo to review new tasks and block completion until their linked review is done.');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
@@ -93,7 +106,7 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     async function visibleDecision(next) {
       // No scroll or screenshot helpers between the click and these assertions.
       for (const part of [decision.getByText('Launch team · Team', { exact: true }),
-        decision.getByRole('heading', { name: 'Proposed customization' }), behavior, consequence,
+         decision.getByRole('heading', { name: next === 'Back to project Tasks' ? 'Customization in use' : 'Proposed customization', exact: true }), behavior, consequence,
         decision.getByRole('status'), decision.getByRole('button', { name: next, exact: true })])
         await expect(part).toBeInViewport({ ratio: 1 });
     }
@@ -153,8 +166,9 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await openOriginal.click();
     await expect(detail.getByLabel('Task title')).toHaveValue('Launch brief');
     await detail.getByRole('button', { name: 'Close task details' }).click();
-    await switchPerson(page, 'leo');
-    await selectTeam();
+     await switchPerson(page, 'leo');
+     await selectTeam();
+    await expect(page.getByText('Assigned to Leo (you)', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Complete Review the deliverable', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Review the deliverable, completed', exact: true })).toBeDisabled();
     await switchPerson(page, 'maya');
@@ -163,5 +177,5 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await expect(page.getByRole('button', { name: 'Launch brief, completed', exact: true })).toBeDisabled();
     expect(fixture.requests).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-  } finally { await page.close(); await fixture.close(); }
+  } finally { releaseTurn(); await page.close(); await fixture.close(); }
 });

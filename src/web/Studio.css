@@ -12,14 +12,13 @@
 .team-capability-body .team-project-name { color: var(--muted); font-size: 14px; }
 .team-capability .team-capability-body .rs-header { position: static; margin-bottom: 8px; }
 .team-capability .team-scope { grid-column: 1 / -1; min-width: 0; }
-.team-capability .team-scope .project-form { margin: 0; }
-.team-capability .team-scope select { min-width: 0; max-width: 100%; }
-@media (max-width: 600px) {
-  .team-capability .team-scope .project-form { padding: 8px 12px; }
-  .team-capability .team-scope .form-line { display: grid; grid-template-columns: minmax(0, 1fr); }
-  .team-capability .team-scope select { width: 100%; }
-  .team-capability .team-scope button { justify-self: start; padding-inline: 10px; }
-}
+.team-capability .team-scope .customization-scope { margin: 0; }
+.team-capability .team-scope select { width: min(100%, 32rem); }
+.team-capability-body .team-feedback { margin-block: 12px; padding: 12px 16px; border: 1px solid var(--line); background: #fff; border-radius: 8px; }
+.team-capability-body .team-control { margin-top: 16px; padding: 12px 0; border-top: 1px solid var(--line); }
+.team-control > summary { font-weight: 600; }
+.team-control > p { margin-top: 8px; }
+.team-control pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .team-capability .rs-header h1:focus { outline: none; }
 .team-capability-body section { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 18px; }
 .team-capability-body label { display: grid; gap: 4px; min-width: 0; }
@@ -139,6 +138,9 @@
 .read-studio .rs-header-actions .rs-link { padding: 6px 8px; margin: 0; border: 1px solid transparent; color: var(--muted); }
 .read-studio .rs-composer { display: flex; flex-direction: row; flex: none; min-height: 0; gap: 12px; align-items: flex-end; margin: 0; padding: 10px 16px; border-top: 1px solid var(--line); }
 .read-studio .rs-composer textarea { flex: 1; width: 100%; min-width: 0; min-height: 44px; max-height: 144px; resize: vertical; border: 0; padding: 12px 0; margin: 0; background: #fff; font-size: 16px; }
+@media (max-width: 420px) and (min-height: 501px) {
+  .read-studio.team-capability .rs-composer textarea { min-height: 72px; }
+}
 .read-studio .rs-composer button { min-width: 76px; min-height: 44px; background: #213d30; border-color: #213d30; color: white; }
 .read-studio .rs-composer button:hover:not(:disabled) { background: #35533e; }
 .rs-send-actions { display: flex; flex-direction: column; align-items: stretch; gap: 4px; max-width: 42%; }

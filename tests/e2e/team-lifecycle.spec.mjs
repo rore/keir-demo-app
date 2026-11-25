@@ -15,8 +15,7 @@ async function setup(page, origin) {
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
   await page.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep my Personal draft through separate approval and activation.');
   await navigate(page, 'Tasks');
-  const tools = await openWorkspaceTool(page, '.project-tools');
-  await tools.getByRole('button', { name: 'New project', exact: true }).click();
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('Who is this for?', { exact: true }).selectOption('TEAM');
   await page.getByLabel('New project name', { exact: true }).fill('Lifecycle team');
   const created = page.waitForResponse(r => r.url().endsWith('/api/projects') && r.request().method() === 'POST');
@@ -45,8 +44,8 @@ async function check(page, fixture, project, version) {
     await capability.propose('maya', project.id, { expectedDraftVersion: version - 1,
       reviewerId: version === 1 ? 'leo' : 'maya', title: version === 1 ? 'Review deliverable' : 'Check the revised deliverable', intent: 'Saved compatibility fixture' });
   } finally { await capability.close(); }
-  await page.getByText('More', { exact: true }).click();
-  await page.getByRole('button', { name: 'Read saved state', exact: true }).click();
+  await page.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
+  await studio(page);
   await page.getByRole('button', { name: 'Check examples', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Approve this draft', exact: true })).toBeEnabled();
 }
@@ -77,12 +76,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await currentUse.screenshot({ path: info.outputPath('separate-choice-controls.png') });
       const approved = await choice(page, 'Approve this draft', 'approvals');
       const saved = page.getByRole('region', { name: 'Saved Team action', exact: true });
-      await expect(saved.getByRole('status')).toHaveText('Approval recorded. This did not activate the draft.');
+      await expect(saved.getByRole('status')).toHaveText('Draft approved. It’s not on yet.');
       expect(fixture.db.prepare('SELECT revision_id,generation FROM team_selections WHERE project_id=?').get(project.id)).toEqual({ revision_id: null, generation: 0 });
       await page.screenshot({ path: info.outputPath('approved-not-active.png') });
       await currentUse.screenshot({ path: info.outputPath('approved-activation-available.png') });
       const first = await choice(page, 'Turn on for new tasks', 'activations');
-      await expect(saved.getByRole('status')).toHaveText('Activation recorded.');
+      await expect(saved.getByRole('status')).toHaveText('Turned on for new tasks.');
       expect(first.receipt.approvalId).toBe(approved.receipt.id);
       expect(first.current.generation).toBe(1);
       await expect(currentUse).toContainText('On for new tasks');
@@ -209,7 +208,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const { project, personalId } = await setup(page, fixture.origin);
       const currentUse = page.getByRole('region', { name: 'Review and current use', exact: true });
       await check(page, fixture, project, 1);
-      await expect(page.getByRole('button', { name: 'Stop using for new Team tasks', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Turn off for new tasks', exact: true })).toHaveCount(0);
       await choice(page, 'Approve this draft', 'approvals');
       const active = await choice(page, 'Turn on for new tasks', 'activations');
       await navigate(page, 'Tasks');
@@ -217,17 +216,17 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByRole('button', { name: 'Review deliverable', exact: true })).toBeVisible();
       const oldPin = fixture.db.prepare('SELECT * FROM team_admissions WHERE source_task_id=?').get(old.id);
       await studio(page);
-      await page.getByText('More', { exact: true }).click();
-      await page.getByRole('button', { name: 'Stop using for new Team tasks', exact: true }).click();
+      await page.getByRole('button', { name: 'Turn off for new tasks', exact: true }).click();
       const confirmation = page.getByRole('group', { name: 'Confirm Team control', exact: true });
       await expect(confirmation.getByRole('heading')).toBeFocused();
-      await expect(confirmation).toContainText(active.receipt.revisionId);
+      await expect(confirmation).not.toContainText(active.receipt.revisionId);
       await expect(confirmation).toContainText('Started work keeps its existing rule.');
       await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
-      await expect(page.getByRole('button', { name: 'Stop using for new Team tasks', exact: true })).toBeFocused();
-      await page.getByRole('button', { name: 'Stop using for new Team tasks', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Turn off for new tasks', exact: true })).toBeFocused();
+      await page.getByRole('button', { name: 'Turn off for new tasks', exact: true }).click();
       await confirmation.screenshot({ path: info.outputPath('deactivation-consequences.png') });
       const stopped = await choice(page, 'Confirm stop for new tasks', 'deactivations');
+      expect(stopped.receipt.input.targetRevisionId).toBe(active.receipt.revisionId);
       expect(stopped.current.revisionId).toBeNull();
       expect(stopped.current.generation).toBe(2);
       expect(fixture.db.prepare('SELECT revision_id,manifest FROM team_admissions WHERE source_task_id=?').get(old.id))
@@ -256,7 +255,6 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const blocked = await createTask(page, 'Covered work to revoke');
       await expect(page.getByRole('button', { name: 'Complete Review deliverable', exact: true })).toBeVisible();
       await studio(page);
-      await page.getByText('More', { exact: true }).click();
       await page.getByText('Emergency revocation', { exact: true }).click();
       await page.getByLabel('Exact revision to revoke', { exact: true }).selectOption(active.receipt.revisionId);
       await page.getByRole('button', { name: 'Review emergency revocation', exact: true }).click();
@@ -339,12 +337,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole('button', { name: 'Check saved action', exact: true }).click();
       const saved = page.getByRole('region', { name: 'Saved Team action', exact: true });
       await expect(saved).toContainText('Emergency revocation recorded for the exact revision.');
-      await expect(saved).toContainText('Target: legacy-A · Revoked');
       await saved.locator('summary').click();
+      await expect(saved.getByText('Target: legacy-A · Revoked', { exact: true })).toBeVisible();
       await expect(saved.locator('pre')).toContainText(savedControl.id);
       await expect(saved.locator('pre')).toContainText(savedControl.operation_id);
       await saved.screenshot({ path: info.outputPath('historical-revocation-current-target.png') });
-      await page.getByText('More', { exact: true }).click();
+      await page.getByText('Support diagnostics', { exact: true }).click();
       await page.getByText('Exact current-use receipt', { exact: true }).click();
       await expect(page.getByText('Exact current-use receipt', { exact: true }).locator('..').locator('pre')).toContainText('"activation": null');
       expect(fixture.db.prepare('SELECT generation FROM team_selections WHERE project_id=?').get(project.id).generation).toBe(nativeSelection.generation + 2);

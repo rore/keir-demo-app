@@ -16,8 +16,7 @@ async function setup(page, origin) {
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
   await page.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep my Personal text through Team simulation.');
   await navigate(page, 'Tasks');
-  const tools = await openWorkspaceTool(page, '.project-tools');
-  await tools.getByRole('button', { name: 'New project', exact: true }).click();
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('Who is this for?', { exact: true }).selectOption('TEAM');
   await page.getByLabel('New project name', { exact: true }).fill('Review team');
   const created = page.waitForResponse(r => new URL(r.url()).pathname === '/api/projects' && r.request().method() === 'POST');
@@ -87,7 +86,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await navigate(page, 'Customizations');
       await page.getByLabel('Customization scope', { exact: true }).selectOption(project.id); teamScope = true;
       await page.reload();
-      await expect(page.getByRole('heading', { name: 'Team customizations', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
       await openStudio(page);
       await expect(result.getByRole('heading', { name: 'Some examples did not match' })).toBeVisible();
       const raw = result.getByText('Exact example results', { exact: true }).locator('..');
@@ -109,6 +108,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const { project, personalId } = await setup(page, fixture.origin);
       await prepare(fixture, project);
       await openStudio(page);
+      await page.getByText('Support diagnostics', { exact: true }).click();
       await page.getByText('Rule details', { exact: true }).click();
       const source = await held(page, `**/api/projects/${project.id}/capability/revisions/*`);
       await page.getByRole('button', { name: 'Inspect exact source and artifacts', exact: true }).click();
@@ -131,11 +131,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(posts).toBe(1);
       await page.getByRole('button', { name: 'I checked saved state', exact: true }).click();
       const evidence = await held(page, `**/api/projects/${project.id}/capability/evidence/*`);
-      await page.getByText('More', { exact: true }).click();
-      await page.getByRole('button', { name: 'Read saved state', exact: true }).click(); await evidence.started;
+      await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await evidence.started;
       await switchPerson(page, 'leo'); evidence.release();
       await navigate(page, 'Customizations');
-      await expect(page.getByRole('heading', { name: 'Team customizations', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Open Studio', exact: true })).toBeDisabled();
       await expect(examples(page)).toHaveCount(0);
       await switchPerson(page, 'maya');
@@ -143,8 +142,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await openStudio(page);
       await expect(examples(page)).toBeVisible();
       fixture.db.prepare("UPDATE project_members SET role='MEMBER' WHERE project_id=? AND user_id='maya'").run(project.id);
-      await page.getByText('More', { exact: true }).click();
-      await page.getByRole('button', { name: 'Read saved state', exact: true }).click();
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect(page.getByRole('alert')).toContainText('Only a current project admin');
       await expect(examples(page)).toHaveCount(0);
       await expect(checkExamples(page)).toHaveCount(0);

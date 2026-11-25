@@ -31,7 +31,6 @@ async function signIn(page, name) {
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
 }
 async function newProject(page, name, mobile = false) {
-  await openWorkspaceTool(page, '.project-tools');
   await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('New project name', { exact: true }).fill(name);
   await page.getByRole('button', { name: 'Save project', exact: true }).click();
@@ -137,6 +136,102 @@ test('an unavailable Personal selection is not shown as verified absence', async
   expect((await response.json()).selection.revision).toBeNull();
   await expect(studio).toHaveCount(0);
 });
+
+for (const width of [1440, 390]) {
+  test(`normal workspace and shared assistant setup without a provider at ${width}px`, async ({ browser, demo }, info) => {
+    const context = await browser.newContext({ hasTouch: width === 390, viewport: { width, height: width === 390 ? 844 : 900 } });
+    const page = await context.newPage();
+    const writes = [];
+    page.on('request', request => {
+      const { pathname } = new URL(request.url());
+      if (request.method() !== 'GET' && /\/authoring(?:\/|$)/.test(pathname)) writes.push(pathname);
+    });
+    try {
+      await page.goto(demo.origin);
+      await signIn(page, 'Maya');
+      const nav = page.getByRole('navigation', { name: 'Main navigation' });
+      const customizations = () => nav.getByRole('button', { name: 'Customizations', exact: true }).click();
+      const tasks = () => nav.getByRole('button', { name: 'Tasks', exact: true }).click();
+      const collection = page.getByRole('heading', { name: 'Customizations', exact: true });
+      const studioButton = name => page.locator('.collection-heading').getByRole('button', { name, exact: true });
+      const configure = page.getByRole('button', { name: 'Configure', exact: true });
+      const setup = page.getByRole('dialog', { name: 'Set up the assistant', exact: true });
+      async function checkSetup() {
+        await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+        await configure.click();
+        await expect(setup).toContainText('Current settings: Not configured');
+        await expect(setup.getByLabel('API key', { exact: true })).toHaveValue('');
+        await setup.getByRole('button', { name: 'Cancel', exact: true }).click();
+        await expect(configure).toBeFocused();
+      }
+      await expect(page.getByText('Personal project', { exact: true })).toBeVisible();
+      await customizations();
+      await expect(collection).toBeVisible();
+      await expect(studioButton('New customization')).toBeInViewport();
+      await page.screenshot({ path: info.outputPath('personal-customizations.png') });
+      await studioButton('New customization').click();
+      await checkSetup();
+      await tasks();
+      await page.getByRole('button', { name: 'New project', exact: true }).click();
+      await page.getByLabel('Who is this for?', { exact: true }).selectOption('TEAM');
+      await page.getByLabel('New project name', { exact: true }).fill('Launch team');
+      await page.getByRole('button', { name: 'Save project', exact: true }).click();
+      await expect(page.getByRole('heading', { name: 'Launch team', exact: true })).toBeFocused();
+      await expect(page.getByText('Team project', { exact: true })).toBeVisible();
+      if (width === 390) {
+        expect(await page.getByLabel('Project', { exact: true }).locator('optgroup').evaluateAll(groups => groups.map(g => g.label)))
+          .toEqual(['Personal projects', 'Team projects']);
+      } else {
+        await expect(page.getByRole('group', { name: 'Personal projects', exact: true })).toBeVisible();
+        await expect(page.getByRole('group', { name: 'Team projects', exact: true }).getByRole('button', { name: 'Launch team', exact: true }))
+          .toHaveAttribute('aria-current', 'true');
+      }
+      const menus = await openWorkspaceTool(page, '.project-tools');
+      await menus.getByRole('button', { name: 'Manage members', exact: true }).click();
+      const members = page.getByRole('dialog', { name: 'Launch team · Team', exact: true });
+      await members.getByLabel('Existing demo person', { exact: true }).selectOption('leo');
+      await members.getByRole('button', { name: 'Add member', exact: true }).click();
+      await expect(members.getByText('Leo · Member', { exact: true })).toBeVisible();
+      await members.getByRole('button', { name: 'Done', exact: true }).click();
+      await expect(page.locator('.project-tools > summary')).toBeFocused();
+      const quickAdd = page.locator('.quick-add');
+      await expect(quickAdd).toHaveCount(1);
+      await quickAdd.getByLabel('New task title', { exact: true }).fill('Write the brief');
+      await quickAdd.getByRole('button', { name: 'Add task', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Write the brief', exact: true })).toBeVisible();
+      await search(page, 'brief');
+      await expect(searchHeading(page)).toBeVisible();
+      await page.getByRole('button', { name: 'Write the brief', exact: true }).click();
+      await expect(page.getByRole('dialog', { name: 'Task details', exact: true }).getByLabel('Task title', { exact: true })).toHaveValue('Write the brief');
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('button', { name: 'Write the brief', exact: true })).toBeFocused();
+      await page.screenshot({ path: info.outputPath('team-tasks.png') });
+      await customizations();
+      await expect(collection).toBeVisible();
+      await expect(studioButton('Open Studio')).toBeEnabled();
+      await expect(studioButton('Open Studio')).toBeInViewport();
+      await page.screenshot({ path: info.outputPath('team-customizations.png') });
+      await studioButton('Open Studio').click();
+      await expect(page.getByRole('button', { name: 'Turn off for new tasks', exact: true })).toHaveCount(0);
+      await checkSetup();
+      await expect(page.getByText('Emergency revocation', { exact: true })).toHaveCount(0);
+      await page.screenshot({ path: info.outputPath('team-studio-unconfigured.png') });
+      await switchPerson(page, 'leo');
+      await expect(page.getByRole('button', { name: 'Write the brief', exact: true })).toBeVisible();
+      await quickAdd.getByLabel('New task title', { exact: true }).fill('Read the brief');
+      await quickAdd.getByRole('button', { name: 'Add task', exact: true }).click();
+      await page.getByRole('button', { name: 'Complete Read the brief', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Read the brief, completed', exact: true })).toBeDisabled();
+      await customizations();
+      await expect(studioButton('Open Studio')).toBeDisabled();
+      await expect(page.getByRole('region', { name: 'Team customization access' })).toContainText('Only a project admin');
+      await expect(page.getByText('Leo · Member', { exact: true })).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      expect(writes).toEqual([]);
+      await page.screenshot({ path: info.outputPath('member-customizations.png') });
+    } finally { await context.close(); }
+  });
+}
 
 test('literal text and exact tags page through open and completed tasks and retry the same cursor', async ({ page, demo }) => {
   const project = demo.db.prepare("SELECT id FROM projects WHERE owner_id='maya'").get().id;
@@ -322,7 +417,7 @@ for (const fallback of [false, true]) test(`local due time rejects gaps and repe
   await expect(page.locator(`time[datetime="${saved}"]`)).toContainText('GMT-5');
   await open.click();
   await expect(dueTime).toHaveValue('2025-11-02T01:30:00.123');
-  await expect(dueTime).toHaveAccessibleDescription(/America\/New_York.*GMT-5/);
+  await expect(dueTime).toHaveAccessibleDescription(/Eastern Time.*GMT-5/);
   await page.getByLabel('Priority', { exact: true }).selectOption('high');
   await save.click();
   await expect(detail).not.toBeVisible();
@@ -461,7 +556,7 @@ test('three people create, rename, edit and complete tasks; all data survives re
     await signIn(page, name);
     if (name === 'Maya') await screenshot(page, 'tasks-desktop');
     await newProject(page, `${name} project`);
-    await expect(page.getByText('Room for something good.')).toBeVisible();
+    await expect(page.getByText('No tasks yet. Add the first one above.')).toBeVisible();
     await openWorkspaceTool(page, '.project-tools');
     await page.getByRole('button', { name: 'Rename project' }).click();
     await page.getByLabel('Project name', { exact: true }).fill(`${name} notebook`);
@@ -605,7 +700,6 @@ test('initial project list must finish before project creation becomes available
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
   await intercepted;
   try {
-    await openWorkspaceTool(page, '.project-tools');
     await expect(page.getByRole('button', { name: 'New project', exact: true })).toBeDisabled();
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole('button', { name: 'New project', exact: true })).toBeDisabled();

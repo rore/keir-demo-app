@@ -489,7 +489,7 @@ for (const [name, viewport, coarse] of [
     await capture('new-task');
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.getByLabel('New task title', { exact: true })).toHaveValue('Keep this new task draft');
-    await page.getByRole('button', { name: '+ New task', exact: true }).click();
+    await page.locator('.quick-add').getByRole('button', { name: 'Details', exact: true }).click();
     await expect(dialog.getByLabel('Task title', { exact: true })).toHaveValue('Keep this new task draft');
     await expect(dialog.getByLabel('Notes (optional)', { exact: true })).toHaveValue('Keep these notes');
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();

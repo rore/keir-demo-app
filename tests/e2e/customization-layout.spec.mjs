@@ -74,17 +74,12 @@ async function appLockup(page) {
   const brand = page.locator('.brand').filter({ visible: true });
   await expect(brand).toHaveCount(1);
   await expect(brand.locator('.brand-name')).toHaveText('Daymark');
-  await expect(brand.locator('.brand-subline')).toHaveText('A KEIR Demo');
   if (await brand.locator('..').evaluate(node => node.classList.contains('welcome-header'))) {
+    await expect(brand.locator('.brand-subline')).toHaveText('A Keir demo');
     const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
     expect(subline.y).toBeGreaterThanOrEqual(name.y + name.height);
     expect(Math.abs(subline.x - name.x)).toBeLessThanOrEqual(1);
-  } else if (page.viewportSize().width > 900) {
-    const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
-    expect(subline.x).toBeGreaterThanOrEqual(name.x + name.width);
-    expect(subline.x - name.x - name.width).toBeLessThan(24);
-    expect(Math.abs(subline.y + subline.height / 2 - name.y - name.height / 2)).toBeLessThanOrEqual(4);
-  } else await expect(brand.locator('.brand-subline')).toBeHidden();
+  } else await expect(brand.locator('.brand-subline')).toHaveCount(0);
   await expect(page.getByText('Powered by Keir', { exact: true })).toHaveCount(0);
 }
 async function openDetails(page) {
@@ -245,7 +240,6 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await enter(page, demo);
   await expect(page).toHaveTitle('Daymark — tasks and customizations');
   await page.getByLabel('New task title').fill('Keep my quick-add');
-  await openWorkspaceTool(page, '.project-tools');
   await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('New project name', { exact: true }).fill('Keep this project draft');
   await openStudio(page);
@@ -272,13 +266,13 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await expect(page.getByRole('button', { name: 'Gather material references', exact: true })).toBeFocused();
 });
 
-test('overflowing native projects and tasks scroll independently with stable navigation and retained task position', async ({ page, demo }) => {
+test('long Tasks page scrolls with stable navigation and an independent project list', async ({ page, demo }) => {
   const now = new Date().toISOString();
   for (let i = 0; i < 60; i++) demo.db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at) VALUES (?, ?, ?, ?, ?)').run(`overflow-project-${i}`, 'maya', `Overflow project ${i}`, now, now);
   const project = demo.db.prepare("SELECT id FROM projects WHERE owner_id='maya' ORDER BY created_at LIMIT 1").get().id;
   for (let i = 0; i < 80; i++) demo.db.prepare('INSERT INTO tasks (id, owner_id, project_id, title, notes, status, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(`overflow-task-${i}`, 'maya', project, `Overflow task ${i}`, '', 'open', now, now, null);
   await enter(page, demo);
-  const rail = page.locator('.task-projects'), header = page.locator('.workspace-top'), main = page.locator('.task-content'), projects = page.getByRole('navigation', { name: 'Projects' });
+  const rail = page.locator('.task-projects'), header = page.locator('.workspace-top'), main = page.locator('.task-main'), projects = page.getByRole('navigation', { name: 'Projects' });
   const geometry = { rail: await rail.boundingBox(), header: await header.boundingBox() };
   await wheel(page, main, 600); await expect.poll(() => scrollTop(main)).toBeGreaterThan(200);
   await expect.poll(() => scrollTop(projects)).toBe(0);
@@ -300,7 +294,7 @@ test('overflowing native projects and tasks scroll independently with stable nav
 test('general start offers editable requests and distinguishes untouched from off setups with history', async ({ page, demo }) => {
   await page.goto(demo.origin); await page.getByRole('button', { name: 'Continue as Sam' }).click();
   await destination(page, 'Customizations');
-  await expect(page.getByText('Your customizations will appear here.', { exact: true })).toBeVisible();
+  await expect(page.getByText('No Personal customizations yet.', { exact: false })).toBeVisible();
   await expect(page.locator('.customization-card')).toHaveCount(0);
   const before = await collection(page); let mutations = 0;
   page.on('request', request => { if (request.method() === 'POST' && /\/api\/(extensions|authoring)/.test(request.url())) mutations++; });
@@ -344,7 +338,7 @@ test('saved draft resumes in chat and failed saved-state reads offer Retry', asy
   await expect(await editSaved(page)).toContainText('Continue changes'); await destination(page, 'Tasks');
   await page.route('**/api/extensions', route => route.abort('failed'));
   await destination(page, 'Customizations'); await expect(page.getByRole('alert')).toContainText('Customizations could not be checked');
-  await expect(page.getByText('Your customizations will appear here.', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('No Personal customizations yet.', { exact: false })).toHaveCount(0);
   await page.unroute('**/api/extensions'); await page.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(await editSaved(page)).toBeEnabled(); await picture(page, 'discovery-continue');
   await (await editSaved(page)).click(); await openDetails(page);

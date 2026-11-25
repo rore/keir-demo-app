@@ -291,7 +291,11 @@ function conversationMessage(id: string, item: Conversation["messages"][number])
     context: item.role === "user" && item.text.startsWith(continuationPrefix) ? item.text : undefined };
 }
 
-function AssistantSetup({ request, close, saved, beginSave }: { request: Props["request"]; close: (uncertain: boolean) => void; saved: (value: Setup) => void; beginSave: () => void }) {
+export function canConfigureAssistant(availability: { available: boolean; code?: string | null }) {
+  return !availability.available && ["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(availability.code ?? "");
+}
+
+export function AssistantSetup({ request, close, saved, beginSave, team = false }: { request: Props["request"]; close: (uncertain: boolean) => void; saved: (value: Setup) => void; beginSave: () => void; team?: boolean }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const key = useRef<HTMLInputElement>(null);
   const lifetime = useRef(new AbortController());
@@ -370,7 +374,9 @@ function AssistantSetup({ request, close, saved, beginSave }: { request: Props["
       <div className="rs-setup-fields">
         <h2 id="assistant-setup-title">Set up the assistant</h2>
         <p>These settings are shared by all three people in this demo. Each person keeps their own customizations.</p>
-        <p>The AI service receives your messages, draft and example checks. It can also read your saved customizations and relevant tasks in bounded pages, including task notes when needed. It cannot read another demo person’s work. Sending a message may cost money.</p>
+        <p>The AI service receives your messages, draft and example checks. {team
+          ? "In Team Studio it can also read the shared project’s name, members and saved customization. It cannot read anyone’s Personal work."
+          : "In Personal Studio it can also read your saved customizations and relevant tasks in bounded pages, including task notes when needed. It cannot read another demo person’s work."} Sending a message may cost money.</p>
         {reading && <p role="status">Checking current settings…</p>}
         {readFailed && <p role="alert">Assistant settings could not be checked. <button type="button" disabled={waiting || reading} onClick={() => void read(!setup)}>Retry status</button></p>}
         {error && <p className="error" role="alert">{error}</p>}
@@ -2322,7 +2328,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button disabled={!!busy} onClick={cancelRestart}>Cancel</button>
             </div>
           </article>}
-        {!retired && !restart && authoring && !authoring.availability.available && ["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <div className="rs-setup-notice"><p>Set up the assistant to create or change a customization.</p><button id="assistant-configure" onClick={openSetup}>Configure</button></div>}
+        {!retired && !restart && authoring && canConfigureAssistant(authoring.availability) && <div className="rs-setup-notice"><p>Set up the assistant to create or change a customization.</p><button id="assistant-configure" onClick={openSetup}>Configure</button></div>}
         {!restart && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
         {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}

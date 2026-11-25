@@ -18,7 +18,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(select.or(button)).toBeVisible();
       if (await select.isVisible()) await select.selectOption(project);
       else await button.click();
-      await expect(page.getByText('Team project · shared tasks', { exact: true })).toBeVisible();
+      await expect(page.getByText('Team project', { exact: true })).toBeVisible();
     }
     async function create(title) {
       await page.getByLabel('New task title', { exact: true }).fill(title);
