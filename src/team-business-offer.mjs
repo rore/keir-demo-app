@@ -102,21 +102,41 @@ function offerSource(program, hook, outcomes) {
 
 // Project saved agreements back to business facts, never expose the native test scripts in an edit.
 export function businessProposal(agreement, sources) {
-  const unsupported = agreement.claims.some(claim => claim.outcomes.some(({ when }) =>
-    Object.keys(when).some(key => key !== 'priority' && !(claim.hook === completing && key === 'childStatus'))));
-  if (unsupported) return { summary: agreement.summary, unavailable: true };
+  const unavailable = { summary: agreement.summary, unavailable: true };
+  if (agreement.claims.some(claim => claim.outcomes.some(({ when }) =>
+    Object.keys(when).some(key => key !== 'priority' && !(claim.hook === completing && key === 'childStatus'))))) return unavailable;
   const fragments = {};
   for (const { hook } of agreement.claims) {
     const program = JSON.parse(sources[hook]);
-    if (!hasSourceFields(program) || program.entrypoint !== hook) return { summary: agreement.summary, unavailable: true };
+    if (!hasSourceFields(program) || program.entrypoint !== hook) return unavailable;
     fragments[hook] = json({ steps: program.steps, return: program.return });
+  }
+  const creation = agreement.claims.find(c => c.hook === created);
+  const completion = agreement.claims.find(c => c.hook === completing);
+  const required = [];
+  const matching = (claim, facts) => claim.outcomes.filter(o => matchesTeamContext(o.when, facts));
+  if (completion) for (const priority of teamPriorities) {
+    const effects = creation ? matching(creation, { priority }) : [];
+    if (creation && effects.length !== 1) return unavailable;
+    const linked = effects[0]?.expect.children === 1;
+    const decisions = [];
+    for (const childStatus of linked ? teamChildStates : ['absent']) {
+      const outcomes = matching(completion, { priority, childStatus });
+      if (outcomes.length !== 1) return unavailable;
+      const { decision, message } = outcomes[0].expect;
+      if (decision === 'ALLOW' && message) return unavailable;
+      decisions.push(decision);
+    }
+    // Describe the reachable behavior, not how a past author originally declared it.
+    if (linked && decisions.join() === 'DENY,DENY,ALLOW') required.push(priority);
   }
   const list = value => value === undefined ? null : Array.isArray(value) ? value : [value];
   return {
     summary: agreement.summary,
     ...Object.fromEntries(TEAM_BINDINGS.map(hook => {
       const claim = agreement.claims.find(c => c.hook === hook);
-      return [hook, !claim ? null : { source: fragments[hook], outcomes: claim.outcomes.map(({ when, expect }) => hook === created
+      return [hook, !claim ? null : { source: fragments[hook],
+        ...(hook === completing && { requireFinishedReviewFor: required.length ? required : null }), outcomes: claim.outcomes.map(({ when, expect }) => hook === created
         ? { when: { priority: list(when.priority) }, expected: { linkedTask: expect.children ? { title: expect.childTitle, assigneeId: expect.childAssigneeId } : null } }
         : { when: { priority: list(when.priority), linkedTask: list(when.childStatus) },
           expected: { allow: expect.decision === 'ALLOW', message: expect.message || null } }) }];

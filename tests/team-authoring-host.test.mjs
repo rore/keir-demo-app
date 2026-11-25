@@ -9,7 +9,7 @@ import { openData, taskService } from '../src/data.mjs';
 import { createTeamCapability } from '../src/team-capability.mjs';
 import { teamProjectService } from '../src/team-native.mjs';
 import { teamAuthoringHost, teamConversationTools, teamConversationHandlers } from '../src/team-authoring-host.mjs';
-import { expandTeamOffer } from '../src/team-business-offer.mjs';
+import { businessProposal, expandTeamOffer } from '../src/team-business-offer.mjs';
 import { triageOffer, linkedOffer, linkedSourceLookalike, triageProposal, offerSources, nestedOfferCalls, allowMissingReview } from './fixtures/team-authored.mjs';
 import { createCompiler } from '../src/compiler.mjs';
 import { teamModel, teamModelBytes } from '../src/team-runtime.mjs';
@@ -102,6 +102,9 @@ test('the same structural tool offers conditional triage and a linked handoff wi
     assert.equal(hostCompiles, index ? 3 : 1);
     const proof = await host.simulate(saved.revisionId, saved.draftVersion);
     assert.equal(proof.eligible, true, JSON.stringify(proof.summary.qualification));
+    const projected = host.discover().currentProposal;
+    if (index) assert.deepEqual(projected.TaskBeforeComplete.requireFinishedReviewFor, ['low']);
+    assert.deepEqual(host.expandOffer(projected), result.proposal, 'An unchanged edit round-trips through the real offer validator');
     assert.equal(read(capability, id).selected, null);
     assert.equal(db.prepare('SELECT count(*) AS n FROM tasks WHERE project_id=?').get(id).n, 0);
     const { cases } = capability.evidence('maya', id, proof.evidenceId).report;
@@ -189,6 +192,9 @@ test('a finished-review requirement rejects an absent-review loophole but preser
   const decisions = Object.fromEntries(cases.filter(c => c.id.includes('before-link') || c.id.includes('handoff'))
     .flatMap(c => picked(c, 'complete').filter(e => e.ref === 'work').map(e => [e.before.childStatus, e.observed.decision])));
   assert.deepEqual(decisions, { absent: 'ALLOW', open: 'DENY', completed: 'ALLOW' });
+  const unchangedEdit = host.discover().currentProposal;
+  assert.equal(unchangedEdit.TaskBeforeComplete.requireFinishedReviewFor, null);
+  assert.deepEqual(host.expandOffer(unchangedEdit), host.expandOffer(offer));
 });
 
 test('offer checks catch the known source shapes without compiling or replacing the business behavior', () => {
@@ -265,6 +271,9 @@ test('a completion-only offer checks that task creation has no hook or side effe
   assert.deepEqual(cases.map(c => picked(c, 'dispatch').map(e => [e.native.admissionBefore, e.observed.outcome, e.observed.children])),
     Array.from({ length: 3 }, () => [['NO_HOOK', 'NONE', 0]]));
   assert.deepEqual(cases.map(c => picked(c, 'complete')[0].observed.decision), ['ALLOW', 'ALLOW', 'DENY']);
+  const edit = host.discover().currentProposal;
+  assert.equal(edit.TaskBeforeComplete.requireFinishedReviewFor, null);
+  assert.deepEqual(host.expandOffer(edit), host.expandOffer(offer));
 });
 
 test('a legacy saved agreement reopens with exact evidence and only business facts are projected for edits', async t => {
@@ -285,4 +294,7 @@ test('a legacy saved agreement reopens with exact evidence and only business fac
   assert.deepEqual(Object.keys(JSON.parse(context.currentProposal.TaskCreated.source)).sort(), ['return', 'steps']);
   assert.deepEqual(capability.source('maya', id, state.draft.revisionId).sourceBundle.sources, legacy.bindings);
   assert.doesNotMatch(JSON.stringify(context), /BEFORE_WRITE|LOST_REPLY|claimId|receipt|reportStatus/);
+  const unsupported = structuredClone(legacy.agreement);
+  unsupported.claims[0].outcomes[0].when.status = 'open';
+  assert.deepEqual(businessProposal(unsupported, legacy.bindings), { summary: unsupported.summary, unavailable: true });
 });

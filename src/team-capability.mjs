@@ -410,6 +410,8 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
       if (!query || Object.keys(query).some(key => key !== 'after')) throw new AppError(400, 'Use only the revision cursor.');
       const after = Object.hasOwn(query, 'after') ? id(query.after) : '';
       const rows = db.prepare(`SELECT r.revision_id AS revisionId,r.revoked_at AS revokedAt,
+         substr(coalesce(json_extract(r.source_bundle,'$.parameters.agreement.summary'),
+           json_extract(r.source_bundle,'$.parameters.title')),1,160) AS behavior,
         r.revision_id IS s.revision_id AS current,r.revision_id IS d.revision_id AS draft,
         (SELECT count(*) FROM team_admissions a JOIN tasks t ON t.id=a.source_task_id
           WHERE a.project_id=r.project_id AND a.revision_id=r.revision_id AND t.status='open') AS openRoots,

@@ -261,7 +261,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByLabel('Version to revoke', { exact: true }).selectOption(active.receipt.revisionId);
       await page.getByRole('button', { name: 'Review emergency revocation', exact: true }).click();
       await expect(confirmation).toContainText('permanently revoked');
-      await expect(confirmation).not.toContainText(active.receipt.revisionId);
+      await expect(confirmation).toContainText(`Version reference: ${active.receipt.revisionId}`);
+      await expect(confirmation).toContainText('Review deliverable');
       await confirmation.screenshot({ path: info.outputPath('revocation-consequences.png') });
       const revoked = await choice(page, 'Permanently revoke this version', 'revocations');
       expect(revoked.target.revokedAt).toBeGreaterThan(0);
@@ -301,26 +302,52 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await check(page, fixture, project, 1);
       const source = fixture.db.prepare('SELECT * FROM team_revisions WHERE project_id=?').get(project.id);
       const manifest = JSON.parse(source.manifest), artifacts = JSON.parse(source.artifacts);
-      installTeamRevision(fixture.db, 'maya', project.id, 'legacy-A', { TaskCreated: Buffer.from(artifacts[manifest.TaskCreated]), TaskBeforeComplete: null });
-      teamProjectService(fixture.db).setSelection('maya', project.id, 'legacy-A');
       runtime = createTeamRuntime({ db: fixture.db });
       const tasks = taskService(fixture.db, { team: runtime });
-      const old = await tasks.createTask('maya', { projectId: project.id, title: 'Completed root, pending effect' }, { operationId: randomUUID() });
-      await tasks.completeTask('maya', old.id);
-      expect(runtime.status('maya', old.id).state).toBe('PENDING');
+      const older = [];
+      for (const version of ['legacy-A', 'legacy-B']) {
+        installTeamRevision(fixture.db, 'maya', project.id, version, { TaskCreated: Buffer.from(artifacts[manifest.TaskCreated]), TaskBeforeComplete: null });
+        teamProjectService(fixture.db).setSelection('maya', project.id, version);
+        const task = await tasks.createTask('maya', { projectId: project.id, title: `Earlier work ${older.length + 1}` }, { operationId: randomUUID() });
+        await tasks.completeTask('maya', task.id);
+        expect(runtime.status('maya', task.id).state).toBe('PENDING');
+        older.push(task);
+      }
+      const [old, other] = older;
+      await navigate(page, 'Tasks');
+      await page.reload(); // Read the tasks seeded directly after the browser's initial project load.
+      async function selectTeam() {
+        if (viewport.width === 390) await page.getByLabel('Project', { exact: true }).selectOption(project.id);
+        else await page.getByRole('navigation', { name: 'Projects', exact: true }).getByRole('button', { name: project.name, exact: true }).click();
+      }
+      await selectTeam();
+      await page.getByRole('button', { name: 'Earlier work 1', exact: true }).click();
+      const detail = page.getByRole('dialog', { name: 'Task details' });
+      const versionDisclosure = detail.getByText('Advanced: rule version for this task', { exact: true });
+      const reference = detail.getByText('Version reference: legacy-A', { exact: true });
+      await expect(reference).toBeHidden();
+      await versionDisclosure.click();
+      await expect(reference).toBeVisible();
+      await detail.getByRole('button', { name: 'Close task details' }).click();
       await studio(page);
+      const advanced = page.getByText('Advanced: emergency revocation', { exact: true });
+      const control = page.getByLabel('Version to revoke', { exact: true });
+      await advanced.click();
+      await expect(control.getByRole('option', { name: /Version reference: legacy-A.*0 open, 1 unfinished/ })).toHaveCount(1);
+      await expect(control.getByRole('option', { name: /Version reference: legacy-B.*0 open, 1 unfinished/ })).toHaveCount(1);
+      await advanced.click();
       await check(page, fixture, project, 2);
       await choice(page, 'Approve this draft', 'approvals');
       const active = await choice(page, 'Turn on for new tasks', 'activations');
-      const advanced = page.getByText('Advanced: emergency revocation', { exact: true });
       await advanced.click();
-      const control = page.getByLabel('Version to revoke', { exact: true });
-      await control.selectOption({ label: await control.getByRole('option', { name: /Earlier version · 0 open, 1 unfinished/ }).textContent() });
+      const label = 'Version reference: legacy-A · Earlier version · 0 open, 1 unfinished';
+      await expect(control.getByRole('option', { name: 'Version reference: legacy-B · Earlier version · 0 open, 1 unfinished', exact: true })).toHaveCount(1);
+      await control.selectOption({ label });
       await expect(control).toHaveValue('legacy-A');
       const emergency = advanced.locator('..');
       await expect(emergency.getByRole('status')).toContainText('Earlier version');
       await expect(emergency.getByRole('status')).toContainText('Open original tasks: 0. Unfinished rule actions: 1.');
-      await expect(emergency).not.toContainText('legacy-A');
+      await expect(emergency.getByRole('status')).toContainText('Version reference: legacy-A');
       await emergency.screenshot({ path: info.outputPath('older-pending-effect-target.png') });
       let posts = 0;
       page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/capability/revocations')) posts++; });
@@ -328,7 +355,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole('button', { name: 'Review emergency revocation', exact: true }).click();
       const confirmation = page.getByRole('group', { name: 'Confirm Team control', exact: true });
       await expect(confirmation).toContainText('Earlier version');
-      await expect(confirmation).not.toContainText('legacy-A');
+      await expect(confirmation).toContainText('Version reference: legacy-A');
       await confirmation.getByRole('button', { name: 'Permanently revoke this version', exact: true }).click();
       await expect(page.getByRole('button', { name: 'Check saved action', exact: true })).toBeVisible();
       const savedControl = fixture.db.prepare('SELECT * FROM team_controls WHERE project_id=?').get(project.id);
@@ -341,6 +368,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(tasks.getTask('maya', old.id).status).toBe('completed');
       expect(fixture.db.prepare('SELECT count(*) AS n FROM tasks WHERE parent_task_id=?').get(old.id).n).toBe(0);
       expect(fixture.db.prepare('SELECT receipt FROM team_admissions WHERE source_task_id=?').get(old.id).receipt).toBeNull();
+      expect(fixture.db.prepare('SELECT count(*) AS n FROM tasks WHERE parent_task_id=?').get(other.id).n).toBe(1);
       teamProjectService(fixture.db).setSelection('maya', project.id, null);
       teamProjectService(fixture.db).setSelection('maya', project.id, active.current.revisionId);
       await page.reload();
@@ -357,6 +385,11 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(fixture.db.prepare('SELECT generation FROM team_selections WHERE project_id=?').get(project.id).generation).toBe(nativeSelection.generation + 2);
       expect(posts).toBe(1);
       await switchPerson(page, 'leo');
+      await navigate(page, 'Tasks');
+      await selectTeam();
+      await page.getByRole('button', { name: 'Earlier work 1', exact: true }).click();
+      await expect(versionDisclosure).toHaveCount(0);
+      await detail.getByRole('button', { name: 'Close task details' }).click();
       await navigate(page, 'Customizations');
       await expect(page.getByRole('button', { name: /^(Open Studio|New customization)$/ })).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Review emergency revocation', exact: true })).toHaveCount(0);

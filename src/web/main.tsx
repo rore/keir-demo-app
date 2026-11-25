@@ -1441,7 +1441,8 @@ function Workspace({
         {detail && (
           <TaskDetail
             key={detail.id}
-            task={detail}
+             task={detail}
+             showTeamVersion={projects.some(item => item.id === detail.projectId && item.mode === "TEAM" && item.role === "ADMIN")}
             draft={draft}
             setDraft={next => { draftVersion.current++; setDraft(next); }}
             manage={() => void openStudio("detail")}
@@ -1622,13 +1623,14 @@ function TeamMembers({ project, users, request, close }: {
   </dialog>;
 }
 
-function TaskReaction({ source, request, confirmed, openCreated, creation = false, bound }: {
+function TaskReaction({ source, request, confirmed, openCreated, creation = false, bound, showTeamVersion = false }: {
   source: Task;
   request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
   confirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
   creation?: boolean;
   bound?: (bound: boolean) => void;
+  showTeamVersion?: boolean;
 }) {
   const [reaction, setReaction] = useState<Reaction | null>(null);
   const [created, setCreated] = useState<Task | null>(null);
@@ -1690,8 +1692,13 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const noEffect = !uncertain && (receipt?.effect === "NONE" || !!reaction?.outcome
     && ["COMPLETED", "BUSINESS_REJECTION", "FAILED", "LIMIT_EXCEEDED"].includes(reaction.outcome.classification ?? "")
     && Array.isArray(reaction.outcome.effects) && reaction.outcome.effects.every(effect => effect.state === "NONE" || effect.effect === "NONE"));
-  if (!error && (reaction?.state === "NO_BINDING" || !reaction)) return null;
-  return <section className="task-reaction" aria-label={creation ? "Task creation customization outcome" : "Customization outcome"}>
+  const version = showTeamVersion && reaction?.team && reaction.revisionId && <details className="task-reaction">
+    <summary>Advanced: rule version for this task</summary>
+    <p>Version reference: {reaction.revisionId}</p>
+    <p>Use this reference to identify the version in Team Studio’s emergency controls.</p>
+  </details>;
+  if (!error && (reaction?.state === "NO_BINDING" || !reaction)) return version || null;
+  return <><section className="task-reaction" aria-label={creation ? "Task creation customization outcome" : "Customization outcome"}>
     {linkedNextAction && <p><strong>Linked task</strong></p>}
     <p role="status">{confirmedReceipt ? update ? unchanged ? "The update made no change." : "This task was updated."
       : created ? linkedNextAction ?? `Created “${created.title}”` : checking ? "A task was added. Checking its details…" : "A task was added, but it is unavailable here."
@@ -1721,11 +1728,12 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
       {receipt && <pre aria-label="Saved native receipt">{JSON.stringify(receipt, null, 2)}</pre>}
       {reaction.outcome && <pre aria-label="Original runtime outcome">{JSON.stringify(reaction.outcome, null, 2)}</pre>}
     </details>}
-  </section>;
+  </section>{version}</>;
 }
 
 function TaskDetail({
   task,
+  showTeamVersion,
   draft,
   setDraft,
   manage,
@@ -1741,6 +1749,7 @@ function TaskDetail({
   save,
 }: {
   task: Task;
+  showTeamVersion: boolean;
   draft: TaskDraft;
   setDraft: (draft: TaskDraft) => void;
   manage: () => void;
@@ -1777,7 +1786,7 @@ function TaskDetail({
     return () => controller.abort();
   }, [task.parentTaskId, task.originEventId, task.projectId]);
   const atTop = !!task.creatorId && !task.parentTaskId;
-  const created = <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation bound={setCreationBound} />;
+  const created = <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation bound={setCreationBound} showTeamVersion={showTeamVersion} />;
   return <TaskForm task={task} draft={draft} setDraft={setDraft} busy={busy} error={error} close={close} save={save} complete={complete}
     recovery={<>
       {hold && <section aria-label="Last completion attempt" className="task-completion-hold">

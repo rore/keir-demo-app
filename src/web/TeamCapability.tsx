@@ -16,7 +16,7 @@ type ChoiceInput = { operationId: string; expectedDraftVersion: number; revision
 type ControlInput = { operationId: string; targetRevisionId: string; expectedSelectionRevisionId: string | null; expectedSelectionGeneration: number };
 type ActionKind = "approvals" | "activations" | "deactivations" | "revocations";
 type ActionInput = ChoiceInput | ControlInput;
-type ListedVersion = { revisionId: string; revoked: boolean; current: boolean; draft: boolean; openRoots: number; pendingEffects: number };
+type ListedVersion = { revisionId: string; behavior: string | null; revoked: boolean; current: boolean; draft: boolean; openRoots: number; pendingEffects: number };
 type RevisionPage = { items: ListedVersion[]; next: string | null };
 type Receipt = { id: string; kind: ActionKind; operationId: string; actorId: string; revisionId: string;
   evidenceId?: string; approvalId?: string; generation?: number; input?: ActionInput & { kind: string } };
@@ -81,8 +81,9 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   });
   const [choiceReceipt, setChoiceReceipt] = useState<Receipt | null>(null), [choiceNotice, setChoiceNotice] = useState("");
   const [revisionPage, setRevisionPage] = useState<RevisionPage | null>(null), [targetRevisionId, setTargetRevisionId] = useState("");
-  const [versionOffset, setVersionOffset] = useState(0);
-  const [confirmation, setConfirmation] = useState<{ kind: "deactivations" | "revocations"; body: ControlInput; targetLabel?: string; counts?: string } | null>(null);
+  const [laterVersions, setLaterVersions] = useState(false);
+  const [confirmation, setConfirmation] = useState<{ kind: "deactivations" | "revocations"; body: ControlInput;
+    targetLabel?: string; counts?: string; behavior?: string | null } | null>(null);
   const lifetime = useRef(new AbortController()), serial = useRef(0), edits = useRef(0);
   const heading = useRef<HTMLHeadingElement>(null), stateRef = useRef(state); stateRef.current = state;
   const latestReply = useRef<HTMLDivElement>(null), focusReply = useRef(false), positioned = useRef(false);
@@ -160,7 +161,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     try {
       const page = await request<RevisionPage>(`${base}/revisions${after ? "?after=" + encodeURIComponent(after) : ""}`, "GET", undefined, lifetime.current.signal);
       if (read !== serial.current || lifetime.current.signal.aborted) return;
-      setRevisionPage(page); setTargetRevisionId(""); setVersionOffset(after ? versionOffset + (revisionPage?.items.length ?? 0) : 0);
+      setRevisionPage(page); setTargetRevisionId(""); setLaterVersions(!!after);
     } catch (e) { if (read === serial.current) { setRevisionPage(null); failure(e); } }
   }
   async function readEvidence(id: string, current = state!, read = ++serial.current, restoreCases = false) {
@@ -295,19 +296,18 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       }
     } finally { if (!lifetime.current.signal.aborted) setBusy(""); }
   }
-  const versionLabel = (item: ListedVersion, index: number) => `Version ${versionOffset + index + 1} in this list · ${
+  const versionLabel = (item: ListedVersion) => `Version reference: ${item.revisionId} · ${
     item.current ? "In use for new tasks" : item.draft ? "Latest saved draft" : "Earlier version"}${item.revoked ? " · Revoked" : ""}`;
   const versionCounts = (item: ListedVersion) => `Open original tasks: ${item.openRoots}. Unfinished rule actions: ${item.pendingEffects}.`;
   function confirmControl(kind: "deactivations" | "revocations", invoker: HTMLButtonElement) {
     if (!state?.selection.available || state.selection.generation === null || busy || pendingChoice || confirmation) return;
     const target = kind === "deactivations" ? state.selection.revisionId : targetRevisionId;
-    const index = revisionPage?.items.findIndex(r => r.revisionId === target) ?? -1;
-    const version = revisionPage?.items[index];
+    const version = revisionPage?.items.find(r => r.revisionId === target);
     if (!target || kind === "revocations" && (!version || version.revoked)) return;
     controlInvoker.current = invoker;
     setConfirmation({ kind, body: { operationId: crypto.randomUUID(), targetRevisionId: target,
       expectedSelectionRevisionId: state.selection.revisionId, expectedSelectionGeneration: state.selection.generation },
-      ...(kind === "revocations" && version && { targetLabel: versionLabel(version, index), counts: versionCounts(version) }) });
+      ...(kind === "revocations" && version && { targetLabel: versionLabel(version), counts: versionCounts(version), behavior: version.behavior }) });
   }
   const matching = evidence && evidence.revisionId === state?.draft?.revisionId && identity(evidence.cases) === identity(cases);
   const normalExamples = evidence?.report.cases.filter(c => evidence.cases.find(e => e.id === c.id)?.fault === "NONE");
@@ -530,17 +530,17 @@ export default function TeamCapability({ project, request, scopeControl, back, b
               {(!revisionPage || revisionPage.items.length > 0) && <details className="team-control"><summary>Advanced: emergency revocation</summary>
                 <p>Project admins only. Permanently stop one version if it must stop affecting existing tasks. To stop using the current version only for new tasks, turn it off instead.</p>
                 <p>Revoking a version stops its future actions and prevents unfinished original tasks that use it from being completed. Linked reviews can still be completed. Saved work and other versions are unchanged.</p>
-                <p>Earlier versions can still affect tasks. The counts are a guide: a completed task can still have an unfinished rule action.</p>
+                <p>Earlier versions can still affect tasks. Match the version reference shown under Advanced in an affected original task’s details. Counts are a guide: a completed task can still have an unfinished rule action.</p>
                {!revisionPage ? <><p>The version list is unavailable.</p><button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>Read version list</button></> : <>
                  <label htmlFor="team-revocation-target">Version to revoke</label>
                  <select id="team-revocation-target" value={targetRevisionId} disabled={!!busy || lifecycleBusy} onChange={e => setTargetRevisionId(e.target.value)}>
                    <option value="">Choose a saved version</option>
-                   {revisionPage.items.map((r, i) => <option key={r.revisionId} value={r.revisionId}>{versionLabel(r, i)} · {r.openRoots} open, {r.pendingEffects} unfinished</option>)}
+                    {revisionPage.items.map(r => <option key={r.revisionId} value={r.revisionId}>{versionLabel(r)}{r.behavior ? ` · ${r.behavior}` : ""} · {r.openRoots} open, {r.pendingEffects} unfinished</option>)}
                  </select>
-                 {revisionPage.items.map((r, i) => r.revisionId === targetRevisionId && <p key={r.revisionId} role="status">
-                   {versionLabel(r, i)}. {versionCounts(r)}
+                 {revisionPage.items.map(r => r.revisionId === targetRevisionId && <p key={r.revisionId} role="status">
+                   {versionLabel(r)}. {versionCounts(r)}{r.behavior && <><br />{r.behavior}</>}
                  </p>)}
-                 {versionOffset > 0 && <button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>Back to first versions</button>}
+                  {laterVersions && <button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>Back to first versions</button>}
                  {revisionPage.next && <button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions(revisionPage.next!)}>More versions</button>}
                 <button disabled={!targetRevisionId || !!busy || lifecycleBusy || revisionPage.items.find(r => r.revisionId === targetRevisionId)?.revoked}
                   onClick={e => confirmControl("revocations", e.currentTarget)}>Review emergency revocation</button>
@@ -561,6 +561,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
        <h3 ref={controlHeading} tabIndex={-1}>{stopping ? "Turn off for new tasks?" : "Confirm emergency revocation"}</h3>
         {stopping ? <p>Existing tasks keep the rule they started with.</p> : <>
           <p>{confirmation.targetLabel}. {confirmation.counts}</p>
+          {confirmation.behavior && <p>{confirmation.behavior}</p>}
           <p>This version will be permanently revoked. Its future actions will stop and unfinished original tasks using it can’t be completed. Saved work and other versions are unchanged.</p>
        </>}
        <button disabled={!!busy} onClick={() => setConfirmation(null)}>Cancel</button>

@@ -49,7 +49,7 @@ After an unconfirmed preparation or example check, use the readback control show
 
 When a customization is on, choose **Turn off for new tasks**, then **Confirm stop for new tasks**. Started work keeps its pinned rule unless that revision is revoked. New tasks save a no-policy choice until another rule is selected.
 
-Under **Advanced: emergency revocation**, choose the **Version to revoke**. Use **More versions** if needed, then choose **Review emergency revocation**. Check the selected version and consequences before choosing **Permanently revoke this version**. The list includes earlier versions. Counts are a guide: completed tasks may still have unfinished rule actions.
+In an affected original task’s details, open **Advanced: rule version for this task** to find its version reference. In Studio, open **Advanced: emergency revocation** and match that reference under **Version to revoke**. Use **More versions** if needed. Choose **Review emergency revocation**, check the same reference and the consequences, then choose **Permanently revoke this version**. Counts are a guide: completed tasks may still have unfinished rule actions.
 
 Revocation permanently blocks that revision's future effects and completion of unfinished main tasks pinned to it. It clears the selection only if that exact revision is selected. Completed work, saved children and receipts are not undone. Verified linked tasks can still be completed. To replace a revoked draft, propose fresh behavior in the conversation, confirm and check it, then approve and turn it on separately. There is no repair, restore or repinning action. The manual fixture below is separate from Studio.
 
