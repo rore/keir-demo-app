@@ -55,7 +55,9 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     demo.db.exec('UPDATE extension_selections SET revision_id = NULL, binding_pins = NULL');
     const studioCalls = [];
     page.on('request', request => {
-      if (/^\/api\/(authoring|extensions)(\/|$)/.test(new URL(request.url()).pathname)) studioCalls.push(request.url());
+      const { pathname, search } = new URL(request.url());
+      if (/^\/api\/(?:extensions|(?:projects\/[^/]+\/)?authoring)(?:\/|$)/.test(pathname))
+        studioCalls.push(`${request.method()} ${pathname}${search}`);
     });
     await page.goto(demo.origin);
     await signIn(page, 'Maya');
@@ -64,7 +66,15 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     const priority = page.getByLabel('Priority', { exact: true });
     const dueTime = page.getByLabel('Due time (optional)', { exact: true });
     const detail = page.getByRole('dialog', { name: 'Task details' });
-    await task.click();
+    async function openWithoutRule() {
+      const selection = page.waitForResponse(r => r.url() === `${demo.origin}/api/extensions` && r.request().method() === 'GET');
+      await task.click();
+      const response = await selection;
+      expect(response.ok()).toBe(true);
+      expect((await response.json()).selection.revision).toBeNull();
+      await expect(detail.getByRole('button', { name: 'Customization Studio', exact: true })).toHaveCount(0);
+    }
+    await openWithoutRule();
     await expect(priority).toHaveValue('normal');
     await expect(dueTime).toHaveValue('');
     await tags.fill('  Material, priority, MATERIAL  ');
@@ -75,7 +85,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(task).toBeFocused();
     await expect(page.locator('time[datetime="2028-02-29T17:42:37.123Z"]')).toContainText('12:42:37.123 PM GMT-5');
     expect(demo.db.prepare("SELECT due_at FROM tasks WHERE title='Gather material references'").get().due_at).toBe('2028-02-29T17:42:37.123Z');
-    await task.click();
+    await openWithoutRule();
     await expect(tags).toHaveValue('material, priority');
     await taskButton(page, 'Close task details').click();
 
@@ -87,7 +97,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(searchHeading(page)).toBeVisible();
     await expect(task).toBeVisible();
     await screenshot(page, `native-tags-search-${layout}`);
-    await task.click();
+    await openWithoutRule();
     await expect(tags).toHaveValue('material, priority');
     await expect(priority).toHaveValue('high');
     await expect(dueTime).toHaveValue('2028-02-29T12:42:37.123');
@@ -100,14 +110,33 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await taskButton(page, 'Clear').click();
     await expect(searchHeading(page)).toHaveCount(0);
     await expect(page.getByLabel('Filter by tag', { exact: true })).toHaveValue('');
-    await task.click();
+    await openWithoutRule();
     await expect(tags).toHaveValue('material');
     await expect(priority).toHaveValue('high');
     await expect(dueTime).toHaveValue('');
-    expect(studioCalls).toEqual([]);
+    // One read per open to confirm the selection. No authoring or extension mutations.
+    expect(studioCalls).toEqual(Array(4).fill('GET /api/extensions'));
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
+
+test('an unavailable Personal selection is not shown as verified absence', async ({ page, demo }) => {
+  await page.goto(demo.origin);
+  await signIn(page, 'Maya');
+  await page.route(`${demo.origin}/api/extensions`, route => route.fulfill({ status: 503, json: { message: 'Selection unavailable.' } }), { times: 1 });
+  const detail = page.getByRole('dialog', { name: 'Task details' });
+  const task = taskButton(page, 'Gather material references');
+  const studio = detail.getByRole('button', { name: 'Customization Studio', exact: true });
+  await task.click();
+  await expect(studio).toBeVisible();
+  await detail.getByRole('button', { name: 'Close task details' }).click();
+  const available = page.waitForResponse(r => r.url() === `${demo.origin}/api/extensions` && r.request().method() === 'GET');
+  await task.click();
+  const response = await available;
+  expect(response.ok()).toBe(true);
+  expect((await response.json()).selection.revision).toBeNull();
+  await expect(studio).toHaveCount(0);
+});
 
 test('literal text and exact tags page through open and completed tasks and retry the same cursor', async ({ page, demo }) => {
   const project = demo.db.prepare("SELECT id FROM projects WHERE owner_id='maya'").get().id;
