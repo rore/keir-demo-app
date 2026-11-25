@@ -110,8 +110,6 @@ async function openSavedItem(page, extensionId) {
 async function enterStudio(page, demo, user = 'Maya') {
   await page.goto(demo.origin);
   await page.getByRole('button', { name: `Continue as ${user}` }).click();
-  await page.getByRole('button', { name: user === 'Maya' ? 'Gather material references' : 'Plan the Saturday session', exact: true }).click();
-  await page.locator('#open-customizations').click();
   await openSavedItem(page, demo.extensionIds[user.toLowerCase()]);
   await expect(studio(page)).toBeVisible();
   await expect(authoring(page)).toBeVisible();
@@ -326,8 +324,6 @@ test('held status from an old owner cannot appear in the newly mounted Studio af
   await held;
 
   await switchPerson(page, 'leo');
-  await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-  await page.locator('#open-customizations').click();
   await openSavedItem(page, demo.extensionIds.leo);
   await expect(authoring(page)).toBeVisible();
   await expect(authoring(page)).not.toContainText('AI setup has not been confirmed');
@@ -389,8 +385,6 @@ for (const [eligible, width] of [[false, 1440], [true, 1440], [true, 683]]) test
     return { availability: available, conversations: [{ id: offered.id, version: 1, status: presented.status, runId: offered.runId,
       creationOperationId: 'offered-creation', operationId: offered.operation.id }], current: presented };
   } });
-  await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-  await page.locator('#open-customizations').click();
   await openSavedItem(page, demo.extensionIds.maya);
   const ui = studio(page);
   await expect(ui.getByText('Inspect the exact offered run.', { exact: true })).toBeVisible();

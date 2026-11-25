@@ -1033,6 +1033,7 @@ function Workspace({
       },
       ({ saved, hold }) => {
         if (!saved) {
+          setCreateNotice(previous => previous === "Task added." ? "" : previous);
           setCompletionHold({ taskId: task.id, message: hold });
           setNotice(`${task.title} stayed open on the last attempt. ${hold}`);
           return;
@@ -1097,7 +1098,9 @@ function Workspace({
           {task.notes && <small>{task.notes}</small>}
         </button>
         {task.assigneeName && <small className="muted">Assigned to {task.assigneeName}</small>}
-        {task.status === "open" && completionHold?.taskId === task.id && <small className="muted">Completion held on last attempt</small>}
+        {task.status === "open" && completionHold?.taskId === task.id && <p className="task-completion-hold">
+          <strong>This task stayed open.</strong> The rule said: “{completionHold.message}”
+        </p>}
         {(task.priority === "high" || task.priority === "low" || task.dueAt) && <small className="muted">
           {task.priority === "high" ? "High priority" : task.priority === "low" ? "Low priority" : ""}
           {(task.priority === "high" || task.priority === "low") && task.dueAt && " · "}
@@ -1471,6 +1474,7 @@ function Workspace({
              hold={detail.status === "open" && completionHold?.taskId === detail.id ? completionHold.message : undefined}
             close={closeDetail}
             reactionRequest={studioRequest}
+            visible={destination === "tasks"}
             reactionConfirmed={refreshCreatedTasks}
             openCreated={openCreatedTask}
             save={(dueAt) => {
@@ -1597,12 +1601,13 @@ function TeamMembers({ project, users, request, close }: {
     : <section className="project-form team-members" aria-label="Current Team access">{content}</section>;
 }
 
-function TaskReaction({ source, request, confirmed, openCreated, creation = false }: {
+function TaskReaction({ source, request, confirmed, openCreated, creation = false, bound }: {
   source: Task;
   request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
   confirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
   creation?: boolean;
+  bound?: (bound: boolean) => void;
 }) {
   const [reaction, setReaction] = useState<Reaction | null>(null);
   const [created, setCreated] = useState<Task | null>(null);
@@ -1611,7 +1616,7 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const mounted = useRef(false), locked = useRef(false), serial = useRef(0), reads = useRef(0);
   const lifetime = useRef(new AbortController()), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const announced = useRef<string | null>(null);
-  const callbacks = useRef({ request, confirmed }); callbacks.current = { request, confirmed };
+  const callbacks = useRef({ request, confirmed, bound }); callbacks.current = { request, confirmed, bound };
   async function read(reconcile = false, automatic = false) {
     if (!mounted.current || locked.current) return;
     if (!automatic) reads.current = 0;
@@ -1624,6 +1629,7 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
       if (!mounted.current || serial.current !== turn) return;
       if (!["NO_BINDING", "PENDING", "STARTED", "FINISHED"].includes(next.state)) throw new Error("Unconfirmed reaction response");
       setError(""); setReaction(next);
+      callbacks.current.bound?.(next.state !== "NO_BINDING");
       const observation = next.reconciliation?.receipt;
       const receipt = observation?.kind === "SUCCESS" && observation.effect === "CONFIRMED" ? observation : next.receipt;
       const isUpdate = (next.reconciliation?.capability ?? next.capability) === "tasks.update";
@@ -1663,7 +1669,7 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const noEffect = !uncertain && (receipt?.effect === "NONE" || !!reaction?.outcome
     && ["COMPLETED", "BUSINESS_REJECTION", "FAILED", "LIMIT_EXCEEDED"].includes(reaction.outcome.classification ?? "")
     && Array.isArray(reaction.outcome.effects) && reaction.outcome.effects.every(effect => effect.state === "NONE" || effect.effect === "NONE"));
-  if (creation && (reaction?.state === "NO_BINDING" || !reaction && !error)) return null;
+  if (!error && (reaction?.state === "NO_BINDING" || !reaction)) return null;
   return <section className="task-reaction" aria-label={creation ? "Task creation customization outcome" : "Customization outcome"}>
     {linkedNextAction && <p><strong>Linked task</strong></p>}
     <p role="status">{confirmedReceipt ? update ? unchanged ? "The update made no change." : "This task was updated."
@@ -1672,9 +1678,8 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
       : noEffect ? reaction?.workflow ? "This customization made no change." : "No task was added by this customization."
       : uncertain ? reaction?.team ? "We haven’t confirmed a linked task. It may already exist." : reaction?.workflow || creation ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."
       : reaction?.revoked ? "This customization is no longer allowed to run."
-      : reaction?.state === "NO_BINDING" ? "No customization was recorded for this completion."
-        : reaction?.state === "PENDING" ? "This customization has not started yet."
-          : !reaction && checking ? "Checking the customization result…" : reaction?.workflow || creation
+      : reaction?.state === "PENDING" ? "This customization has not started yet."
+        : !reaction ? null : reaction?.workflow || creation
             ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."}</p>
     {reaction?.outcome?.classification && !["COMPLETED", "UNCERTAIN"].includes(reaction.outcome.classification) && <p>{creation ? "The customization did not finish successfully. Your task is kept." : "The customization did not finish successfully. Your completed task is kept."}</p>}
     {created && <button type="button" className="quiet-button" aria-label={`Open task: ${created.title}`} onClick={() => openCreated(created)}>{linkedNextAction ? "Open linked task" : "Open task"}</button>}
@@ -1709,6 +1714,7 @@ function TaskDetail({
   hold,
   close,
   reactionRequest,
+  visible,
   reactionConfirmed,
   openCreated,
   save,
@@ -1722,12 +1728,23 @@ function TaskDetail({
   hold?: string;
   close: () => void;
   reactionRequest: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
+  visible: boolean;
   reactionConfirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
   save: (dueAt?: string | null) => void;
 }) {
   const [parent, setParent] = useState<Task | null>(null);
+  const [creationBound, setCreationBound] = useState(false), [completionBound, setCompletionBound] = useState(false);
+  const [selectedCompletion, setSelectedCompletion] = useState<"selected" | "none" | "unavailable" | null>(null);
   const request = useRef(reactionRequest); request.current = reactionRequest;
+  useEffect(() => {
+    if (!visible || task.creatorId || task.status !== "open") return;
+    const controller = new AbortController();
+    void request.current<Collection>("extensions", "GET", undefined, controller.signal).then(collection => {
+      if (!controller.signal.aborted) setSelectedCompletion(!collection.selection ? "unavailable" : collection.selection.revision ? "selected" : "none");
+    }).catch(() => { if (!controller.signal.aborted) setSelectedCompletion("unavailable"); });
+    return () => controller.abort();
+  }, [task.id, task.creatorId, task.status, visible]);
   useEffect(() => {
     if (!task.parentTaskId || !task.originEventId) return;
     const controller = new AbortController();
@@ -1738,7 +1755,7 @@ function TaskDetail({
     return () => controller.abort();
   }, [task.parentTaskId, task.originEventId, task.projectId]);
   const atTop = !!task.creatorId && !task.parentTaskId;
-  const created = <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation />;
+  const created = <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation bound={setCreationBound} />;
   return <TaskForm task={task} draft={draft} setDraft={setDraft} busy={busy} error={error} close={close} save={save}
     recovery={<>
       {hold && <section aria-label="Last completion attempt" className="task-completion-hold">
@@ -1751,9 +1768,10 @@ function TaskDetail({
         <button type="button" className="quiet-button" onClick={() => openCreated(parent)}>Open “{parent.title}”</button>
       </section>}
     </>}>
-    {task.status === "completed" && !task.creatorId && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} />}
+    {task.status === "completed" && !task.creatorId && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} bound={setCompletionBound} />}
     {!atTop && created}
-    {!task.creatorId && <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>}
+    {!task.creatorId && (creationBound || completionBound || task.status === "open" && (selectedCompletion === "selected" || selectedCompletion === "unavailable")) &&
+      <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>}
   </TaskForm>;
 }
 

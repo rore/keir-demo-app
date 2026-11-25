@@ -241,6 +241,9 @@ test('a held real reaction read survives a selection transition without replay o
   const original = await nativeRequest(page, 'tasks/' + source.id + '/reaction');
   expect(original.receipt.effect).toBe('CONFIRMED');
   await page.reload(); await tasks(page);
+  await page.getByRole('button', { name: source.title, exact: true }).click();
+  const outcome = page.getByRole('dialog', { name: 'Task details' }).getByRole('region', { name: 'Customization outcome', exact: true });
+  await expect(outcome).toContainText('Original follow-up');
   let release, entered, delivered, held = false;
   const started = new Promise(resolve => { entered = resolve; }), finished = new Promise(resolve => { delivered = resolve; });
   await page.route('**/api/tasks/' + source.id + '/reaction', async route => {
@@ -250,7 +253,7 @@ test('a held real reaction read survives a selection transition without replay o
     await route.fulfill({ response }).catch(() => {}); delivered();
   });
   try {
-    await page.getByRole('button', { name: source.title, exact: true }).click(); await started;
+    await outcome.getByRole('button', { name: 'Check result', exact: true }).click(); await started;
     await page.getByLabel('Task title', { exact: true }).fill('Keep this edit');
     const before = await nativeRequest(page, 'projects/' + project.id + '/tasks');
     await open(page);

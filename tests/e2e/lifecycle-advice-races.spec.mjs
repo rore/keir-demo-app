@@ -28,8 +28,6 @@ const test = base.extend({
 });
 const details = page => page.getByRole('dialog', { name: 'Task details', exact: true });
 const outcome = page => details(page).getByRole('region', { name: 'Customization outcome', exact: true });
-const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
-const noBinding = 'No customization was recorded for this completion.';
 async function api(page, path) {
   const origin = new URL(page.url()).origin;
   const session = await (await page.request.get(origin + '/api/session')).json();
@@ -100,19 +98,16 @@ function unchangedExceptCompletion(demo, before, task) {
     .toEqual({ state: 'NO_BINDING', revision_id: null, pins: null, outcome: null });
 }
 
-test('a held actual completion receipt cannot replace a reopened task view or unsent edits through Studio navigation', async ({ page, demo }) => {
+test('a held no-binding response cannot replace a reopened task view or unsent edits', async ({ page, demo }) => {
   const task = await enter(page, demo.origin), before = snapshot(demo.db), writes = recordMutations(page);
   const hold = await holdReaction(page, task.id);
   try {
     await complete(page, task); await hold.started;
     await page.getByRole('button', { name: task.title, exact: true }).click();
-    await expect(outcome(page)).toContainText(noBinding);
+    await expect(outcome(page)).toHaveCount(0);
     await details(page).getByLabel('Task title', { exact: true }).fill('Retain unsaved native race title');
     await details(page).getByLabel('Notes', { exact: false }).fill('Retain unsaved native notes');
-    await details(page).getByRole('button', { name: 'Customization Studio', exact: true }).click();
-    await expect(studio(page)).toBeVisible();
-    await studio(page).getByRole('button', { name: 'Back to my task', exact: true }).click();
-    await expect(details(page).getByRole('button', { name: 'Customization Studio', exact: true })).toBeFocused();
+    await expect(details(page).getByRole('button', { name: 'Customization Studio', exact: true })).toHaveCount(0);
     await expect(details(page).getByLabel('Task title', { exact: true })).toHaveValue('Retain unsaved native race title');
     const notes = details(page).getByLabel('Notes', { exact: false });
     await expect(notes).toHaveValue('Retain unsaved native notes');
@@ -120,12 +115,12 @@ test('a held actual completion receipt cannot replace a reopened task view or un
     hold.release(); await hold.finished;
     await expect(notes).toBeFocused();
     await expect(notes).toHaveValue('Retain unsaved native notes');
-    await expect(outcome(page)).toContainText(noBinding);
+    await expect(outcome(page)).toHaveCount(0);
     await expect(outcome(page).getByRole('button', { name: /^Open task:/ })).toHaveCount(0);
     await details(page).getByRole('button', { name: 'Close task details', exact: true }).click();
     await page.getByRole('button', { name: task.title, exact: true }).click();
     await expect(details(page).getByLabel('Task title', { exact: true })).toHaveValue(task.title);
-    await expect(outcome(page)).toContainText(noBinding);
+    await expect(outcome(page)).toHaveCount(0);
     expect(writes).toEqual(['/api/tasks/' + task.id + '/complete']);
     unchangedExceptCompletion(demo, before, task);
   } finally { hold.release(); }

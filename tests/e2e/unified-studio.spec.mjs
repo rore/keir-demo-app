@@ -5,6 +5,8 @@ import { navigate, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { taskService } from '../../src/data.mjs';
 import { teamProjectService } from '../../src/team-native.mjs';
 
+test.use({ hasTouch: true });
+
 for (const width of [1440, 390]) test(`one Team conversation to linked task at ${width}px`, async ({ page }, info) => {
   const reply = (name, args) => ({ calls: [{ id: name, name, arguments: args }], text: '', usage: { inputTokens: 1, outputTokens: 1 } });
   const fixture = await startAuthoringFixture({ authoringOverride: { providerFactory: config => ({
@@ -32,11 +34,35 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     await expect(page.getByLabel('New task title', { exact: true })).toBeVisible();
+    const personal = page.getByRole('button', { name: 'Gather material references', exact: true });
+    const personalDetail = page.getByRole('dialog', { name: 'Task details', exact: true });
+    const selection = page.waitForResponse(r => new URL(r.url()).pathname === '/api/extensions' && r.request().method() === 'GET');
+    await personal.click();
+    expect((await (await selection).json()).selection.revision).toBeNull();
+    await expect(personalDetail.getByRole('button', { name: 'Customization Studio', exact: true })).toHaveCount(0);
+    await personalDetail.getByRole('button', { name: 'Close task details' }).click();
+    const noBinding = page.waitForResponse(r => /\/api\/tasks\/[^/]+\/reaction$/.test(r.url()));
+    await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
+    expect((await (await noBinding).json()).state).toBe('NO_BINDING');
+    await expect(page.getByRole('button', { name: 'Gather material references, completed', exact: true })).toBeDisabled();
+    await expect(page.getByRole('region', { name: 'Customization outcome', exact: true })).toHaveCount(0);
     await page.screenshot({ path: info.outputPath('personal-tasks.png') });
     await selectTeam();
     await page.screenshot({ path: info.outputPath('team-tasks.png') });
     await navigate(page, 'Customizations');
     await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+    if (width === 390) {
+      const scope = page.getByLabel('Customization scope', { exact: true });
+      await expect(scope).toHaveValue(project.id);
+      expect(await scope.evaluate(select => {
+        const style = getComputedStyle(select), context = document.createElement('canvas').getContext('2d');
+        context.font = `${style.fontSize} ${style.fontFamily}`;
+        return context.measureText(select.selectedOptions[0].text).width + parseFloat(style.paddingLeft) + 36 <= select.clientWidth;
+      })).toBe(true);
+      await scope.tap();
+      await page.keyboard.press('Escape');
+      await page.screenshot({ path: info.outputPath('team-scope-touch.png') });
+    }
     await page.getByLabel('Message to Daymark assistant').fill('Ask Leo to review new tasks and block completion until their linked review is done.');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     const proposed = page.getByRole('article', { name: 'Proposed behavior' });
@@ -108,7 +134,10 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await detail.getByRole('button', { name: 'Close task details' }).click();
     await page.getByRole('button', { name: 'Complete Launch brief', exact: true }).click();
     const row = page.locator('.task-row').filter({ has: page.getByRole('button', { name: 'Launch brief', exact: true }) });
-    await expect(row).toContainText('Completion held on last attempt');
+    await expect(row.getByText('This task stayed open.', { exact: true })).toBeVisible();
+    await expect(row).toContainText('Complete its linked review first.');
+    await expect(page.getByText('Task added.', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('status').filter({ hasText: 'Launch brief stayed open on the last attempt.' })).toHaveCount(1);
     await row.screenshot({ path: info.outputPath('after-activation-task-row.png') });
     await page.getByRole('button', { name: 'Launch brief', exact: true }).click();
     const hold = detail.getByRole('region', { name: 'Last completion attempt' });

@@ -16,8 +16,9 @@
 .team-capability .team-scope select { min-width: 0; max-width: 100%; }
 @media (max-width: 600px) {
   .team-capability .team-scope .project-form { padding: 8px 12px; }
-  .team-capability .team-scope .form-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-  .team-capability .team-scope button { padding-inline: 10px; }
+  .team-capability .team-scope .form-line { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .team-capability .team-scope select { width: 100%; }
+  .team-capability .team-scope button { justify-self: start; padding-inline: 10px; }
 }
 .team-capability .rs-header h1:focus { outline: none; }
 .team-capability-body section { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 18px; }

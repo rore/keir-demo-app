@@ -23,11 +23,6 @@ async function seed(page, fixture, { approved = false, native = false, selection
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
-  if (native) {
-    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-    await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');
-    await page.locator('#open-customizations').click();
-  }
   async function checkedDraft(source, cases, name) {
     const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name });
     const path = 'extensions/' + extensionId;
@@ -35,7 +30,7 @@ async function seed(page, fixture, { approved = false, native = false, selection
     state = await api(page, path + '/scenarios', { ...input(state), cases });
     return api(page, path + '/simulate', input(state));
   }
-  if (selectionBaseline) {
+  if (selectionBaseline || native) {
     const existing = taskCustomizationFixture({ projectId: fixture.metadata.projectId, otherProjectId: fixture.metadata.otherProjectId, title: 'Existing customer follow-up' });
     let active = await checkedDraft(existing.source, existing.cases, 'Existing customer change');
     const path = 'extensions/' + active.extension.id;
@@ -45,6 +40,11 @@ async function seed(page, fixture, { approved = false, native = false, selection
   let state = await checkedDraft(fixture.metadata.source, fixture.metadata.cases, 'Continuity proposal');
   const path = 'extensions/' + state.extension.id;
   if (approved) state = await api(page, path + '/approve', { ...input(state), evidenceId: state.evidence.id });
+  if (native) {
+    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+    await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');
+    await page.locator('#open-customizations').click();
+  }
   return { path, state };
 }
 async function openItem(page, id) {

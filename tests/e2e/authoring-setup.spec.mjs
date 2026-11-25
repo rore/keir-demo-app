@@ -86,10 +86,6 @@ async function scriptSetup(page, options = {}) {
 async function enterStudio(page, origin, user = 'Maya', beforeNew = () => {}) {
   await page.goto(origin);
   await page.getByRole('button', { name: `Continue as ${user}` }).click();
-  await page.getByRole('button', { name: user === 'Maya' ? 'Gather material references' : 'Plan the Saturday session', exact: true }).click();
-  await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');
-  await page.locator('#open-customizations').click();
-  await expect(studio(page)).toBeVisible();
   await navigate(page, 'Customizations');
   beforeNew();
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
@@ -245,7 +241,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await noSecretInBrowser(page, reopenCancelSecret);
     await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
     await navigate(page, 'Tasks');
-    await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this unsaved task title');
+    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+    await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Gather material references');
   });
 }
 
@@ -357,14 +354,12 @@ test('an owner switch fences a pending setup response and clears the old key fro
     await expect(page.getByRole('button', { name: /^Continue as Leo/ })).toBeVisible();
     await expect(dialog).toHaveCount(0);
     release();
-    await navigate(other, 'Tasks');
-    await other.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-    await other.locator('#open-customizations').click();
+    await navigate(other, 'Customizations');
+    await other.getByRole('button', { name: 'New customization', exact: true }).click();
     await expect(studio(other)).toBeVisible();
     await page.getByRole('button', { name: /^Continue as Leo/ }).click();
-    await navigate(page, 'Tasks');
-    await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-    await page.locator('#open-customizations').click();
+    await navigate(page, 'Customizations');
+    await page.getByRole('button', { name: 'New customization', exact: true }).click();
     await expect(authoring(page)).toBeVisible();
     await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'leo');
     const conversation = ui.getByRole('log', { name: 'Studio conversation', exact: true });
@@ -374,7 +369,9 @@ test('an owner switch fences a pending setup response and clears the old key fro
     await noSecretInBrowser(page, secret);
     expect(calls.setupPosts).toHaveLength(1);
     expect(calls.turns).toHaveLength(0);
-    await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
+    await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
+    await navigate(page, 'Tasks');
+    await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
     await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Plan the Saturday session');
   } finally { release?.(); await other.close(); }
 });

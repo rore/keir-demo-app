@@ -116,7 +116,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByRole('button', { name: 'Check the revised deliverable', exact: true })).toBeVisible();
       expect(fixture.db.prepare('SELECT revision_id FROM team_admissions WHERE source_task_id=?').get(recent.id).revision_id).toBe(second.receipt.revisionId);
       await page.getByRole('button', { name: 'Complete A deliverable', exact: true }).click();
-      await expect(page.getByText('Completion held on last attempt', { exact: true })).toBeVisible();
+      await expect(page.getByText('This task stayed open.', { exact: true })).toBeVisible();
       await switchPerson(page, 'leo');
       await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Complete Review deliverable', exact: true }).click();

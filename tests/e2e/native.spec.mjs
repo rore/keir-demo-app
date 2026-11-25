@@ -350,19 +350,14 @@ test('completion observations preserve edits and recover from failed or stale de
   await page.goto(demo.origin);
   await signIn(page, 'Maya');
   await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Gather material references, completed', exact: true })).toBeDisabled();
+  await page.route('**/api/tasks/*/reaction', route => route.fulfill({ status: 503, contentType: 'application/json',
+    body: JSON.stringify({ message: 'The saved observation is temporarily unavailable.' }) }));
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   const detail = page.getByRole('dialog', { name: 'Task details', exact: true });
   const outcome = detail.getByRole('region', { name: 'Customization outcome', exact: true });
-  const noBinding = 'No customization was recorded for this completion.';
-  await expect(outcome.getByRole('status')).toHaveText(noBinding);
-  await page.getByLabel('Task title', { exact: true }).fill('Unsaved title stays');
-  await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
-  await expect(outcome.getByRole('status')).toHaveText(noBinding);
-  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved title stays');
-  await page.route('**/api/tasks/*/reaction', route => route.fulfill({ status: 503, contentType: 'application/json',
-    body: JSON.stringify({ message: 'The saved observation is temporarily unavailable.' }) }));
-  await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
   await expect(outcome.getByRole('alert')).toContainText('The customization result could not be checked. Your task stays completed.');
+  await page.getByLabel('Task title', { exact: true }).fill('Unsaved title stays');
   await expect(outcome.getByRole('button', { name: /^Open task:/ })).toHaveCount(0);
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved title stays');
   await page.unroute('**/api/tasks/*/reaction');
@@ -380,13 +375,12 @@ test('completion observations preserve edits and recover from failed or stale de
   }, { times: 1 });
   await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
   await started;
-  await expect(outcome.getByRole('alert')).toHaveCount(0);
   await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByLabel('Task title', { exact: true }).fill('Newer unsaved title');
-  await expect(outcome.getByRole('status')).toHaveText(noBinding);
+  await expect(outcome).toHaveCount(0);
   release(); await finished;
-  await expect(outcome.getByRole('button', { name: 'Check result', exact: true })).toBeEnabled();
+  await expect(outcome).toHaveCount(0);
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Newer unsaved title');
   await expect(outcome.getByRole('alert')).toHaveCount(0);
   await page.unroute('**/api/tasks/*/reaction');
@@ -395,7 +389,7 @@ test('completion observations preserve edits and recover from failed or stale de
   await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Complete Plan the Saturday session', exact: true }).click();
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-  await expect(outcome.getByRole('status')).toHaveText(noBinding);
+  await expect(outcome).toHaveCount(0);
   await expect(outcome.getByRole('button', { name: /^Open task:/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toHaveCount(0);
   await screenshot(page, 'native-completion-outcome');
@@ -405,7 +399,7 @@ test('a completion observation pending across a user switch never enters the new
   await page.goto(demo.origin);
   await signIn(page, 'Maya');
   await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Customization outcome', exact: true }).getByRole('status')).toHaveText('No customization was recorded for this completion.');
+  await expect(page.getByRole('button', { name: 'Gather material references, completed', exact: true })).toBeDisabled();
   let release, entered, delivered;
   const started = new Promise(resolve => { entered = resolve; });
   const finished = new Promise(resolve => { delivered = resolve; });

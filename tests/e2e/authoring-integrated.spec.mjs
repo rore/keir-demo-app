@@ -53,8 +53,8 @@ test('offline semantic mismatch stays visible and unapproved until an explicit s
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-    await page.locator('#open-customizations').click();
+    await navigate(page, 'Customizations');
+    await page.getByRole('button', { name: 'New customization', exact: true }).click();
     const ui = studio(page), session = await (await page.request.get(`${fixture.origin}/api/session`)).json();
     let exactItem = null;
     const read = async path => {
@@ -167,8 +167,8 @@ test('offline Studio resumes the same checked draft and preserves review when th
   try {
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: 'Continue as Maya' }).click();
-    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-    await page.locator('#open-customizations').click();
+    await navigate(page, 'Customizations');
+    await page.getByRole('button', { name: 'New customization', exact: true }).click();
     const ui = studio(page);
     await send(page, `Add ${fixture.metadata.title} after I finish a task in ${fixture.metadata.projectName}.`);
     await expect(ui.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
@@ -294,10 +294,8 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
         await page.reload();
         expect(fixture.requests).toEqual([]);
       }
-      await navigate(page, 'Tasks');
-      await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-      await page.getByLabel('Task title', { exact: true }).fill('Unsaved native title during offline authoring');
-      await page.locator('#open-customizations').click();
+      await navigate(page, 'Customizations');
+      await page.getByRole('button', { name: 'New customization', exact: true }).click();
       const ui = studio(page), panel = authoring(page);
       await expect(ui.getByLabel('Message to Daymark assistant', { exact: true })).toHaveAttribute('placeholder', 'Ask or describe a change…');
       expect(fixture.requests).toEqual([]);
@@ -420,6 +418,10 @@ for (const [provider, width] of [['openai', 1440], ['anthropic', 390]]) {
       await expect.poll(async () => (await read('extensions')).selection.revision.id).toBe(conversation.review.revisionId);
       expect((await read('extensions')).selection.generation).toBe(selectedA.generation + 1);
       expect(fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all()).toEqual(nativeBefore, 'Checking, approval and activation make no native task changes.');
+      await navigate(page, 'Tasks');
+      await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+      await page.getByLabel('Task title', { exact: true }).fill('Unsaved native title during offline authoring');
+      await page.locator('#open-customizations').click();
       await ui.getByRole('button', { name: 'Back to my task', exact: true }).click();
       await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved native title during offline authoring');
       await page.getByRole('button', { name: 'Close task details', exact: true }).click();

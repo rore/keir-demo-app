@@ -496,12 +496,10 @@ for (const [name, viewport, coarse] of [
     await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
     await page.getByLabel('Task title', { exact: true }).fill('Keep this detail draft');
     await capture('task-detail');
-    await page.locator('#open-customizations').click();
-    await expect(ui(page)).toBeVisible();
-    await ui(page).getByRole('button', { name: 'Back to my task', exact: true }).click();
-    await expect(page.locator('#open-customizations')).toBeFocused();
+    await expect(page.locator('#open-customizations')).toHaveCount(0);
     await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Keep this detail draft');
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Gather material references', exact: true })).toBeFocused();
     await navigate('Customizations');
     await page.locator(`[id="edit-${fixture.state.extension.id}"]`).click();
     await page.unroute('**/api/authoring**');
