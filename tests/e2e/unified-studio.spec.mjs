@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
-import { linkedOffer } from '../fixtures/team-authored.mjs';
+import { linkedOffer, linkedSourceLookalike, offerSources } from '../fixtures/team-authored.mjs';
 import { navigate, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { taskService } from '../../src/data.mjs';
 import { teamProjectService } from '../../src/team-native.mjs';
@@ -26,9 +26,9 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
         expect(request.tools.map(tool => tool.name)).toEqual(['offer_proposal']);
         expect(JSON.parse(request.toolResult.output)).toMatchObject({
           ok: false, saved: false, remainingAttempts: 1,
-          diagnostics: [{ code: 'OFFER_FIELD_INVALID', path: '/TaskCreated/source' }],
+          diagnostics: [{ code: 'TASK_FIELD_UNSUPPORTED', path: '/TaskCreated/source/steps/1' }],
         });
-        const corrected = reply('offer_proposal', linkedOffer());
+        const corrected = reply('offer_proposal', offerSources(linkedOffer(), false));
         corrected.calls[0].id = 'corrected-offer';
         return corrected;
       }
@@ -55,10 +55,8 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
         expect(input.clarificationContext).toBe(narrowing);
         expect(input.previousUserMessages.at(-1)).toContain('email reminders');
       }
-      if (width === 1440) return reply('offer_proposal', linkedOffer());
-      const malformed = linkedOffer();
-      malformed.TaskCreated.source = JSON.parse(malformed.TaskCreated.source);
-      return reply('offer_proposal', malformed);
+      if (width === 1440) return reply('offer_proposal', offerSources(linkedOffer(), true));
+      return reply('offer_proposal', linkedSourceLookalike());
     },
   }) } });
   const project = taskService(fixture.db).createProject('maya', { name: 'Launch team', mode: 'TEAM' });
@@ -132,9 +130,9 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     const proposed = page.getByRole('article', { name: 'Proposed behavior' });
     await expect(proposed.getByText('For every new main task, Daymark adds “Review the deliverable” for Leo.', { exact: true })).toBeVisible();
     await expect(proposed.getByRole('heading', { name: 'Proposed behavior for Launch team' })).toBeVisible();
-    await proposed.getByText('Exact expected outcomes', { exact: true }).click();
+    await proposed.getByText('Examples', { exact: true }).click();
     await expect(proposed.getByText(/The task stays open\. Complete its linked review first\./)).toBeVisible();
-    await proposed.getByText('Exact expected outcomes', { exact: true }).click();
+    await proposed.getByText('Examples', { exact: true }).click();
     expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(0);
     expect(requests).toHaveLength(width === 390 ? 8 : 6);
     expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(requests.length * OPENAI_RESERVE_MICROS);
@@ -144,7 +142,12 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       const latest = page.getByRole('log', { name: 'Latest messages', exact: true });
       await expect(latest).toContainText('Yes, leave out the email.');
       await expect(latest).toBeInViewport({ ratio: 1 });
-      await expect(page.getByLabel('Message to Daymark assistant')).toBeInViewport({ ratio: 1 });
+      const confirm = proposed.getByRole('button', { name: 'Confirm this behavior' });
+      await expect(confirm).toBeInViewport({ ratio: 1 });
+      const composer = page.getByLabel('Message to Daymark assistant');
+      expect(await proposed.evaluate(node => Boolean(node.compareDocumentPosition(document.querySelector('#studio-message')) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+      await composer.scrollIntoViewIfNeeded();
+      await expect(composer).toBeInViewport({ ratio: 1 });
       expect(await page.locator('.team-capability .rs-chat').evaluate(node => getComputedStyle(node).overflowY)).toBe('visible');
       await page.screenshot({ path: info.outputPath('team-chat-reopened-touch.png') });
       await expect(page.getByText(question, { exact: true })).toBeHidden();
@@ -247,4 +250,85 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     expect(fixture.requests).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   } finally { releaseTurn(); await page.close(); await fixture.close(); }
+});
+
+test('Team confirmation distinguishes definite rejection, unknown delivery and a saved draft whose check failed', async ({ page }, info) => {
+  const fixture = await startAuthoringFixture({ authoringOverride: {
+    config: { status: 'ready', provider: 'openai', model: 'fixture', reserveMicros: OPENAI_RESERVE_MICROS, maxMicros: 4_000_000 },
+    providerFactory: config => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros, async complete(request) {
+      const isIntent = request.tools[0].name === 'resolve_intent';
+      const offer = linkedOffer();
+      if (JSON.parse(request.input).currentUserMessage === 'Prepare the first proposal') {
+        // A real compiler error, not a mocked HTTP rejection and not one the offer contract claims to catch.
+        const source = JSON.parse(offer.TaskCreated.source);
+        source.return.record.status = { cel: 'unboundResult' };
+        offer.TaskCreated.source = JSON.stringify(source);
+      }
+      return { calls: [{ id: isIntent ? 'intent' : 'offer', name: isIntent ? 'resolve_intent' : 'offer_proposal',
+        arguments: isIntent ? { intent: 'prepare', question: '' } : offer }], text: '', usage: { inputTokens: 1, outputTokens: 1 } };
+    } }),
+  } });
+  const project = taskService(fixture.db).createProject('maya', { name: 'Launch team', mode: 'TEAM' });
+  teamProjectService(fixture.db).addMember('maya', project.id, { userId: 'leo' });
+  const path = `/api/projects/${project.id}/authoring/confirm`;
+  let confirmations = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname === path && request.method() === 'POST') confirmations++; });
+  const proposal = page.getByRole('article', { name: 'Proposed behavior' });
+  const confirm = proposal.getByRole('button', { name: 'Confirm this behavior' });
+  const revisions = () => fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n;
+  const submitted = async text => {
+    await page.getByLabel('Message to Daymark assistant').fill(text);
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(confirm).toBeEnabled();
+  };
+  const reopen = async label => {
+    await page.getByRole('button', { name: 'Back to Customizations' }).click();
+    await page.getByRole('button', { name: label, exact: true }).click();
+  };
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(fixture.origin);
+    await page.getByRole('button', { name: /^Continue as Maya/ }).click();
+    await page.getByRole('combobox', { name: 'Project', exact: true }).selectOption(project.id);
+    await navigate(page, 'Customizations');
+    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await submitted('Prepare the first proposal');
+    const rejection = page.waitForResponse(response => new URL(response.url()).pathname === path);
+    await confirm.click();
+    expect((await rejection).status()).toBe(422);
+    const unsaved = proposal.getByRole('alert').filter({ hasText: 'No draft was saved for it' });
+    await expect(unsaved).toBeInViewport({ ratio: 1 });
+    await expect(confirm).toHaveCount(0);
+    expect(revisions()).toBe(0);
+    await reopen('Open Studio');
+    await expect(unsaved).toBeInViewport({ ratio: 1 });
+    await expect(confirm).toHaveCount(0);
+    await page.screenshot({ path: info.outputPath('confirm-definitely-unsaved.png') });
+
+    await submitted('Prepare a fresh proposal');
+    await page.route(`**${path}`, route => route.abort('failed'), { times: 1 });
+    await confirm.click();
+    const unknown = proposal.getByRole('status').filter({ hasText: 'couldn’t tell whether the draft was saved' });
+    await expect(unknown).toBeInViewport({ ratio: 1 });
+    await expect(unsaved).toHaveCount(0);
+    await unknown.getByRole('button', { name: 'Check saved state' }).click();
+    await reopen('Open Studio');
+    await expect(unknown).toBeInViewport({ ratio: 1 });
+    await expect(confirm).toHaveCount(0);
+    expect(confirmations).toBe(2);
+    expect(revisions()).toBe(0);
+    await page.screenshot({ path: info.outputPath('confirm-unknown-readback.png') });
+
+    fixture.db.exec("CREATE TEMP TRIGGER fail_team_evidence BEFORE INSERT ON team_evidence BEGIN SELECT RAISE(ABORT,'Test: check unavailable'); END");
+    await submitted('Prepare a new proposal');
+    await confirm.click();
+    const saved = page.getByRole('region', { name: 'Review and current use' });
+    await expect(saved.getByText('The draft was saved, but its examples couldn’t be checked.', { exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(saved.getByRole('button', { name: 'Check examples' })).toBeEnabled();
+    await expect(saved.getByRole('button', { name: 'Approve this draft' })).toHaveCount(0);
+    await expect(proposal).toHaveCount(0);
+    expect(revisions()).toBe(1);
+    expect(confirmations).toBe(3);
+    await page.screenshot({ path: info.outputPath('confirm-saved-check-unavailable.png') });
+  } finally { await page.close(); await fixture.close(); }
 });

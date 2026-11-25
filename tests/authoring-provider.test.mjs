@@ -113,25 +113,42 @@ test('both wire formats carry the same strict Team business offer and preserve i
   }
 });
 
-test('rejects unsupported output, malformed calls, refusals and incomplete responses', async () => {
+test('classifies rejected replies without leaving provider content in diagnostics', async () => {
   const call = { type: 'function_call', name: 'lookup', arguments: '{}', call_id: 'c1' };
-  const invalid = [openai([{ ...call, arguments: '{' }]), openai([{ ...call, arguments: '[]' }]),
-    openai([{ ...call, call_id: '' }]), openai([{ ...call, call_id: 'id\n' }]), openai([call, { ...call, call_id: 'c2' }]),
-    openai([{ type: 'unknown' }]), openai([{ type: 'message', role: 'developer', content: [{ type: 'output_text', text: 'Untrusted role' }] }]),
-    openai([{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: 'No' }] }]),
-    { ...openai([]), status: 'incomplete' }, { ...openai([]), usage: undefined },
-    { ...openai([]), usage: { input_tokens: -1, output_tokens: 1 } }];
-  for (const body of invalid) await assert.rejects(complete(body), errorCode('PROVIDER_RESPONSE_INVALID'));
-  for (const body of [anthropic([], 'max_tokens'), anthropic([{ type: 'unknown' }]),
-    anthropic([{ type: 'tool_use', id: 'a', name: 'lookup', input: {} }], 'end_turn'),
-    anthropic([], 'tool_use'), anthropic([{ type: 'refusal', text: 'No' }])]) {
-    await assert.rejects(complete(body, 'anthropic'), errorCode('PROVIDER_RESPONSE_INVALID'));
+  const tool = 'PROVIDER_REPLY_TOOL_INVALID', part = 'PROVIDER_REPLY_PART_UNSUPPORTED',
+    format = 'PROVIDER_REPLY_FORMAT', incomplete = 'PROVIDER_REPLY_INCOMPLETE', usage = 'PROVIDER_REPLY_USAGE_INVALID';
+  const privateText = 'private-wire-marker';
+  for (const [vendor, body, code] of [
+    ...[
+      [openai([{ ...call, arguments: privateText }]), tool], [openai([{ ...call, arguments: '[]' }]), tool],
+      [openai([{ ...call, call_id: '' }]), tool], [openai([{ ...call, call_id: 'id\n' }]), tool],
+      [openai([call, { ...call, call_id: 'c2' }]), tool],
+      [openai([{ type: privateText }]), part],
+      [openai([{ type: 'message', role: 'developer', content: [{ type: 'output_text', text: privateText }] }]), part],
+      [openai([{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: privateText }] }]), part],
+      [{ ...openai([]), status: 'incomplete', incomplete_details: { reason: privateText } }, incomplete],
+      [{ ...openai([]), status: privateText }, format], [{ ...openai([]), output: null }, format],
+      [{ ...openai([]), usage: undefined }, usage], [{ ...openai([]), usage: { input_tokens: -1, output_tokens: 1 } }, usage],
+    ].map(([body, code]) => ['openai', body, code]),
+    ...[
+      [anthropic([], 'max_tokens'), incomplete], [anthropic([], 'pause_turn'), incomplete],
+      [anthropic([], 'refusal'), part], [anthropic([{ type: privateText }]), part],
+      [anthropic([{ type: 'tool_use', id: 'a', name: 'lookup', input: {} }], 'end_turn'), tool],
+      [anthropic([], 'tool_use'), tool], [anthropic([{ type: 'refusal', text: privateText }]), part],
+      [anthropic([], privateText), format],
+      [{ ...anthropic([]), usage: { input_tokens: 5, output_tokens: 1, cache_read_input_tokens: -1 } }, usage],
+    ].map(([body, code]) => ['anthropic', body, code]),
+  ]) {
+    await assert.rejects(complete({ ...body, id: privateText }, vendor), error => {
+      assert.doesNotMatch(String(error) + JSON.stringify(error), /private-wire-marker/);
+      return errorCode(code)(error);
+    });
   }
 });
 
 test('requires bounded integer usage', async () => {
   for (const [input_tokens, output_tokens, code] of [[135169, 1, 'TOKEN_LIMIT'], [1, 4097, 'TOKEN_LIMIT'],
-    [1.5, 1, 'PROVIDER_RESPONSE_INVALID'], [1, undefined, 'PROVIDER_RESPONSE_INVALID']]) {
+    [1.5, 1, 'PROVIDER_REPLY_USAGE_INVALID'], [1, undefined, 'PROVIDER_REPLY_USAGE_INVALID']]) {
     await assert.rejects(complete({ ...openai([]), usage: { input_tokens, output_tokens } }), errorCode(code));
   }
 });
@@ -185,7 +202,7 @@ test('bounds request and chunked response bytes and rejects non-JSON content', a
   assert.equal(cancelled, true);
   await assert.rejects(createAuthoringProvider(config('openai'), {
     fetchImpl: async () => new Response('{}', { headers: { 'content-type': 'text/html' } }) })
-    .complete(request), errorCode('PROVIDER_RESPONSE_INVALID'));
+    .complete(request), errorCode('PROVIDER_REPLY_FORMAT'));
 });
 
 for (const name of ['openai', 'anthropic']) test(`${name} preflight checks the exact full wire envelope at its UTF-8 byte boundary without fetching`, async () => {

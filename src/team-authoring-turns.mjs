@@ -178,7 +178,7 @@ export function createTeamAuthoringTurns({ db, capability, projects, access, liv
     const authorize = () => {
       access(actor, projectId, lease);
       const now = rowFor(actor, projectId);
-      if (controller.signal.aborted || signal?.aborted || now?.run_id !== row.run_id || now.version !== row.version
+      if (now?.run_id !== row.run_id || now.version !== row.version
           || now.status !== 'AWAITING_USER' || now.view !== row.view) throw conflict();
       return actor;
     };
@@ -192,17 +192,23 @@ export function createTeamAuthoringTurns({ db, capability, projects, access, liv
         let draft;
         try { draft = await host.save(proposal, { draft: prior.handles, signal: active }); }
         catch (error) {
-          if (error instanceof AuthoringError) throw new AppError(error.code === 'STALE_DRAFT' ? 409 : 422, safeMessage(error.code));
+          if (error instanceof AuthoringError && error.code === 'TEAM_OFFER_INVALID') {
+            authorize();
+            db.prepare("UPDATE authoring_conversations SET status='BLOCKED',view=?,updated_at=? WHERE id=? AND run_id=?")
+              .run(JSON.stringify({ proposal, confirmRejected: true }), Date.now(), row.id, row.run_id);
+            throw Object.assign(new AppError(422, safeMessage(error.code)), { code: error.code });
+          }
+          if (error instanceof AuthoringError && error.code === 'STALE_DRAFT') throw conflict();
           throw error;
         }
-        authorize();
+        authorize(); // The save is known committed even if the browser has gone away.
         db.prepare("UPDATE authoring_conversations SET status='IDLE',view='{}',updated_at=? WHERE id=? AND run_id=?")
           .run(Date.now(), row.id, row.run_id);
         // Save already committed. An unavailable check must not ask the user to prepare it again.
         const authorizeCheck = () => {
           access(actor, projectId, lease);
           const now = rowFor(actor, projectId);
-          if (active.aborted || now?.run_id !== row.run_id || now.version !== row.version || now.status !== 'IDLE') throw conflict();
+          if (now?.run_id !== row.run_id || now.version !== row.version || now.status !== 'IDLE') throw conflict();
           return actor;
         };
         const checkHost = teamAuthoringHost({ capability, projects, actor, projectId, authorize: authorizeCheck });

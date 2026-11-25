@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AppError, transaction } from './data.mjs';
 import { loadHost, authoringDefinition, definitionFormats, TASK_HOOKS, TASK_DEFINITION, digest, json } from './extension-catalog.mjs';
 import { readAuthoringConfig, LEGACY_OPENAI_RESERVE_MICROS, OPENAI_RESERVE_MICROS } from './authoring-config.mjs';
-import { AuthoringError, createAuthoringProvider } from './authoring-provider.mjs';
+import { AuthoringError, createAuthoringProvider, PROVIDER_REPLY_CODES } from './authoring-provider.mjs';
 import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './authoring-agent.mjs';
 import { authoringExample, businessContext, evidenceSummary } from './authoring-example.mjs';
 import { createAuthoringContext } from './authoring-context.mjs';
@@ -13,10 +13,12 @@ export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_IN
   'AUTHORING_GUIDE_UNAVAILABLE',
   'SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'CONVERSATION_LIMIT', 'CONFIG_CHANGED', 'BYTE_LIMIT', 'CONTEXT_LIMIT', 'TOKEN_LIMIT', 'TIME_LIMIT', 'EXPIRED',
   'RUN_INTERRUPTED', 'CANCELLED', 'STALE_CONTEXT', 'STALE_DRAFT', 'STALE_CONVERSATION', 'AI_BUSY', 'PROVIDER_TIMEOUT',
-  'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', 'PROVIDER_RESPONSE_INVALID',
+  'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', ...PROVIDER_REPLY_CODES,
   'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'TEAM_OFFER_INVALID', 'DISCUSSION_ONLY', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
 const codeFor = value => AUTHORING_CODES.includes(value) ? value : 'TOOL_FAILED';
-const safeMessage = code => ({
+const safeMessage = code => PROVIDER_REPLY_CODES.includes(code)
+  ? 'Daymark couldn’t use the assistant’s reply. It stopped without retrying. Your saved work is kept. Ask whoever manages assistant settings to check what happened before you send another request.'
+  : ({
   AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create a customization. Native tasks remain available.',
   LEGACY_CUSTOMIZATION_RETIRED: 'This earlier customization is read-only. Its saved discussion and results are kept. Start a new customization to change task behavior.',
   AI_CONFIG_INVALID: 'The operator AI configuration needs attention.', AI_CREDENTIALS_MISSING: 'The operator AI credentials are unavailable.',

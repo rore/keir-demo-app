@@ -10,7 +10,7 @@ type Example = { id: string; name: string; fault: string; actors: { id: string; 
 type Agreement = { summary: string; claims: { hook: string; outcomes: { id: string; when: Record<string, unknown>; expect: Record<string, unknown> }[] }[] };
 type Revision = { revisionId: string; parameters: Parameters | null; agreement?: Agreement; manifest: { executableIdentity: string }; revoked: boolean };
 type Discussion = { availability: { available: boolean; code?: string | null }; conversation: { version: number; runId: string; status: string;
-  agreement: Agreement | null; checkUnavailable?: boolean; messages: { id: string; role: string; text: string }[] } | null };
+  agreement: Agreement | null; confirmRejected?: boolean; checkUnavailable?: boolean; messages: { id: string; role: string; text: string }[] } | null };
 type ChoiceInput = { operationId: string; expectedDraftVersion: number; revisionId: string; evidenceId: string; cases: Example[];
   approvalId?: string; expectedSelectionGeneration?: number };
 type ControlInput = { operationId: string; targetRevisionId: string; expectedSelectionRevisionId: string | null; expectedSelectionGeneration: number };
@@ -71,8 +71,11 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const [uncertain, setUncertain] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false), [setupNotice, setSetupNotice] = useState("");
   const setupGeneration = useRef(0), setupInvoker = useRef<HTMLElement>(null);
-  const [unconfirmedPreparation, setUnconfirmedPreparation] = useState<string | null>(null);
   const operationKey = operationScope ? `daymark-team-action:${operationScope}:${project.id}` : null;
+  const preparationKey = operationScope ? `daymark-team-confirm:${operationScope}:${project.id}` : null;
+  const [unconfirmedPreparation, setUnconfirmedPreparation] = useState<string | null>(() => {
+    try { return preparationKey ? sessionStorage.getItem(preparationKey) : null; } catch { return null; }
+  });
   const [pendingChoice, setPendingChoice] = useState<{ kind: ActionKind; body: ActionInput; rejected?: boolean } | null>(() => {
     try {
       const text = operationKey && sessionStorage.getItem(operationKey);
@@ -89,6 +92,8 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const heading = useRef<HTMLHeadingElement>(null), stateRef = useRef(state); stateRef.current = state;
   const latestReply = useRef<HTMLDivElement>(null), focusReply = useRef(false), positioned = useRef(false);
   const conversationEnd = useRef<HTMLDivElement>(null);
+  const proposalAction = useRef<HTMLButtonElement>(null);
+  const preparationFeedback = useRef<HTMLDivElement>(null);
   const decision = useRef<HTMLElement>(null), draftHeading = useRef<HTMLHeadingElement>(null);
   const preparedFrom = useRef<{ revisionId: string | null } | null>(null);
   const choiceFocus = useRef<boolean>(false);
@@ -97,20 +102,26 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const chat = `projects/${project.id}/authoring`;
   const conversation = discussion?.conversation;
   const authoring = conversation?.status === "RUNNING" || conversation?.status === "CANCELLING";
+  const preparationUnknown = !!conversation?.agreement && !conversation.confirmRejected && conversation.runId === unconfirmedPreparation;
   useLayoutEffect(() => { heading.current?.focus(); }, []);
   useLayoutEffect(() => {
     if (positioned.current || !discussion) return;
     positioned.current = true;
-    if (conversation?.messages.length) conversationEnd.current?.scrollIntoView({ block: "nearest" });
+    if (conversation?.messages.length) (proposalAction.current ?? conversationEnd.current)?.scrollIntoView({ block: "nearest" });
   }, [discussion, conversation?.messages.length]);
   useLayoutEffect(() => {
     if (!focusReply.current || authoring || busy || !latestReply.current) return;
     focusReply.current = false;
     if (document.activeElement === document.body || document.activeElement?.id === "studio-message") {
       if (document.activeElement === document.body) latestReply.current.focus({ preventScroll: true });
-      conversationEnd.current?.scrollIntoView({ block: "nearest" });
+      (proposalAction.current ?? conversationEnd.current)?.scrollIntoView({ block: "nearest" });
     }
   }, [authoring, busy, conversation?.version]);
+  useLayoutEffect(() => {
+    if (busy || !preparationFeedback.current) return;
+    preparationFeedback.current.scrollIntoView({ block: "nearest" });
+    if (document.activeElement === document.body) preparationFeedback.current.focus({ preventScroll: true });
+  }, [busy, preparationUnknown, conversation?.confirmRejected]);
   useLayoutEffect(() => {
     if (!state?.draft || busy || !decision.current) return;
     const prepared = preparedFrom.current && preparedFrom.current.revisionId !== state.draft.revisionId;
@@ -177,12 +188,26 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     const timer = window.setTimeout(() => void refresh(), 600);
     return () => window.clearTimeout(timer);
   }, [discussion]);
+  useEffect(() => {
+    if (!discussion || !unconfirmedPreparation || preparationUnknown) return;
+    rememberPreparation(null);
+  }, [discussion, unconfirmedPreparation, preparationUnknown]);
+  function rememberPreparation(runId: string | null) {
+    setUnconfirmedPreparation(runId);
+    if (!preparationKey) return;
+    try {
+      if (runId) sessionStorage.setItem(preparationKey, runId);
+      else sessionStorage.removeItem(preparationKey);
+    } catch { /* Readback still works in this view. */ }
+  }
   async function chatAction(action: "turn" | "confirm" | "cancel") {
     if (!state || busy || pendingChoice || action === "turn" && (!text.trim() || authoring)
-        || action !== "turn" && !conversation || action === "confirm" && conversation?.runId === unconfirmedPreparation) return;
+        || action !== "turn" && !conversation
+        || action === "confirm" && (!conversation?.agreement || conversation.confirmRejected || preparationUnknown)) return;
     const input = action === "turn" ? { operationId: crypto.randomUUID(), text, expectedVersion: conversation?.version ?? 0, expectedDraftVersion: state.draftVersion }
       : { runId: conversation!.runId, expectedVersion: conversation!.version };
     if (action === "confirm") {
+      rememberPreparation(conversation!.runId);
       preparedFrom.current = { revisionId: state.draft?.revisionId ?? null };
       setChoiceReceipt(null); setChoiceTarget(null); setChoiceNotice("");
     }
@@ -196,10 +221,12 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       if (action === "confirm") await refresh();
     } catch (e) {
       const status = (e as { status?: number }).status;
-      if (action === "confirm" && (!status || status >= 500) && !lifetime.current.signal.aborted) setUnconfirmedPreparation(conversation!.runId);
-      const saved = await refresh();
-      if (action !== "confirm" || !saved?.draft || saved.draft.revisionId === preparedFrom.current?.revisionId
-          || identity(saved.draft.agreement) !== identity(conversation?.agreement)) failure(e);
+      if (action === "confirm" && ![401, 403, 404].includes(status ?? 0)) {
+        await refresh(); // Only the saved thread resolves the attempt. Never repeat the POST.
+      } else {
+        await refresh();
+        failure(e);
+      }
     }
     finally { if (!lifetime.current.signal.aborted) setBusy(""); }
   }
@@ -350,7 +377,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       ?? normalExamples?.find(hasChild) : null;
   const currentDraftOn = !!state?.draft && state.draft.revisionId === state.selection.revisionId;
   const showActive = currentDraftOn && !state?.draft?.revoked;
-  const recoveryNeeded = state && (pendingChoice || uncertain || conversation?.runId === unconfirmedPreparation);
+  const recoveryNeeded = state && (pendingChoice || uncertain || preparationUnknown);
   function closeSetup(unconfirmed: boolean) {
     const generation = ++setupGeneration.current;
     setSetupOpen(false);
@@ -416,23 +443,25 @@ export default function TeamCapability({ project, request, scopeControl, back, b
             {!conversation && <><h2>What should happen in this project?</h2>
               <p className="team-starter">Ask what Daymark can do, or describe a change. For example: “Add a follow-up for high-priority tasks.”</p></>}
             {transcript}
-            {composer}
-           {conversation?.agreement && <article className="rs-message rs-decision" aria-label="Proposed behavior">
+            {conversation?.agreement && <article className="rs-message rs-decision" aria-label="Proposed behavior">
                <h2>Proposed behavior for {project.name}</h2>
                {behavior(conversation.agreement)}
-               <details><summary>Exact expected outcomes</summary>
+                <details><summary>Examples</summary>
                  {conversation.agreement.claims.map(claim => <div key={claim.hook}>
                    <h3>{claim.hook === "TaskCreated" ? "When a task is added" : "When someone tries to finish a task"}</h3>
                    <ul>{claim.outcomes.map(outcome => <li key={outcome.id}>{situation(outcome.when, claim.hook)}. {describe(outcome.expect)}</li>)}</ul>
                  </div>)}
                </details>
                <p><strong>In use now</strong><br />{currentUse}</p>
-              <p>Confirming saves this draft and checks the examples. It won’t change real tasks or what’s in use.</p>
-              {conversation.runId === unconfirmedPreparation
-                ? <div role="status"><p>The save wasn’t confirmed. Check saved state before starting a new request. Don’t resend this confirmation.</p>
-                  <button disabled={!!busy} onClick={() => void refresh()}>Check saved state</button></div>
-                : <button className="rs-primary" disabled={!!busy || lifecycleBusy} onClick={() => void chatAction("confirm")}>{busy === "confirm" ? "Preparing and checking…" : "Confirm this behavior"}</button>}
-           </article>}
+               {conversation.confirmRejected
+                 ? <div ref={preparationFeedback} tabIndex={-1} className="team-feedback" role="alert">Daymark couldn’t save this proposal. No draft was saved for it. Send a new message below to prepare a fresh proposal.</div>
+                 : busy !== "confirm" && preparationUnknown
+                   ? <div ref={preparationFeedback} tabIndex={-1} className="team-feedback" role="status"><p>Daymark couldn’t tell whether the draft was saved. Check saved state. This won’t send the confirmation again.</p>
+                     <button disabled={!!busy} onClick={() => void refresh()}>Check saved state</button></div>
+                   : <><p>Confirming saves this draft and checks the examples. It won’t change real tasks or what’s in use.</p>
+                     <button ref={proposalAction} className="rs-primary" disabled={!!busy || lifecycleBusy} onClick={() => void chatAction("confirm")}>{busy === "confirm" ? "Preparing and checking…" : "Confirm this behavior"}</button></>}
+            </article>}
+            {composer}
           </section>}
           {state.draft && !conversation?.agreement && <>
              <section ref={decision} aria-label="Review and current use" className="team-decision">

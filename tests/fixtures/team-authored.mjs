@@ -93,3 +93,31 @@ export function linkedOffer() {
     ] },
   };
 }
+
+// Synthetic lookalike of the source-contract failure, not a retained provider reply.
+export function linkedSourceLookalike() {
+  const offer = linkedOffer();
+  const creation = JSON.parse(offer.TaskCreated.source), completion = JSON.parse(offer.TaskBeforeComplete.source);
+  creation.name = 'CreateLinkedTask';
+  completion.name = 'WaitForLinkedTask';
+  creation.steps.splice(1, 0, { id: 'original', let: { cel: '!has(task.parentTaskId)' } });
+  creation.steps[2].when = 'original';
+  completion.steps[1].when = 'linked';
+  offer.TaskCreated.source = JSON.stringify(creation);
+  offer.TaskBeforeComplete.source = JSON.stringify(completion);
+  return offer;
+}
+
+export function offerSources(offer, behaviorOnly) {
+  const result = structuredClone(offer);
+  for (const hook of ['TaskCreated', 'TaskBeforeComplete']) {
+    if (!result[hook]) continue;
+    const { steps, return: returns, ...envelope } = JSON.parse(result[hook].source);
+    if (!behaviorOnly) {
+      const { fingerprint, ...domain } = envelope.domain;
+      envelope.domain = { ...domain, modelDigest: fingerprint };
+    }
+    result[hook].source = json({ ...(behaviorOnly ? {} : envelope), steps, return: returns });
+  }
+  return result;
+}

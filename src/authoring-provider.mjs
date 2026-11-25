@@ -4,6 +4,11 @@ import { estimateAuthoringMicros } from './authoring-config.mjs';
 export class AuthoringError extends Error {
   constructor(code) { super(code); this.name = 'AuthoringError'; this.code = code; }
 }
+// Fixed classifications only. Never put provider-supplied values in errors or saved turn state.
+export const PROVIDER_REPLY_CODES = Object.freeze([
+  'PROVIDER_RESPONSE_INVALID', 'PROVIDER_REPLY_FORMAT', 'PROVIDER_REPLY_INCOMPLETE',
+  'PROVIDER_REPLY_PART_UNSUPPORTED', 'PROVIDER_REPLY_TOOL_INVALID', 'PROVIDER_REPLY_USAGE_INVALID',
+]);
 const fail = code => { throw new AuthoringError(code); };
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const integer = value => Number.isSafeInteger(value) && value >= 0;
@@ -90,58 +95,61 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
         if (response.status === 429) fail('PROVIDER_RATE_LIMIT');
         if (response.status >= 300 && response.status < 400) fail('PROVIDER_REDIRECT');
         if (response.status !== 200) fail('PROVIDER_UNAVAILABLE');
-        if (response.headers?.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') fail('PROVIDER_RESPONSE_INVALID');
+        if (response.headers?.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') fail('PROVIDER_REPLY_FORMAT');
         const length = response.headers.get('content-length');
         if (length !== null && Number(length) > maxBytes) fail('BYTE_LIMIT');
         reader = response.body?.getReader();
-        if (!reader) fail('PROVIDER_RESPONSE_INVALID');
+        if (!reader) fail('PROVIDER_REPLY_FORMAT');
         const chunks = []; let size = 0;
         for (;;) {
           const { done, value } = await wait(reading = Promise.resolve(reader.read()));
           if (done) break;
-          if (!(value instanceof Uint8Array)) fail('PROVIDER_RESPONSE_INVALID');
+          if (!(value instanceof Uint8Array)) fail('PROVIDER_REPLY_FORMAT');
           size += value.byteLength;
           if (size > maxBytes) fail('BYTE_LIMIT');
           chunks.push(value);
         }
         let raw;
         try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); }
-        catch { fail('PROVIDER_RESPONSE_INVALID'); }
+        catch { fail('PROVIDER_REPLY_FORMAT'); }
         const calls = [], text = [];
         let native;
         if (provider === 'openai') {
-          if (raw?.status !== 'completed' || !Array.isArray(raw.output)) fail('PROVIDER_RESPONSE_INVALID');
+          if (raw?.status === 'incomplete') fail('PROVIDER_REPLY_INCOMPLETE');
+          if (raw?.status !== 'completed' || !Array.isArray(raw.output)) fail('PROVIDER_REPLY_FORMAT');
           native = raw.output;
           for (const item of native) {
             if (item?.type === 'function_call') {
               let args;
-              try { args = JSON.parse(item.arguments); } catch { fail('PROVIDER_RESPONSE_INVALID'); }
+              try { args = JSON.parse(item.arguments); } catch { fail('PROVIDER_REPLY_TOOL_INVALID'); }
               calls.push({ id: item.call_id, name: item.name, arguments: args });
             } else if (item?.type === 'message' && item.role === 'assistant' && Array.isArray(item.content)) {
               for (const part of item.content) {
-                if (part?.type !== 'output_text' || typeof part.text !== 'string') fail('PROVIDER_RESPONSE_INVALID');
+                if (part?.type !== 'output_text' || typeof part.text !== 'string') fail('PROVIDER_REPLY_PART_UNSUPPORTED');
                 text.push(part.text);
               }
-            } else if (item?.type !== 'reasoning') fail('PROVIDER_RESPONSE_INVALID');
+            } else if (item?.type !== 'reasoning') fail('PROVIDER_REPLY_PART_UNSUPPORTED');
           }
           items.push(...native);
         } else {
-          if (!['tool_use', 'end_turn'].includes(raw?.stop_reason) || !Array.isArray(raw.content)) fail('PROVIDER_RESPONSE_INVALID');
+          if (['max_tokens', 'pause_turn'].includes(raw?.stop_reason)) fail('PROVIDER_REPLY_INCOMPLETE');
+          if (raw?.stop_reason === 'refusal') fail('PROVIDER_REPLY_PART_UNSUPPORTED');
+          if (!['tool_use', 'end_turn'].includes(raw?.stop_reason) || !Array.isArray(raw.content)) fail('PROVIDER_REPLY_FORMAT');
           native = raw.content;
           for (const item of native) {
             if (item?.type === 'tool_use') calls.push({ id: item.id, name: item.name, arguments: item.input });
             else if (item?.type === 'text' && typeof item.text === 'string') text.push(item.text);
-            else if (!['thinking', 'redacted_thinking'].includes(item?.type)) fail('PROVIDER_RESPONSE_INVALID');
+            else if (!['thinking', 'redacted_thinking'].includes(item?.type)) fail('PROVIDER_REPLY_PART_UNSUPPORTED');
           }
-          if ((raw.stop_reason === 'tool_use') !== (calls.length > 0)) fail('PROVIDER_RESPONSE_INVALID');
+          if ((raw.stop_reason === 'tool_use') !== (calls.length > 0)) fail('PROVIDER_REPLY_TOOL_INVALID');
           items.push({ role: 'assistant', content: native });
         }
-        if (calls.length > 1 || calls.some(call => !id(call.id) || !id(call.name) || !object(call.arguments))) fail('PROVIDER_RESPONSE_INVALID');
+        if (calls.length > 1 || calls.some(call => !id(call.id) || !id(call.name) || !object(call.arguments))) fail('PROVIDER_REPLY_TOOL_INVALID');
         const usage = raw.usage;
-        if (!object(usage) || !integer(usage.input_tokens) || !integer(usage.output_tokens)) fail('PROVIDER_RESPONSE_INVALID');
+        if (!object(usage) || !integer(usage.input_tokens) || !integer(usage.output_tokens)) fail('PROVIDER_REPLY_USAGE_INVALID');
         let inputTokens = usage.input_tokens;
         for (const key of provider === 'anthropic' ? ['cache_read_input_tokens', 'cache_creation_input_tokens'] : []) {
-          if (usage[key] !== undefined) { if (!integer(usage[key])) fail('PROVIDER_RESPONSE_INVALID'); inputTokens += usage[key]; }
+          if (usage[key] !== undefined) { if (!integer(usage[key])) fail('PROVIDER_REPLY_USAGE_INVALID'); inputTokens += usage[key]; }
         }
         if (!Number.isSafeInteger(inputTokens) || inputTokens > 135168 || usage.output_tokens > maxOutputTokens) fail('TOKEN_LIMIT');
         const estimate = estimateAuthoringMicros(provider, usage);

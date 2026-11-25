@@ -1,5 +1,7 @@
 import Ajv from 'ajv';
 import { AuthoringError } from './authoring-provider.mjs';
+import { digest, json } from './extension-catalog.mjs';
+import { teamModel } from './team-runtime.mjs';
 import { normalizeTeamAgreement, matchesTeamContext, teamPriorities, teamChildStates, TEAM_AGREEMENT, TEAM_BINDINGS } from './team-qualification.mjs';
 
 const [created, completing] = TEAM_BINDINGS;
@@ -9,7 +11,7 @@ const object = properties => ({ type: 'object', properties, required: Object.key
 // The wire schema uses the providers' shared strict subset. Host validation owns upper bounds.
 const choices = values => nullable({ type: 'array', minItems: 1, items: { type: 'string', enum: values } });
 const binding = (when, expected) => nullable(object({
-  source: { ...text, description: 'Keir JSON source as a string, with the matching entrypoint and the current model pin.' },
+  source: { ...text, description: 'JSON string containing only steps and return. Daymark supplies the program metadata.' },
   outcomes: { type: 'array', minItems: 1, description: 'At most eight disjoint outcomes.', items: object({ when: object(when), expected: object(expected) }) },
 }));
 export const teamOfferFields = {
@@ -31,18 +33,68 @@ const slug = hook => hook === created ? 'creation' : 'completion';
 const wants = ({ priority, linkedTask }) => ({ ...(priority && { priority }), ...(linkedTask && { childStatus: linkedTask }) });
 const allowed = { decision: 'ALLOW', status: 'completed' };
 const emptyEffect = { outcome: 'COMPLETED', children: 0, receipt: 'NONE' };
+// Accept older full-source offers, but only these known metadata fields are host-owned.
+const sourceFields = ['steps', 'return', 'language', 'name', 'domain', 'entrypoint'];
+const hasSourceFields = program => program && typeof program === 'object' && !Array.isArray(program)
+  && Object.keys(program).every(key => sourceFields.includes(key))
+  && Object.hasOwn(program, 'steps') && Object.hasOwn(program, 'return');
+
+// Catch only visible source-contract violations. Compilation and checked-expression coverage happen after confirmation.
+function offerSource(program, hook, outcomes) {
+  const path = `/${hook}/source`;
+  if (!Array.isArray(program.steps) || program.steps.length > 8
+      || program.steps.some(step => !step || typeof step !== 'object' || Array.isArray(step))) reject('SOURCE_STEPS_INVALID', `${path}/steps`);
+  const taskReads = new Set(program.steps.filter(step => step.call === 'tasks.get').map(step => step.id));
+  const taskIds = new Set(['input.taskId', ...[...taskReads].map(id => `${id}.id`)]);
+  const cel = value => typeof value?.cel === 'string' ? value.cel.trim() : null;
+  const checkFields = (value, field) => {
+    if (!taskReads.size) return;
+    JSON.stringify(value, (key, part) => {
+      if (key === 'cel' && typeof part === 'string') {
+        const expr = part.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '""');
+        for (const [, id, name] of expr.matchAll(/\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)/g))
+          if (taskReads.has(id) && !['id', 'projectId', 'priority'].includes(name)) reject('TASK_FIELD_UNSUPPORTED', field);
+      }
+      return part;
+    });
+  };
+  for (const [i, step] of program.steps.entries()) {
+    const field = `${path}/steps/${i}`;
+    checkFields(step, field);
+    if (hook === completing && Object.hasOwn(step, 'when')) reject('COMPLETION_STEP_GUARD', `${field}/when`);
+    if (Object.hasOwn(step, 'onError')) reject('SOURCE_ERROR_BRANCH_UNSUPPORTED', `${field}/onError`);
+    if (step.call === 'tasks.get' && cel(step.args?.taskId) !== 'input.taskId')
+      reject('TASK_READ_NOT_ORIGINAL', `${field}/args/taskId`);
+    if (step.call === 'tasks.childrenSummary' && (hook !== completing
+        || !taskIds.has(cel(step.args?.parentTaskId)) || cel(step.args?.originEventId) !== 'input.creationEventId'))
+      reject('LINKED_READ_NOT_EVENT_BOUND', `${field}/args`);
+    if (hook === created && step.call === 'tasks.create' && Object.hasOwn(step, 'when')
+        && outcomes.every(o => o.expect.children === 1)) reject('CREATION_GUARD_HAS_NO_SKIP', `${field}/when`);
+  }
+  checkFields(program.return, `${path}/return`);
+  const source = json({ language: 'keir/3', name: `daymark-${slug(hook)}`, entrypoint: hook,
+    domain: { ...teamModel.domain, fingerprint: digest(json(teamModel)) }, steps: program.steps, return: program.return });
+  if (Buffer.byteLength(source) > 65536) reject('SOURCE_INVALID', path);
+  return source;
+}
 
 // Project saved agreements back to business facts, never expose the native test scripts in an edit.
 export function businessProposal(agreement, sources) {
   const unsupported = agreement.claims.some(claim => claim.outcomes.some(({ when }) =>
     Object.keys(when).some(key => key !== 'priority' && !(claim.hook === completing && key === 'childStatus'))));
   if (unsupported) return { summary: agreement.summary, unavailable: true };
+  const fragments = {};
+  for (const { hook } of agreement.claims) {
+    const program = JSON.parse(sources[hook]);
+    if (!hasSourceFields(program) || program.entrypoint !== hook) return { summary: agreement.summary, unavailable: true };
+    fragments[hook] = json({ steps: program.steps, return: program.return });
+  }
   const list = value => value === undefined ? null : Array.isArray(value) ? value : [value];
   return {
     summary: agreement.summary,
     ...Object.fromEntries(TEAM_BINDINGS.map(hook => {
       const claim = agreement.claims.find(c => c.hook === hook);
-      return [hook, !claim ? null : { source: sources[hook], outcomes: claim.outcomes.map(({ when, expect }) => hook === created
+      return [hook, !claim ? null : { source: fragments[hook], outcomes: claim.outcomes.map(({ when, expect }) => hook === created
         ? { when: { priority: list(when.priority) }, expected: { linkedTask: expect.children ? { title: expect.childTitle, assigneeId: expect.childAssigneeId } : null } }
         : { when: { priority: list(when.priority), linkedTask: list(when.childStatus) },
           expected: { allow: expect.decision === 'ALLOW', message: expect.message || null } }) }];
@@ -66,14 +118,14 @@ export function expandTeamOffer(input, actor, members) {
   const bindings = {}, claims = [];
   for (const hook of TEAM_BINDINGS) {
     const spec = input[hook], path = `/${hook}`;
-    bindings[hook] = spec?.source ?? null;
-    if (!spec) continue;
+    if (!spec) { bindings[hook] = null; continue; }
     if (spec.outcomes.length > 8) reject('TOO_MANY_OUTCOMES', `${path}/outcomes`);
     const { source } = spec;
     if (!source.isWellFormed() || Buffer.byteLength(source) > 65536) reject('SOURCE_INVALID', `${path}/source`);
     let program;
     try { program = JSON.parse(source); } catch { reject('SOURCE_JSON_INVALID', `${path}/source`); }
-    if (program?.entrypoint !== hook) reject('SOURCE_ENTRYPOINT_MISMATCH', `${path}/source`);
+    if (!hasSourceFields(program)) reject('SOURCE_FIELDS_INVALID', `${path}/source`);
+    if (Object.hasOwn(program, 'entrypoint') && program.entrypoint !== hook) reject('SOURCE_ENTRYPOINT_MISMATCH', `${path}/source`);
     const outcomes = spec.outcomes.map(({ when, expected }, i) => {
       const field = `${path}/outcomes/${i}`;
       if (Object.values(when).some(values => values && new Set(values).size !== values.length)) reject('CONDITION_DUPLICATE', `${field}/when`);
@@ -89,6 +141,7 @@ export function expandTeamOffer(input, actor, members) {
       }
       return { id: `outcome-${i + 1}`, when: wants(when), expect };
     });
+    bindings[hook] = offerSource(program, hook, outcomes);
     claims.push({ id: slug(hook), hook, description: input.summary, outcomes });
   }
 

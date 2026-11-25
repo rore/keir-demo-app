@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const lost of [false, true]) test(`Personal and Team settle the same durable allowance, preserving ${lost ? 'lost replies' : 'malformed usage'}`, async t => {
+for (const failure of ['malformed usage', 'lost replies', 'incomplete replies'])
+test(`Personal and Team settle the same durable allowance, preserving ${failure}`, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'daymark-settlement-')), path = join(directory, 'app.sqlite');
   const origin = 'http://127.0.0.1:32089';
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '0.4', OPENAI_API_KEY: 'synthetic-key' });
@@ -21,12 +22,18 @@ for (const lost of [false, true]) test(`Personal and Team settle the same durabl
   const fetchImpl = async (_url, request) => {
     sent++;
     assert.ok(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros >= config.reserveMicros);
-    if (final && lost) throw new Error('synthetic lost reply');
+    if (final && failure === 'lost replies') throw new Error('synthetic lost reply');
     const input = JSON.parse(request.body);
     const resolving = input.tools[0]?.name === 'resolve_intent';
+    if (final && !resolving && failure === 'incomplete replies') return Response.json({
+      status: 'incomplete', id: 'private-incomplete-reply-id',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'private-incomplete-reply-text' }] }],
+      usage: { input_tokens: 100, output_tokens: 10 },
+    });
     const output = resolving ? [{ type: 'function_call', call_id: 'intent', name: 'resolve_intent', arguments: JSON.stringify({ intent: 'discuss', question: '' }) }]
       : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'You can review and discuss changes.' }] }];
-    const usage = { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: final ? 101 : 10, cache_write_tokens: 20 } };
+    const usage = { input_tokens: 100, output_tokens: 10,
+      input_tokens_details: { cached_tokens: final && failure === 'malformed usage' ? 101 : 10, cache_write_tokens: 20 } };
     return Response.json({ status: 'completed', output, usage });
   };
   async function boot() {
@@ -61,26 +68,42 @@ for (const lost of [false, true]) test(`Personal and Team settle the same durabl
   assert.equal((await call(base + '/turn', input)).statusCode, 202);
   await settled(call, base, 'IDLE');
   assert.equal(sent, 4, 'The cap is smaller than two full holds, yet both two-request turns finish.');
-  const estimated = 4 * 312;
+  let estimated = 4 * 312;
   assert.deepEqual((await call('/api/authoring/setup')).json().allowance, { estimatedMicros: estimated, heldMicros: 0 });
   await app.close(); app = null; db.close(); db = openData(path); call = await boot();
   assert.equal((await call(base + '/turn', input)).statusCode, 202);
   assert.equal(sent, 4);
   assert.deepEqual((await call('/api/authoring/setup')).json().allowance, { estimatedMicros: estimated, heldMicros: 0 });
   final = true;
-  assert.equal((await call(base + '/turn', { ...input, operationId: randomUUID(), expectedVersion: 1 })).statusCode, 202);
+  const finalInput = { ...input, operationId: randomUUID(), expectedVersion: 1 };
+  assert.equal((await call(base + '/turn', finalInput)).statusCode, 202);
   const stopped = await settled(call, base, 'BLOCKED');
-  assert.equal(stopped.code, lost ? 'PROVIDER_UNAVAILABLE' : 'SPEND_LIMIT');
-  if (!lost) assert.match(stopped.messages.at(-1).text, /Ask whoever manages assistant settings/);
-  assert.equal(sent, 5);
+  const incomplete = failure === 'incomplete replies';
+  assert.equal(stopped.code, incomplete ? 'PROVIDER_REPLY_INCOMPLETE' : failure === 'lost replies' ? 'PROVIDER_UNAVAILABLE' : 'SPEND_LIMIT');
+  if (failure !== 'lost replies') assert.match(stopped.messages.at(-1).text, /Ask whoever manages assistant settings/);
+  const dispatches = incomplete ? 6 : 5;
+  if (incomplete) {
+    estimated += 312; // Only the intent reply settled.
+    assert.match(stopped.messages.at(-1).text, /stopped without retrying/);
+    assert.equal(stopped.agreement, null);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM team_revisions').get().n, 0);
+    assert.deepEqual(db.prepare('SELECT kind,outcome FROM authoring_dispatches WHERE run_id=? ORDER BY ordinal')
+      .all(stopped.runId).map(row => [row.kind, row.outcome]), [['provider', 'SUCCESS'], ['provider', 'UNKNOWN']]);
+    const durable = db.prepare(`SELECT state,view FROM authoring_conversations WHERE run_id=?`).get(stopped.runId);
+    assert.doesNotMatch(JSON.stringify([durable, stopped]), /private-incomplete-reply/);
+    await app.close(); app = null; db.close(); db = openData(path); call = await boot();
+    assert.equal((await settled(call, base, 'BLOCKED')).code, 'PROVIDER_REPLY_INCOMPLETE');
+    assert.equal((await call(base + '/turn', finalInput)).statusCode, 202);
+  }
+  assert.equal(sent, dispatches);
   assert.deepEqual((await call('/api/authoring/setup')).json().allowance, { estimatedMicros: estimated, heldMicros: config.reserveMicros });
   const other = taskService(db).createProject('maya', { name: 'Uncertain team', mode: 'TEAM' });
   const blocked = await call(`/api/projects/${other.id}/authoring/turn`, { ...input, operationId: randomUUID() });
   assert.equal(blocked.statusCode, 202);
   await settled(call, `/api/projects/${other.id}/authoring`, 'BLOCKED');
-  assert.equal(sent, 5);
+  assert.equal(sent, dispatches);
   const row = db.prepare("SELECT outcome,estimated_micros FROM authoring_dispatches WHERE kind='provider' ORDER BY rowid DESC LIMIT 1").get();
-  assert.equal(row.outcome, lost ? 'UNKNOWN' : 'SUCCESS');
+  assert.equal(row.outcome, failure === 'malformed usage' ? 'SUCCESS' : 'UNKNOWN');
   assert.equal(row.estimated_micros, null);
   await app.close(); app = null; db.close(); db = null;
   await resetData(directory, true);

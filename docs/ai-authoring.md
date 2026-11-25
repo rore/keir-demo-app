@@ -14,9 +14,11 @@ Daymark manages ordinary assistant context internally. You do not need to start 
 
 ## Team: confirm the proposed behavior
 
-A current project admin uses Studio to discuss one Team project's rule. Check the proposal's scope, people and outcomes, including defaults like a fixed task title. If the assistant proposes dropping an unsupported part, agree to the narrower request before confirming. Daymark builds the checks from the proposed outcomes. **Confirm this behavior** saves and checks the exact draft without another provider request. A saved draft that fails the checks cannot be approved. Discussion can incur provider charges. Approval and turning on are separate, explicit choices.
+A current project admin uses Studio to discuss one Team project's rule. Check the proposal's scope, people and outcomes, including defaults like a fixed task title. If the assistant proposes dropping an unsupported part, agree to the narrower request before confirming. Daymark builds the checks from the proposed outcomes. **Confirm this behavior** saves and checks the exact draft without another provider request. If Daymark says it saved no draft, send a fresh request. If the reply is unconfirmed, use **Check saved state** instead of confirming again. A saved draft that fails the checks cannot be approved. Discussion can incur provider charges. Approval and turning on are separate, explicit choices.
 
 The isolated Team review fixture uses scripted replies for two request shapes: linked review and high-priority triage. It exercises the real compiler, isolated native checks and task lifecycle. It does not qualify live interpretation, provider quality or arbitrary requests.
+
+For new Team offers, Daymark supplies the source language, program name, model pin, and hook from the host. The assistant supplies the rule steps, return value, and independent business outcomes. Older full-source offers still work if their hook matches; Daymark replaces only the declared program metadata and rejects extra top-level fields. This does not rewrite saved rules.
 
 ## Configure a provider
 
