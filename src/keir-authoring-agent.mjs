@@ -109,6 +109,7 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
   const elapsed = () => Math.max(0, Math.ceil(performance.now() - start));
   let admitted = false, registered = false, journalOpen = false, checkpointFailed = false, recordedMs = 0, scenarioRejections = 0;
   let renewals = 0, lastRenewal = '', lastTool = null;
+  let repairOffer = null;
   const settledFacts = new Map(), completedChanges = [];
   const identity = Object.fromEntries(['ownerId', 'sessionId', 'conversationId', 'runId'].map(key => [key, state[key]]));
   const ownState = () => Object.entries(identity).every(([key, value]) => state[key] === value);
@@ -259,7 +260,8 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
     for (;;) {
       check();
       let request = { input: message, continuation: state.continuation, toolResult: state.pending,
-        tools: resolving ? intentTools : intent === 'discuss' ? tools.filter(item => discussionTools.has(item.name) || hostTools[item.name]?.readOnly === true) : tools,
+         tools: resolving ? intentTools : repairOffer ? tools.filter(item => item.name === repairOffer.name)
+           : intent === 'discuss' ? tools.filter(item => discussionTools.has(item.name) || hostTools[item.name]?.readOnly === true) : tools,
          instructions: resolving ? `${intentInstructions}\nA general question about what this workspace can do is discuss, even without a specific change or draft.` : instructions, signal: combined };
       if (state.contextFull) request = await renew(request);
       else if (typeof provider.preflight === 'function') {
@@ -305,7 +307,8 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
         continue;
       }
       state.continuation = response.continuation; state.pending = undefined; message = undefined;
-       resultCheckpoint('SUCCESS', response.estimatedMicros);
+      resultCheckpoint('SUCCESS', response.estimatedMicros);
+      if (repairOffer && response.calls[0]?.name !== repairOffer.name) return terminal({ status: 'BLOCKED', code: repairOffer.code });
       if (!response.calls.length) return terminal({ status: 'IDLE', message: response.text });
       const call = response.calls[0];
       check(); consume('tools');
@@ -398,8 +401,17 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
       } catch (error) {
         if (!(error instanceof AuthoringError) || !['INVALID_TOOL_ARGUMENTS', 'DISCUSSION_ONLY'].includes(error.code)) throw error;
         const scenario = call.name === 'propose_scenarios' && error.code === 'INVALID_TOOL_ARGUMENTS';
+        const offerCode = intent === 'prepare' && error.code === 'INVALID_TOOL_ARGUMENTS'
+          && Object.hasOwn(hostTools, call.name) && hostTools[call.name].invalidOfferCode;
         if (scenario) scenarioRejections++;
+        const remaining = offerCode && !repairOffer ? 1 : 0;
+        if (offerCode) {
+          repairOffer = { name: call.name, code: offerCode };
+          if (!remaining) event = { status: 'BLOCKED', code: offerCode };
+        }
         state.pending = { id: call.id, output: JSON.stringify({ ok: false, code: error.code,
+          ...(offerCode && { saved: false, diagnostics: diagnostics(error.diagnostics ?? [{ code: 'INVALID_TOOL_ARGUMENTS', path: '/proposalJson' }]),
+            remainingAttempts: remaining, ...(remaining && { next: 'Correct only the reported format or field, keep the same agreed behavior, and call this tool once more.' }) }),
           ...(scenario && { diagnostics: error.diagnostics ?? [{ code: 'INVALID_TOOL_ARGUMENTS', path: '/arguments' }],
             currentDraft: { ...state.handles }, remainingAttempts: 3 - scenarioRejections }) }) };
         if (scenario && scenarioRejections >= 3) event = { status: 'BLOCKED', code: 'INVALID_TOOL_ARGUMENTS' };

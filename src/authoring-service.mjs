@@ -14,7 +14,7 @@ export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_IN
   'SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'CONVERSATION_LIMIT', 'CONFIG_CHANGED', 'BYTE_LIMIT', 'CONTEXT_LIMIT', 'TOKEN_LIMIT', 'TIME_LIMIT', 'EXPIRED',
   'RUN_INTERRUPTED', 'CANCELLED', 'STALE_CONTEXT', 'STALE_DRAFT', 'STALE_CONVERSATION', 'AI_BUSY', 'PROVIDER_TIMEOUT',
   'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', 'PROVIDER_RESPONSE_INVALID',
-  'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'DISCUSSION_ONLY', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
+  'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'TEAM_OFFER_INVALID', 'DISCUSSION_ONLY', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
 const codeFor = value => AUTHORING_CODES.includes(value) ? value : 'TOOL_FAILED';
 const safeMessage = code => ({
   AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create a customization. Native tasks remain available.',
@@ -30,6 +30,7 @@ const safeMessage = code => ({
   CONVERSATION_LIMIT: 'The owner conversation limit has been reached.', CONFIG_CHANGED: 'The AI configuration changed. Check saved state before sending again.',
   BUDGET_EXHAUSTED: 'This authoring run reached its resource limit.', REVIEW_NOT_READY: 'Run the current independent examples before offering review.',
   INVALID_TOOL_ARGUMENTS: 'The assistant could not finish preparing the example checks. Saved work is kept. Continue explicitly to try again.',
+  TEAM_OFFER_INVALID: 'Daymark couldn’t prepare a proposal. No draft was saved. You can send a new message with the change you want, including any details you’ve already agreed to.',
   DISCUSSION_ONLY: 'This message was understood as discussion. Describe the change you want to prepare, or clarify your request. Approval and turning it on are separate.',
 }[code] ?? 'Authoring could not finish safely. Check saved state before continuing.');
 const error = (status, code) => { const value = new AppError(status, safeMessage(code)); value.code = codeFor(code); return value; };

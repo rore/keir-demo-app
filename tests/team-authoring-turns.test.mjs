@@ -106,10 +106,11 @@ test('Team discussion is durable and project-scoped, and late provider output ca
   const projects = teamProjectService(db);
   projects.addMember('maya', launch.id, { userId: 'leo' });
   projects.addMember('maya', other.id, { userId: 'leo' });
-  const gates = [];
+  const gates = [], providerRequests = [];
   const response = (calls = [], text = '') => ({ calls, text, usage: { inputTokens: 1, outputTokens: 1 } });
   const config = { status: 'ready', provider: 'openai', model: 'fixture', reserveMicros: 1, maxMicros: 100 };
   const providerFactory = () => ({ reserveMicros: 1, maxMicros: 100, async complete(request) {
+    providerRequests.push(request);
     if (request.tools[0].name === 'resolve_intent') return response([{ id: 'intent', name: 'resolve_intent', arguments: { intent: 'prepare', question: '' } }]);
     const { promise, resolve } = Promise.withResolvers();
     gates.push(resolve);
@@ -220,4 +221,34 @@ test('Team discussion is durable and project-scoped, and late provider output ca
   assert.equal(saved.evidence, null);
   assert.equal(saved.eligibility.eligible, false);
   assert.equal((await call(maya, 'POST', foreign + '/confirm', nextDecision)).statusCode, 409);
+
+  const before = db.prepare('SELECT * FROM team_drafts WHERE project_id=?').get(other.id);
+  const malformed = triageProposal();
+  malformed.agreement.examples[0].actions[1].expect.children = 'Private malformed value';
+  const badOffer = { name: 'offer_proposal', arguments: { proposalJson: JSON.stringify(malformed) } };
+  const requestsBefore = providerRequests.length;
+  const invalidTurn = { ...input, operationId: randomUUID(), expectedVersion: newOffer.version, expectedDraftVersion: 2 };
+  assert.equal((await call(maya, 'POST', foreign + '/turn', invalidTurn)).statusCode, 202);
+  await waitFor(() => gates[5]);
+  gates[5](response([{ id: 'invalid1', ...badOffer }]));
+  await waitFor(() => gates[6]);
+  const repair = providerRequests.at(-1);
+  assert.deepEqual(repair.tools.map(tool => tool.name), ['offer_proposal']);
+  assert.deepEqual(JSON.parse(repair.toolResult.output).diagnostics, [
+    { code: 'AGREEMENT_FIELD_INVALID', path: '/agreement/examples/0/actions/1/expect/children' },
+  ]);
+  assert.ok(!repair.toolResult.output.includes('Private malformed value'));
+  gates[6](response([{ id: 'invalid2', ...badOffer }]));
+  const blocked = await waitFor(async () => {
+    const value = (await call(maya, 'GET', foreign)).json().conversation;
+    return value.status === 'BLOCKED' && value;
+  });
+  assert.equal(blocked.code, 'TEAM_OFFER_INVALID');
+  assert.equal(blocked.agreement, null);
+  assert.match(blocked.messages.at(-1).text, /No draft was saved.*send a new message/);
+  assert.ok(!JSON.stringify(blocked).includes('Private malformed value'));
+  assert.equal((await call(maya, 'POST', foreign + '/confirm', { runId: blocked.runId, expectedVersion: blocked.version })).statusCode, 409);
+  assert.equal((await call(maya, 'POST', foreign + '/turn', invalidTurn)).statusCode, 202);
+  assert.equal(providerRequests.length - requestsBefore, 3, 'Intent, one offer, one repair; replay spends nothing.');
+  assert.deepEqual(db.prepare('SELECT * FROM team_drafts WHERE project_id=?').get(other.id), before);
 });

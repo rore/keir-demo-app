@@ -10,69 +10,81 @@ export const TEAM_BINDINGS = Object.freeze(['TaskCreated', 'TaskBeforeComplete']
 const domains = { priority: ['low', 'normal', 'high'], status: ['open', 'completed'], childStatus: ['absent', 'open', 'completed'] };
 const word = value => typeof value === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(value);
 const line = (value, max) => typeof value === 'string' && value.isWellFormed() && value.trim() && value.length <= max && !/\p{Cc}/u.test(value);
-const invalid = () => new AppError(400, 'Use the bounded agreed Team claims and native examples.');
-const object = (value, allowed, required = allowed) => {
+const invalid = (path = '/agreement') => Object.assign(new AppError(400, 'Use the bounded agreed Team claims and native examples.'), { fieldPath: path });
+const object = (value, allowed, required = allowed, path) => {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !allowed.includes(k))
-      || required.some(k => !Object.hasOwn(value, k))) throw invalid();
+      || required.some(k => !Object.hasOwn(value, k))) throw invalid(path);
 };
 
 // This is an example-coverage contract, not a proof of arbitrary program behavior.
 export function teamAgreementContract() {
   return { format: TEAM_AGREEMENT, qualification: TEAM_QUALIFICATION, hooks: [...TEAM_BINDINGS], facts: structuredClone(domains),
+    proposalShape: { bindings: { TaskCreated: 'JSON source string or null', TaskBeforeComplete: 'JSON source string or null' },
+      agreement: { format: TEAM_AGREEMENT, summary: 'single-line description', claims: 'array of agreed outcomes grouped by hook',
+        examples: 'array of native examples, not JSON strings' } },
     agreementFields: ['format', 'summary', 'claims', 'examples'],
     claimFields: ['id', 'hook', 'description', 'outcomes'], outcomeFields: ['id', 'when', 'expect'],
     caseFields: ['id', 'name', 'actors', 'initialTasks', 'fault', 'actions'],
     actorFields: ['id', 'userId', 'role'], roles: ['ADMIN', 'MEMBER'], faults: ['NONE', 'BEFORE_WRITE', 'LOST_REPLY'],
+    initialTaskFields: ['ref', 'actor', 'title', 'priority?'],
     actions: { create: ['op', 'actor', 'ref', 'title', 'priority?', 'expect'],
-      dispatch: ['op', 'ref', 'expect', 'covers'], complete: ['op', 'actor', 'ref', 'expect', 'covers?'],
+       dispatch: ['op', 'ref', 'expect', 'covers?'], complete: ['op', 'actor', 'ref', 'expect', 'covers?'],
       reconcile: ['op', 'actor', 'ref', 'expect'] },
     covers: ['claimId', 'outcomeId'], childReferenceSuffix: '.child',
     creationOutcomes: ['outcome', 'children', 'receipt', 'childTitle?', 'childAssigneeId?', 'reportStatus?'],
     completionOutcomes: ['decision', 'status', 'message?'],
+    exampleExpectations: { create: { status: ['open', 'completed'] },
+      dispatch: { outcome: ['COMPLETED', 'FAILED', 'UNCERTAIN', 'UNKNOWN', 'NONE'], children: [0, 1], receipt: ['CONFIRMED', 'NONE'] },
+      complete: { decision: ['ALLOW', 'DENY', 'BLOCKED'], status: ['open', 'completed'] },
+      reconcile: { effect: ['CONFIRMED', 'NONE', 'UNRESOLVED'], children: [0, 1] } },
+    shapeRules: 'Use exactly the listed keys (a ? marks optional fields). Give both binding keys, with null for an unused hook. Use one claim per non-null hook and none for null. IDs and original task refs are lowercase ASCII slugs (up to 40 characters, starting with a letter); userId is a current member ID. Each case needs at least two distinct actors, including an ADMIN. Each agreed context needs a matching dispatch or completion step labeled with covers. Use covers only on an original task; link it to a claim and outcome ID. Use the .child suffix to refer to the generated task. An agreed creation outcome of one child needs its exact title and assignee. ALLOW pairs with completed; DENY pairs with open. Add BEFORE_WRITE and LOST_REPLY examples for a write, without covers on their interrupted dispatch steps.',
     limits: { claims: 2, outcomesPerClaim: 8, examples: 16, actionsPerExample: 12, bytes: 32768 },
     coverage: 'Only typed outcomes and contexts are checked; summary and description are explanatory text, not certified claims. Each present hook needs one agreed claim. Observe every finite declared context, each compiled event guard both ways, real material effects and write-loss cases. Unsupported dependencies remain unverified.' };
 }
 
 export function normalizeTeamAgreement(input) {
   object(input, ['format', 'summary', 'claims', 'examples']);
-  if (input.format !== TEAM_AGREEMENT || !line(input.summary, 2048) || !Array.isArray(input.claims)
-      || input.claims.length < 1 || input.claims.length > 2) throw invalid();
+  if (input.format !== TEAM_AGREEMENT) throw invalid('/agreement/format');
+  if (!line(input.summary, 2048)) throw invalid('/agreement/summary');
+  if (!Array.isArray(input.claims) || input.claims.length < 1 || input.claims.length > 2) throw invalid('/agreement/claims');
   const ids = new Set(), hooks = new Set();
-  for (const claim of input.claims) {
-    object(claim, ['id', 'hook', 'description', 'outcomes']);
+  for (const [i, claim] of input.claims.entries()) {
+    const path = `/agreement/claims/${i}`;
+    object(claim, ['id', 'hook', 'description', 'outcomes'], undefined, path);
     if (!word(claim.id) || ids.has(claim.id) || !TEAM_BINDINGS.includes(claim.hook) || hooks.has(claim.hook)
-        || !line(claim.description, 1024) || !Array.isArray(claim.outcomes) || !claim.outcomes.length || claim.outcomes.length > 8) throw invalid();
+        || !line(claim.description, 1024) || !Array.isArray(claim.outcomes) || !claim.outcomes.length || claim.outcomes.length > 8) throw invalid(path);
     ids.add(claim.id); hooks.add(claim.hook);
     const outcomes = new Set();
-    for (const outcome of claim.outcomes) {
-      object(outcome, ['id', 'when', 'expect']);
-      if (!word(outcome.id) || outcomes.has(outcome.id)) throw invalid();
+    for (const [j, outcome] of claim.outcomes.entries()) {
+      const field = `${path}/outcomes/${j}`;
+      object(outcome, ['id', 'when', 'expect'], undefined, field);
+      if (!word(outcome.id) || outcomes.has(outcome.id)) throw invalid(`${field}/id`);
       outcomes.add(outcome.id);
-      object(outcome.when, Object.keys(domains), []);
+      object(outcome.when, Object.keys(domains), [], `${field}/when`);
       for (const [key, value] of Object.entries(outcome.when)) {
         const values = Array.isArray(value) ? value : [value];
-        if (!values.length || new Set(values).size !== values.length || values.some(v => !domains[key].includes(v))) throw invalid();
+        if (!values.length || new Set(values).size !== values.length || values.some(v => !domains[key].includes(v))) throw invalid(`${field}/when`);
       }
       const expected = outcome.expect;
       if (claim.hook === 'TaskCreated') {
-        object(expected, ['outcome', 'children', 'receipt', 'childTitle', 'childAssigneeId', 'reportStatus'], ['outcome', 'children', 'receipt']);
+        object(expected, ['outcome', 'children', 'receipt', 'childTitle', 'childAssigneeId', 'reportStatus'], ['outcome', 'children', 'receipt'], `${field}/expect`);
         if (expected.outcome !== 'COMPLETED' || ![0, 1].includes(expected.children)
             || expected.receipt !== (expected.children ? 'CONFIRMED' : 'NONE')
             || expected.children && (!line(expected.childTitle, 120) || !/^[A-Za-z0-9-]{1,128}$/.test(expected.childAssigneeId ?? ''))
             || !expected.children && (Object.hasOwn(expected, 'childTitle') || Object.hasOwn(expected, 'childAssigneeId'))
-            || Object.hasOwn(expected, 'reportStatus') && !line(expected.reportStatus, 256)) throw invalid();
+            || Object.hasOwn(expected, 'reportStatus') && !line(expected.reportStatus, 256)) throw invalid(`${field}/expect`);
       } else {
-        object(expected, ['decision', 'status', 'message'], ['decision', 'status']);
+        object(expected, ['decision', 'status', 'message'], ['decision', 'status'], `${field}/expect`);
         if (!['DENY', 'ALLOW'].includes(expected.decision) || expected.status !== (expected.decision === 'ALLOW' ? 'completed' : 'open')
-            || Object.hasOwn(expected, 'message') && (typeof expected.message !== 'string' || expected.message.length > 256 || /\p{Cc}/u.test(expected.message))) throw invalid();
+            || Object.hasOwn(expected, 'message') && (typeof expected.message !== 'string' || expected.message.length > 256 || /\p{Cc}/u.test(expected.message))) throw invalid(`${field}/expect`);
       }
     }
   }
   const examples = normalizeTeamCases(input.examples, { authored: true });
-  for (const c of examples) for (const action of c.actions) if (action.covers) {
+  for (const [i, c] of examples.entries()) for (const [j, action] of c.actions.entries()) if (action.covers) {
     const claim = input.claims.find(v => v.id === action.covers.claimId);
     if (!claim || claim.hook !== (action.op === 'dispatch' ? 'TaskCreated' : 'TaskBeforeComplete')
-        || !claim.outcomes.some(v => v.id === action.covers.outcomeId)) throw invalid();
+        || !claim.outcomes.some(v => v.id === action.covers.outcomeId)) throw invalid(`/agreement/examples/${i}/actions/${j}/covers`);
   }
   const normalized = json({ ...input, examples });
   if (Buffer.byteLength(normalized) > 32768) throw new AppError(413, 'The agreed Team behavior exceeds 32 KiB.');

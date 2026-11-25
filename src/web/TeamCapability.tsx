@@ -40,6 +40,22 @@ const facts: Record<string, Record<string, string>> = {
 const fact = (key: string, value: unknown) => facts[key]?.[String(value)] ?? "No supported observation was recorded";
 const identity = (value: unknown): string => JSON.stringify(value, (_, v) => v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
+function replyText(text: string) {
+  const inline = (line: string) => line.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/).map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") && part.length > 4 ? <strong key={i}>{part.slice(2, -2)}</strong>
+      : part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <code key={i}>{part.slice(1, -1)}</code> : part);
+  const blocks: { type: "p" | "ul" | "ol"; lines: string[] }[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const marker = line.match(/^\s*([-*]|\d+\.)\s+/);
+    const type = !marker ? "p" : /^\d/.test(marker[1]) ? "ol" : "ul";
+    const previous = blocks.at(-1);
+    if (type !== "p" && previous?.type === type) previous.lines.push(line.slice(marker![0].length));
+    else blocks.push({ type, lines: [line.slice(marker?.[0].length ?? 0)] });
+  }
+  return blocks.map(({ type: Block, lines }, i) => Block === "p" ? <p key={i}>{inline(lines[0])}</p>
+    : <Block key={i}>{lines.map((line, j) => <li key={j}>{inline(line)}</li>)}</Block>);
+}
 const actionMessages = { approvals: "Draft approved. It’s not on yet.", activations: "Turned on for new tasks.",
   deactivations: "Turned off for new tasks. Started work keeps its existing rule.",
   revocations: "Emergency revocation recorded for the exact revision. Saved work was not undone." };
@@ -71,7 +87,8 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const [confirmation, setConfirmation] = useState<{ kind: "deactivations" | "revocations"; body: ControlInput } | null>(null);
   const lifetime = useRef(new AbortController()), serial = useRef(0), edits = useRef(0);
   const heading = useRef<HTMLHeadingElement>(null), stateRef = useRef(state); stateRef.current = state;
-  const latestReply = useRef<HTMLDivElement>(null), focusReply = useRef(false);
+  const latestReply = useRef<HTMLDivElement>(null), focusReply = useRef(false), positioned = useRef(false);
+  const conversationEnd = useRef<HTMLDivElement>(null);
   const decision = useRef<HTMLElement>(null), draftHeading = useRef<HTMLHeadingElement>(null);
   const preparedFrom = useRef<{ revisionId: string | null } | null>(null);
   const choiceFocus = useRef<boolean>(false);
@@ -82,9 +99,17 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const authoring = conversation?.status === "RUNNING" || conversation?.status === "CANCELLING";
   useLayoutEffect(() => { heading.current?.focus(); }, []);
   useLayoutEffect(() => {
+    if (positioned.current || !discussion) return;
+    positioned.current = true;
+    if (conversation?.messages.length) conversationEnd.current?.scrollIntoView({ block: "nearest" });
+  }, [discussion, conversation?.messages.length]);
+  useLayoutEffect(() => {
     if (!focusReply.current || authoring || busy || !latestReply.current) return;
     focusReply.current = false;
-    if (document.activeElement === document.body) latestReply.current.focus();
+    if (document.activeElement === document.body || document.activeElement?.id === "studio-message") {
+      if (document.activeElement === document.body) latestReply.current.focus({ preventScroll: true });
+      conversationEnd.current?.scrollIntoView({ block: "nearest" });
+    }
   }, [authoring, busy, conversation?.version]);
   useLayoutEffect(() => {
     if (!state?.draft || busy || !decision.current) return;
@@ -343,8 +368,9 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     });
   }
   const renderMessage = (message: NonNullable<Discussion["conversation"]>["messages"][number]) => <article key={message.id}
-    className={`rs-message ${message.role === "user" ? "rs-user" : "rs-assistant"}`}>
-    <p><strong>{message.role === "user" ? "You" : "Daymark"}</strong></p><p>{message.text}</p>
+    className={`team-message team-message-${message.role}`}>
+    <strong className="team-speaker">{message.role === "user" ? "You" : "Daymark"}</strong>
+    {message.role === "user" ? <p>{message.text}</p> : replyText(message.text)}
   </article>;
   const messages = conversation?.messages ?? [];
   const recent = messages.at(-1)?.role === "assistant" ? 2 : 1;
@@ -362,14 +388,15 @@ export default function TeamCapability({ project, request, scopeControl, back, b
        }}>Configure</button>}
      </div>}
      {setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
-    <StudioComposer text={text} change={setText} canSend={!!discussion?.availability.available && !lifecycleBusy && !busy && !!text.trim()}
-      submit={event => { event.preventDefault(); void chatAction("turn"); }} />
+     <StudioComposer text={text} change={setText} canSend={!!discussion?.availability.available && !lifecycleBusy && !busy && !!text.trim()}
+       submit={event => { event.preventDefault(); void chatAction("turn"); }} />
+     <div ref={conversationEnd} />
   </>;
   return <section className="read-studio team-capability" aria-label="Customization Studio">
     <div className="team-capability-body">
     <header className="rs-header">
       <h1 ref={heading} tabIndex={-1}>Customization Studio</h1>
-      <div className="rs-header-actions"><button onClick={back}>Back to Customizations</button>
+       <div className="rs-header-actions"><button onClick={back}>Back to Customizations</button>
       </div>
       <div className="team-scope">{scopeControl}</div>
     </header>
@@ -389,6 +416,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
             {!conversation && <><h2>What should happen in this project?</h2>
               <p className="team-starter">Ask what Daymark can do, or describe a change. For example: “Add a follow-up for high-priority tasks.”</p></>}
             {transcript}
+            {composer}
            {conversation?.agreement && <article className="rs-message rs-decision" aria-label="Proposed behavior">
                <h2>Proposed behavior for {project.name}</h2>
                {behavior(conversation.agreement)}
@@ -405,7 +433,6 @@ export default function TeamCapability({ project, request, scopeControl, back, b
                   <button disabled={!!busy} onClick={() => void refresh()}>Check saved state</button></div>
                 : <button className="rs-primary" disabled={!!busy || lifecycleBusy} onClick={() => void chatAction("confirm")}>{busy === "confirm" ? "Preparing and checking…" : "Confirm this behavior"}</button>}
            </article>}
-            {composer}
           </section>}
           {state.draft && !conversation?.agreement && <>
              <section ref={decision} aria-label="Review and current use" className="team-decision">

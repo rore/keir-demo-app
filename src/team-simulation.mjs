@@ -5,10 +5,10 @@ import { verifiedChild } from './team-native.mjs';
 import { digest, json } from './extension-catalog.mjs';
 
 export const TEAM_HARNESS = 'daymark-team-native-simulation/1';
-const invalid = () => new AppError(400, 'Use the bounded Team example format.');
-const object = (value, keys, required = keys) => {
+const invalid = (path = '/agreement/examples') => Object.assign(new AppError(400, 'Use the bounded Team example format.'), { fieldPath: path });
+const object = (value, keys, required = keys, path) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-      || Object.keys(value).some(key => !keys.includes(key)) || required.some(key => !Object.hasOwn(value, key))) throw invalid();
+      || Object.keys(value).some(key => !keys.includes(key)) || required.some(key => !Object.hasOwn(value, key))) throw invalid(path);
 };
 const word = value => typeof value === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(value);
 const title = value => typeof value === 'string' && value.isWellFormed() && value.trim() && value.length <= 120 && !/\p{Cc}/u.test(value);
@@ -19,49 +19,53 @@ const values = { status: ['open', 'completed'], children: [0, 1], outcome: ['COM
 export function normalizeTeamCases(input, { authored = false } = {}) {
   if (!Array.isArray(input) || input.length < 1 || input.length > (authored ? 16 : 8)) throw invalid();
   const ids = new Set();
-  for (const c of input) {
-    object(c, ['id', 'name', 'actors', 'initialTasks', 'fault', 'actions']);
+  for (const [i, c] of input.entries()) {
+    const path = `/agreement/examples/${i}`;
+    object(c, ['id', 'name', 'actors', 'initialTasks', 'fault', 'actions'], undefined, path);
     if (!word(c.id) || ids.has(c.id) || !title(c.name) || !['NONE', 'BEFORE_WRITE', 'LOST_REPLY'].includes(c.fault)
         || !Array.isArray(c.actors) || c.actors.length < 2 || c.actors.length > 4
         || !Array.isArray(c.initialTasks) || c.initialTasks.length > 16
-        || !Array.isArray(c.actions) || !c.actions.length || c.actions.length > (authored ? 12 : 8)) throw invalid();
+        || !Array.isArray(c.actions) || !c.actions.length || c.actions.length > (authored ? 12 : 8)) throw invalid(path);
     ids.add(c.id);
     const actors = new Set(), users = new Set(), refs = new Set();
-    for (const a of c.actors) {
-      object(a, authored ? ['id', 'userId', 'role'] : ['id', 'role']);
-      if (!word(a.id) || actors.has(a.id) || !['ADMIN', 'MEMBER'].includes(a.role)) throw invalid();
-      if (authored && (typeof a.userId !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(a.userId) || users.has(a.userId))) throw invalid();
+    for (const [j, a] of c.actors.entries()) {
+      const field = `${path}/actors/${j}`;
+      object(a, authored ? ['id', 'userId', 'role'] : ['id', 'role'], undefined, field);
+      if (!word(a.id) || actors.has(a.id) || !['ADMIN', 'MEMBER'].includes(a.role)) throw invalid(field);
+      if (authored && (typeof a.userId !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(a.userId) || users.has(a.userId))) throw invalid(`${field}/userId`);
       actors.add(a.id);
       users.add(a.userId);
     }
-    if ((!authored && !actors.has('reviewer')) || !c.actors.some(a => a.role === 'ADMIN')) throw invalid();
-    for (const task of c.initialTasks) {
-      object(task, authored ? ['ref', 'actor', 'title', 'priority'] : ['ref', 'actor', 'title'], ['ref', 'actor', 'title']);
-      if (!word(task.ref) || refs.has(task.ref) || !actors.has(task.actor) || !title(task.title)) throw invalid();
-      if (Object.hasOwn(task, 'priority') && !['low', 'normal', 'high'].includes(task.priority)) throw invalid();
+    if ((!authored && !actors.has('reviewer')) || !c.actors.some(a => a.role === 'ADMIN')) throw invalid(`${path}/actors`);
+    for (const [j, task] of c.initialTasks.entries()) {
+      const field = `${path}/initialTasks/${j}`;
+      object(task, authored ? ['ref', 'actor', 'title', 'priority'] : ['ref', 'actor', 'title'], ['ref', 'actor', 'title'], field);
+      if (!word(task.ref) || refs.has(task.ref) || !actors.has(task.actor) || !title(task.title)) throw invalid(field);
+      if (Object.hasOwn(task, 'priority') && !['low', 'normal', 'high'].includes(task.priority)) throw invalid(`${field}/priority`);
       refs.add(task.ref);
     }
-    for (const action of c.actions) {
+    for (const [j, action] of c.actions.entries()) {
+      const field = `${path}/actions/${j}`;
       const keys = action?.op === 'create' ? ['op', 'actor', 'ref', 'title', 'expect']
         : action?.op === 'dispatch' ? ['op', 'ref', 'expect'] : ['op', 'actor', 'ref', 'expect'];
-      object(action, authored ? [...keys, ...(action?.op === 'create' ? ['priority'] : []), 'covers'] : keys, keys);
-      if (!Object.hasOwn(required, action.op)) throw invalid();
-      if (action.op !== 'dispatch' && !actors.has(action.actor)) throw invalid();
+      object(action, authored ? [...keys, ...(action?.op === 'create' ? ['priority'] : []), 'covers'] : keys, keys, field);
+      if (!Object.hasOwn(required, action.op)) throw invalid(`${field}/op`);
+      if (action.op !== 'dispatch' && !actors.has(action.actor)) throw invalid(`${field}/actor`);
       if (action.op === 'create') {
-        if (!word(action.ref) || refs.has(action.ref) || !title(action.title)) throw invalid();
+        if (!word(action.ref) || refs.has(action.ref) || !title(action.title)) throw invalid(field);
         refs.add(action.ref);
-        if (Object.hasOwn(action, 'priority') && !['low', 'normal', 'high'].includes(action.priority)) throw invalid();
-      } else if (typeof action.ref !== 'string' || !refs.has(action.ref.replace(authored ? /\.(?:child|review)$/ : /\.review$/, ''))) throw invalid();
+        if (Object.hasOwn(action, 'priority') && !['low', 'normal', 'high'].includes(action.priority)) throw invalid(`${field}/priority`);
+      } else if (typeof action.ref !== 'string' || !refs.has(action.ref.replace(authored ? /\.(?:child|review)$/ : /\.review$/, ''))) throw invalid(`${field}/ref`);
       if (authored && Object.hasOwn(action, 'covers')) {
-        object(action.covers, ['claimId', 'outcomeId']);
+        object(action.covers, ['claimId', 'outcomeId'], undefined, `${field}/covers`);
         if (!word(action.covers.claimId) || !word(action.covers.outcomeId)
-            || !['dispatch', 'complete'].includes(action.op) || /\.(?:child|review)$/.test(action.ref)) throw invalid();
+            || !['dispatch', 'complete'].includes(action.op) || /\.(?:child|review)$/.test(action.ref)) throw invalid(`${field}/covers`);
       }
       const extra = ['childTitle', 'childAssigneeId', 'reportStatus', 'message'];
-      object(action.expect, [...Object.keys(values), ...(authored ? extra : [])], required[action.op]);
+      object(action.expect, [...Object.keys(values), ...(authored ? extra : [])], required[action.op], `${field}/expect`);
       for (const [key, value] of Object.entries(action.expect))
         if (Object.hasOwn(values, key) ? !values[key].includes(value)
-          : typeof value !== 'string' || !value.isWellFormed() || value.length > (key === 'childTitle' ? 120 : 256) || /\p{Cc}/u.test(value)) throw invalid();
+          : typeof value !== 'string' || !value.isWellFormed() || value.length > (key === 'childTitle' ? 120 : 256) || /\p{Cc}/u.test(value)) throw invalid(`${field}/expect/${key}`);
     }
   }
   const normalized = json(input);

@@ -1057,6 +1057,7 @@ p {
 .team-members ul { list-style:none; padding:0; margin:0; }
 .team-members li { padding:8px 0; border-bottom:1px solid var(--line); }
 .task-search-actions button { width:44px; min-height:44px; padding:0; font-size:21px; }
+.task-search-form:has([aria-label="Clear"]) input::-webkit-search-cancel-button { display:none; }
 .task-search-status { margin-inline:16px; }
 .completion span { visibility:hidden; }
 .completion:is(:hover:not(:disabled),:focus-visible) span, .completed .completion span { visibility:visible; }

@@ -11,19 +11,25 @@ export const teamAuthoringTools = [...AUTHORING_TOOLS.filter(item => !['compile_
 export const teamAuthoringHandlers = {
   save_draft: { advancesDraft: true, async run(host, args, context) { return { draft: await host.save(args.proposalJson, context) }; } },
 };
-const offer = tool('offer_proposal', 'Offer the complete proposal, including independent expected examples, for the person to confirm. This does not compile or save rules. Use the exact host format.', { proposalJson: string });
+const offer = tool('offer_proposal', 'Send proposalJson as one JSON-encoded object with exactly bindings and agreement. Give both binding keys; each value is a JSON source string or null. Agreement claims and examples are arrays of objects. Use currentContext.proposalContract. This checks the offer format only; it never saves or compiles.', { proposalJson: string });
 export const teamConversationTools = teamAuthoringTools.filter(item => !['discover_catalog', 'save_draft', 'simulate_draft', 'offer_review'].includes(item.name)).concat(offer);
 export const teamConversationInstructions = `You are Daymark’s assistant for a shared project. The currentContext in the message is the fresh, scoped discovery result; use it directly.
 If asked what Daymark can do, answer directly with two or three short, concrete examples: add a linked follow-up for a teammate, add one only for matching tasks such as high priority, or keep the original task open until its linked review is done. Do not ask the user to choose before answering basic capability questions.
 Only original tasks people add can start this customization. Linked tasks created by it do not start another creation rule. A linked review can be completed normally; waiting for it applies to the original task only. Never propose manual creation or an extra recursion check to avoid a loop that cannot occur.
 Use words a teammate would use: Daymark, original task, linked review, example, approval, turn on. Do not talk about hosts, hooks, artifacts, child/root tasks, IDs, or recursion. This wording rule is for visible replies, not structured proposal fields. State unsupported parts plainly and use ask_clarification to get consent before omitting them. Do not ask again once the person explicitly accepts the same narrowing and all needed details are known. When the request is complete, offer the exact proposal in the same reply. Never save it without the separate human confirmation.`;
 export const teamConversationHandlers = {
-  offer_proposal: { run(host, args) {
+  offer_proposal: { invalidOfferCode: 'TEAM_OFFER_INVALID', run(host, args) {
     const proposal = host.validateProposal(args.proposalJson);
     return { event: { result: { status: 'AWAITING_USER' }, terminal: {
       status: 'AWAITING_USER', message: 'Check that this is the behavior you want. Confirming saves a draft and checks its examples. It does not turn anything on.', proposal,
     } } };
   } },
+};
+
+const invalidOffer = (code, path) => {
+  const error = new AuthoringError('INVALID_TOOL_ARGUMENTS');
+  error.diagnostics = [{ code, path }];
+  return error;
 };
 
 const handles = state => ({
@@ -65,17 +71,30 @@ export function teamAuthoringHost({ capability, projects, actor, projectId, auth
       };
     },
     validateProposal(text) {
-      if (!text.trim() || !text.isWellFormed() || Buffer.byteLength(text) > 98304) throw new AuthoringError('INVALID_TOOL_ARGUMENTS');
+      if (!text.trim() || !text.isWellFormed() || Buffer.byteLength(text) > 98304) throw invalidOffer('PROPOSAL_TEXT_INVALID', '/proposalJson');
       let input;
-      try { input = JSON.parse(text); } catch { throw new AuthoringError('INVALID_TOOL_ARGUMENTS'); }
+      try { input = JSON.parse(text); } catch { throw invalidOffer('PROPOSAL_JSON_INVALID', '/proposalJson'); }
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 2
-          || !Object.hasOwn(input, 'bindings') || !Object.hasOwn(input, 'agreement')) throw new AuthoringError('INVALID_TOOL_ARGUMENTS');
-      if (!input.bindings || Object.keys(input.bindings).length !== TEAM_BINDINGS.length
-          || TEAM_BINDINGS.some(hook => !Object.hasOwn(input.bindings, hook) ||
-            input.bindings[hook] !== null && typeof input.bindings[hook] !== 'string'))
-        throw new AuthoringError('INVALID_TOOL_ARGUMENTS');
-      try { return { bindings: input.bindings, agreement: normalizeTeamAgreement(input.agreement) }; }
-      catch { throw new AuthoringError('INVALID_TOOL_ARGUMENTS'); }
+          || !Object.hasOwn(input, 'bindings') || !Object.hasOwn(input, 'agreement')) throw invalidOffer('PROPOSAL_SHAPE_INVALID', '/proposalJson');
+      if (!input.bindings || typeof input.bindings !== 'object' || Array.isArray(input.bindings)
+          || Object.keys(input.bindings).length !== TEAM_BINDINGS.length || TEAM_BINDINGS.some(hook => !Object.hasOwn(input.bindings, hook)))
+        throw invalidOffer('BINDINGS_SHAPE_INVALID', '/bindings');
+      let agreement;
+      try { agreement = normalizeTeamAgreement(input.agreement); }
+      catch (error) {
+        if (![400, 413].includes(error.status)) throw error;
+        throw invalidOffer('AGREEMENT_FIELD_INVALID', error.fieldPath ?? '/agreement');
+      }
+      for (const hook of TEAM_BINDINGS) {
+        const value = input.bindings[hook], path = `/bindings/${hook}`;
+        if ((value !== null) !== agreement.claims.some(claim => claim.hook === hook)) throw invalidOffer('BINDING_CLAIM_MISMATCH', path);
+        if (value === null) continue;
+        if (typeof value !== 'string' || !value.isWellFormed() || Buffer.byteLength(value) > 65536) throw invalidOffer('BINDING_SOURCE_STRING_REQUIRED', path);
+        let source;
+        try { source = JSON.parse(value); } catch { throw invalidOffer('BINDING_SOURCE_JSON_INVALID', path); }
+        if (source?.entrypoint !== hook) throw invalidOffer('BINDING_ENTRYPOINT_MISMATCH', path);
+      }
+      return { bindings: input.bindings, agreement };
     },
     async save(text, { draft, signal }) {
       const input = this.validateProposal(text);
