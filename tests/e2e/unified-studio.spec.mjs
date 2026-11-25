@@ -4,6 +4,7 @@ import { linkedProposal } from '../fixtures/team-authored.mjs';
 import { navigate, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { taskService } from '../../src/data.mjs';
 import { teamProjectService } from '../../src/team-native.mjs';
+import { OPENAI_RESERVE_MICROS } from '../../src/authoring-config.mjs';
 
 test.use({ hasTouch: true });
 
@@ -11,16 +12,36 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
   const reply = (name, args) => ({ calls: [{ id: name, name, arguments: args }], text: '', usage: { inputTokens: 1, outputTokens: 1 } });
   let holdTurn = width === 390, releaseTurn;
   const heldTurn = new Promise(resolve => { releaseTurn = resolve; });
-  const fixture = await startAuthoringFixture({ authoringOverride: { providerFactory: config => ({
+  const requests = [];
+  const question = 'I can add a linked review for a teammate, do that only for high-priority tasks, and keep the original open until the review is done.';
+  const narrowing = 'Daymark can’t send email. Should I prepare the linked review without email?';
+  const fixture = await startAuthoringFixture({ authoringOverride: {
+    config: { status: 'ready', provider: 'openai', model: 'fixture', reserveMicros: OPENAI_RESERVE_MICROS, maxMicros: 4_000_000 },
+    providerFactory: config => ({
     reserveMicros: config.reserveMicros, maxMicros: config.maxMicros,
     complete: async request => {
+      const input = JSON.parse(request.input);
+      requests.push(input.currentUserMessage);
       if (request.tools[0].name === 'resolve_intent') {
         if (holdTurn) { holdTurn = false; await heldTurn; }
-        return reply('resolve_intent', { intent: 'prepare', question: '' });
+        expect(request.instructions).toContain('A general question about what this workspace can do is discuss');
+        return reply('resolve_intent', { intent: input.currentUserMessage === 'What can we do here?' ? 'discuss' : 'prepare', question: '' });
       }
-      if (!request.toolResult) return reply('discover_catalog', {});
-      const { result } = JSON.parse(request.toolResult.output);
+      expect(request.toolResult).toBeUndefined();
+      expect(request.tools.some(tool => tool.name === 'discover_catalog')).toBe(false);
+      const result = input.currentContext;
       expect(result.businessContext.members.map(p => p.id).sort()).toEqual(['leo', 'maya']);
+      expect(result.businessContext.restriction).toContain('never starts another creation rule');
+      expect(request.instructions).toContain('Do not ask the user to choose before answering basic capability questions');
+      if (input.hostContext.intent === 'discuss') {
+        expect(request.tools.some(tool => tool.name === 'offer_proposal')).toBe(false);
+        return { calls: [], text: question, usage: { inputTokens: 1, outputTokens: 1 } };
+      }
+      if (input.currentUserMessage.includes('email reminders')) return reply('ask_clarification', { question: narrowing });
+      if (input.currentUserMessage === 'Yes, leave out the email.') {
+        expect(input.clarificationContext).toBe(narrowing);
+        expect(input.previousUserMessages.at(-1)).toContain('email reminders');
+      }
       return reply('offer_proposal', { proposalJson: JSON.stringify(linkedProposal()) });
     },
   }) } });
@@ -55,9 +76,9 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await selectTeam();
     await page.screenshot({ path: info.outputPath('team-tasks.png') });
     await navigate(page, 'Customizations');
-    await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+    await page.getByRole('button', { name: 'New customization', exact: true }).click();
     if (width === 390) {
-      const scope = page.getByLabel('Customization scope', { exact: true });
+      const scope = page.getByLabel('Personal or Team project', { exact: true });
       await expect(scope).toHaveValue(project.id);
       expect(await scope.evaluate(select => {
         const style = getComputedStyle(select), context = document.createElement('canvas').getContext('2d');
@@ -76,13 +97,33 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       await expect(page.getByRole('button', { name: 'Confirm this behavior' })).toHaveCount(0);
       expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(0);
     }
-    await page.getByLabel('Message to Daymark assistant').fill('Ask Leo to review new tasks and block completion until their linked review is done.');
-    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    const send = async text => {
+      await page.getByLabel('Message to Daymark assistant').fill(text);
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
+    };
+    await send('What can we do here?');
+    await expect(page.getByText(question, { exact: true })).toBeVisible();
+    await send('Ask Leo to review new tasks and block completion until their linked review is done. Also send email reminders.');
+    await expect(page.getByText(narrowing, { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Confirm this behavior' })).toHaveCount(0);
+    await send('Yes, leave out the email.');
     const proposed = page.getByRole('article', { name: 'Proposed behavior' });
     await expect(proposed.getByText('For every new main task, Daymark adds “Review the deliverable” for Leo.', { exact: true })).toBeVisible();
     await expect(proposed.getByRole('heading', { name: 'Proposed behavior for Launch team' })).toBeVisible();
     expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(0);
+    expect(requests).toHaveLength(width === 390 ? 7 : 6);
+    expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(requests.length * OPENAI_RESERVE_MICROS);
     if (width === 390) {
+      await page.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
+      await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+      const latest = page.getByRole('log', { name: 'Latest messages', exact: true });
+      await expect(latest).toContainText('Yes, leave out the email.');
+      await expect(latest).toBeInViewport();
+      await expect(page.getByText(question, { exact: true })).toBeHidden();
+      await page.getByText('Earlier messages', { exact: true }).click();
+      await expect(page.getByText(question, { exact: true })).toBeVisible();
+      await page.getByText('Earlier messages', { exact: true }).click();
+      expect(requests).toHaveLength(7);
       await page.route(`**/api/projects/${project.id}/authoring/confirm`, async route => {
         const saved = await route.fetch();
         expect(saved.status()).toBe(200);

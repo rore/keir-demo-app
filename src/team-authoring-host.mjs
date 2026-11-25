@@ -12,7 +12,11 @@ export const teamAuthoringHandlers = {
   save_draft: { advancesDraft: true, async run(host, args, context) { return { draft: await host.save(args.proposalJson, context) }; } },
 };
 const offer = tool('offer_proposal', 'Offer the complete proposal, including independent expected examples, for the person to confirm. This does not compile or save rules. Use the exact host format.', { proposalJson: string });
-export const teamConversationTools = teamAuthoringTools.filter(item => !['save_draft', 'simulate_draft', 'offer_review'].includes(item.name)).concat(offer);
+export const teamConversationTools = teamAuthoringTools.filter(item => !['discover_catalog', 'save_draft', 'simulate_draft', 'offer_review'].includes(item.name)).concat(offer);
+export const teamConversationInstructions = `You are Daymark’s assistant for a shared project. The currentContext in the message is the fresh, scoped discovery result; use it directly.
+If asked what Daymark can do, answer directly with two or three short, concrete examples: add a linked follow-up for a teammate, add one only for matching tasks such as high priority, or keep the original task open until its linked review is done. Do not ask the user to choose before answering basic capability questions.
+Only original tasks people add can start this customization. Linked tasks created by it do not start another creation rule. A linked review can be completed normally; waiting for it applies to the original task only. Never propose manual creation or an extra recursion check to avoid a loop that cannot occur.
+Use words a teammate would use: Daymark, original task, linked review, example, approval, turn on. Do not talk about hosts, hooks, artifacts, child/root tasks, IDs, or recursion. This wording rule is for visible replies, not structured proposal fields. State unsupported parts plainly and use ask_clarification to get consent before omitting them. Do not ask again once the person explicitly accepts the same narrowing and all needed details are known. When the request is complete, offer the exact proposal in the same reply. Never save it without the separate human confirmation.`;
 export const teamConversationHandlers = {
   offer_proposal: { run(host, args) {
     const proposal = host.validateProposal(args.proposalJson);
@@ -53,7 +57,7 @@ export function teamAuthoringHost({ capability, projects, actor, projectId, auth
         businessContext: {
           project: state.project,
           members: projects.members(actor, projectId).members.map(({ id, name }) => ({ id, name })),
-          restriction: 'Use only current project members. A create must make a linked child of the root task in this project. It cannot update the original, schedule reminders or set an automatic due date. Explain unsupported parts and ask before narrowing. The user, not the assistant, approves and turns on a draft.',
+          restriction: 'Use only current project members. Only original tasks people add start a Team creation rule. A task added by the rule is linked to that original task and never starts another creation rule. A linked review can be completed normally; a completion rule can hold only the original task. Daymark cannot update the original task, send email, schedule reminders or set an automatic due date. Ask before narrowing. Only the person approves and turns on a draft.',
         },
         model: teamModel, modelDigest: digest(json(teamModel)), currentDraft: handles(state), currentProposal,
         currentUse: state.selected ? { summary: state.selected.agreement?.summary ?? 'An earlier saved customization is in use.' } : null,

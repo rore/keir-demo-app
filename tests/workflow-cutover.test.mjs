@@ -39,7 +39,7 @@ test('Stage A cutover preserves old rows, historical proof, and the definitive r
   for (let attempt = 0; attempt < 2; attempt++) {
     const db = openData(path), lifecycle = createLifecycle(db);
     try {
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 18);
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 19);
       assert.deepEqual(queries.map(query => query(db, true)), prior);
       assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
       assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
@@ -113,7 +113,7 @@ test('cutover rechecks pending work, preserves revoked rows and rolls back after
   try {
     const before = comparison(reference), schema = db => db.prepare('SELECT * FROM sqlite_schema ORDER BY name').all();
     for (const boundary of ['UPDATE extension_selections', 'ALTER TABLE task_effect_receipts', 'INSERT INTO task_effect_receipts',
-      'DROP TABLE previous_workflow_receipts', 'PRAGMA user_version=18']) {
+      'DROP TABLE previous_workflow_receipts', 'PRAGMA user_version=19']) {
       writeFileSync(path, stageA);
       DatabaseSync.prototype.exec = function (sql) {
         if (sql === boundary) {

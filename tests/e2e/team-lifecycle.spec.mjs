@@ -6,12 +6,13 @@ import { createTeamRuntime, installTeamRevision } from '../../src/team-runtime.m
 import { createTeamCapability } from '../../src/team-capability.mjs';
 import { taskService } from '../../src/data.mjs';
 import { randomUUID } from 'node:crypto';
+const scope = page => page.getByLabel('Personal or Team project', { exact: true });
 
 async function setup(page, origin) {
   await page.goto(origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await navigate(page, 'Customizations');
-  const personalId = await page.getByLabel('Customization scope', { exact: true }).inputValue();
+  const personalId = await scope(page).inputValue();
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
   await page.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep my Personal draft through separate approval and activation.');
   await navigate(page, 'Tasks');
@@ -25,7 +26,7 @@ async function setup(page, origin) {
   const menu = await openWorkspaceTool(page, '.project-tools');
   await menu.getByRole('button', { name: 'Manage members', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('Existing demo person', { exact: true }).selectOption('leo');
+  await dialog.getByLabel('Teammate', { exact: true }).selectOption('leo');
   await dialog.getByRole('button', { name: 'Add member', exact: true }).click();
   await expect(dialog.getByText('Leo · Member', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
@@ -34,7 +35,7 @@ async function setup(page, origin) {
 }
 async function studio(page) {
   await navigate(page, 'Customizations');
-  await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+  await page.getByRole('button', { name: /^(Open Studio|New customization)$/ }).click();
   await expect(page.getByRole('heading', { name: 'Customization Studio', exact: true })).toBeVisible();
 }
 async function check(page, fixture, project, version) {
@@ -105,11 +106,11 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(currentUse).toContainText('On for new tasks');
       await currentUse.screenshot({ path: info.outputPath('replacement-in-use.png') });
       expect(fixture.db.prepare('SELECT * FROM team_admissions WHERE source_task_id=?').get(old.id)).toEqual(oldPin);
-      await page.getByLabel('Customization scope', { exact: true }).selectOption(personalId);
+      await scope(page).selectOption(personalId);
       await page.getByRole('button', { name: 'Return to Personal Studio', exact: true }).click();
       await expect(page.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep my Personal draft through separate approval and activation.');
       await navigate(page, 'Customizations');
-      await page.getByLabel('Customization scope', { exact: true }).selectOption(project.id);
+      await scope(page).selectOption(project.id);
       await navigate(page, 'Tasks');
       const recent = await createTask(page, 'B deliverable');
       await expect(page.getByRole('button', { name: 'Check the revised deliverable', exact: true })).toBeVisible();
@@ -121,7 +122,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole('button', { name: 'Complete Review deliverable', exact: true }).click();
       await expect(page.getByRole('button', { name: 'Review deliverable, completed', exact: true })).toBeDisabled();
       await navigate(page, 'Customizations');
-      await expect(page.getByRole('button', { name: 'Open Studio', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^(Open Studio|New customization)$/ })).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Approve this draft', exact: true })).toHaveCount(0);
       await switchPerson(page, 'maya');
       await page.getByRole('button', { name: 'Complete A deliverable', exact: true }).click();
@@ -195,7 +196,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await switchPerson(page, 'leo');
       await navigate(page, 'Customizations');
       await expect(page.getByRole('region', { name: 'Saved Team action', exact: true })).toHaveCount(0);
-      await expect(page.getByRole('button', { name: 'Open Studio', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^(Open Studio|New customization)$/ })).toHaveCount(0);
       expect(fixture.requests).toEqual([]);
     } finally { await page.close(); await fixture.close(); }
   });
@@ -234,11 +235,11 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(currentUse).toContainText('Nothing is on for new tasks.');
       await currentUse.screenshot({ path: info.outputPath('deactivated-current-use.png') });
       // Personal drafts are session-scoped; verify navigation continuity before switching people.
-      await page.getByLabel('Customization scope', { exact: true }).selectOption(personalId);
+      await scope(page).selectOption(personalId);
       await page.getByRole('button', { name: 'Return to Personal Studio', exact: true }).click();
       await expect(page.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep my Personal draft through separate approval and activation.');
       await navigate(page, 'Customizations');
-      await page.getByLabel('Customization scope', { exact: true }).selectOption(project.id);
+      await scope(page).selectOption(project.id);
       await navigate(page, 'Tasks');
       const uncovered = await createTask(page, 'New no-policy work');
       await page.getByRole('button', { name: 'Complete New no-policy work', exact: true }).click();
@@ -349,7 +350,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(posts).toBe(1);
       await switchPerson(page, 'leo');
       await navigate(page, 'Customizations');
-      await expect(page.getByRole('button', { name: 'Open Studio', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^(Open Studio|New customization)$/ })).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Review emergency revocation', exact: true })).toHaveCount(0);
       expect(fixture.requests).toEqual([]);
     } finally { await runtime?.close(); await page.close(); await fixture.close(); }

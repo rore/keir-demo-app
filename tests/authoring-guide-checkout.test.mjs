@@ -32,7 +32,7 @@ test('a forced-autocrlf checkout preserves new byte pins and the real assistant 
   }
   mkdirSync(join(checkout, 'src'));
   copyFileSync(join(root, '.gitattributes'), join(checkout, '.gitattributes'));
-  for (const file of ['authoring-agent.mjs', 'keir-authoring-agent.mjs', 'authoring-provider.mjs', 'extension-catalog.mjs']) {
+  for (const file of ['authoring-agent.mjs', 'keir-authoring-agent.mjs', 'authoring-provider.mjs', 'authoring-config.mjs', 'extension-catalog.mjs']) {
     copyFileSync(join(root, 'src', file), join(checkout, 'src', file));
   }
   git(checkout, 'init', '--quiet');

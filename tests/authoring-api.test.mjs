@@ -59,6 +59,7 @@ const rowState = db => JSON.parse(db.prepare('SELECT state FROM authoring_conver
 const dispatches = (db, id = db.prepare('SELECT id FROM authoring_conversations ORDER BY rowid DESC LIMIT 1').get().id) =>
   db.prepare('SELECT * FROM authoring_dispatches WHERE conversation_id=? ORDER BY rowid').all(id);
 const reserved = db => db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
+const fixtureEstimate = provider => provider === 'anthropic' ? 4 : 85;
 const guideFile = new URL('../vendor/customer-authoring-guide-v9.md', import.meta.url);
 function substituteGuide(t, path) {
   const open = fs.openSync;
@@ -420,7 +421,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
     assert.equal(bytes.suite, JSON.stringify(cases));
     assert.deepEqual(state.selection, selection); assert.equal(state.approved, false);
     assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
-    assert.equal(reserved(db), configFor(provider).reserveMicros * 6);
+    assert.equal(reserved(db), fixtureEstimate(provider) * 6);
     assert.equal(rowState(db).counts.compiles, 2);
     assert.equal(dispatches(db, current.id).length, 12); assert.ok(dispatches(db, current.id).every(item => item.outcome === 'SUCCESS'));
     const index = 'authoring?extensionId=' + current.extensionId;
@@ -496,7 +497,7 @@ for (const [provider, cap] of [['openai', '0.387072'], ['anthropic', '0.077824']
   assert.equal(blocked.code, 'SPEND_LIMIT'); assert.equal(fake.requests.length, 1);
   assert.equal(reserved(db), config.reserveMicros);
   hold.resolve(); assert.equal((await service.wait('maya', first.conversation.id)).status, 'IDLE');
-  assert.equal(reserved(db), config.reserveMicros);
+  assert.equal(reserved(db), fixtureEstimate(provider));
 });
 
 test('file restart never replays interrupted work; a new explicit revision conversation uses current B', async t => {
@@ -515,7 +516,7 @@ test('file restart never replays interrupted work; a new explicit revision conve
   state.dispatchOrdinal = 3; state.checkpoint = { phase: 'DISPATCH', ...state.inFlight };
   state.counts.calls++; state.usage.reservedMicros += configFor('anthropic').reserveMicros;
   state.runLedger.ordinal = 3; state.runLedger.reserved += configFor('anthropic').reserveMicros;
-  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,NULL)').run(saved.id, 'maya', saved.runId, 3, 'provider', null, configFor('anthropic').reserveMicros);
+   db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,NULL,NULL)').run(saved.id, 'maya', saved.runId, 3, 'provider', null, configFor('anthropic').reserveMicros);
   db.prepare('UPDATE authoring_budget SET reserved_micros=reserved_micros+?').run(configFor('anthropic').reserveMicros);
   db.prepare("UPDATE authoring_conversations SET status='RUNNING',state=? WHERE id=?").run(JSON.stringify(state), saved.id);
   const held = reserved(db); db.close();
@@ -536,7 +537,7 @@ test('file restart never replays interrupted work; a new explicit revision conve
   assert.equal(result.status, 'AWAITING_USER'); assert.equal(result.version, 1); assert.equal(fake.requests.length, 2);
   assert.equal(result.draft.revisionId, currentB.revisionId);
   assert.deepEqual(JSON.parse(db.prepare('SELECT state FROM authoring_conversations WHERE id=?').get(saved.id).state), retained);
-  assert.equal(reserved(db), held + configFor('anthropic').reserveMicros);
+  assert.equal(reserved(db), held + fixtureEstimate('anthropic'));
   assert.equal(fake.requests[1].body.messages.length, 1);
   assert.equal(fake.requests[1].body.messages[0].content.some(item => item.type === 'tool_result'), false);
   assert.deepEqual(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection, initialSelection);
@@ -565,7 +566,7 @@ test('cancel remains CANCELLING and blocks replacement until an ignoring compile
   assert.deepEqual(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection, initial.selection);
   assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draftVersion, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 0);
-  assert.equal(fake.requests.length, 1); assert.equal(reserved(db), configFor().reserveMicros);
+  assert.equal(fake.requests.length, 1); assert.equal(reserved(db), fixtureEstimate('openai'));
 });
 
 test('cancel retains the run until an abort-insensitive fetch and response cancellation both settle', async t => {
@@ -724,7 +725,7 @@ for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lo
   assert.deepEqual(retained.usage, beforeRestart.usage);
   assert.equal(rowState(db).counts.calls, 1); assert.equal(rowState(db).counts.tools, 1);
   assert.deepEqual(lifecycle.source('maya', initial.revisionId, initial.extension.id), initialSource);
-  assert.equal(reserved(db), held + configFor().reserveMicros);
+  assert.equal(reserved(db), held + fixtureEstimate('openai'));
   assert.deepEqual(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection, selectedA);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
 });
@@ -752,7 +753,7 @@ test(`${provider} repairs ${defect} native scenario rejection without changing o
       assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 1);
       assert.equal(db.prepare('SELECT suite FROM extension_authored').get().suite, null);
       assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
-      assert.equal(reserved(db), configFor(provider).reserveMicros * 3);
+      assert.equal(reserved(db), configFor(provider).reserveMicros + fixtureEstimate(provider) * 2);
       return { name: 'propose_scenarios', arguments: { revisionId: compiled.revisionId, cases, expectedDraftVersion: 1 } };
     }
     if (index === 3) {
@@ -774,7 +775,7 @@ test(`${provider} repairs ${defect} native scenario rejection without changing o
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   assert.deepEqual(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection, selection);
   assert.deepEqual(rowState(db).counts, { calls: 5, tools: 5, compiles: 1, simulations: 1, clarifications: 0, inputs: 1 });
-  assert.equal(fake.requests.length, 5); assert.equal(reserved(db), configFor(provider).reserveMicros * 5);
+  assert.equal(fake.requests.length, 5); assert.equal(reserved(db), fixtureEstimate(provider) * 5);
 });
 
 test('only allowlisted scenario admission diagnostics are repairable; other host failures stay terminal', async t => {
@@ -799,7 +800,7 @@ test('only allowlisted scenario admission diagnostics are repairable; other host
     assert.equal(JSON.stringify(finished).includes('private-hostile-instruction'), false);
     assert.equal(fake.requests.length, 2); assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draftVersion, 1);
     assert.equal(db.prepare('SELECT suite FROM extension_authored').get().suite, null);
-    assert.equal(reserved(db), configFor().reserveMicros * 2);
+    assert.equal(reserved(db), fixtureEstimate('openai') * 2);
   }
 });
 

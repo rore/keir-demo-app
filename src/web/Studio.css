@@ -1,16 +1,22 @@
 .read-studio { --rs-gutter: 28px; color: var(--ink); flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; font-size: 16px; line-height: 1.55; }
 .team-capability-body { flex: 1; overflow-y: auto; min-height: 0; padding: 0 12px 28px; overflow-wrap: anywhere; }
-.team-capability-body > * { max-width: 720px; margin-inline: auto; }
+.team-capability-body > * { max-width: 960px; margin-inline: auto; }
 .team-capability-body .team-examples :is(details, summary), .team-more { font-size: inherit; }
 .team-capability-body .team-examples li + li { margin-top: 12px; }
 .team-capability-body .team-more { margin-top: 24px; }
 .team-capability-body .rs-chat { padding: 12px; border: 1px solid var(--line); border-radius: 12px; margin: 0 auto 16px; }
+.team-capability-body .rs-chat > h2, .team-capability-body .team-starter { padding-inline: 8px; }
+.team-starter { color: var(--muted); font-size: 14px; margin-bottom: 8px; }
+.team-capability-body .team-transcript { overflow: visible; padding-inline: 8px; }
+.team-capability-body .team-transcript .rs-message { display: block; margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: #f0f3ed; }
+.team-capability-body .team-transcript .rs-user { background: #e2eadf; }
+.team-capability-body .team-transcript .rs-message > p + p { margin-top: 4px; }
 .team-capability-body .rs-composer { padding: 6px 0 0; border: 0; }
 .team-capability-body .team-decision { margin-top: 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
 .team-capability-body .team-decision h2 { margin: 0 0 8px; }
 .team-capability-body .team-behavior { margin-block: 12px; }
 .team-capability-body .team-project-name { color: var(--muted); font-size: 14px; }
-.team-capability .team-capability-body .rs-header { position: static; margin-bottom: 8px; }
+.team-capability .team-capability-body .rs-header { position: static; margin-bottom: 8px; padding-inline: 0; }
 .team-capability .team-scope { grid-column: 1 / -1; min-width: 0; }
 .team-capability .team-scope .customization-scope { margin: 0; }
 .team-capability .team-scope select { width: min(100%, 32rem); }

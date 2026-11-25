@@ -1,3 +1,5 @@
+import { estimateAuthoringMicros } from './authoring-config.mjs';
+
 // Native wire adapters only: all tool authority stays in the host loop.
 export class AuthoringError extends Error {
   constructor(code) { super(code); this.name = 'AuthoringError'; this.code = code; }
@@ -142,7 +144,9 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
           if (usage[key] !== undefined) { if (!integer(usage[key])) fail('PROVIDER_RESPONSE_INVALID'); inputTokens += usage[key]; }
         }
         if (!Number.isSafeInteger(inputTokens) || inputTokens > 135168 || usage.output_tokens > maxOutputTokens) fail('TOKEN_LIMIT');
-        const result = { continuation: { provider, items }, calls, text: text.join('\n'), usage: { inputTokens, outputTokens: usage.output_tokens } };
+        const estimate = estimateAuthoringMicros(provider, usage);
+        const result = { continuation: { provider, items }, calls, text: text.join('\n'), usage: { inputTokens, outputTokens: usage.output_tokens },
+          ...(integer(estimate) && estimate <= config.reserveMicros && { estimatedMicros: estimate }) };
         if (bytes(result) > 262144) fail('BYTE_LIMIT');
         return result;
       } catch (error) {

@@ -67,7 +67,7 @@ test('reopen retains exact task, customization and receipt bytes', async t => {
   db.close();
 
   db = openData(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 18);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 19);
   const { type, notnull, dflt_value } = db.prepare("SELECT * FROM pragma_table_info('tasks') WHERE name='tags'").get();
   assert.deepEqual({ type, notnull, dflt_value }, { type: 'TEXT', notnull: 1, dflt_value: "'[]'" });
   assert.deepEqual(snapshot(db), before);

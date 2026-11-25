@@ -52,7 +52,7 @@ async function fillDraft(page, values) {
 }
 async function expectDraft(page, values) {
   for (const [name, value] of Object.entries(values)) await expect(fields(page)[name]).toHaveValue(value);
-  await expect(page.locator('#edit-due-zone')).toContainText('Times use Eastern Time.');
+  await expect(page.locator('#edit-due-zone')).toContainText('Enter a local time.');
 }
 async function holdCreateResponse(page, rejection) {
   let release, observed, delivered;

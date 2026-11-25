@@ -46,7 +46,7 @@ test('project mode defaults Personal; Team creation, membership and empty select
   try {
     assert.equal(teamProjectService(reopened).members('leo', team.id).project.role, 'MEMBER');
     assert.deepEqual(reopened.prepare("SELECT * FROM extension_selections ORDER BY rowid").all(), before.extension_selections);
-    assert.equal(reopened.prepare('PRAGMA user_version').get().user_version, 18);
+    assert.equal(reopened.prepare('PRAGMA user_version').get().user_version, 19);
     assert.deepEqual(reopened.prepare('PRAGMA foreign_key_check').all(), []);
   } finally { reopened.close(); }
 });

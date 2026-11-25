@@ -14,7 +14,14 @@ const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 
 const authoringHistoryTables = ['authoring_dispatches', 'authoring_messages', 'authoring_operations'];
 const taskEffectTables = ['task_create_operations', 'task_effect_receipts', 'task_events'];
 const createdHook = 'TaskCreated';
-const schemaVersion = 18;
+const schemaVersion = 19;
+const addAuthoringSettlement = `
+  ALTER TABLE authoring_dispatches ADD COLUMN estimated_micros INTEGER
+    CHECK(estimated_micros IS NULL OR (kind='provider' AND outcome IS 'SUCCESS'
+      AND estimated_micros BETWEEN 0 AND reserved_micros));
+  ALTER TABLE authoring_budget ADD COLUMN cleared_estimated_micros INTEGER NOT NULL DEFAULT 0
+    CHECK(cleared_estimated_micros BETWEEN 0 AND reserved_micros);
+`;
 const addTaskFields = `
   ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high'));
   ALTER TABLE tasks ADD COLUMN due_at TEXT
@@ -358,7 +365,7 @@ function readBytes(path, length, position = 0) {
 }
 
 function supportedVersion(version, allowUpgrade) {
-  return version === schemaVersion || allowUpgrade && (version === 10 || version === 11 || version === 12 || version === 13 || version === 14 || version === 15 || version === 16 || version === 17);
+  return version === schemaVersion || allowUpgrade && Number.isInteger(version) && version >= 10 && version < schemaVersion;
 }
 
 function inspectDataFile(path, allowUpgrade = false) {
@@ -397,7 +404,8 @@ function assertDatabase(db, allowUpgrade = false) {
        if (version >= 15) expected.exec(addTeamProjects);
        if (version >= 16) expected.exec(addTeamCapabilities);
        if (version >= 17) expected.exec(addTeamLifecycle);
-       if (version >= 18) expected.exec(addTeamControls);
+        if (version >= 18) expected.exec(addTeamControls);
+        if (version >= 19) expected.exec(addAuthoringSettlement);
       schemaIdentities.set(version, schemaIdentity(expected));
     }
     finally { expected.close(); }
@@ -458,7 +466,8 @@ export function openData(path, { allowUpgrade = true, seed = true } = {}) {
         if (version < 15) db.exec(addTeamProjects);
         if (version < 16) db.exec(addTeamCapabilities);
         if (version < 17) db.exec(addTeamLifecycle);
-        db.exec(addTeamControls);
+        if (version < 18) db.exec(addTeamControls);
+        db.exec(addAuthoringSettlement);
         db.exec('PRAGMA user_version=' + schemaVersion);
         assertDatabase(db);
       });
@@ -473,7 +482,8 @@ export function openData(path, { allowUpgrade = true, seed = true } = {}) {
       db.exec(addTeamCapabilities);
       db.exec(addTeamLifecycle);
       db.exec(addTeamControls);
-      db.exec('INSERT INTO authoring_budget VALUES (1, 0)');
+      db.exec(addAuthoringSettlement);
+      db.exec('INSERT INTO authoring_budget (id,reserved_micros) VALUES (1, 0)');
       if (seed) seedRows(db);
       db.exec('PRAGMA user_version=' + schemaVersion);
     });
@@ -515,6 +525,8 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
       for (const table of teamTables) db.exec(`DELETE FROM ${table}`);
       for (const table of taskEffectTables) db.exec(`DELETE FROM ${table}`);
       db.exec('UPDATE extensions SET draft_revision_id=NULL');
+      db.exec(`UPDATE authoring_budget SET cleared_estimated_micros=cleared_estimated_micros+
+        (SELECT COALESCE(SUM(estimated_micros),0) FROM authoring_dispatches) WHERE id=1`);
       for (const table of authoringHistoryTables) db.exec(`DELETE FROM ${table}`);
       for (const table of lifecycleTables) db.exec(`DELETE FROM ${table}`);
       db.exec('DELETE FROM authoring_conversations');

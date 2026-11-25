@@ -67,9 +67,10 @@ function populated16(t, version = 16) {
   const db = new DatabaseSync(path);
   try {
     schema16(db);
-    if (version === 17) { db.exec(addTeamLifecycle); db.exec('PRAGMA user_version=17'); }
+    if (version >= 17) { db.exec(addTeamLifecycle); db.exec('PRAGMA user_version=17'); }
+    if (version === 18) { db.exec(addTeamControls); db.exec('PRAGMA user_version=18'); }
     db.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE; PRAGMA defer_foreign_keys=ON');
-    for (const { name, fields, rows } of version === 17 ? legacyRows17 : legacyRows) {
+    for (const { name, fields, rows } of version >= 17 ? legacyRows17 : legacyRows) {
       const insert = db.prepare(`INSERT INTO ${name}(${fields.join(',')}) VALUES (${fields.map(() => '?').join(',')})`);
       for (const row of rows) insert.run(...fields.map(field => row[field]));
     }
@@ -85,7 +86,7 @@ test('populated v16 preserves old policy/source/evidence/receipts and Personal d
   const f = populated16(t);
   let db = openData(f.path), api = createTeamCapability(db);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 18);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 19);
     assert.deepEqual(f.snapshot(db), f.before);
     assert.equal(db.prepare('SELECT generation FROM team_selections').get().generation, 0);
     assert.equal(db.prepare('SELECT source_bundle FROM team_revisions WHERE revision_id=?').get('manual-policy').source_bundle, null);
@@ -129,7 +130,7 @@ test('each lifecycle DDL and marker boundary rolls back with byte-identical popu
         throw new Error('Lifecycle migration interrupted');
       }
       const result = exec.call(this, sql);
-      if (sql === 'PRAGMA user_version=18' && boundary === statements.length) { interrupted = true; throw new Error('Lifecycle migration interrupted'); }
+      if (sql === 'PRAGMA user_version=19' && boundary === statements.length) { interrupted = true; throw new Error('Lifecycle migration interrupted'); }
       return result;
     };
     try { assert.throws(() => openData(f.path), /Lifecycle migration interrupted/); }
@@ -169,7 +170,7 @@ test('populated v17 preserves all old pins/Personal data and activation attribut
   const f = populated16(t, 17);
   let db = openData(f.path), api = createTeamCapability(db);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 18);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 19);
     assert.deepEqual(f.snapshot(db), f.before);
     assert.equal(db.prepare('SELECT count(*) AS n FROM team_controls').get().n, 0);
     assert.deepEqual(api.readOperation('maya', projectId, activation17.receipt.operationId).receipt, activation17.receipt);
@@ -202,6 +203,31 @@ test('populated v17 preserves all old pins/Personal data and activation attribut
   } finally { await api.close(); db?.close(); }
 });
 
+test('schema 19 preserves historical holds and legacy bytes; interrupted settlement migration rolls back', t => {
+  const f = populated16(t, 18), old = new DatabaseSync(f.path);
+  old.exec(`UPDATE authoring_budget SET reserved_micros=319488 WHERE id=1;
+    INSERT INTO authoring_conversations VALUES ('legacy','maya','operation',1,'run','IDLE',0,0,'{}','[]','{}',0);
+    INSERT INTO authoring_operations VALUES ('legacy','maya','operation','hash','run',1);
+    INSERT INTO authoring_dispatches VALUES ('legacy','maya','run',1,'provider',NULL,319488,'SUCCESS')`);
+  const queries = inventory(old), snapshot = db => queries.map(sql => db.prepare(sql).all()), before = snapshot(old);
+  old.close();
+  const bytes = readFileSync(f.path), exec = DatabaseSync.prototype.exec;
+  DatabaseSync.prototype.exec = function (sql) {
+    if (sql === 'PRAGMA user_version=19') throw new Error('Settlement migration interrupted');
+    return exec.call(this, sql);
+  };
+  try { assert.throws(() => openData(f.path), /Settlement migration interrupted/); }
+  finally { DatabaseSync.prototype.exec = exec; }
+  assert.deepEqual(readFileSync(f.path), bytes);
+  const db = openData(f.path);
+  try {
+    assert.deepEqual(snapshot(db), before);
+    assert.equal(db.prepare('SELECT estimated_micros FROM authoring_dispatches').get().estimated_micros, null);
+    assert.equal(db.prepare('SELECT cleared_estimated_micros FROM authoring_budget').get().cleared_estimated_micros, 0);
+    assert.throws(() => db.exec('UPDATE authoring_dispatches SET estimated_micros=1'), /immutable/);
+  } finally { db.close(); }
+});
+
 test('every schema18 control DDL and marker boundary rolls back populated v17 byte-for-byte', t => {
   const f = populated16(t, 17), original = readFileSync(f.path), exec = DatabaseSync.prototype.exec;
   const starts = [...addTeamControls.matchAll(/^ {2}(?:CREATE TABLE|CREATE TRIGGER)\b/gm)].map(m => m.index);
@@ -214,7 +240,7 @@ test('every schema18 control DDL and marker boundary rolls back populated v17 by
         throw new Error('Control migration interrupted');
       }
       const result = exec.call(this, sql);
-      if (sql === 'PRAGMA user_version=18' && boundary === statements.length) { interrupted = true; throw new Error('Control migration interrupted'); }
+      if (sql === 'PRAGMA user_version=19' && boundary === statements.length) { interrupted = true; throw new Error('Control migration interrupted'); }
       return result;
     };
     try { assert.throws(() => openData(f.path), /Control migration interrupted/); }

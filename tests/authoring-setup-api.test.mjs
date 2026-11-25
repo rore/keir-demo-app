@@ -43,7 +43,9 @@ async function appFor(t, file, authoring = {}) {
   return { app, call, login, getAuth: () => ({ ...auth }) };
 }
 function assertSafeSetup(value) {
-  keys(value, ['configuration', 'choices', 'availability']);
+  keys(value, ['configuration', 'choices', 'availability', 'allowance']);
+  keys(value.allowance, ['estimatedMicros', 'heldMicros']);
+  assert.ok(Object.values(value.allowance).every(amount => Number.isSafeInteger(amount) && amount >= 0));
   keys(value.configuration, ['status', 'code', 'source', 'provider', 'model', 'maxUsd']);
   keys(value.availability, ['available', 'code', 'provider', 'model']);
   assert.deepEqual(value.choices, [

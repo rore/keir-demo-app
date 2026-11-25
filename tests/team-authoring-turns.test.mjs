@@ -3,9 +3,101 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setImmediate } from 'node:timers/promises';
 import { createApp } from '../src/app.mjs';
-import { openData, taskService } from '../src/data.mjs';
+import { openData, resetData, taskService } from '../src/data.mjs';
 import { teamProjectService } from '../src/team-native.mjs';
 import { triageProposal } from './fixtures/team-authored.mjs';
+import { readAuthoringConfig, estimateAuthoringMicros } from '../src/authoring-config.mjs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+for (const lost of [false, true]) test(`Personal and Team settle the same durable allowance, preserving ${lost ? 'lost replies' : 'malformed usage'}`, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'daymark-settlement-')), path = join(directory, 'app.sqlite');
+  const origin = 'http://127.0.0.1:32089';
+  const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '0.4', OPENAI_API_KEY: 'synthetic-key' });
+  let db = openData(path), app, sent = 0, final = false;
+  t.after(async () => { await app?.close(); db?.close(); rmSync(directory, { recursive: true, force: true }); });
+  const team = taskService(db).createProject('maya', { name: 'Settlement team', mode: 'TEAM' });
+  const fetchImpl = async (_url, request) => {
+    sent++;
+    assert.ok(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros >= config.reserveMicros);
+    if (final && lost) throw new Error('synthetic lost reply');
+    const input = JSON.parse(request.body);
+    const resolving = input.tools[0]?.name === 'resolve_intent';
+    const output = resolving ? [{ type: 'function_call', call_id: 'intent', name: 'resolve_intent', arguments: JSON.stringify({ intent: 'discuss', question: '' }) }]
+      : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'You can review and discuss changes.' }] }];
+    const usage = { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: final ? 101 : 10, cache_write_tokens: 20 } };
+    return Response.json({ status: 'completed', output, usage });
+  };
+  async function boot() {
+    app = await createApp({ db, origin, authoring: { config, fetchImpl } });
+    const headers = { host: '127.0.0.1:32089', origin, 'content-type': 'application/json' };
+    const initial = (await app.inject({ url: '/api/session', headers })).json();
+    const login = await app.inject({ method: 'POST', url: '/api/session', headers: { ...headers, 'x-session-context': initial.contextToken }, payload: { userId: 'maya' } });
+    assert.equal(login.statusCode, 200, login.body);
+    Object.assign(headers, { cookie: `keir_demo_session=${login.cookies[0].value}`, 'x-session-context': login.json().contextToken });
+    return (url, payload) => app.inject({ method: payload ? 'POST' : 'GET', url, headers, ...(payload && { payload }) });
+  }
+  async function settled(call, url, expected) {
+    for (let i = 0; i < 50; i++) {
+      const response = await call(url);
+      assert.equal(response.statusCode, 200, response.body);
+      const result = response.json();
+      const conversation = result.conversation ?? result;
+      if (conversation?.status === expected) return conversation;
+      if (conversation?.status && !['RUNNING', 'CANCELLING'].includes(conversation.status))
+        assert.equal(conversation.status, expected, JSON.stringify({ status: conversation.status, code: conversation.code }));
+      await setImmediate();
+    }
+    assert.fail(`No ${expected} reply through ${url}`);
+  }
+  let call = await boot();
+  const base = `/api/projects/${team.id}/authoring`;
+  const personal = { conversationId: null, operationId: randomUUID(), expectedVersion: 0, expectedDraftVersion: 0, text: 'What can I do?', intent: 'auto', target: { kind: 'create' } };
+  const start = await call('/api/authoring/turn', personal);
+  assert.equal(start.statusCode, 202, start.body);
+  await settled(call, `/api/authoring/conversations/${start.json().conversation.id}`, 'IDLE');
+  const input = { operationId: randomUUID(), expectedVersion: 0, expectedDraftVersion: 0, text: 'What can we do?' };
+  assert.equal((await call(base + '/turn', input)).statusCode, 202);
+  await settled(call, base, 'IDLE');
+  assert.equal(sent, 4, 'The cap is smaller than two full holds, yet both two-request turns finish.');
+  const estimated = 4 * 312;
+  assert.deepEqual((await call('/api/authoring/setup')).json().allowance, { estimatedMicros: estimated, heldMicros: 0 });
+  await app.close(); app = null; db.close(); db = openData(path); call = await boot();
+  assert.equal((await call(base + '/turn', input)).statusCode, 202);
+  assert.equal(sent, 4);
+  assert.deepEqual((await call('/api/authoring/setup')).json().allowance, { estimatedMicros: estimated, heldMicros: 0 });
+  final = true;
+  assert.equal((await call(base + '/turn', { ...input, operationId: randomUUID(), expectedVersion: 1 })).statusCode, 202);
+  const stopped = await settled(call, base, 'BLOCKED');
+  assert.equal(stopped.code, lost ? 'PROVIDER_UNAVAILABLE' : 'SPEND_LIMIT');
+  if (!lost) assert.match(stopped.messages.at(-1).text, /Ask whoever manages assistant settings/);
+  assert.equal(sent, 5);
+  assert.deepEqual((await call('/api/authoring/setup')).json().allowance, { estimatedMicros: estimated, heldMicros: config.reserveMicros });
+  const other = taskService(db).createProject('maya', { name: 'Uncertain team', mode: 'TEAM' });
+  const blocked = await call(`/api/projects/${other.id}/authoring/turn`, { ...input, operationId: randomUUID() });
+  assert.equal(blocked.statusCode, 202);
+  await settled(call, `/api/projects/${other.id}/authoring`, 'BLOCKED');
+  assert.equal(sent, 5);
+  const row = db.prepare("SELECT outcome,estimated_micros FROM authoring_dispatches WHERE kind='provider' ORDER BY rowid DESC LIMIT 1").get();
+  assert.equal(row.outcome, lost ? 'UNKNOWN' : 'SUCCESS');
+  assert.equal(row.estimated_micros, null);
+  await app.close(); app = null; db.close(); db = null;
+  await resetData(directory, true);
+  db = openData(path); call = await boot();
+  const afterReset = (await call('/api/authoring/setup')).json().allowance;
+  assert.equal(afterReset.estimatedMicros, estimated, 'Deleting history cannot reclassify settled spend as a legacy hold.');
+  assert.ok(afterReset.heldMicros >= config.reserveMicros);
+});
+
+test('usage estimates price observed tokens without inventing cache discounts', () => {
+  assert.equal(estimateAuthoringMicros('openai', { input_tokens: 100, output_tokens: 10 }), 370);
+  assert.equal(estimateAuthoringMicros('openai', { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: 101 } }), null);
+  assert.equal(estimateAuthoringMicros('anthropic', { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 20,
+    cache_creation_input_tokens: 30, cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 10 } }), 20);
+  assert.equal(estimateAuthoringMicros('anthropic', { input_tokens: 100_000, output_tokens: 10, cache_read_input_tokens: 1 }), 50_026);
+  assert.equal(estimateAuthoringMicros('anthropic', { input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: -1 }), null);
+});
 
 test('Team discussion is durable and project-scoped, and late provider output cannot survive stop or loss of access', async t => {
   const db = openData(':memory:');

@@ -169,7 +169,7 @@ async function api<T>(
   return data;
 }
 
-function Brand({ welcome = false }: { welcome?: boolean }) {
+function Brand() {
   return (
     <span className="brand">
       <span className="brand-mark" aria-hidden="true">
@@ -177,7 +177,6 @@ function Brand({ welcome = false }: { welcome?: boolean }) {
       </span>
       <span className="brand-copy">
         <span className="brand-name">Daymark</span>
-        {welcome && <span className="brand-subline">A Keir demo</span>}
       </span>
     </span>
   );
@@ -296,8 +295,7 @@ function App() {
     return (
       <div className="welcome">
         <header className="welcome-header">
-          <Brand welcome />
-          <span className="eyebrow">THE LOCAL DEMO</span>
+          <Brand />
         </header>
         <main className="welcome-main">
           <div className="welcome-copy">
@@ -320,13 +318,7 @@ function App() {
             </div>
           </div>
           <section className="people-card" aria-labelledby="welcome-title">
-            <span className="section-number">START HERE</span>
             <h2 id="welcome-title">Choose a demo person.</h2>
-            <p>
-              Choose a fictional demo person.
-              <br />
-              Each has a space of their own.
-            </p>
             {error && (
               <div className="error" role="alert">
                 {error}
@@ -346,9 +338,6 @@ function App() {
                   <span>
                     <strong>Continue as {user.name}</strong>
                     <small>{user.description}</small>
-                  </span>
-                  <span className="arrow" aria-hidden="true">
-                    ↗
                   </span>
                 </button>
               ))}
@@ -1017,8 +1006,13 @@ function Workspace({
       if (!lifetime.current.signal.aborted) { setBusy(false); setCreateActivity(null); }
     }
   }
+  function canComplete(task: Task) {
+    return !task.creatorId || project?.role === "ADMIN" || (task.assigneeId ?? task.creatorId) === session.user.id;
+  }
   function complete(task: Task) {
     if (busy) return;
+    const instance = detailInstance.current;
+    setCreateNotice(previous => previous === "Task added." ? "" : previous);
     setCompletionHold(previous => previous?.taskId === task.id ? null : previous);
     action(
       async () => {
@@ -1034,13 +1028,13 @@ function Workspace({
       },
       ({ saved, hold }) => {
         if (!saved) {
-          setCreateNotice(previous => previous === "Task added." ? "" : previous);
           setCompletionHold({ taskId: task.id, message: hold });
           setNotice(`${task.title} stayed open on the last attempt. ${hold}`);
           return;
         }
-        updateTask(saved);
-        setNotice("A little more done.");
+         updateTask(saved);
+         if (detail?.id === saved.id && detailInstance.current === instance) setDetail(saved);
+         setNotice(`${saved.title} completed.`);
         setRecentCompletion(saved.id);
       },
     );
@@ -1079,7 +1073,7 @@ function Workspace({
               ? `${task.title}, completed`
               : `Complete ${task.title}`
           }
-          disabled={busy || task.status === "completed"}
+          disabled={busy || task.status === "completed" || !canComplete(task)}
           onClick={() => complete(task)}
         >
           <span aria-hidden="true">✓</span>
@@ -1124,7 +1118,7 @@ function Workspace({
     setNewProject(true); setRename(false); setProjectName(""); setProjectMode("PERSONAL");
   }
   const scopeControl = <div className="customization-scope">
-    <label htmlFor="customization-project">Customization scope</label>
+    <label htmlFor="customization-project">Personal or Team project</label>
     <div className="form-line">
       <select id="customization-project" value={projectId} onChange={event => {
         const selected = projects.find(item => item.id === event.target.value);
@@ -1228,17 +1222,13 @@ function Workspace({
           </div>}
           <button id="new-project" className="quiet-button project-create" disabled={!projectsReady} onClick={startProject}>New project</button>
           </aside>
-          <section className="task-surface" aria-label="Project tasks">
+          <div className="project-work">
           {(newProject || rename) && (
-            <form className="project-form" onSubmit={saveProject}>
-              {newProject && <><label htmlFor="project-mode">Who is this for?</label>
-                <select id="project-mode" value={projectMode} onChange={event => setProjectMode(event.target.value as "PERSONAL" | "TEAM")}>
-                  <option value="PERSONAL">Personal · only you</option><option value="TEAM">Team · shared tasks</option>
-                 </select><p className="muted">You can invite teammates to a Team project after creating it.</p></>}
+            <form className="project-form project-editor" onSubmit={saveProject}>
+              <h2>{rename ? "Rename project" : "New project"}</h2>
               <label htmlFor="project-name">
                 {rename ? "Project name" : "New project name"}
               </label>
-              <div className="form-line">
                 <input
                   autoFocus
                   id="project-name"
@@ -1246,8 +1236,15 @@ function Workspace({
                   onChange={(event) => setProjectName(event.target.value)}
                   required
                   maxLength={80}
-                  placeholder="Something worth making"
+                  placeholder="Name this project"
                 />
+              {newProject && <div>
+                <label htmlFor="project-mode">Who is this for?</label>
+                <select id="project-mode" value={projectMode} onChange={event => setProjectMode(event.target.value as "PERSONAL" | "TEAM")}>
+                  <option value="PERSONAL">Personal · only you</option><option value="TEAM">Team · shared tasks</option>
+                </select>{projectMode === "TEAM" && <p className="muted">You can invite teammates after creating the project.</p>}
+              </div>}
+              <div className="form-line">
                 <button className="primary" disabled={busy}>
                   Save project
                 </button>
@@ -1265,6 +1262,7 @@ function Workspace({
               </div>
             </form>
           )}
+          <section className="task-surface" aria-label="Project tasks">
           {error && (
             <div className="error" role="alert">
               {error}
@@ -1302,6 +1300,7 @@ function Workspace({
           {project && (
             <form className="task-search-form" onSubmit={event => {
               event.preventDefault();
+              setCreateNotice(previous => previous === "Task added." ? "" : previous);
               closeTaskFilter(event.currentTarget);
               const next = { q: filters.q.trim(), tag: filters.tag.trim() };
               if (next.q || next.tag) void fetchSearch(next, "submit");
@@ -1309,27 +1308,31 @@ function Workspace({
               <label>
                  <span className="sr-only">Search tasks</span>
                 <input id="task-search-text" type="search" value={filters.q} maxLength={120} placeholder="Find a task…"
-                  onChange={event => setFilters({ ...filters, q: event.target.value })} />
+                  onChange={event => {
+                    setCreateNotice(previous => previous === "Task added." ? "" : previous);
+                    const q = event.target.value;
+                    if (!q && !filters.tag && search) resetSearch();
+                    else setFilters({ ...filters, q });
+                  }} />
               </label>
               <details className="tool-menu task-filter" onKeyDown={dismissTool}>
-              <summary>Filter <span aria-hidden="true">⌄</span>{filters.tag && <span className="sr-only">Tag filter entered</span>}</summary>
+              <summary onClick={() => setCreateNotice(previous => previous === "Task added." ? "" : previous)}>Filter <span aria-hidden="true">⌄</span>{filters.tag && <span className="sr-only">Tag filter entered</span>}</summary>
               <div className="tool-menu-content">
               <label>
                 Filter by tag
                 <input type="text" value={filters.tag}
-                  onChange={event => setFilters({ ...filters, tag: event.target.value })} />
+                  placeholder="Enter an exact tag" onChange={event => setFilters({ ...filters, tag: event.target.value })} />
               </label>
               </div>
               </details>
               <div className="task-search-actions">
-                <button className="primary" disabled={!filters.q.trim() && !filters.tag.trim()}>Search</button>
-                <button type="button" className="quiet-button" disabled={!search && !filters.q && !filters.tag}
+                <button className="quiet-button" aria-label="Search" disabled={!filters.q.trim() && !filters.tag.trim()}><span aria-hidden="true">⌕</span></button>
+                {search && <button type="button" className="quiet-button" aria-label="Clear"
                   onClick={event => { closeTaskFilter(event.currentTarget.form); resetSearch(); document.getElementById("task-search-text")?.focus(); }}>
-                  Clear
-                </button>
+                  <span aria-hidden="true">×</span>
+                </button>}
               </div>
-              {search && appliedFilters.current && <p className="task-applied-filters">Applied filters: {[appliedFilters.current.q && `Text “${appliedFilters.current.q}”`,
-                appliedFilters.current.tag && `Tag “${appliedFilters.current.tag}”`].filter(Boolean).join(" · ")}</p>}
+              {search && appliedFilters.current?.tag && <p className="task-applied-filters">Tagged “{appliedFilters.current.tag}”</p>}
             </form>
           )}
            <div className="task-content" role="region" aria-label="Task list">
@@ -1387,6 +1390,7 @@ function Workspace({
           </div>
           </section>
           </div>
+          </div>
         </main>
         {destination === "customizations" && (!projectsReady ? <CustomizationsPage><p role="status">Checking project access…</p></CustomizationsPage>
           : unavailableTeam ? <CustomizationsPage scopeControl={scopeControl}><p role="alert">That Team project is not available. Choose an accessible scope.</p></CustomizationsPage>
@@ -1441,7 +1445,8 @@ function Workspace({
             draft={draft}
             setDraft={next => { draftVersion.current++; setDraft(next); }}
             manage={() => void openStudio("detail")}
-            busy={busy}
+             busy={busy}
+             complete={canComplete(detail) ? () => complete(detail) : undefined}
              error={error}
              hold={detail.status === "open" && completionHold?.taskId === detail.id ? completionHold.message : undefined}
             close={closeDetail}
@@ -1500,15 +1505,11 @@ function Workspace({
   );
 }
 
-function timeZoneLabel(timeZone: string) {
-  return new Intl.DateTimeFormat(undefined, { timeZone, timeZoneName: "longGeneric" }).formatToParts()
-    .find(part => part.type === "timeZoneName")?.value ?? timeZone;
-}
-
 function TeamCustomizations({ project, request, scopeControl, open }: {
   project: Project; request: Parameters<typeof TeamMembers>[0]["request"]; scopeControl: ReactNode; open: () => void;
 }) {
   const [access, setAccess] = useState<"ADMIN" | "MEMBER" | "unavailable" | null>(null);
+  const [saved, setSaved] = useState<{ draft: boolean; discussion: boolean; inUse: boolean | null } | null>(null);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     let controller: AbortController;
@@ -1516,24 +1517,36 @@ function TeamCustomizations({ project, request, scopeControl, open }: {
       controller?.abort();
       controller = new AbortController();
       const { signal } = controller;
-      setAccess(null);
-      void request<Members>(`projects/${project.id}/members`, "GET", undefined, signal).then(({ project: current }) => {
+      setAccess(null); setSaved(null);
+      void request<Members>(`projects/${project.id}/members`, "GET", undefined, signal).then(async ({ project: current }) => {
         if (signal.aborted) return;
-        setAccess(current.id === project.id && current.mode === "TEAM" && (current.role === "ADMIN" || current.role === "MEMBER") ? current.role : "unavailable");
+        if (current.id !== project.id || current.mode !== "TEAM" || !["ADMIN", "MEMBER"].includes(current.role ?? "")) return setAccess("unavailable");
+        if (current.role === "MEMBER") return setAccess("MEMBER");
+        const [state, thread] = await Promise.all([
+          request<{ draft: unknown; selection: { available: boolean; revisionId: string | null } }>(`projects/${project.id}/capability`, "GET", undefined, signal),
+          request<{ conversation: unknown }>(`projects/${project.id}/authoring`, "GET", undefined, signal),
+        ]);
+        if (signal.aborted) return;
+        setSaved({ draft: !!state.draft, discussion: !!thread.conversation, inUse: state.selection.available ? !!state.selection.revisionId : null });
+        setAccess("ADMIN");
       }).catch(() => { if (!signal.aborted) setAccess("unavailable"); });
     };
     refresh();
     window.addEventListener("focus", refresh);
     return () => { controller.abort(); window.removeEventListener("focus", refresh); };
   }, [project.id, retry]);
+  const empty = saved?.inUse === false && !saved.draft && !saved.discussion;
   return <CustomizationsPage scopeControl={scopeControl}
-    action={<button className="primary customization-start" disabled={access !== "ADMIN"} onClick={open}>Open Studio</button>}>
+    action={access === "ADMIN" && <button className="primary customization-start" onClick={open}>{empty ? "New customization" : "Open Studio"}</button>}>
     <section className="customization-list" aria-label="Team customization access">
       {access === "unavailable" ? <p className="customization-empty" role="alert">This Team project could not be accessed.{" "}
         <button className="quiet-button" onClick={() => setRetry(value => value + 1)}>Check access again</button></p>
-        : <p className="customization-empty" role="status">{access === "ADMIN" ? `Start or continue a customization for ${project.name}. A customization that’s turned on can affect everyone’s new tasks in this project.`
-          : access === "MEMBER" ? "You can work on Team tasks. Only a project admin can edit, approve or turn on this project’s customization."
-            : "Checking project access…"}</p>}
+        : <div className="customization-empty" role="status">{access === "ADMIN" ? <>
+          <h2>{empty ? "No Team customizations yet" : saved?.inUse ? "A customization is on" : saved?.inUse === null ? "Couldn’t check what’s on" : "No customization is on"}</h2>
+          <p>{empty ? `Start one to change how tasks work in ${project.name}.` : `Open Studio to review or continue saved work in ${project.name}.`}</p>
+          <p>A customization that’s on can affect everyone’s new tasks in this project.</p>
+        </> : access === "MEMBER" ? <><h2>Team customizations</h2><p>Only project admins can open Studio and see or change this project’s customization. You can still work on Team tasks.</p></>
+            : <p>Checking project access…</p>}</div>}
     </section>
   </CustomizationsPage>;
 }
@@ -1594,10 +1607,9 @@ function TeamMembers({ project, users, request, close }: {
     <div className="detail-heading"><h2 id="team-members-title">{project.name} · Team</h2>
       <button type="button" className="icon-button" aria-label="Close members" onClick={close}>×</button></div>
     <div className="member-content">{error ? <p className="error" role="alert">{error}</p> : !state ? <p role="status">Checking current membership…</p> : <>
-      <p>{state.project.role === "ADMIN" ? "Project admin" : "Member"} · Current access</p>
       <ul>{state.members.map(member => <li key={member.id}>{member.name} · {member.role === "ADMIN" ? "Admin" : "Member"}</li>)}</ul>
       {state.project.role === "ADMIN" && <form onSubmit={add}>
-        <label htmlFor="existing-member">Existing demo person</label>
+        <label htmlFor="existing-member">Teammate</label>
         <select id="existing-member" value={userId} onChange={event => setUserId(event.target.value)} required>
           <option value="">Choose a person</option>
           {users.filter(user => !state.members.some(member => member.id === user.id)).map(user => <option key={user.id} value={user.id}>{user.name}</option>)}
@@ -1605,7 +1617,7 @@ function TeamMembers({ project, users, request, close }: {
       </form>}
       {state.project.role === "MEMBER" && <p className="muted">Only a project admin can add members or manage Team capabilities.</p>}
     </>}</div>
-    <div className="detail-actions"><button type="button" className="quiet-button" disabled={busy} onClick={() => void refresh()}>Refresh access</button>
+    <div className="detail-actions">{error && <button type="button" className="quiet-button" disabled={busy} onClick={() => void refresh()}>Check access again</button>}
       <button type="button" className="quiet-button" onClick={close}>Done</button></div>
   </dialog>;
 }
@@ -1726,6 +1738,7 @@ function TaskDetail({
   visible,
   reactionConfirmed,
   openCreated,
+  complete,
   save,
 }: {
   task: Task;
@@ -1740,6 +1753,7 @@ function TaskDetail({
   visible: boolean;
   reactionConfirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
+  complete?: () => void;
   save: (dueAt?: string | null) => void;
 }) {
   const [parent, setParent] = useState<Task | null>(null);
@@ -1765,7 +1779,7 @@ function TaskDetail({
   }, [task.parentTaskId, task.originEventId, task.projectId]);
   const atTop = !!task.creatorId && !task.parentTaskId;
   const created = <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation bound={setCreationBound} />;
-  return <TaskForm task={task} draft={draft} setDraft={setDraft} busy={busy} error={error} close={close} save={save}
+  return <TaskForm task={task} draft={draft} setDraft={setDraft} busy={busy} error={error} close={close} save={save} complete={complete}
     recovery={<>
       {hold && <section aria-label="Last completion attempt" className="task-completion-hold">
         <p role="status"><strong>Not completed on the last attempt</strong><br />The rule said: “{hold}”</p>
@@ -1784,7 +1798,7 @@ function TaskDetail({
   </TaskForm>;
 }
 
-function TaskForm({ task, draft, setDraft, busy, error, close, save, children, recovery, submitBlocked = false, closeLabel = "Cancel", closeNotice }: {
+function TaskForm({ task, draft, setDraft, busy, error, close, save, complete, children, recovery, submitBlocked = false, closeLabel = "Cancel", closeNotice }: {
   task?: Task;
   draft: TaskDraft;
   setDraft: (draft: TaskDraft) => void;
@@ -1792,6 +1806,7 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
   error: string;
   close: () => void;
   save: (dueAt?: string | null) => void;
+  complete?: () => void;
   children?: ReactNode;
   recovery?: ReactNode;
   submitBlocked?: boolean;
@@ -1858,19 +1873,19 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
         value={notes}
         onChange={(event) => setDraft({ ...draft, notes: event.target.value })}
         maxLength={4000}
-        placeholder="A thought, a reference, a place to begin…"
+        placeholder="Add a note"
         rows={7}
       />
       <label htmlFor="edit-tags">Tags</label>
       <input id="edit-tags" value={draft.tags} aria-describedby="edit-tags-hint"
         onChange={event => setDraft({ ...draft, tags: event.target.value })} />
-      <p id="edit-tags-hint" className="muted tag-hint">Separate tags with commas. Use up to 8 tags, each up to 32 characters.</p>
+      <p id="edit-tags-hint" className="muted tag-hint">Separate tags with commas.</p>
       </div>
       <aside className="task-form-meta" aria-label="Task metadata">
       {task && <p className={`status-label ${task.status}`}>
         {task.status === "completed" ? "✓ Completed" : "○ Open"}
       </p>}
-      {task?.assigneeName && <p>Assigned to {task.assigneeName}</p>}
+      {task?.creatorId && <p className="tag-hint">{task.assigneeName ? `Assigned to ${task.assigneeName}` : "Unassigned"}</p>}
       <label htmlFor="edit-priority">Priority</label>
       <select id="edit-priority" value={draft.priority}
         onChange={event => setDraft({ ...draft, priority: event.target.value as Task["priority"] })}>
@@ -1879,11 +1894,11 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
         <option value="high">High</option>
       </select>
       <label htmlFor="edit-due-time">Due time <span className="muted">(optional)</span></label>
-      <input id="edit-due-time" ref={dueTimeInput} type="datetime-local" min="0001-01-01T00:00" max="9999-12-31T23:59:59.999" step="0.001"
+      <input id="edit-due-time" ref={dueTimeInput} type="datetime-local" min="0001-01-01T00:00" max="9999-12-31T23:59:59.999" step="any"
         value={draft.dueTime} aria-invalid={dueTimeError ? true : undefined}
         aria-describedby={dueTimeError ? "edit-due-zone edit-due-error" : "edit-due-zone"}
         onChange={event => editDueTime(event.target.value)} />
-      <p id="edit-due-zone" className="muted tag-hint">Times use {timeZoneLabel(draft.dueZone)}.
+      <p id="edit-due-zone" className="muted tag-hint">Enter a local time.
         {task?.dueAt && !draft.dueTimeEdited && <> Saved time: {formatDueTime(task.dueAt, draft.dueZone)}.</>}
       </p>
       {task?.dueAt && !draft.dueTime && !draft.dueTimeEdited &&
@@ -1911,6 +1926,7 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
         <button type="button" className="quiet-button" onClick={close}>
           {closeLabel}
         </button>
+        {task?.status === "open" && complete && <button type="button" className="quiet-button" disabled={busy} onClick={complete}>Complete task</button>}
         <button className="primary" disabled={busy || submitBlocked}>
           {task ? "Save changes" : "Add task"}
         </button>

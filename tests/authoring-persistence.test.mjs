@@ -63,8 +63,8 @@ test('current schema retains ownership, identity, statuses, integer bounds and b
     assert.throws(() => db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(value));
   }
   for (const value of [0, 9007199254740991]) db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(value);
-  assert.throws(() => db.prepare('INSERT INTO authoring_budget VALUES (1, 0)').run(), /UNIQUE/);
-  assert.throws(() => db.prepare('INSERT INTO authoring_budget VALUES (2, 0)').run(), /CHECK/);
+  assert.throws(() => db.prepare('INSERT INTO authoring_budget (id,reserved_micros) VALUES (1, 0)').run(), /UNIQUE/);
+  assert.throws(() => db.prepare('INSERT INTO authoring_budget (id,reserved_micros) VALUES (2, 0)').run(), /CHECK/);
   db.close();
 });
 
@@ -75,7 +75,7 @@ test('reset verifies every authoring table, backs up historical receipts and pre
   insertConversation(db, { id: 'conversation-2', creation_operation_id: 'operation-2', status: 'INTERRUPTED' });
   db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run('conversation-1', 'maya', 1, 'message-1', '{"id":"message-1","receipt":{"evidenceId":"proof"}}');
   db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run('conversation-1', 'maya', 'operation-1', 'exact-body-hash', 'run-1', 1);
-  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run('conversation-1', 'maya', 'run-1', 1, 'provider', null, 999, 'UNKNOWN');
+  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?,NULL)').run('conversation-1', 'maya', 'run-1', 1, 'provider', null, 999, 'UNKNOWN');
   db.prepare('UPDATE authoring_budget SET reserved_micros=?').run(987654321);
   db.prepare("UPDATE tasks SET notes=? WHERE owner_id='maya'").run('original\u0000native notes');
   const original = snapshot(db, allDataTables);
@@ -102,7 +102,7 @@ test('reset verifies every authoring table, backs up historical receipts and pre
     db = openData(path);
     assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 0);
     for (const table of authoringHistoryTables) assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get().n, 0);
-    assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 987654321 });
+    assert.deepEqual({ ...db.prepare('SELECT * FROM authoring_budget').get() }, { id: 1, reserved_micros: 987654321, cleared_estimated_micros: 0 });
     assert.equal(db.prepare('SELECT count(*) n FROM tasks').get().n, 9);
     assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
     db.close();
@@ -116,7 +116,7 @@ test('failed reset rolls conversation deletion back without releasing reserved b
   insertConversation(db);
   db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run('conversation-1', 'maya', 1, 'message-1', '{"id":"message-1","receipt":{"evidenceId":"proof"}}');
   db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run('conversation-1', 'maya', 'operation-1', 'exact-body-hash', 'run-1', 1);
-  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run('conversation-1', 'maya', 'run-1', 1, 'provider', null, 2345, 'UNKNOWN');
+  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?,NULL)').run('conversation-1', 'maya', 'run-1', 1, 'provider', null, 2345, 'UNKNOWN');
   db.exec('UPDATE authoring_budget SET reserved_micros=2345');
   const original = snapshot(db, allDataTables);
   db.close();
@@ -133,7 +133,7 @@ test('current schema enforces owner/run lineage and immutable creation time and 
   const { path } = fixture(t), db = openData(path);
   insertConversation(db, { id: 'conversation', created_at: 1, run_id: 'run' });
   db.exec("INSERT INTO authoring_operations VALUES ('conversation','maya','op','hash','run',1)");
-  db.exec("INSERT INTO authoring_dispatches VALUES ('conversation','maya','run',1,'provider',NULL,99,NULL)");
+  db.exec("INSERT INTO authoring_dispatches VALUES ('conversation','maya','run',1,'provider',NULL,99,NULL,NULL)");
   db.close();
   const reopened = openData(path);
   assert.throws(() => reopened.exec('UPDATE authoring_conversations SET created_at=2'), /immutable/);
@@ -141,12 +141,13 @@ test('current schema enforces owner/run lineage and immutable creation time and 
   for (const sql of ["UPDATE authoring_dispatches SET reserved_micros=0", "UPDATE authoring_dispatches SET outcome='invalid'",
     "INSERT INTO authoring_messages VALUES ('conversation','leo',1,'foreign','{}')",
     "INSERT INTO authoring_operations VALUES ('conversation','leo','foreign','hash','foreign-run',1)",
-    "INSERT INTO authoring_dispatches VALUES ('conversation','leo','run',2,'tool','call',0,NULL)",
-    "INSERT INTO authoring_dispatches VALUES ('conversation','maya','missing-run',2,'tool','call',0,NULL)"])
+    "INSERT INTO authoring_dispatches VALUES ('conversation','leo','run',2,'tool','call',0,NULL,NULL)",
+    "INSERT INTO authoring_dispatches VALUES ('conversation','maya','missing-run',2,'tool','call',0,NULL,NULL)"])
     assert.throws(() => reopened.exec(sql));
   reopened.exec("UPDATE authoring_dispatches SET outcome='UNKNOWN'");
   assert.throws(() => reopened.exec("UPDATE authoring_dispatches SET outcome='SUCCESS'"), /immutable/);
   assert.throws(() => reopened.exec('UPDATE authoring_dispatches SET reserved_micros=0'), /immutable/);
   assert.equal(reopened.prepare('SELECT reserved_micros FROM authoring_dispatches').get().reserved_micros, 99);
+  assert.throws(() => reopened.exec('UPDATE authoring_dispatches SET estimated_micros=1'), /immutable/);
   assert.deepEqual(reopened.prepare('PRAGMA foreign_key_check').all(), []); reopened.close();
 });

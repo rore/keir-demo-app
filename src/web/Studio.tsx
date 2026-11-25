@@ -131,6 +131,7 @@ export function pendingRequests(ownerId: string) {
   return entries;
 }
 type Setup = {
+  allowance?: { estimatedMicros: number; heldMicros: number };
   configuration: { status: string; code: string | null; source: "local" | "environment" | "none"; provider: string | null; model: string | null; maxUsd: string | null };
   choices: { provider: string; model: string }[];
   availability: Authoring["availability"];
@@ -146,7 +147,7 @@ function authoringReason(code: string | null | undefined) {
   if (!code) return "";
   if (code === "LEGACY_CUSTOMIZATION_RETIRED") return "This earlier customization is retired. Its saved work is read-only. You can start a new customization.";
   if (["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(code)) return "AI authoring is not configured.";
-  if (code === "SPEND_LIMIT") return "The shared authoring allowance is exhausted. Saved work and review remain available.";
+  if (code === "SPEND_LIMIT") return "Daymark’s assistant has reached the spending limit. You can still review saved work and use Tasks. Ask whoever manages assistant settings about the allowance before sending again.";
   if (["BUDGET_EXHAUSTED", "EXPIRED"].includes(code)) return "An earlier authoring policy stopped this saved run. Your discussion, proposal and examples are kept. You can explicitly continue here under the current settings and shared allowance.";
   if (code === "PROVIDER_RATE_LIMIT") return "Your AI provider reached a request or account limit. Your discussion and any saved draft are kept. Check provider usage or explicitly try again later. Nothing is retried automatically.";
   if (code === "CONTEXT_LIMIT") return "This request could not fit safely within the authoring limits. Saved work is kept. Inspect its checks or send a smaller request; nothing is sent automatically.";
@@ -383,6 +384,8 @@ export function AssistantSetup({ request, close, saved, beginSave, team = false 
         {setup && <>
           <p>Current settings: {setup.configuration.provider ? setup.configuration.provider + " / " + setup.configuration.model + " · "
             + (setup.configuration.maxUsd === null ? "No Daymark spending cap" : setup.configuration.maxUsd + " USD total") : "Not configured"}. Saving a key does not establish that it works.</p>
+          {setup.allowance && <p>Estimated spend: ${(setup.allowance.estimatedMicros / 1_000_000).toFixed(6)}.
+            {" "}Allowance held for pending or unverified usage: ${(setup.allowance.heldMicros / 1_000_000).toFixed(6)}. These amounts are not an invoice.</p>}
           <label htmlFor="assistant-provider">Service</label>
           <select id="assistant-provider" value={provider} disabled={waiting} aria-invalid={invalid === "provider"} onChange={event => {
             setProvider(event.target.value); setModel(setup.choices.find(item => item.provider === event.target.value)?.model ?? ""); if (key.current) key.current.value = "";

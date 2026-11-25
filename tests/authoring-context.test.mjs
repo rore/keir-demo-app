@@ -95,7 +95,7 @@ for (const definitionId of [undefined, 'daymark.task-completed/1']) test(`task a
   else saved.definitionId = definitionId;
   saved.continuation = { opaque: 'legacy-private' };
   db.prepare("UPDATE authoring_conversations SET state=?,status='RUNNING' WHERE id=?").run(JSON.stringify(saved), current.id);
-  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run(current.id, 'maya', current.runId, 99, 'provider', null, 1, 'UNKNOWN');
+   db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?,NULL)').run(current.id, 'maya', current.runId, 99, 'provider', null, 1, 'UNKNOWN');
   const before = authoringStorage(db), count = requests;
   service = open();
   assert.deepEqual(authoringStorage(db), before, 'startup does not rewrite retired continuation, receipts or accounting');

@@ -21,7 +21,7 @@ const safeMessage = code => ({
   LEGACY_CUSTOMIZATION_RETIRED: 'This earlier customization is read-only. Its saved discussion and results are kept. Start a new customization to change task behavior.',
   AI_CONFIG_INVALID: 'The operator AI configuration needs attention.', AI_CREDENTIALS_MISSING: 'The operator AI credentials are unavailable.',
   AUTHORING_GUIDE_UNAVAILABLE: 'The assistant guide is unavailable. Native tasks and saved review remain available.',
-  SPEND_LIMIT: 'The operator AI allowance has been reached.', AI_BUSY: 'Another authoring request is still settling. Check its saved state.',
+  SPEND_LIMIT: 'Daymark’s assistant has reached the spending limit. Your work is saved. You can review saved changes and keep using Tasks. Ask whoever manages assistant settings about the allowance before sending another request.', AI_BUSY: 'Another authoring request is still settling. Check its saved state.',
   PROVIDER_RATE_LIMIT: 'The AI service refused this request because of a request or account limit. Any saved proposal and examples are kept. Check the provider usage and limits before retrying manually.',
   STALE_DRAFT: 'The draft changed. Read saved state before continuing.', STALE_CONVERSATION: 'The conversation changed. Read saved state before continuing.',
   RUN_INTERRUPTED: 'The previous run was interrupted. Check the current draft before explicitly continuing.',
@@ -59,20 +59,40 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
     const value = db.prepare('SELECT reserved_micros FROM authoring_budget WHERE id=1').get()?.reserved_micros;
     if (!integer(value)) stop('CHECKPOINT_UNCERTAIN'); return value;
   };
-  const effectiveHeld = () => {
+  const allowance = () => {
     const raw = held();
-    const { tracked, legacy } = db.prepare(`SELECT COALESCE(SUM(reserved_micros),0) AS tracked,
-      COALESCE(SUM(CASE WHEN reserved_micros=? THEN 1 ELSE 0 END),0) AS legacy
+    const cleared = db.prepare('SELECT cleared_estimated_micros FROM authoring_budget WHERE id=1').get()?.cleared_estimated_micros;
+    const { tracked, legacy, estimated } = db.prepare(`SELECT COALESCE(SUM(coalesce(estimated_micros,reserved_micros)),0) AS tracked,
+      COALESCE(SUM(estimated_micros),0) AS estimated,
+      COALESCE(SUM(CASE WHEN estimated_micros IS NULL AND reserved_micros=? THEN 1 ELSE 0 END),0) AS legacy
       FROM authoring_dispatches WHERE kind='provider'`).get(LEGACY_OPENAI_RESERVE_MICROS);
-    if (!integer(tracked) || tracked > raw || !integer(legacy)) stop('CHECKPOINT_UNCERTAIN');
+    if (!integer(tracked) || !integer(cleared) || tracked > raw - cleared || !integer(legacy)) stop('CHECKPOINT_UNCERTAIN');
     const old = BigInt(LEGACY_OPENAI_RESERVE_MICROS), delta = BigInt(OPENAI_RESERVE_MICROS - LEGACY_OPENAI_RESERVE_MICROS);
-    // Reset keeps credit held but removes dispatch history. Treat unaccounted holds as
+    // Reset keeps spend and holds but removes dispatch history. Treat unaccounted holds as
     // legacy OpenAI at worst, without rewriting immutable receipts or refunding credit.
-    const untracked = BigInt(raw - tracked);
+    const untracked = BigInt(raw - tracked - cleared);
     const total = BigInt(raw) + BigInt(legacy) * delta + (untracked * delta + old - 1n) / old;
     if (total > BigInt(Number.MAX_SAFE_INTEGER)) stop('CHECKPOINT_UNCERTAIN');
-    return Number(total);
+    return { estimatedMicros: estimated + cleared, heldMicros: Number(total) - estimated - cleared };
   };
+  const effectiveHeld = () => { const { estimatedMicros, heldMicros } = allowance(); return estimatedMicros + heldMicros; };
+  // Called inside the live checkpoint transaction. The original hold and
+  // identity remain immutable; only the first definitive result can settle.
+  function recordDispatchResult(id, owner, run, cp) {
+    const item = db.prepare('SELECT kind,reserved_micros,outcome FROM authoring_dispatches WHERE conversation_id=? AND owner_id=? AND run_id=? AND ordinal=?')
+      .get(id, owner, run, cp.ordinal);
+    if (!item || item.outcome !== null || item.kind !== cp.kind || !['SUCCESS', 'REJECTED', 'UNKNOWN'].includes(cp.outcome)) stop('HOST_RESULT_INVALID');
+    const estimate = cp.kind === 'provider' && cp.outcome === 'SUCCESS' && integer(cp.estimatedMicros) && cp.estimatedMicros <= item.reserved_micros
+      ? cp.estimatedMicros : null;
+    if (estimate !== null) {
+      const next = held() - (item.reserved_micros - estimate);
+      if (!integer(next)) stop('CHECKPOINT_UNCERTAIN');
+      db.prepare('UPDATE authoring_budget SET reserved_micros=? WHERE id=1').run(next);
+    }
+    if (db.prepare(`UPDATE authoring_dispatches SET outcome=?,estimated_micros=?
+      WHERE conversation_id=? AND owner_id=? AND run_id=? AND ordinal=? AND outcome IS NULL`)
+      .run(cp.outcome, estimate, id, owner, run, cp.ordinal).changes !== 1) stop('CHECKPOINT_UNCERTAIN');
+  }
   const decode = row => {
     try { return { state: JSON.parse(row.state), operations: JSON.parse(row.operations), view: JSON.parse(row.view) }; }
     catch { throw error(503, 'HOST_RESULT_INVALID'); }
@@ -358,15 +378,9 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
             || cp.kind !== prior.state.inFlight.kind || cp.callId !== prior.state.inFlight.callId)) stop('HOST_RESULT_INVALID');
         const nextHeld = held() + delta;
         if (!integer(nextHeld) || effectiveHeld() + delta > config.maxMicros) stop('SPEND_LIMIT');
-        if (cp.phase === 'DISPATCH') db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,NULL)')
+         if (cp.phase === 'DISPATCH') db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,NULL,NULL)')
           .run(ctx.id, ctx.owner, ctx.runId, cp.ordinal, cp.kind, cp.callId ?? null, delta);
-        if (cp.phase === 'RESULT') {
-          const item = db.prepare('SELECT outcome FROM authoring_dispatches WHERE conversation_id=? AND owner_id=? AND run_id=? AND ordinal=?')
-            .get(ctx.id, ctx.owner, ctx.runId, cp.ordinal);
-          if (!item || item.outcome || !['SUCCESS', 'REJECTED', 'UNKNOWN'].includes(cp.outcome)) stop('HOST_RESULT_INVALID'); item.outcome = cp.outcome;
-          db.prepare('UPDATE authoring_dispatches SET outcome=? WHERE conversation_id=? AND owner_id=? AND run_id=? AND ordinal=?')
-            .run(cp.outcome, ctx.id, ctx.owner, ctx.runId, cp.ordinal);
-        }
+         if (cp.phase === 'RESULT') recordDispatchResult(ctx.id, ctx.owner, ctx.runId, cp);
         const saved = { ...state, transport: { provider: config.provider, model: config.model, policy: resourcePolicy,
           settingsRevision: config.settingsRevision ?? null },
           runLedger: { base: ledger.base, reserved: additional, ordinal: cp.phase === 'DISPATCH' ? cp.ordinal : ledger.ordinal } };
@@ -388,7 +402,7 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
           state: encode(saved), operations: encode(ops), view: encode(view) };
         if (length(dto(projection, false)) > 131072 - 1024) stop('BYTE_LIMIT');
         checkpointFault({ stage: 'beforeCommit', phase: cp.phase, runId: ctx.runId, ordinal: cp.ordinal });
-        db.prepare('UPDATE authoring_budget SET reserved_micros=? WHERE id=1').run(nextHeld);
+         if (delta) db.prepare('UPDATE authoring_budget SET reserved_micros=? WHERE id=1').run(nextHeld);
         if (!row) db.prepare('INSERT INTO authoring_conversations (id,owner_id,creation_operation_id,version,run_id,status,cancel_requested,updated_at,state,operations,view,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(ctx.id, ctx.owner, ctx.input.operationId,
           state.version, ctx.runId, status, 0, Date.now(), encode(saved), encode(ops), encode(view), state.createdAt);
         else db.prepare('UPDATE authoring_conversations SET version=?,run_id=?,status=?,cancel_requested=0,updated_at=?,state=?,operations=?,view=? WHERE id=? AND owner_id=?')
@@ -695,14 +709,14 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
     },
     availability: ready => availability(ready, true),
     provider: () => providerFactory(config),
-    budget: () => Math.max(0, config.maxMicros - effectiveHeld()),
+    budget: () => Math.max(0, config.maxMicros - effectiveHeld()), recordDispatchResult,
     reserve(micros) {
       if (!integer(micros) || micros !== config.reserveMicros || effectiveHeld() + micros > config.maxMicros) stop('SPEND_LIMIT');
       db.prepare('UPDATE authoring_budget SET reserved_micros=? WHERE id=1').run(held() + micros);
     },
   });
   return {
-    list, read, turn, cancel, availability, messages: messagePage, transcript, team,
+    list, read, turn, cancel, availability, allowance, messages: messagePage, transcript, team,
     assertItemIdle(owner, extensionId) {
       if ([...live.values()].some(ctx => ctx.owner === owner && ctx.extensionId === extensionId)) {
         const failure = new AppError(409, 'Open this customization and use Stop, then wait for authoring to settle before deleting it.');

@@ -97,7 +97,7 @@ function diagnostics(value) {
 
 // State, budget and synchronous checkpoints are host-owned; current is the live owner/session/run fence.
 export async function runAuthoringTurn({ provider, host, context, state, input, priorUserMessages, signal,
-  instructions = loadAuthoringInstructions(), tools = AUTHORING_TOOLS, hostTools = {} }) {
+  instructions = loadAuthoringInstructions(), tools = AUTHORING_TOOLS, hostTools = {}, discoverBeforeReply = false }) {
   if (!instructions) return { status: 'BLOCKED', code: 'AUTHORING_GUIDE_UNAVAILABLE' };
   if (!object(context) || !object(state) || !integer(state.version) || !object(state.counts) || !object(state.usage)
       || !['inputTokens', 'outputTokens', 'reservedMicros'].every(key => integer(state.usage[key]))
@@ -138,10 +138,11 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
     checkpoint({ phase: 'DISPATCH', ...state.inFlight });
     journalOpen = true;
   };
-  const resultCheckpoint = outcome => {
+  const resultCheckpoint = (outcome, estimatedMicros) => {
     const dispatched = state.inFlight;
     state.inFlight = null;
-    try { checkpoint({ phase: 'RESULT', ...dispatched, outcome }); }
+    try { checkpoint({ phase: 'RESULT', ...dispatched, outcome,
+      ...(outcome === 'SUCCESS' && dispatched.kind === 'provider' && integer(estimatedMicros) && estimatedMicros <= provider.reserveMicros && { estimatedMicros }) }); }
     catch (error) { state.inFlight = dispatched; throw error; }
     journalOpen = false;
   };
@@ -215,21 +216,29 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
     await currentDraft();
     const history = priorUserMessages?.texts.length || priorUserMessages?.truncated
       ? { previousUserMessages: priorUserMessages.texts, previousUserMessagesTruncated: priorUserMessages.truncated } : {};
+    const clarification = priorUserMessages?.clarification ? { clarificationContext: priorUserMessages.clarification } : {};
+    const discover = async () => {
+      const facts = await wait(() => host.discover());
+      await currentDraft();
+      if (!object(facts) || size(facts) > 131072) fail('CONTEXT_LIMIT');
+      if (facts.currentDraft && !same(handles(facts.currentDraft), state.handles)) fail('STALE_DRAFT');
+      return facts;
+    };
     const normalMessage = async renewedContext => {
       const awareness = typeof host.awareness === 'function' ? await wait(() => host.awareness()) : null;
       if (awareness !== null && (!object(awareness) || size(awareness) > 4096)) fail('HOST_RESULT_INVALID');
-      return awareness !== null || Object.keys(history).length || renewedContext
-        ? JSON.stringify({ ...(awareness !== null && { hostContext: { ...awareness, intent } }), ...history, currentUserMessage: input.text,
+      const facts = discoverBeforeReply && !renewedContext ? await discover() : null;
+      return awareness !== null || Object.keys(history).length || renewedContext || facts
+        ? JSON.stringify({ ...(awareness !== null && { hostContext: { ...awareness, intent } }), ...history,
+          ...(discoverBeforeReply && clarification), ...(facts && { currentContext: facts }), currentUserMessage: input.text,
           ...(renewedContext && { renewedContext }) }) : input.text;
     };
     const renew = async request => {
       if (resolving || journalOpen || checkpointFailed || state.inFlight || state.checkpoint?.phase !== 'RESULT'
           || !['SUCCESS', 'REJECTED'].includes(state.checkpoint.outcome) || renewals >= 4) fail('CONTEXT_LIMIT');
       check(); await currentDraft();
-      const currentContext = await wait(() => host.discover());
-      await currentDraft();
-      if (!object(currentContext) || size(currentContext) > 131072 || currentContext.currentProposal?.truncated) fail('CONTEXT_LIMIT');
-      if (currentContext.currentDraft && !same(handles(currentContext.currentDraft), state.handles)) fail('STALE_DRAFT');
+      const currentContext = await discover();
+      if (currentContext.currentProposal?.truncated) fail('CONTEXT_LIMIT');
       if (state.handles.revisionId && (!object(currentContext.currentProposal) || typeof currentContext.currentProposal.source !== 'string'
           || !Array.isArray(currentContext.currentProposal.cases))) fail('CONTEXT_LIMIT');
       const renewedContext = { currentContext, completedChanges, lastTool,
@@ -246,13 +255,12 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
       renewals++; lastRenewal = fingerprint;
       return fresh;
     };
-    let message = resolving ? JSON.stringify({ ...history, currentUserMessage: input.text,
-      ...(priorUserMessages?.clarification && { clarificationContext: priorUserMessages.clarification }) }) : await normalMessage();
+    let message = resolving ? JSON.stringify({ ...history, currentUserMessage: input.text, ...clarification }) : await normalMessage();
     for (;;) {
       check();
       let request = { input: message, continuation: state.continuation, toolResult: state.pending,
         tools: resolving ? intentTools : intent === 'discuss' ? tools.filter(item => discussionTools.has(item.name) || hostTools[item.name]?.readOnly === true) : tools,
-        instructions: resolving ? intentInstructions : instructions, signal: combined };
+         instructions: resolving ? `${intentInstructions}\nA general question about what this workspace can do is discuss, even without a specific change or draft.` : instructions, signal: combined };
       if (state.contextFull) request = await renew(request);
       else if (typeof provider.preflight === 'function') {
         try { provider.preflight(request); }
@@ -291,13 +299,13 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
           resultCheckpoint('REJECTED'); fail('PROVIDER_RESPONSE_INVALID');
         }
         intent = args.intent; state.resolvedIntent = intent;
-        resultCheckpoint('SUCCESS');
+         resultCheckpoint('SUCCESS', response.estimatedMicros);
         if (intent === 'clarify') { consume('clarifications'); return terminal({ status: 'AWAITING_USER', message: args.question }); }
         resolving = false; message = await normalMessage();
         continue;
       }
       state.continuation = response.continuation; state.pending = undefined; message = undefined;
-      resultCheckpoint('SUCCESS');
+       resultCheckpoint('SUCCESS', response.estimatedMicros);
       if (!response.calls.length) return terminal({ status: 'IDLE', message: response.text });
       const call = response.calls[0];
       check(); consume('tools');

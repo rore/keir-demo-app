@@ -74,12 +74,7 @@ async function appLockup(page) {
   const brand = page.locator('.brand').filter({ visible: true });
   await expect(brand).toHaveCount(1);
   await expect(brand.locator('.brand-name')).toHaveText('Daymark');
-  if (await brand.locator('..').evaluate(node => node.classList.contains('welcome-header'))) {
-    await expect(brand.locator('.brand-subline')).toHaveText('A Keir demo');
-    const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
-    expect(subline.y).toBeGreaterThanOrEqual(name.y + name.height);
-    expect(Math.abs(subline.x - name.x)).toBeLessThanOrEqual(1);
-  } else await expect(brand.locator('.brand-subline')).toHaveCount(0);
+  await expect(brand.locator('.brand-subline')).toHaveCount(0);
   await expect(page.getByText('Powered by Keir', { exact: true })).toHaveCount(0);
 }
 async function openDetails(page) {

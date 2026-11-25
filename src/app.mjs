@@ -129,7 +129,8 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     const session = authorize(request);
     return { sessionId: session.authoringEpoch, current: () => { try { return authorize(request) === session; } catch { return false; } } };
   }
-  const setupResponse = () => ({ configuration: settings.publicConfiguration(), choices: authoringChoices, availability: ai.availability() });
+  const setupResponse = () => ({ configuration: settings.publicConfiguration(), choices: authoringChoices, availability: ai.availability(),
+    allowance: ai.allowance() });
   function setupAuthority(request) {
     authorize(request); noQuery(request);
     if (request.headers.origin !== undefined && request.headers.origin !== origin) throw new AppError(403, 'Use the same local app origin.');

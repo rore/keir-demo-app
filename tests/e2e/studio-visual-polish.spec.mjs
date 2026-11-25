@@ -470,7 +470,7 @@ for (const [name, viewport, coarse] of [
     await expect(filter).toHaveJSProperty('open', false);
     await expect(filter.locator(':scope > summary')).toBeFocused();
     await expect(page.locator('.task-applied-filters')).toBeVisible();
-    await expect(page.locator('.task-applied-filters')).toContainText('Tag “review”');
+    await expect(page.locator('.task-applied-filters')).toHaveText('Tagged “review”');
     await capture('active-tag-filter-closed');
     await openWorkspaceTool(page, '.task-filter');
     await page.getByRole('button', { name: 'Clear', exact: true }).click();

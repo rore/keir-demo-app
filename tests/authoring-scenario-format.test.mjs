@@ -255,7 +255,7 @@ for (const extra of ['', ' Please show the checked results before asking for my 
   assert.deepEqual(overflow.native.effects, []);
   assert.deepEqual(lifecycle.source('maya', state.draft.id, extensionId).cases, independent);
   assert.deepEqual(rows(db, nativeTables), before);
-  assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, config.reserveMicros * calls.length);
+  assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, 85 * calls.length);
 
   const selection = { extensionId, ...input(state) };
   const approved = lifecycle.approve('maya', { ...selection, evidenceId: settled.review.evidenceId }, () => {});

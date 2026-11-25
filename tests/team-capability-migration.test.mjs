@@ -63,7 +63,7 @@ test('populated v15 upgrades once without rewriting pins/receipts/Personal draft
   const f = await populated15(t);
   let db = openData(f.path);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 18);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 19);
     assert.deepEqual(f.snapshot(db), f.before);
     assert.equal(db.prepare('SELECT source_bundle FROM team_revisions').get().source_bundle, null);
     assert.deepEqual(db.prepare('SELECT revision_id,draft_version FROM team_drafts ORDER BY project_id').all().map(Object.values), [[null, 0], [null, 0]]);
@@ -114,7 +114,7 @@ test('each schema16 DDL, slot initialization and version marker boundary rolls b
         throw new Error('Capability migration interrupted');
       }
       const result = exec.call(this, sql);
-      if (sql === 'PRAGMA user_version=18' && boundary === statements.length) { interrupted = true; throw new Error('Capability migration interrupted'); }
+      if (sql === 'PRAGMA user_version=19' && boundary === statements.length) { interrupted = true; throw new Error('Capability migration interrupted'); }
       return result;
     };
     try { assert.throws(() => openData(f.path), /Capability migration interrupted/); }

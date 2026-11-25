@@ -51,7 +51,7 @@ test('populated v14 migrates additively, preserving every old column, Personal a
   for (let attempt = 0; attempt < 2; attempt++) {
     const db = openData(f.path);
     try {
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 18);
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 19);
       assert.deepEqual(f.snapshot(db), f.before);
       assert.deepEqual(db.prepare('SELECT DISTINCT mode FROM projects').all().map(Object.values), [['PERSONAL']]);
       assert.equal(db.prepare('SELECT count(*) AS n FROM team_admissions').get().n, 0);
@@ -76,7 +76,7 @@ test('every v15 DDL boundary and marker write rolls back without partial authori
         throw new Error('Team migration interrupted');
       }
       const result = exec.call(this, sql);
-      if (sql === 'PRAGMA user_version=18' && boundary === statements.length) {
+      if (sql === 'PRAGMA user_version=19' && boundary === statements.length) {
         interrupted = true;
         throw new Error('Team migration interrupted');
       }

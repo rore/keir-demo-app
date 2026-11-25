@@ -556,7 +556,7 @@ for (const code of ['SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'PROVIDER_RATE_LIMIT', 'C
   const continuation = ui.getByRole('button', { name: code === 'PROVIDER_RATE_LIMIT' ? 'Try again from saved work' : 'Continue here from saved work', exact: true });
   expect(calls.turns).toHaveLength(0);
   if (code === 'SPEND_LIMIT') {
-    await expect(ui).toContainText('The shared authoring allowance is exhausted.');
+    await expect(ui).toContainText('Ask whoever manages assistant settings about the allowance');
     await expect(continuation).toHaveCount(0);
     return;
   }

@@ -71,6 +71,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const [confirmation, setConfirmation] = useState<{ kind: "deactivations" | "revocations"; body: ControlInput } | null>(null);
   const lifetime = useRef(new AbortController()), serial = useRef(0), edits = useRef(0);
   const heading = useRef<HTMLHeadingElement>(null), stateRef = useRef(state); stateRef.current = state;
+  const latestReply = useRef<HTMLDivElement>(null), focusReply = useRef(false);
   const decision = useRef<HTMLElement>(null), draftHeading = useRef<HTMLHeadingElement>(null);
   const preparedFrom = useRef<{ revisionId: string | null } | null>(null);
   const choiceFocus = useRef<boolean>(false);
@@ -80,6 +81,11 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const conversation = discussion?.conversation;
   const authoring = conversation?.status === "RUNNING" || conversation?.status === "CANCELLING";
   useLayoutEffect(() => { heading.current?.focus(); }, []);
+  useLayoutEffect(() => {
+    if (!focusReply.current || authoring || busy || !latestReply.current) return;
+    focusReply.current = false;
+    if (document.activeElement === document.body) latestReply.current.focus();
+  }, [authoring, busy, conversation?.version]);
   useLayoutEffect(() => {
     if (!state?.draft || busy || !decision.current) return;
     const prepared = preparedFrom.current && preparedFrom.current.revisionId !== state.draft.revisionId;
@@ -155,6 +161,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       preparedFrom.current = { revisionId: state.draft?.revisionId ?? null };
       setChoiceReceipt(null); setChoiceTarget(null); setChoiceNotice("");
     }
+    if (action === "turn") focusReply.current = true;
     setBusy(action); setError("");
     try {
       const next = await request<Discussion>(`${chat}/${action}`, "POST", input, lifetime.current.signal);
@@ -335,10 +342,16 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       if (!lifetime.current.signal.aborted) (setupInvoker.current?.getClientRects().length ? setupInvoker.current : heading.current)?.focus();
     });
   }
-  const transcript = <div className="team-transcript" aria-live="polite">{conversation?.messages.map(message => <article key={message.id}
+  const renderMessage = (message: NonNullable<Discussion["conversation"]>["messages"][number]) => <article key={message.id}
     className={`rs-message ${message.role === "user" ? "rs-user" : "rs-assistant"}`}>
     <p><strong>{message.role === "user" ? "You" : "Daymark"}</strong></p><p>{message.text}</p>
-  </article>)}</div>;
+  </article>;
+  const messages = conversation?.messages ?? [];
+  const recent = messages.at(-1)?.role === "assistant" ? 2 : 1;
+  const transcript = <div className="team-transcript">
+    {messages.length > recent && <details><summary>Earlier messages</summary>{messages.slice(0, -recent).map(renderMessage)}</details>}
+    <div ref={latestReply} tabIndex={-1} role="log" aria-label="Latest messages">{messages.slice(-recent).map(renderMessage)}</div>
+  </div>;
   const composer = <>
     {authoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping…" : "Working on your request…"}</span>
       <button disabled={!!busy || conversation?.status === "CANCELLING"} onClick={() => void chatAction("cancel")}>Stop</button></div>}
@@ -373,8 +386,9 @@ export default function TeamCapability({ project, request, scopeControl, back, b
            {choiceNotice && <p role="status">{choiceNotice}</p>}
          </section>}
          {(!state.draft || conversation?.agreement) && <section aria-label="Conversation" className="rs-chat">
-           {!conversation && <h2>What should happen in this project?</h2>}
-           {conversation?.agreement ? <details><summary>Earlier messages</summary>{transcript}</details> : transcript}
+            {!conversation && <><h2>What should happen in this project?</h2>
+              <p className="team-starter">Ask what Daymark can do, or describe a change. For example: “Add a follow-up for high-priority tasks.”</p></>}
+            {transcript}
            {conversation?.agreement && <article className="rs-message rs-decision" aria-label="Proposed behavior">
                <h2>Proposed behavior for {project.name}</h2>
                {behavior(conversation.agreement)}

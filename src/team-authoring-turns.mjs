@@ -3,7 +3,7 @@ import { AppError, transaction } from './data.mjs';
 import { digest, json } from './extension-catalog.mjs';
 import { AuthoringError } from './authoring-provider.mjs';
 import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './keir-authoring-agent.mjs';
-import { teamAuthoringHost, teamConversationTools, teamConversationHandlers } from './team-authoring-host.mjs';
+import { teamAuthoringHost, teamConversationTools, teamConversationHandlers, teamConversationInstructions } from './team-authoring-host.mjs';
 
 const definitionId = 'daymark.team-authoring/1';
 const token = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -13,7 +13,7 @@ const conflict = () => new AppError(409, 'The saved discussion or draft changed.
 
 // Use the same durable conversation, operation and spend journal as Personal.
 // The project binding lives in the conversation state and is never taken from the model.
-export function createTeamAuthoringTurns({ db, capability, projects, access, live, availability, provider, budget, reserve, safeMessage, codeFor }) {
+export function createTeamAuthoringTurns({ db, capability, projects, access, live, availability, provider, budget, reserve, recordDispatchResult, safeMessage, codeFor }) {
   const rowFor = (actor, projectId) => db.prepare(`SELECT * FROM authoring_conversations WHERE owner_id=?
     AND json_extract(state,'$.definitionId')=? AND json_extract(state,'$.projectId')=? ORDER BY created_at DESC LIMIT 1`).get(actor, definitionId, projectId);
   transaction(db, () => {
@@ -106,11 +106,10 @@ export function createTeamAuthoringTurns({ db, capability, projects, access, liv
           } else if (cp.phase === 'DISPATCH') {
             const micros = cp.kind === 'provider' ? native.reserveMicros : 0;
             if (micros) reserve(micros);
-            db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,NULL)')
+            db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,NULL,NULL)')
               .run(id, actor, runId, cp.ordinal, cp.kind, cp.callId ?? null, micros);
           } else if (cp.phase === 'RESULT') {
-            if (db.prepare(`UPDATE authoring_dispatches SET outcome=? WHERE conversation_id=? AND owner_id=? AND run_id=? AND ordinal=? AND outcome IS NULL`)
-                .run(cp.outcome, id, actor, runId, cp.ordinal).changes !== 1) throw new AuthoringError('CHECKPOINT_UNCERTAIN');
+            recordDispatchResult(id, actor, runId, cp);
             db.prepare('UPDATE authoring_conversations SET state=? WHERE id=? AND run_id=?').run(encoded(), id, runId);
           }
         });
@@ -129,7 +128,8 @@ export function createTeamAuthoringTurns({ db, capability, projects, access, liv
     ctx.promise = (async () => {
       try {
         const result = await runAuthoringTurn({ provider: { ...native, complete: value => track(() => native.complete(value)) },
-          host: scoped, tools: teamConversationTools, hostTools: teamConversationHandlers, context, state, instructions, priorUserMessages: history,
+          host: scoped, tools: teamConversationTools, hostTools: teamConversationHandlers, context, state,
+          instructions: `${instructions}\n\n${teamConversationInstructions}`, discoverBeforeReply: true, priorUserMessages: history,
           input: { id: input.operationId, expectedVersion: input.expectedVersion, intent: 'auto', text: input.text }, signal: controller.signal });
         await Promise.allSettled([...ctx.tracked]);
         if (!ctx.admitted) throw new AppError(409, safeMessage(codeFor(result.code)));

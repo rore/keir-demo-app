@@ -4,7 +4,8 @@ import { navigate, openWorkspaceTool, switchPerson } from '../fixtures/workspace
 import { teamProjectService } from '../../src/team-native.mjs';
 import { createTeamCapability } from '../../src/team-capability.mjs';
 
-const openStudio = page => page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+const openStudio = page => page.getByRole('button', { name: /^(Open Studio|New customization)$/ }).click();
+const scope = page => page.getByLabel('Personal or Team project', { exact: true });
 const checkExamples = page => page.getByRole('button', { name: 'Check examples', exact: true });
 const examples = page => page.getByRole('region', { name: 'Examples', exact: true });
 
@@ -12,7 +13,7 @@ async function setup(page, origin) {
   await page.goto(origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await navigate(page, 'Customizations');
-  const personalId = await page.getByLabel('Customization scope', { exact: true }).inputValue();
+  const personalId = await scope(page).inputValue();
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
   await page.getByLabel('Message to Daymark assistant', { exact: true }).fill('Keep my Personal text through Team simulation.');
   await navigate(page, 'Tasks');
@@ -26,7 +27,7 @@ async function setup(page, origin) {
   const members = await openWorkspaceTool(page, '.project-tools');
   await members.getByRole('button', { name: 'Manage members', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('Existing demo person', { exact: true }).selectOption('leo');
+  await dialog.getByLabel('Teammate', { exact: true }).selectOption('leo');
   await dialog.getByRole('button', { name: 'Add member', exact: true }).click();
   await expect(dialog.getByText('Leo · Member', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
@@ -80,11 +81,11 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(saved.passed).toBe(0);
       await page.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
       teamScope = false;
-      await page.getByLabel('Customization scope', { exact: true }).selectOption(personalId);
+      await scope(page).selectOption(personalId);
       await page.getByRole('button', { name: 'Return to Personal Studio', exact: true }).click();
       await expect(page.getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('Keep my Personal text through Team simulation.');
       await navigate(page, 'Customizations');
-      await page.getByLabel('Customization scope', { exact: true }).selectOption(project.id); teamScope = true;
+      await scope(page).selectOption(project.id); teamScope = true;
       await page.reload();
       await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
       await openStudio(page);
@@ -113,10 +114,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const source = await held(page, `**/api/projects/${project.id}/capability/revisions/*`);
       await page.getByRole('button', { name: 'Inspect exact source and artifacts', exact: true }).click();
       await source.started;
-      await page.getByLabel('Customization scope', { exact: true }).selectOption(personalId); source.release();
+      await scope(page).selectOption(personalId); source.release();
       await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeVisible();
       await expect(page.getByLabel('Exact Team source and artifacts', { exact: true })).toHaveCount(0);
-      await page.getByLabel('Customization scope', { exact: true }).selectOption(project.id);
+      await scope(page).selectOption(project.id);
       await openStudio(page);
       let posts = 0;
       page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/capability/simulations')) posts++; });
@@ -135,7 +136,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await switchPerson(page, 'leo'); evidence.release();
       await navigate(page, 'Customizations');
       await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Open Studio', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: /^(Open Studio|New customization)$/ })).toHaveCount(0);
       await expect(examples(page)).toHaveCount(0);
       await switchPerson(page, 'maya');
       await navigate(page, 'Customizations');
