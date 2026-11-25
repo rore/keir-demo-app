@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from '../src/authoring-provider.mjs';
+import { teamConversationTools } from '../src/team-authoring-host.mjs';
+import { linkedOffer } from './fixtures/team-authored.mjs';
 
 const secret = 'provider-test-secret';
 const config = provider => readAuthoringConfig({ KEIR_AI_PROVIDER: provider,
@@ -92,6 +94,23 @@ test('Anthropic preserves thinking and places matching tool result before new in
   assert.equal(messages[index + 1].role, 'user');
   assert.deepEqual(messages[index + 1].content[0], { type: 'tool_result', tool_use_id: 'tool-exact', content: 'record' });
   assert.deepEqual(messages[index + 1].content[1], { type: 'text', text: 'Explain' });
+});
+
+test('both wire formats carry the same strict Team business offer and preserve its structured arguments', async () => {
+  const name = 'offer_proposal', input = linkedOffer();
+  const tool = teamConversationTools.find(tool => tool.name === name);
+  for (const vendor of ['openai', 'anthropic']) {
+    const provider = createAuthoringProvider(config(vendor), { fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body), [wire] = body.tools;
+      assert.equal(wire.strict, true);
+      assert.deepEqual(wire.parameters ?? wire.input_schema, tool.parameters);
+      assert.doesNotMatch(JSON.stringify(wire), /maxItems|BEFORE_WRITE|LOST_REPLY|receipt|claimId/);
+      return json(vendor === 'openai' ? openai([{ type: 'function_call', name, arguments: JSON.stringify(input), call_id: 'c1' }])
+        : anthropic([{ type: 'tool_use', name, input, id: 'c1' }], 'tool_use'));
+    } });
+    const reply = await provider.complete({ ...request, tools: [tool] });
+    assert.deepEqual(reply.calls, [{ id: 'c1', name, arguments: input }]);
+  }
 });
 
 test('rejects unsupported output, malformed calls, refusals and incomplete responses', async () => {

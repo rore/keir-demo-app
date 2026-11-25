@@ -68,3 +68,28 @@ function writeLossExamples(childTitle) {
         ...(i ? { childTitle, childAssigneeId: 'leo' } : {}) } },
       { op: 'reconcile', actor: 'author', ref: 'work', expect: { effect: i ? 'CONFIRMED' : 'NONE', children: i ? 1 : 0 } }] }));
 }
+
+export function triageOffer({ priority = 'high', title = 'Prepare priority triage', assigneeId = 'leo' } = {}) {
+  const program = JSON.parse(triageProposal().bindings.TaskCreated);
+  program.steps[1].let.cel = `task.priority == "${priority}"`;
+  program.steps[2].args.title.literal = title;
+  program.steps[2].args.assigneeId.literal = assigneeId;
+  return { summary: `Add ${title} for ${priority}-priority tasks. Completion never waits.`, TaskBeforeComplete: null,
+    TaskCreated: { source: json(program), outcomes: [
+      { when: { priority: [priority] }, expected: { linkedTask: { title, assigneeId } } },
+      { when: { priority: ['low', 'normal', 'high'].filter(p => p !== priority) }, expected: { linkedTask: null } },
+    ] } };
+}
+
+export function linkedOffer() {
+  const { bindings, agreement } = linkedProposal();
+  return { summary: agreement.summary,
+    TaskCreated: { source: bindings.TaskCreated, outcomes: [
+      { when: { priority: null }, expected: { linkedTask: { title: 'Review the deliverable', assigneeId: 'leo' } } },
+    ] },
+    TaskBeforeComplete: { source: bindings.TaskBeforeComplete, outcomes: [
+      { when: { priority: null, linkedTask: ['absent', 'open'] }, expected: { allow: false, message: 'Complete its linked review first.' } },
+      { when: { priority: null, linkedTask: ['completed'] }, expected: { allow: true, message: null } },
+    ] },
+  };
+}

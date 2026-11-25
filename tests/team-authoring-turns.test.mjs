@@ -5,7 +5,7 @@ import { setImmediate } from 'node:timers/promises';
 import { createApp } from '../src/app.mjs';
 import { openData, resetData, taskService } from '../src/data.mjs';
 import { teamProjectService } from '../src/team-native.mjs';
-import { triageProposal } from './fixtures/team-authored.mjs';
+import { triageOffer } from './fixtures/team-authored.mjs';
 import { readAuthoringConfig, estimateAuthoringMicros } from '../src/authoring-config.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -180,7 +180,7 @@ test('Team discussion is durable and project-scoped, and late provider output ca
   const newTurn = await call(maya, 'POST', foreign + '/turn', { ...input, operationId: randomUUID() });
   assert.equal(newTurn.statusCode, 202, newTurn.body);
   await waitFor(() => gates[3]);
-  gates[3](response([{ id: 'offer', name: 'offer_proposal', arguments: { proposalJson: JSON.stringify(triageProposal()) } }]));
+  gates[3](response([{ id: 'offer', name: 'offer_proposal', arguments: triageOffer() }]));
   const offered = await waitFor(async () => {
     const value = (await call(maya, 'GET', foreign)).json().conversation;
     return value.agreement && value;
@@ -190,6 +190,11 @@ test('Team discussion is durable and project-scoped, and late provider output ca
   assert.equal(Object.hasOwn(offered, 'proposal'), false);
   assert.equal(db.prepare('SELECT count(*) AS n FROM team_revisions').get().n, 0);
   const decision = { runId: offered.runId, expectedVersion: offered.version };
+  assert.equal((await call(maya, 'POST', foreign + '/confirm', { ...decision, expectedVersion: offered.version - 1 })).statusCode, 409);
+  db.prepare("DELETE FROM project_members WHERE project_id=? AND user_id='leo'").run(other.id);
+  assert.equal((await call(maya, 'POST', foreign + '/confirm', decision)).statusCode, 409);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM team_revisions').get().n, 0);
+  db.prepare("INSERT INTO project_members VALUES (?,'leo','MEMBER')").run(other.id);
   const confirmed = await call(maya, 'POST', foreign + '/confirm', decision);
   assert.equal(confirmed.statusCode, 200, confirmed.body);
   assert.equal(confirmed.json().conversation.agreement, null);
@@ -205,7 +210,7 @@ test('Team discussion is durable and project-scoped, and late provider output ca
   });
   assert.equal(replacement.statusCode, 202, replacement.body);
   await waitFor(() => gates[4]);
-  gates[4](response([{ id: 'offer', name: 'offer_proposal', arguments: { proposalJson: JSON.stringify(triageProposal()) } }]));
+  gates[4](response([{ id: 'offer', name: 'offer_proposal', arguments: triageOffer() }]));
   const newOffer = await waitFor(async () => {
     const value = (await call(maya, 'GET', foreign)).json().conversation;
     return value.agreement && value;
@@ -223,9 +228,9 @@ test('Team discussion is durable and project-scoped, and late provider output ca
   assert.equal((await call(maya, 'POST', foreign + '/confirm', nextDecision)).statusCode, 409);
 
   const before = db.prepare('SELECT * FROM team_drafts WHERE project_id=?').get(other.id);
-  const malformed = triageProposal();
-  malformed.agreement.examples[0].actions[1].expect.children = 'Private malformed value';
-  const badOffer = { name: 'offer_proposal', arguments: { proposalJson: JSON.stringify(malformed) } };
+  const malformed = triageOffer();
+  malformed.TaskCreated.outcomes[0].expected.linkedTask.assigneeId = 'Private malformed value';
+  const badOffer = { name: 'offer_proposal', arguments: malformed };
   const requestsBefore = providerRequests.length;
   const invalidTurn = { ...input, operationId: randomUUID(), expectedVersion: newOffer.version, expectedDraftVersion: 2 };
   assert.equal((await call(maya, 'POST', foreign + '/turn', invalidTurn)).statusCode, 202);
@@ -235,7 +240,7 @@ test('Team discussion is durable and project-scoped, and late provider output ca
   const repair = providerRequests.at(-1);
   assert.deepEqual(repair.tools.map(tool => tool.name), ['offer_proposal']);
   assert.deepEqual(JSON.parse(repair.toolResult.output).diagnostics, [
-    { code: 'AGREEMENT_FIELD_INVALID', path: '/agreement/examples/0/actions/1/expect/children' },
+    { code: 'ASSIGNEE_NOT_CURRENT', path: '/TaskCreated/outcomes/0/expected/linkedTask/assigneeId' },
   ]);
   assert.ok(!repair.toolResult.output.includes('Private malformed value'));
   gates[6](response([{ id: 'invalid2', ...badOffer }]));

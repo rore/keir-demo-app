@@ -72,9 +72,12 @@ const same = (left, right) => left.revisionId === right.revisionId && left.draft
 function argumentsFor(call, tools) {
   const schema = tools.find(item => item.name === call.name)?.parameters;
   if (!schema || !object(call.arguments) || Object.keys(call.arguments).length !== schema.required.length
-      || !schema.required.every(key => Object.hasOwn(call.arguments, key) && (schema.properties[key] === version ? integer(call.arguments[key])
-        : schema.properties[key] === caseStrings ? Array.isArray(call.arguments[key]) : typeof call.arguments[key] === 'string'
-          && (!schema.properties[key].enum || schema.properties[key].enum.includes(call.arguments[key]))))) fail('INVALID_TOOL_ARGUMENTS');
+      || !schema.required.every(key => {
+        const field = schema.properties[key], value = call.arguments[key];
+        return Object.hasOwn(call.arguments, key) && (field === version ? integer(value)
+          : field === caseStrings ? Array.isArray(value) : field.type === 'string' ? typeof value === 'string'
+            && (!field.enum || field.enum.includes(value)) : true); // Structured host arguments are validated by that host.
+      })) fail('INVALID_TOOL_ARGUMENTS');
   return call.arguments;
 }
 function boundedText(value, max) {
@@ -240,7 +243,7 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
       check(); await currentDraft();
       const currentContext = await discover();
       if (currentContext.currentProposal?.truncated) fail('CONTEXT_LIMIT');
-      if (state.handles.revisionId && (!object(currentContext.currentProposal) || typeof currentContext.currentProposal.source !== 'string'
+      if (!repairOffer && state.handles.revisionId && (!object(currentContext.currentProposal) || typeof currentContext.currentProposal.source !== 'string'
           || !Array.isArray(currentContext.currentProposal.cases))) fail('CONTEXT_LIMIT');
       const renewedContext = { currentContext, completedChanges, lastTool,
         settledFacts: [...settledFacts.values()].filter(value => value !== lastTool) };
@@ -410,14 +413,14 @@ export async function runAuthoringTurn({ provider, host, context, state, input, 
           if (!remaining) event = { status: 'BLOCKED', code: offerCode };
         }
         state.pending = { id: call.id, output: JSON.stringify({ ok: false, code: error.code,
-          ...(offerCode && { saved: false, diagnostics: diagnostics(error.diagnostics ?? [{ code: 'INVALID_TOOL_ARGUMENTS', path: '/proposalJson' }]),
+          ...(offerCode && { saved: false, diagnostics: diagnostics(error.diagnostics ?? [{ code: 'INVALID_TOOL_ARGUMENTS', path: '/arguments' }]),
             remainingAttempts: remaining, ...(remaining && { next: 'Correct only the reported format or field, keep the same agreed behavior, and call this tool once more.' }) }),
           ...(scenario && { diagnostics: error.diagnostics ?? [{ code: 'INVALID_TOOL_ARGUMENTS', path: '/arguments' }],
             currentDraft: { ...state.handles }, remainingAttempts: 3 - scenarioRejections }) }) };
         if (scenario && scenarioRejections >= 3) event = { status: 'BLOCKED', code: 'INVALID_TOOL_ARGUMENTS' };
         outcome = 'REJECTED';
       }
-      const settled = { name: call.name, arguments: call.arguments, outcome,
+      const settled = { name: call.name, ...(!(outcome === 'REJECTED' && repairOffer?.name === call.name) && { arguments: call.arguments }), outcome,
         result: state.pending ? JSON.parse(state.pending.output) : event };
       if (size({ continuation: state.continuation, pending: state.pending }) > 262144) {
         state.continuation = undefined; state.pending = undefined; state.contextFull = true;

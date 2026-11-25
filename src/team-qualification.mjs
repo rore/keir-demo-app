@@ -7,7 +7,9 @@ import { normalizeTeamCases } from './team-simulation.mjs';
 export const TEAM_QUALIFICATION = 'daymark-team-claims/1';
 export const TEAM_AGREEMENT = 'daymark-team-agreement/1';
 export const TEAM_BINDINGS = Object.freeze(['TaskCreated', 'TaskBeforeComplete']);
-const domains = { priority: ['low', 'normal', 'high'], status: ['open', 'completed'], childStatus: ['absent', 'open', 'completed'] };
+export const teamPriorities = Object.freeze(['low', 'normal', 'high']);
+export const teamChildStates = Object.freeze(['absent', 'open', 'completed']);
+const domains = { priority: teamPriorities, status: ['open', 'completed'], childStatus: teamChildStates };
 const word = value => typeof value === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(value);
 const line = (value, max) => typeof value === 'string' && value.isWellFormed() && value.trim() && value.length <= max && !/\p{Cc}/u.test(value);
 const invalid = (path = '/agreement') => Object.assign(new AppError(400, 'Use the bounded agreed Team claims and native examples.'), { fieldPath: path });
@@ -15,32 +17,6 @@ const object = (value, allowed, required = allowed, path) => {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !allowed.includes(k))
       || required.some(k => !Object.hasOwn(value, k))) throw invalid(path);
 };
-
-// This is an example-coverage contract, not a proof of arbitrary program behavior.
-export function teamAgreementContract() {
-  return { format: TEAM_AGREEMENT, qualification: TEAM_QUALIFICATION, hooks: [...TEAM_BINDINGS], facts: structuredClone(domains),
-    proposalShape: { bindings: { TaskCreated: 'JSON source string or null', TaskBeforeComplete: 'JSON source string or null' },
-      agreement: { format: TEAM_AGREEMENT, summary: 'single-line description', claims: 'array of agreed outcomes grouped by hook',
-        examples: 'array of native examples, not JSON strings' } },
-    agreementFields: ['format', 'summary', 'claims', 'examples'],
-    claimFields: ['id', 'hook', 'description', 'outcomes'], outcomeFields: ['id', 'when', 'expect'],
-    caseFields: ['id', 'name', 'actors', 'initialTasks', 'fault', 'actions'],
-    actorFields: ['id', 'userId', 'role'], roles: ['ADMIN', 'MEMBER'], faults: ['NONE', 'BEFORE_WRITE', 'LOST_REPLY'],
-    initialTaskFields: ['ref', 'actor', 'title', 'priority?'],
-    actions: { create: ['op', 'actor', 'ref', 'title', 'priority?', 'expect'],
-       dispatch: ['op', 'ref', 'expect', 'covers?'], complete: ['op', 'actor', 'ref', 'expect', 'covers?'],
-      reconcile: ['op', 'actor', 'ref', 'expect'] },
-    covers: ['claimId', 'outcomeId'], childReferenceSuffix: '.child',
-    creationOutcomes: ['outcome', 'children', 'receipt', 'childTitle?', 'childAssigneeId?', 'reportStatus?'],
-    completionOutcomes: ['decision', 'status', 'message?'],
-    exampleExpectations: { create: { status: ['open', 'completed'] },
-      dispatch: { outcome: ['COMPLETED', 'FAILED', 'UNCERTAIN', 'UNKNOWN', 'NONE'], children: [0, 1], receipt: ['CONFIRMED', 'NONE'] },
-      complete: { decision: ['ALLOW', 'DENY', 'BLOCKED'], status: ['open', 'completed'] },
-      reconcile: { effect: ['CONFIRMED', 'NONE', 'UNRESOLVED'], children: [0, 1] } },
-    shapeRules: 'Use exactly the listed keys (a ? marks optional fields). Give both binding keys, with null for an unused hook. Use one claim per non-null hook and none for null. IDs and original task refs are lowercase ASCII slugs (up to 40 characters, starting with a letter); userId is a current member ID. Each case needs at least two distinct actors, including an ADMIN. Each agreed context needs a matching dispatch or completion step labeled with covers. Use covers only on an original task; link it to a claim and outcome ID. Use the .child suffix to refer to the generated task. An agreed creation outcome of one child needs its exact title and assignee. ALLOW pairs with completed; DENY pairs with open. Add BEFORE_WRITE and LOST_REPLY examples for a write, without covers on their interrupted dispatch steps.',
-    limits: { claims: 2, outcomesPerClaim: 8, examples: 16, actionsPerExample: 12, bytes: 32768 },
-    coverage: 'Only typed outcomes and contexts are checked; summary and description are explanatory text, not certified claims. Each present hook needs one agreed claim. Observe every finite declared context, each compiled event guard both ways, real material effects and write-loss cases. Unsupported dependencies remain unverified.' };
-}
 
 export function normalizeTeamAgreement(input) {
   object(input, ['format', 'summary', 'claims', 'examples']);
@@ -161,7 +137,7 @@ function coverageNeeds(artifact) {
   return { dependencies, guards, calls, unsupported };
 }
 
-const matches = (when, facts) => facts && Object.entries(when).every(([key, values]) => (Array.isArray(values) ? values : [values]).includes(facts[key]));
+export const matchesTeamContext = (when, facts) => facts && Object.entries(when).every(([key, values]) => (Array.isArray(values) ? values : [values]).includes(facts[key]));
 const sameExpected = (expected, observed) => Object.entries(expected).every(([key, value]) => observed?.[key] === value);
 export function qualifyAuthoredTeam({ agreement, cases, report, manifest, artifacts, projectId }) {
   const unverified = [], agreementDigest = digest(json(agreement));
@@ -179,13 +155,15 @@ export function qualifyAuthoredTeam({ agreement, cases, report, manifest, artifa
       const event = result.events[j];
       const binding = action.op === 'dispatch' ? 'TaskCreated'
         : action.op === 'complete' && !/\.(?:child|review)$/.test(action.ref) ? 'TaskBeforeComplete' : null;
-      if (event?.action !== action.op || event.ref !== action.ref || json(event.expected) !== json(action.expect)
+       if (event?.action !== action.op || event.ref !== action.ref || json(event.expected) !== json(action.expect)
           || !sameExpected(action.expect, event.observed) || !Array.isArray(event.mismatches) || event.mismatches.length
           || !event.native?.taskId || !Number.isInteger(event.native.writeAttempts) || event.native.writeAttempts < 0 || event.native.writeAttempts > 1
-          || event.binding !== binding || json(event.covers) !== json(action.covers ?? null)
-          || action.op === 'dispatch' && (event.runtime?.hook !== 'TaskCreated'
-            || event.runtime.outcome?.classification !== event.observed.outcome
-            || manifest.TaskCreated !== null && event.native.admissionBefore !== 'PENDING')) {
+           || event.binding !== binding || json(event.covers) !== json(action.covers ?? null)
+           || action.op === 'dispatch' && (event.runtime?.hook !== 'TaskCreated'
+             || (manifest.TaskCreated === null
+               ? event.native.admissionBefore !== 'NO_HOOK' || event.runtime.outcome !== null || event.observed.outcome !== 'NONE'
+                 || event.observed.children !== 0 || event.observed.receipt !== 'NONE' || event.native.writeAttempts !== 0
+               : event.runtime.outcome?.classification !== event.observed.outcome || event.native.admissionBefore !== 'PENDING'))) {
         reject('A native action does not establish its independent expected result.'); continue;
       }
       if (action.op === 'dispatch' && event.observed.receipt === 'CONFIRMED') {
@@ -200,6 +178,12 @@ export function qualifyAuthoredTeam({ agreement, cases, report, manifest, artifa
       points.push({ c, action, event });
     }
   }
+  const creation = agreement.claims.find(c => c.hook === 'TaskCreated');
+  const alwaysNoChild = priorities => creation?.outcomes.every(o => Object.keys(o.when).every(key => key === 'priority'))
+    && priorities.every(priority => {
+      const options = creation.outcomes.filter(o => matchesTeamContext(o.when, { priority }));
+      return options.length === 1 && options[0].expect.children === 0;
+    });
   for (const hook of TEAM_BINDINGS) {
     const claim = agreement.claims.find(c => c.hook === hook);
     if (manifest[hook] === null) {
@@ -220,7 +204,7 @@ export function qualifyAuthoredTeam({ agreement, cases, report, manifest, artifa
     const covered = [];
     for (const point of normal) {
       const cover = point.action.covers, outcome = claim.outcomes.find(o => o.id === cover?.outcomeId);
-      if (cover?.claimId !== claim.id || !outcome || !matches(outcome.when, point.event.before)
+       if (cover?.claimId !== claim.id || !outcome || !matchesTeamContext(outcome.when, point.event.before)
           || !sameExpected(outcome.expect, point.event.observed)) {
         reject('A normal hook observation is not tied to its agreed context and decisive outcome.'); continue;
       }
@@ -232,9 +216,13 @@ export function qualifyAuthoredTeam({ agreement, cases, report, manifest, artifa
       reject('A checked dependency is missing from the agreed contexts.');
     const contexts = fields.reduce((rows, key) => rows.flatMap(row => domains[key].map(value => ({ ...row, [key]: value }))), [{}]);
     for (const context of contexts) {
-      const outcomes = claim.outcomes.filter(o => matches(o.when, context));
+      // Only a verified creation for this root can make its linked task open or completed.
+      // Exclude impossible combinations only when the creation claim decides by priority alone.
+      if (hook === 'TaskBeforeComplete' && ['open', 'completed'].includes(context.childStatus)
+          && alwaysNoChild(context.priority ? [context.priority] : teamPriorities)) continue;
+      const outcomes = claim.outcomes.filter(o => matchesTeamContext(o.when, context));
       if (outcomes.length !== 1 || !covered.some(p => p.action.covers.outcomeId === outcomes[0].id
-          && matches(context, p.event.before))) reject('Finite matching and nonmatching contexts are incomplete or ambiguous.');
+           && matchesTeamContext(context, p.event.before))) reject('Finite matching and nonmatching contexts are incomplete or ambiguous.');
     }
     if (hook === 'TaskCreated') {
       for (const call of needs.calls) if (!covered.some(p => p.event.runtime?.outcome?.trace?.some(t => t.event === 'CALL_SUCCEEDED' && t.step === call.id)))

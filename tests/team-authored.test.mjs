@@ -67,10 +67,6 @@ test('one authored path qualifies conditional triage with explicit absent comple
 
 test('claims and binding decisions are closed, independently fixed and cannot be replaced by matching case names or caller pass flags', async t => {
   const f = setup(t);
-  const contract = f.api.contract('maya', f.project.id);
-  contract.facts.priority.pop(); contract.hooks.pop();
-  assert.deepEqual(f.api.contract('maya', f.project.id).facts.priority, ['low', 'normal', 'high']);
-  assert.deepEqual(f.api.contract('maya', f.project.id).hooks, ['TaskCreated', 'TaskBeforeComplete']);
   const proposal = triageProposal();
   for (const change of [
     p => { delete p.bindings.TaskBeforeComplete; },

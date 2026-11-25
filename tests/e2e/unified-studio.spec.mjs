@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
-import { linkedProposal } from '../fixtures/team-authored.mjs';
+import { linkedOffer } from '../fixtures/team-authored.mjs';
 import { navigate, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { taskService } from '../../src/data.mjs';
 import { teamProjectService } from '../../src/team-native.mjs';
@@ -26,9 +26,9 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
         expect(request.tools.map(tool => tool.name)).toEqual(['offer_proposal']);
         expect(JSON.parse(request.toolResult.output)).toMatchObject({
           ok: false, saved: false, remainingAttempts: 1,
-          diagnostics: [{ code: 'BINDING_SOURCE_STRING_REQUIRED', path: '/bindings/TaskCreated' }],
+          diagnostics: [{ code: 'OFFER_FIELD_INVALID', path: '/TaskCreated/source' }],
         });
-        const corrected = reply('offer_proposal', { proposalJson: JSON.stringify(linkedProposal()) });
+        const corrected = reply('offer_proposal', linkedOffer());
         corrected.calls[0].id = 'corrected-offer';
         return corrected;
       }
@@ -45,6 +45,7 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       expect(result.businessContext.members.map(p => p.id).sort()).toEqual(['leo', 'maya']);
       expect(result.businessContext.restriction).toContain('never starts another creation rule');
       expect(request.instructions).toContain('Do not ask the user to choose before answering basic capability questions');
+      expect(request.instructions).not.toContain('Show business output, ordered calls, trace and receipts separately');
       if (input.hostContext.intent === 'discuss') {
         expect(request.tools.some(tool => tool.name === 'offer_proposal')).toBe(false);
         return { calls: [], text: help, usage: { inputTokens: 1, outputTokens: 1 } };
@@ -54,9 +55,10 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
         expect(input.clarificationContext).toBe(narrowing);
         expect(input.previousUserMessages.at(-1)).toContain('email reminders');
       }
-      const malformed = linkedProposal();
-      malformed.bindings.TaskCreated = JSON.parse(malformed.bindings.TaskCreated);
-      return reply('offer_proposal', { proposalJson: JSON.stringify(malformed) });
+      if (width === 1440) return reply('offer_proposal', linkedOffer());
+      const malformed = linkedOffer();
+      malformed.TaskCreated.source = JSON.parse(malformed.TaskCreated.source);
+      return reply('offer_proposal', malformed);
     },
   }) } });
   const project = taskService(fixture.db).createProject('maya', { name: 'Launch team', mode: 'TEAM' });
@@ -130,8 +132,11 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     const proposed = page.getByRole('article', { name: 'Proposed behavior' });
     await expect(proposed.getByText('For every new main task, Daymark adds “Review the deliverable” for Leo.', { exact: true })).toBeVisible();
     await expect(proposed.getByRole('heading', { name: 'Proposed behavior for Launch team' })).toBeVisible();
+    await proposed.getByText('Exact expected outcomes', { exact: true }).click();
+    await expect(proposed.getByText(/The task stays open\. Complete its linked review first\./)).toBeVisible();
+    await proposed.getByText('Exact expected outcomes', { exact: true }).click();
     expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(0);
-    expect(requests).toHaveLength(width === 390 ? 8 : 7);
+    expect(requests).toHaveLength(width === 390 ? 8 : 6);
     expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(requests.length * OPENAI_RESERVE_MICROS);
     if (width === 390) {
       await page.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
@@ -180,10 +185,10 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await examples.getByText('See how it works', { exact: true }).click();
     const business = examples.getByRole('article').filter({ has: page.getByRole('heading', { name: 'One example in Launch team' }) });
     await expect(business.getByRole('listitem')).toHaveText([
-      'Maya adds “Prepare the release notes” (normal priority).',
+      'Maya adds “Example original task” (normal priority).',
       'Daymark adds “Review the deliverable” for Leo.',
       'Leo finishes “Review the deliverable”.',
-      'Maya finishes “Prepare the release notes”.',
+      'Maya finishes “Example original task”.',
     ]);
     await business.scrollIntoViewIfNeeded();
     await expect(business.getByRole('heading')).toBeInViewport({ ratio: 1 });

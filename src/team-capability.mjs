@@ -7,7 +7,7 @@ import { teamModel, teamModelBytes, validateTeamBundle } from './team-runtime.mj
 import { createCompiler } from './compiler.mjs';
 import { digest, json } from './extension-catalog.mjs';
 import { normalizeTeamCases, simulateTeam, TEAM_HARNESS } from './team-simulation.mjs';
-import { normalizeTeamAgreement, qualifyAuthoredTeam, teamAgreementContract, teamAgreementUsers, TEAM_BINDINGS, TEAM_QUALIFICATION } from './team-qualification.mjs';
+import { normalizeTeamAgreement, qualifyAuthoredTeam, teamAgreementUsers, TEAM_BINDINGS, TEAM_QUALIFICATION } from './team-qualification.mjs';
 
 const hooks = ['TaskCreated', 'TaskBeforeComplete'];
 const template = readFileSync(new URL('../keir/team-review-v1.json', import.meta.url), 'utf8');
@@ -386,7 +386,6 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
   }
   return {
     state,
-    contract(actor, projectId, authorize) { access(actor, projectId, authorize); return teamAgreementContract(); },
     async proposeAuthored(actor, projectId, input, authorize, context) {
       access(actor, projectId, authorize);
       fields(input, ['expectedDraftVersion', 'bindings', 'agreement']);

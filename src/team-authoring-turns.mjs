@@ -58,7 +58,9 @@ export function createTeamAuthoringTurns({ db, capability, projects, access, liv
       return read(actor, projectId, lease);
     }
     if (db.prepare('SELECT 1 FROM authoring_operations WHERE owner_id=? AND operation_id=? LIMIT 1').get(actor, input.operationId)) throw conflict();
-    const instructions = loadAuthoringInstructions(), available = availability(Boolean(instructions));
+    // Keep the pinned source guidance, not the generic guide's instructions for writing native checks.
+    const instructions = loadAuthoringInstructions(teamConversationInstructions)?.split('\n## Simulate and submit\n', 1)[0];
+    const available = availability(Boolean(instructions));
     if (!available.available) throw new AppError(503, safeMessage(available.code));
     if (live.size >= 2 || [...live.values()].some(job => job.owner === actor || job.projectId === projectId))
       throw new AppError(429, safeMessage('AI_BUSY'));
@@ -129,7 +131,7 @@ export function createTeamAuthoringTurns({ db, capability, projects, access, liv
       try {
         const result = await runAuthoringTurn({ provider: { ...native, complete: value => track(() => native.complete(value)) },
           host: scoped, tools: teamConversationTools, hostTools: teamConversationHandlers, context, state,
-          instructions: `${instructions}\n\n${teamConversationInstructions}`, discoverBeforeReply: true, priorUserMessages: history,
+           instructions, discoverBeforeReply: true, priorUserMessages: history,
           input: { id: input.operationId, expectedVersion: input.expectedVersion, intent: 'auto', text: input.text }, signal: controller.signal });
         await Promise.allSettled([...ctx.tracked]);
         if (!ctx.admitted) throw new AppError(409, safeMessage(codeFor(result.code)));
@@ -188,7 +190,7 @@ export function createTeamAuthoringTurns({ db, capability, projects, access, liv
       try {
         const active = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
         let draft;
-        try { draft = await host.save(JSON.stringify(proposal), { draft: prior.handles, signal: active }); }
+        try { draft = await host.save(proposal, { draft: prior.handles, signal: active }); }
         catch (error) {
           if (error instanceof AuthoringError) throw new AppError(error.code === 'STALE_DRAFT' ? 409 : 422, safeMessage(error.code));
           throw error;
