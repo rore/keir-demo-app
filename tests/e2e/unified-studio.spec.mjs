@@ -1,12 +1,85 @@
 import { test, expect } from '@playwright/test';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { allowMissingReview, linkedOffer, nestedOfferCalls, offerSources } from '../fixtures/team-authored.mjs';
-import { navigate, switchPerson } from '../fixtures/workspace-ui.mjs';
+import { navigate, openEarlierPersonalEditor, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { taskService } from '../../src/data.mjs';
 import { teamProjectService } from '../../src/team-native.mjs';
 import { OPENAI_RESERVE_MICROS } from '../../src/authoring-config.mjs';
+import { taskCustomizationFixture } from '../fixtures/task-customization.mjs';
+import { seedEarlierTeamDiscussion } from '../fixtures/task-authoring.mjs';
 
 test.use({ hasTouch: true });
+
+test('Personal confirms the exact offer, recovers a lost reply and keeps approval and activation separate', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  let program, calls = 0;
+  const fixture = await startAuthoringFixture({ authoringOverride: {
+    config: { status: 'ready', provider: 'openai', model: 'fixture', reserveMicros: OPENAI_RESERVE_MICROS, maxMicros: 3 * OPENAI_RESERVE_MICROS },
+    providerFactory: config => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros, async complete(request) {
+      calls++;
+      expect(request.tools.some(tool => /resolve_intent|compile_draft|simulate_draft/.test(tool.name))).toBe(false);
+      if (calls === 2) return { calls: [{ id: 'catalog', name: 'discover_catalog', arguments: {} }], text: '',
+        usage: { inputTokens: 1, outputTokens: 1 } };
+      if (calls === 3) {
+        const { rejectedOffer } = JSON.parse(request.toolResult.output).result;
+        expect(rejectedOffer.source).toBe('{');
+        expect(rejectedOffer.cases).toEqual(program.cases);
+        expect(rejectedOffer.diagnostics).toEqual([{ code: 'SYNTAX_INVALID', path: '/source' }]);
+      }
+      return { calls: [{ id: 'offer', name: 'offer_proposal', arguments: { hookId: 'TaskCompleted', sourceJson: calls === 1 ? '{' : program.source,
+        cases: program.cases, expectedDraftVersion: 0, summary: 'Add a follow-up after completing a task in the chosen project.' } }],
+        text: '', usage: { inputTokens: 1, outputTokens: 1 } };
+    } }),
+  } });
+  try {
+    program = taskCustomizationFixture({ projectId: fixture.metadata.projectId, otherProjectId: fixture.metadata.otherProjectId });
+    await page.goto(fixture.origin);
+    await page.getByRole('button', { name: /^Continue as Maya/ }).click();
+    await navigate(page, 'Customizations');
+    await openEarlierPersonalEditor(page, fixture);
+    await page.getByLabel('Message to Daymark assistant', { exact: true }).fill('Create a follow-up when I complete a task in this project.');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    const confirm = page.getByRole('button', { name: 'Confirm this behavior', exact: true });
+    await expect(confirm).toBeEnabled();
+    const count = table => fixture.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
+    expect(count('extension_revisions')).toBe(0);
+    expect(count('extension_evidence')).toBe(0);
+    await confirm.tap();
+    await expect(page.getByText(/No draft was saved\. Ask the assistant to correct the proposal/)).toBeVisible();
+    await expect(confirm).toHaveCount(0);
+    expect(calls).toBe(1);
+    expect(count('extension_revisions')).toBe(0);
+    expect(count('extension_evidence')).toBe(0);
+    const composer = page.getByLabel('Message to Daymark assistant', { exact: true });
+    await composer.fill('Please correct the proposal without changing the behavior.');
+    await page.getByRole('button', { name: 'Send', exact: true }).tap();
+    await expect(confirm).toBeEnabled();
+    expect(count('extension_revisions')).toBe(0);
+    let posts = 0;
+    await page.route('**/api/authoring/conversations/*/confirm', async route => {
+      posts++;
+      expect((await route.fetch()).status()).toBe(202);
+      await route.abort('failed');
+    });
+    await confirm.click();
+    await expect(page.getByText('The draft was saved and its examples passed. It is not approved or turned on.', { exact: true })).toBeVisible();
+    expect(posts).toBe(1);
+    expect(calls).toBe(3);
+    expect(count('extension_revisions')).toBe(1);
+    expect(count('extension_approvals')).toBe(0);
+    const active = () => fixture.db.prepare("SELECT revision_id FROM extension_selections WHERE owner_id='maya' AND hook_id='TaskCompleted'").get()?.revision_id;
+    expect(active()).toBeNull();
+    await page.getByRole('article').filter({ hasText: 'The draft was saved and its examples passed.' })
+      .getByRole('button', { name: 'See proposed change', exact: true }).click();
+    await page.getByRole('button', { name: 'View simulation', exact: true }).click();
+    await page.getByRole('button', { name: 'Approve this change', exact: true }).click();
+    const turnOn = page.getByRole('button', { name: 'Turn on for tasks completed', exact: true });
+    await expect(turnOn).toBeEnabled();
+    expect(active()).toBeNull();
+    await turnOn.click();
+    await expect.poll(active).not.toBeNull();
+  } finally { await fixture.close(); }
+});
 
 for (const width of [1440, 390]) test(`one Team conversation to linked task at ${width}px`, async ({ page }, info) => {
   const reply = (name, args) => ({ calls: [{ id: name, name, arguments: args }], text: '', usage: { inputTokens: 1, outputTokens: 1 } });
@@ -36,11 +109,8 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       }
       const input = JSON.parse(request.input);
       requests.push(input.currentUserMessage);
-      if (request.tools[0].name === 'resolve_intent') {
-        if (holdTurn) { holdTurn = false; await heldTurn; }
-        expect(request.instructions).toContain('A general question about what this workspace can do is discuss');
-        return reply('resolve_intent', { intent: input.currentUserMessage === 'What can we do here?' ? 'discuss' : 'prepare', question: '' });
-      }
+       if (holdTurn) { holdTurn = false; await heldTurn; }
+       expect(request.tools.some(tool => tool.name === 'resolve_intent')).toBe(false);
       expect(request.toolResult).toBeUndefined();
       expect(request.tools.some(tool => tool.name === 'discover_catalog')).toBe(false);
       const result = input.currentContext;
@@ -49,20 +119,20 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       expect(request.instructions).toContain('Do not ask the user to choose before answering basic capability questions');
       expect(request.instructions).not.toContain('Show business output, ordered calls, trace and receipts separately');
       expect(request.instructions).toContain('Missing is not done: deny both absent and open');
-      if (input.hostContext.intent === 'discuss') {
-        expect(request.tools.some(tool => tool.name === 'offer_proposal')).toBe(false);
+       if (input.currentUserMessage === 'What can we do here?') {
         return { calls: [], text: help, usage: { inputTokens: 1, outputTokens: 1 } };
       }
       if (input.currentUserMessage.includes('Slack messages')) return reply('ask_clarification', { question: narrowing });
       if (input.currentUserMessage === 'Yes, leave out Slack.') {
-        expect(input.clarificationContext).toBe(narrowing);
-        expect(input.previousUserMessages.at(-1)).toContain('Slack messages');
+         expect(input.transcript.messages.at(-1)).toEqual({ role: 'assistant', text: narrowing });
+         expect(input.transcript.messages.at(-2).text).toContain('Slack messages');
       }
       if (width === 1440) return reply('offer_proposal', reviewOffer);
       return reply('offer_proposal', allowMissingReview(reviewOffer));
     },
   }) } });
   const project = taskService(fixture.db).createProject('maya', { name: 'Launch team', mode: 'TEAM' });
+  seedEarlierTeamDiscussion(fixture.db, project.id);
   teamProjectService(fixture.db).addMember('maya', project.id, { userId: 'leo' });
   async function selectTeam() {
     const select = page.getByRole('combobox', { name: 'Project', exact: true });
@@ -93,7 +163,7 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await selectTeam();
     await page.screenshot({ path: info.outputPath('team-tasks.png') });
     await navigate(page, 'Customizations');
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await earlierTeamWork(page);
     if (width === 390) {
       const scope = page.getByLabel('Personal or Team project', { exact: true });
       await expect(scope).toHaveValue(project.id);
@@ -140,11 +210,11 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
     await expect(proposed.getByText(/The task stays open\. Complete its linked review first\./)).toBeVisible();
     await proposed.getByText('Examples', { exact: true }).click();
     expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(0);
-    expect(requests).toHaveLength(width === 390 ? 8 : 4);
+    expect(requests).toHaveLength(width === 390 ? 5 : 2);
     expect(fixture.db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros).toBe(requests.length * OPENAI_RESERVE_MICROS);
     if (width === 390) {
       await page.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
-      await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+      await earlierTeamWork(page);
       const latest = page.getByRole('log', { name: 'Latest messages', exact: true });
       await expect(latest).toContainText('Yes, leave out Slack.');
       await expect(latest).toBeInViewport({ ratio: 1 });
@@ -160,7 +230,7 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       await page.getByText('Earlier messages', { exact: true }).click();
       await expect(page.getByText(question, { exact: true })).toBeVisible();
       await page.getByText('Earlier messages', { exact: true }).click();
-      expect(requests).toHaveLength(8);
+      expect(requests).toHaveLength(5);
       await page.route(`**/api/projects/${project.id}/authoring/confirm`, async route => {
         const saved = await route.fetch();
         expect(saved.status()).toBe(200);
@@ -168,7 +238,7 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       }, { times: 1 });
     }
     await page.getByRole('button', { name: 'Confirm this behavior' }).click();
-    await expect(page.getByRole('button', { name: 'Approve this draft' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Approve this draft' })).toBeEnabled({ timeout: 20_000 });
     expect(fixture.db.prepare('SELECT count(*) AS n FROM team_revisions').get().n).toBe(1);
     const decision = page.getByRole('region', { name: 'Review and current use' });
     const behavior = decision.getByText(behaviorText, { exact: true });
@@ -305,7 +375,6 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
   const fixture = await startAuthoringFixture({ authoringOverride: {
     config: { status: 'ready', provider: 'openai', model: 'fixture', reserveMicros: OPENAI_RESERVE_MICROS, maxMicros: 4_000_000 },
     providerFactory: config => ({ reserveMicros: config.reserveMicros, maxMicros: config.maxMicros, async complete(request) {
-      const isIntent = request.tools[0].name === 'resolve_intent';
       const offer = linkedOffer();
       if (JSON.parse(request.input).currentUserMessage === 'Prepare the first proposal') {
         // A real compiler error, not a mocked HTTP rejection and not one the offer contract claims to catch.
@@ -313,11 +382,11 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
         source.return.record.status = { cel: 'unboundResult' };
         offer.TaskCreated.source = JSON.stringify(source);
       }
-      return { calls: [{ id: isIntent ? 'intent' : 'offer', name: isIntent ? 'resolve_intent' : 'offer_proposal',
-        arguments: isIntent ? { intent: 'prepare', question: '' } : offer }], text: '', usage: { inputTokens: 1, outputTokens: 1 } };
+       return { calls: [{ id: 'offer', name: 'offer_proposal', arguments: offer }], text: '', usage: { inputTokens: 1, outputTokens: 1 } };
     } }),
   } });
   const project = taskService(fixture.db).createProject('maya', { name: 'Launch team', mode: 'TEAM' });
+  seedEarlierTeamDiscussion(fixture.db, project.id);
   teamProjectService(fixture.db).addMember('maya', project.id, { userId: 'leo' });
   const path = `/api/projects/${project.id}/authoring/confirm`;
   let confirmations = 0;
@@ -330,9 +399,9 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(confirm).toBeEnabled();
   };
-  const reopen = async label => {
+  const reopen = async () => {
     await page.getByRole('button', { name: 'Back to Customizations' }).click();
-    await page.getByRole('button', { name: label, exact: true }).click();
+    await earlierTeamWork(page);
   };
   try {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -340,7 +409,7 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     await page.getByRole('combobox', { name: 'Project', exact: true }).selectOption(project.id);
     await navigate(page, 'Customizations');
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await earlierTeamWork(page);
     await submitted('Prepare the first proposal');
     const rejection = page.waitForResponse(response => new URL(response.url()).pathname === path);
     await confirm.click();
@@ -349,7 +418,7 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
     await expect(unsaved).toBeInViewport({ ratio: 0.99 });
     await expect(confirm).toHaveCount(0);
     expect(revisions()).toBe(0);
-    await reopen('Open Studio');
+    await reopen();
     await expect(unsaved).toBeInViewport({ ratio: 0.99 });
     await expect(confirm).toHaveCount(0);
     await page.screenshot({ path: info.outputPath('confirm-definitely-unsaved.png') });
@@ -361,7 +430,7 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
     await expect(unknown).toBeInViewport({ ratio: 0.99 });
     await expect(unsaved).toHaveCount(0);
     await unknown.getByRole('button', { name: 'Check saved state' }).click();
-    await reopen('Open Studio');
+    await reopen();
     await expect(unknown).toBeInViewport({ ratio: 0.99 });
     await expect(confirm).toHaveCount(0);
     expect(confirmations).toBe(2);
@@ -381,3 +450,8 @@ test('Team confirmation distinguishes definite rejection, unknown delivery and a
     await page.screenshot({ path: info.outputPath('confirm-saved-check-unavailable.png') });
   } finally { await page.close(); await fixture.close(); }
 });
+async function earlierTeamWork(page) {
+  await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+  await page.getByText('More', { exact: true }).click();
+  await page.getByRole('button', { name: 'Open earlier Team work' }).click();
+}

@@ -5,6 +5,8 @@ import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
 import { AppError, notFound, transaction, taskService } from './data.mjs';
 import { projectAccess, taskAccess, verifiedChild } from './team-native.mjs';
 import { digest, json } from './extension-catalog.mjs';
+import { SHARED_MANIFEST } from './shared-completion-contract.mjs';
+import { isTaskBundle } from './shared-task-bundle.mjs';
 
 export let teamModelBytes, teamModel;
 try {
@@ -49,19 +51,32 @@ export function installTeamRevision(db, actor, projectId, revisionId, hooks) {
 }
 
 export function createTeamRuntime({ db, clock = () => Math.floor(performance.now()),
-  beforeCompleteCommit, beforeEffectCommit, effectReply } = {}) {
+  beforeCompleteCommit, beforeEffectCommit, effectReply, sharedCompletion } = {}) {
   const keys = new WeakMap(), running = new Set();
   let closing = false, draining, requested = false;
   const admission = id => db.prepare('SELECT * FROM team_admissions WHERE source_task_id=?').get(id);
   const savedEvent = id => db.prepare('SELECT * FROM team_admissions WHERE event_id=?').get(id);
+  const bundleAdmission = taskId => db.prepare(`SELECT a.event_id,a.project_id,a.source_task_id,a.initiator_id,
+    a.operation_id,a.original_key,a.revision_id,a.policy_state,a.manifest,a.created_at,p.activation_id
+    FROM team_admissions a JOIN shared_completion_roots p ON p.root_id=a.event_id WHERE a.source_task_id=?`).get(taskId);
+  const taskIdentity = ({ id, owner_id, project_id, creator_id, parent_task_id, origin_event_id, created_at }) =>
+    [id, owner_id, project_id, creator_id, parent_task_id, origin_event_id, created_at];
   function revision(row) {
-    if (!teamModel?.capabilities || !teamModelBytes) throw unavailable();
     if (row?.policy_state !== 'PINNED' || !row.revision_id || !row.manifest) throw unavailable();
     const saved = db.prepare('SELECT * FROM team_revisions WHERE project_id=? AND revision_id=?')
       .get(row.project_id, row.revision_id);
     if (!saved || saved.revoked_at !== null || saved.manifest !== row.manifest) throw unavailable();
     const manifest = JSON.parse(saved.manifest);
-    if (manifest.modelDigest !== digest(teamModelBytes) || !Array.isArray(manifest.grants)
+    if (Object.hasOwn(manifest, 'format')) {
+      if (isTaskBundle(manifest.format) && sharedCompletion) {
+        if ((manifest.hooks.TaskCreated === null) !== (row.state === 'NO_HOOK')) throw unavailable();
+        return { manifest: manifest.hooks, exact: sharedCompletion.teamBinding(row) };
+      }
+      if (manifest.format !== SHARED_MANIFEST || !sharedCompletion || row.state !== 'NO_HOOK') throw unavailable();
+      sharedCompletion.teamBinding(row);
+      return { manifest: manifest.hooks };
+    }
+    if (!teamModel?.capabilities || !teamModelBytes || manifest.modelDigest !== digest(teamModelBytes) || !Array.isArray(manifest.grants)
         || manifest.grants.some(id => !Object.hasOwn(teamModel.capabilities, id))
         || !Object.hasOwn(manifest, 'TaskCreated') || !Object.hasOwn(manifest, 'TaskBeforeComplete')) throw unavailable();
     return { manifest, artifacts: JSON.parse(saved.artifacts) };
@@ -199,6 +214,10 @@ export function createTeamRuntime({ db, clock = () => Math.floor(performance.now
     }
   }
   async function attempt(row) {
+    if (isTaskBundle(JSON.parse(row.manifest ?? 'null')?.format)) {
+      try { await sharedCompletion?.run(row.event_id); } catch { /* Unavailable exact attempts never bypass the shared binding. */ }
+      return;
+    }
     let claimed;
     try {
       claimed = transaction(db, () => {
@@ -225,7 +244,7 @@ export function createTeamRuntime({ db, clock = () => Math.floor(performance.now
     const row = admission(taskId);
     if (!row) {
       const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
-      if (!verifiedChild(db, task)) throw unavailable();
+      if (!verifiedChild(db, task) && !sharedCompletion?.verifiedCreatedTask(task)) throw unavailable();
       return { state: 'NO_BINDING', outcome: null, receipt: null, reconciliation: null };
     }
     const receipt = row.receipt && JSON.parse(row.receipt);
@@ -249,48 +268,75 @@ export function createTeamRuntime({ db, clock = () => Math.floor(performance.now
       return taskService(db).getTask(actor, taskId);
     });
     const row = admission(taskId);
+    const bundled = isTaskBundle(JSON.parse(row?.manifest ?? 'null')?.format);
+    const pin = bundled && bundleAdmission(taskId);
     let evaluated;
-    if (!initial.row.parent_task_id) {
+    const gateAuthority = (status = 'open') => {
+      within(lease);
+      if (context.authorize && context.authorize() !== actor) throw new AppError(401, 'Your demo session changed. Sign in again.');
+      const { row: task, project } = taskAccess(db, actor, taskId, true);
+      const fresh = admission(taskId);
+      if (!pin || !fresh || project.id !== row.project_id || project.mode !== 'TEAM' || task.status !== status
+          || task.created_at !== row.created_at || task.creator_id !== row.initiator_id
+          || json(bundleAdmission(taskId)) !== json(pin) || json(taskIdentity(task)) !== json(taskIdentity(initial.row))) throw stale();
+      revision(fresh);
+      return { task, project };
+    };
+    const sharedCreated = sharedCompletion?.verifiedCreatedTask(initial.row) === true;
+    if (!sharedCreated && !initial.row.parent_task_id) {
       if (!row) throw unavailable();
       if (row.policy_state !== 'NO_POLICY') {
         const selected = revision(row);
-        if (selected.manifest.TaskBeforeComplete !== null) evaluated = await run(row, actor, 'TaskBeforeComplete', context);
+        if (selected.manifest.TaskBeforeComplete !== null) evaluated = bundled
+          ? await sharedCompletion.beforeTeamComplete(actor, row, selected.exact.bindings.TaskBeforeComplete,
+            { authority: gateAuthority, deadline: lease.deadline })
+          : await run(row, actor, 'TaskBeforeComplete', context);
       }
-    } else if (!verifiedChild(db, initial.row)) throw unavailable();
+    } else if (!sharedCreated && !verifiedChild(db, initial.row)) throw unavailable();
     await beforeCompleteCommit?.({ actor, taskId });
     return transaction(db, () => {
       within(lease);
       if (context.authorize && context.authorize() !== actor) throw new AppError(401, 'Your demo session changed. Sign in again.');
       if (context.signal?.aborted) throw stale();
       const current = taskAccess(db, actor, taskId, true);
-      if (current.row.parent_task_id) {
+      if (sharedCreated) {
+        if (!sharedCompletion.verifiedCreatedTask(current.row)) throw unavailable();
+      } else if (current.row.parent_task_id) {
         if (!verifiedChild(db, current.row)) throw unavailable();
       } else {
         const fresh = admission(taskId);
-        if (!fresh || json(fresh) !== json(row)) throw stale();
+        if (!fresh || (bundled ? !pin || json(bundleAdmission(taskId)) !== json(pin)
+          || json(taskIdentity(current.row)) !== json(taskIdentity(initial.row)) : json(fresh) !== json(row))) throw stale();
         if (fresh.policy_state === 'NO_POLICY') {
           if (fresh.revision_id !== null || fresh.manifest !== null) throw unavailable();
         } else {
           const selected = revision(fresh);
           if (selected.manifest.TaskBeforeComplete !== null) {
             if (!evaluated) throw unavailable();
-            const { outcome, ctx } = evaluated;
-            authority(ctx);
-            recheckReads(ctx);
-            if (outcome.classification !== 'COMPLETED' || !Array.isArray(outcome.effects) || outcome.effects.length
-                || !outcome.result || !['ALLOW', 'DENY'].includes(outcome.result.decision)
-                || typeof outcome.result.message !== 'string') throw unavailable();
-            if (outcome.result.decision !== 'ALLOW') throw new AppError(422, outcome.result.message.slice(0, 256) || 'This task is not ready to complete.');
+            if (bundled) {
+              evaluated.recheck();
+              if (evaluated.result.decision !== 'ALLOW') throw new AppError(422, evaluated.result.message);
+            } else {
+              const { outcome, ctx } = evaluated;
+              authority(ctx);
+              recheckReads(ctx);
+              if (outcome.classification !== 'COMPLETED' || !Array.isArray(outcome.effects) || outcome.effects.length
+                  || !outcome.result || !['ALLOW', 'DENY'].includes(outcome.result.decision)
+                  || typeof outcome.result.message !== 'string') throw unavailable();
+              if (outcome.result.decision !== 'ALLOW') throw new AppError(422, outcome.result.message.slice(0, 256) || 'This task is not ready to complete.');
+            }
           }
         }
       }
       const now = new Date().toISOString();
-      db.prepare("UPDATE tasks SET status='completed',completed_at=?,updated_at=? WHERE id=? AND status='open'").run(now, now, taskId);
-      if (evaluated) authority(evaluated.ctx);
+      const changed = db.prepare("UPDATE tasks SET status='completed',completed_at=?,updated_at=? WHERE id=? AND status='open'").run(now, now, taskId).changes;
+      if (evaluated?.ctx) authority(evaluated.ctx);
       if (row?.policy_state === 'PINNED') revision(admission(taskId));
       within(lease);
       taskAccess(db, actor, taskId, true);
       if (context.authorize && context.authorize() !== actor) throw new AppError(401, 'Your demo session changed. Sign in again.');
+      if (changed && !sharedCreated) sharedCompletion?.capture(actor, taskId, now);
+      if (evaluated?.recheck) evaluated.recheck('completed');
       return taskService(db).getTask(actor, taskId);
     });
   }

@@ -13,7 +13,7 @@ export function createQualificationHost({ env = process.env } = {}) {
       + 'Discover the supported contract and actual existing project IDs; do not guess IDs or use placeholder constants. Author my project and title choices in source. '
       + 'Independently expect one creation for a completed task in that project, none for another project, and no claimed creation when the source is missing, denied or temporarily unavailable. '
       + 'A later human completion of the created task is a new occurrence and should match again. Use those expectations to author the example cases before checking. '
-      + 'Prepare and check the exact change, then offer review. Do not approve, activate, complete a real task or create a real task.' }],
+      + 'Offer the exact behavior and its independent examples for human confirmation. Do not save, run checks, approve, activate or change any real task.' }],
     async runCheck({ config, inputs, fetchImpl }) {
       const prefix = join(tmpdir(), 'keir-ai-qualification-');
       const directory = await mkdtemp(prefix);
@@ -34,7 +34,7 @@ export function createQualificationHost({ env = process.env } = {}) {
             text: input.text, expectedVersion: conversation?.version ?? 0,
             expectedDraftVersion: conversation ? lifecycle.state('sam', conversation.extensionId).draftVersion : 0 }, lease);
           conversation = await service.wait('sam', accepted.conversation.id);
-          if (conversation.status !== 'AWAITING_USER') break;
+          if (conversation.status !== 'AWAITING_USER' || conversation.offer) break;
         }
         const state = JSON.parse(db.prepare('SELECT state FROM authoring_conversations WHERE id=?').get(conversation.id).state);
         if (JSON.stringify(db.prepare('SELECT * FROM tasks ORDER BY id').all()) !== nativeBefore

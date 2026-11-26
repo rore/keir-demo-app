@@ -64,8 +64,8 @@ test('the same structural tool offers conditional triage and a linked handoff wi
     let count = 0;
     const provider = { reserveMicros: 1, maxMicros: 100, complete: async request => {
       count++;
-      const name = count === 1 ? 'resolve_intent' : 'offer_proposal';
-      if (count === 2) {
+       const name = 'offer_proposal';
+       if (count === 1) {
         const catalog = JSON.parse(request.input).currentContext;
         assert.equal(catalog.businessContext.project.id, id);
         assert.deepEqual(catalog.businessContext.members.map(m => m.id).sort(), ['leo', 'maya', 'sam']);
@@ -76,14 +76,14 @@ test('the same structural tool offers conditional triage and a linked handoff wi
         assert.deepEqual(catalog.currentProposal, index ? plain : null);
         assert.equal(Object.hasOwn(catalog, 'modelDigest'), false);
       }
-      return { calls: [{ id: `call${count}`, name, arguments: count === 1 ? { intent: 'prepare', question: '' } : offer }],
+       return { calls: [{ id: `call${count}`, name, arguments: offer }],
         text: '', usage: { inputTokens: 1, outputTokens: 1 } };
     } };
     const result = await runAuthoringTurn({ provider, host, context, state: createAuthoringState(context), tools: teamConversationTools,
       hostTools: teamConversationHandlers, discoverBeforeReply: true,
-      input: { id: 'request', expectedVersion: 0, intent: 'auto', text: 'Set up the requested follow-up.' } });
+       input: { id: 'request', expectedVersion: 0, text: 'Set up the requested follow-up.' } });
     assert.equal(result.status, 'AWAITING_USER', result.code);
-    assert.equal(count, 2);
+     assert.equal(count, 1);
     assert.equal(hostCompiles, index, 'Neither offer compiles before the separate human action');
     assert.equal(read(capability, id).draftVersion, index);
     assert.equal(db.prepare('SELECT count(*) AS n FROM team_evidence').get().n, index);

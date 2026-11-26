@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AppError, notFound, transaction } from './data.mjs';
+import { SHARED_MANIFEST } from './shared-completion-contract.mjs';
+import { isTaskBundle } from './shared-task-bundle.mjs';
 
 export const teamTables = ['team_controls', 'team_activations', 'team_approvals', 'team_evidence', 'team_drafts', 'team_admissions', 'team_selections', 'team_revisions', 'project_members'];
 export const addTeamControls = `
@@ -155,26 +157,38 @@ export function taskAccess(db, actor, id, write = false) {
   return { row, project };
 }
 
-export function admitTeamRoot(db, actor, taskId, operationId, now) {
+export function teamCreateSelection(db, projectId) {
+  return db.prepare(`SELECT s.revision_id,s.generation,r.manifest,r.revoked_at,a.id AS activation_id
+    FROM team_selections s LEFT JOIN team_revisions r ON r.project_id=s.project_id AND r.revision_id=s.revision_id
+    LEFT JOIN team_activations a ON a.project_id=s.project_id AND a.revision_id=s.revision_id AND a.generation=s.generation
+    WHERE s.project_id=?`).get(projectId);
+}
+
+export function admitTeamRoot(db, actor, taskId, operationId, now, sharedAdmission) {
   const { row, project } = taskAccess(db, actor, taskId);
-  const selected = db.prepare('SELECT revision_id FROM team_selections WHERE project_id=?').get(project.id);
+  const selected = db.prepare('SELECT revision_id,generation FROM team_selections WHERE project_id=?').get(project.id);
   if (!selected) throw new AppError(503, 'This Team project has no policy selection record.');
   const revision = selected.revision_id === null ? null
     : db.prepare('SELECT * FROM team_revisions WHERE project_id=? AND revision_id=?').get(project.id, selected.revision_id);
   if (selected.revision_id !== null && (!revision || revision.revoked_at !== null))
     throw new AppError(503, 'The selected Team policy is unavailable.');
-  let manifest;
+  let manifest, activation;
   if (revision) {
     manifest = JSON.parse(revision.manifest);
-    if (!Object.hasOwn(manifest, 'TaskCreated') || !Object.hasOwn(manifest, 'TaskBeforeComplete'))
+    if (Object.hasOwn(manifest, 'format')) {
+      if (manifest.format !== SHARED_MANIFEST && !isTaskBundle(manifest.format) || !sharedAdmission) throw new AppError(503, 'The selected Team policy is unavailable.');
+      activation = sharedAdmission(project.id, revision, selected.generation);
+    } else if (!Object.hasOwn(manifest, 'TaskCreated') || !Object.hasOwn(manifest, 'TaskBeforeComplete'))
       throw new AppError(503, 'The selected Team policy is incomplete.');
   }
   if (row.creator_id !== actor) throw notFound();
+  const event = randomUUID();
   db.prepare(`INSERT INTO team_admissions(event_id,project_id,source_task_id,initiator_id,operation_id,original_key,
     revision_id,policy_state,manifest,state,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(randomUUID(), project.id, row.id, actor, operationId, randomUUID(), revision?.revision_id ?? null,
+    .run(event, project.id, row.id, actor, operationId, randomUUID(), revision?.revision_id ?? null,
       revision ? 'PINNED' : 'NO_POLICY', revision?.manifest ?? null,
-      revision && manifest.TaskCreated !== null ? 'PENDING' : 'NO_HOOK', now);
+      revision && (isTaskBundle(manifest.format) ? manifest.hooks.TaskCreated !== null : !activation && manifest.TaskCreated !== null) ? 'PENDING' : 'NO_HOOK', now);
+  if (activation) db.prepare('INSERT INTO shared_completion_roots VALUES (?,?)').run(event, activation);
 }
 
 export function verifiedChild(db, row) {

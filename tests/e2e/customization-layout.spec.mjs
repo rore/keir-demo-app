@@ -244,9 +244,12 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   await expect(await editSaved(page)).toBeFocused();
   await destination(page, 'Tasks');
-  await expect(page.locator('.project-link.selected')).toHaveCount(1);
-  await expect(page.getByLabel('New task title')).toHaveValue('Keep my quick-add');
+  await expect(page.locator('.project-link.selected')).toBeHidden();
+  await expect(page.getByLabel('New task title')).toBeHidden();
   await expect(page.getByLabel('New project name', { exact: true })).toHaveValue('Keep this project draft');
+  await page.getByRole('main', { name: 'New project' }).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.locator('.project-link.selected')).toBeVisible();
+  await expect(page.getByLabel('New task title')).toHaveValue('Keep my quick-add');
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByLabel('Task title', { exact: true }).fill('Keep native detail title');
   await page.getByLabel('Notes (optional)').fill('Keep native detail notes');
@@ -294,16 +297,14 @@ test('general start offers editable requests and distinguishes untouched from of
   const before = await collection(page); let mutations = 0;
   page.on('request', request => { if (request.method() === 'POST' && /\/api\/(extensions|authoring)/.test(request.url())) mutations++; });
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(ui(page).getByRole('heading', { name: 'What would you like Daymark to do for you?' })).toBeVisible();
-  await expect(ui(page).getByRole('button', { name: 'Prioritize new requests', exact: true })).toBeVisible();
+  await expect(ui(page).getByText('Personal · Untitled customization', { exact: true })).toBeVisible();
   await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible();
   await expect(ui(page).getByRole('button', { name: /See available starting points|Pending for open tasks|Needs attention for open tasks|Change choice/ })).toHaveCount(0);
   await expect(ui(page).getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
-  await expect(ui(page).getByText('Set up the assistant to create or change a customization.', { exact: true })).toBeVisible();
   await expect(ui(page).getByRole('button', { name: 'Configure', exact: true })).toBeVisible();
-  await picture(page, 'general-start'); expect(await collection(page)).toEqual(before); expect(mutations).toBe(0);
+  await picture(page, 'general-start'); expect((await collection(page)).selection).toEqual(before.selection); expect(mutations).toBe(0);
   await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
-  await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeFocused();
+  await expect(page.getByRole('article', { name: 'Untitled customization' })).toBeVisible();
   await switchPerson(page, 'maya');
   await openStudio(page);
   const beforeOff = await savedState(page);
@@ -321,13 +322,14 @@ test('general start offers editable requests and distinguishes untouched from of
   await expect(await card(page)).toContainText('Approved · Not on yet'); await picture(page, 'general-off');
   const beforeNew = await collection(page);
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect(await collection(page)).toEqual(beforeNew);
+  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect((await collection(page)).selection).toEqual(beforeNew.selection);
 });
 
 test('saved draft resumes in chat and failed saved-state reads offer Retry', async ({ page, demo }) => {
-  await enter(page, demo); await overview(page); const initial = await collection(page);
-  await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect(await collection(page)).toEqual(initial);
+  await enter(page, demo); await overview(page);
+  const earlier = await openEarlierPersonalEditor(page, demo);
+  targets.set(page, earlier.extensionId);
+  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible();
   await prepareChoice(page, proposedLabel); const draft = await savedState(page);
   await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
   await expect(await editSaved(page)).toContainText('Continue changes'); await destination(page, 'Tasks');
@@ -476,7 +478,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(action).toBeEnabled();
     await expect(rows.nth(1)).toBeVisible();
     await expect(composer).toHaveValue('Keep this unsent thought');
-    await results.getByText('Technical details for this version', { exact: true }).click();
+    await results.getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(results).toContainText(`Evidence: ${id}`);
     await expect(results.getByLabel('Exact checked examples', { exact: true })).toContainText(id);
     await expect(results).toContainText('Example tasks; your tasks are unchanged.');
@@ -525,9 +527,11 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   await destination(page, 'Tasks'); await overview(page); await expect(await card(page)).toContainText('Couldn’t check what’s in use');
   await expect(await card(page)).not.toContainText('completed tasks: Done'); await picture(page, 'overview-unavailable');
   await switchPerson(page, 'sam'); await destination(page, 'Customizations');
-  await expect(page.locator('.customization-card')).toHaveCount(0); await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect((await savedState(page)).selection.revision).toBeNull(); expect((await savedState(page)).draft).toBeNull();
-  await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click(); await expect(page.locator('.customization-card')).toHaveCount(0); await picture(page, 'overview-off');
+  await expect(page.locator('.customization-card')).toHaveCount(0);
+  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await expect(ui(page).getByText('Personal · Untitled customization', { exact: true })).toBeVisible();
+  await expect(ui(page).getByRole('region', { name: 'Saved draft' })).toHaveCount(0);
+  await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click(); await picture(page, 'overview-off');
 });
 test('transcript and canvas own wheel and PageDown; arrivals preserve earlier reading and splitter keeps usable widths', async ({ page, demo }) => {
   await enter(page, demo); const fixture = await scriptLayoutAuthoring(page); await openStudio(page);
@@ -712,7 +716,7 @@ for (const operation of ['simulate', 'approve', 'activate']) {
       } else {
         results = studio.getByRole('article', { name: 'Current decision', exact: true });
         await expect(results.getByRole('article', { name: /^Example:/ }).first()).toBeVisible();
-        await results.getByText('Technical details for this version', { exact: true }).click();
+        await results.getByText('Advanced: saved evidence', { exact: true }).click();
         proof = await results.getByLabel('Exact checked examples', { exact: true }).textContent();
       }
       const anchor = operation === 'simulate'
@@ -745,3 +749,4 @@ for (const operation of ['simulate', 'approve', 'activate']) {
     } finally { release?.(); }
   });
 }
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

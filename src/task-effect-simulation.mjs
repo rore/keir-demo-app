@@ -72,9 +72,9 @@ function errorShape(error, cause = true) {
     requireThat(/^\/steps\/[0-7]$/.test(error.cause.path) && (error.path === handler || error.path.startsWith(handler + '/')));
   }
 }
-function checkedHost(host) {
+function checkedHost(host, extraHook) {
   const trusted = definitionForPins(host.pins);
-  requireThat(TASK_HOOKS.includes(trusted.pins.hook) && host.definitionId === trusted.definitionId
+  requireThat((TASK_HOOKS.includes(trusted.pins.hook) || trusted.pins.hook === extraHook) && host.definitionId === trusted.definitionId
     && host.dcmBytes instanceof Uint8Array && Buffer.from(host.dcmBytes).equals(trusted.dcmBytes));
   return trusted;
 }
@@ -143,7 +143,7 @@ export function consumeTaskEffect(outcome, host) {
 }
 
 function decisionConsumer(dcm, hook) {
-  requireThat(hook === 'TaskBeforeCreate' && dcm.entrypoints[hook].consumer.kind === 'DECISION');
+  requireThat(['TaskBeforeCreate', 'TaskBeforeComplete'].includes(hook) && dcm.entrypoints[hook].consumer.kind === 'DECISION');
   return outcome => {
     try {
       const value = snapshot(outcome);
@@ -184,7 +184,7 @@ function decisionConsumer(dcm, hook) {
   };
 }
 export function createTaskDecisionConsumer(host) {
-  const trusted = checkedHost(host);
+  const trusted = checkedHost(host, 'TaskBeforeComplete');
   return decisionConsumer(JSON.parse(trusted.dcmBytes), trusted.pins.hook);
 }
 function validateFields(dcm, declarations, value) {

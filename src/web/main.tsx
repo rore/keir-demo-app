@@ -2,7 +2,9 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Temporal } from "temporal-polyfill";
 import "./styles.css";
-import Studio, { sha256, type Collection, type StudioTarget } from "./Studio";
+import Studio, { pendingRequests, sha256, type Collection, type State, type StudioTarget } from "./Studio";
+import SharedCompletionStudio, { offerTime, TeamActiveRule } from "./SharedCompletionStudio";
+import type { ActiveTeam } from "./SharedCompletionStudio";
 import Customizations, { CustomizationsPage } from "./Customizations";
 import TeamCapability from "./TeamCapability";
 import { normalizeTaskTags } from "../task-workflow-values.mjs";
@@ -19,6 +21,9 @@ function studioLink() {
   const keys = Array.from(params.keys());
   const id = (value: string | null) => value !== null && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value);
   if (keys.length === 1 && id(params.get("teamProject"))) return { valid: true, target: null, teamProject: params.get("teamProject")! };
+  const teamStudio = params.get("studio");
+  if (keys.length === 2 && id(params.get("teamProject")) && (teamStudio === "shared" || teamStudio === "legacy"))
+    return { valid: true, target: null, teamProject: params.get("teamProject")!, teamStudio };
   if (keys.length === 1 && params.get("personal") === "1") return { valid: true, target: null, personal: true };
   if (keys.length === 1 && params.get("new") === "1") return { valid: true, target: { extensionId: null } as StudioTarget };
   if (keys.length < 1 || keys.length > 2 || new Set(keys).size !== keys.length || keys.some(key => !["customization", "conversation"].includes(key))
@@ -29,11 +34,13 @@ type Project = { id: string; name: string; mode?: "PERSONAL" | "TEAM"; role?: "A
 type Members = { project: Project; members: { id: string; name: string; role: "ADMIN" | "MEMBER" }[] };
 type NativeReceipt = { kind: string; effect?: "CONFIRMED" | "NONE" | "UNKNOWN"; value?: { id: string }; code?: string };
 type NativeChange = Pick<Task, "tags" | "priority" | "dueAt">;
-type ReactionObservation = { capability?: "tasks.create" | "tasks.update"; observation?: { updated?: { id: string; before: NativeChange; after: NativeChange } } };
+type ReactionObservation = { capability?: "tasks.create" | "tasks.update"; destinationProjectId?: string;
+  observation?: { updated?: { id: string; before: NativeChange; after: NativeChange } } };
 type Reaction = {
   state: "NO_BINDING" | "PENDING" | "STARTED" | "FINISHED";
   workflow?: boolean;
   team?: boolean;
+  linked?: boolean;
   revisionId?: string | null;
   revoked?: boolean;
   outcome?: { classification?: string; effects?: { state?: string; effect?: string }[]; error?: { code?: string }; [key: string]: unknown } | null;
@@ -120,7 +127,7 @@ function taskDraft(task: Task, dueZone = Temporal.Now.timeZoneId()): TaskDraft {
 
 function formatDueTime(dueAt: string, timeZone = Temporal.Now.timeZoneId()) {
   return new Date(dueAt).toLocaleString(undefined, { timeZone, year: "numeric", month: "short", day: "numeric",
-    hour: "numeric", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, timeZoneName: "shortOffset",
+    hour: "numeric", minute: "2-digit", timeZoneName: "shortOffset",
     era: dueAt.startsWith("0001-01-01") ? "short" : undefined });
 }
 
@@ -423,6 +430,10 @@ function Workspace({
   const [projectMode, setProjectMode] = useState<"PERSONAL" | "TEAM">("PERSONAL");
   const [membersOpen, setMembersOpen] = useState(false);
   const [newProject, setNewProject] = useState(false);
+  const [projectCreateError, setProjectCreateError] = useState("");
+  const [projectCreateUncertain, setProjectCreateUncertain] = useState(false);
+  const projectCreatePending = useRef(false);
+  const restoreProjectLauncher = useRef(false);
   const [rename, setRename] = useState(false);
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<Task | null>(null);
@@ -446,12 +457,16 @@ function Workspace({
     }
     return stored;
   });
-  const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">(savedRoute ? "studio" : !entryLink.valid || entryLink.teamProject || entryLink.personal ? "customizations" : "tasks");
+  const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">(savedRoute || entryLink.teamStudio ? "studio" : !entryLink.valid || entryLink.teamProject || entryLink.personal ? "customizations" : "tasks");
   const [studioOrigin, setStudioOrigin] = useState<"detail" | "overview">("overview");
   const [studioTarget, setStudioTarget] = useState(savedRoute ?? { extensionId: null, entryId: crypto.randomUUID() });
+  const [teamLegacy, setTeamLegacy] = useState(entryLink.teamStudio === "legacy");
+  const [personalEditor, setPersonalEditor] = useState<{ entryId: string; shared: boolean | null } | null>(null);
+  const [studioReadRetry, setStudioReadRetry] = useState(0);
   const [customizationNotice, setCustomizationNotice] = useState(entryLink.valid ? "" : "That customization link is invalid. Choose a saved item or start a new one.");
   const studioEntrySerial = useRef(0);
   const currentStudioEntry = useRef<string | null>(studioTarget.entryId);
+  const startingShared = useRef<{ operationId: string; running: boolean } | null>(null);
   const personalReturn = useRef<(StudioTarget & { entryId: string }) | null>(null);
   const projectsRef = useRef(projects); projectsRef.current = projects;
   const scope = useRef("PERSONAL");
@@ -505,7 +520,8 @@ function Workspace({
         const selected = projectsRef.current.find(item => item.id === link.teamProject && item.mode === "TEAM");
         if (selected) selectProject(selected.id);
         else setUnavailableTeam(true);
-        currentStudioEntry.current = null; setDestination("customizations");
+        currentStudioEntry.current = null; setTeamLegacy(link.teamStudio === "legacy");
+        setDestination(link.teamStudio && selected ? "studio" : "customizations");
       } else if (link.personal) {
         const selected = projectsRef.current.find(item => item.mode !== "TEAM");
         if (selected) selectProject(selected.id);
@@ -524,10 +540,11 @@ function Workspace({
     window.addEventListener("hashchange", changed);
     return () => window.removeEventListener("hashchange", changed);
   }, [routeKey]);
+  const tasksVisible = destination === "tasks" && !newProject;
   const detailVisible = useRef(false);
-  detailVisible.current = destination === "tasks" && !!detail;
+  detailVisible.current = tasksVisible && !!detail;
   const createVisible = useRef(false);
-  createVisible.current = destination === "tasks" && createOpen;
+  createVisible.current = tasksVisible && createOpen;
   const resumeDetail = useRef(false);
   const destinationFocus = useRef<string | null>(null);
   const taskScroller = useRef<HTMLElement>(null);
@@ -659,20 +676,64 @@ function Workspace({
     const hash = next === "customizations" && project?.mode === "TEAM" ? "#teamProject=" + encodeURIComponent(project.id) : "";
     if (hash !== location.hash) history.pushState(null, "", location.pathname + location.search + hash);
   }
+  useEffect(() => {
+    if (destination !== "studio" || !projectsReady || scope.current !== "PERSONAL" || !studioTarget.extensionId || studioTarget.conversationId) return;
+    if (personalEditor?.entryId === studioTarget.entryId && personalEditor.shared !== null) return;
+    const { extensionId, entryId } = studioTarget;
+    const abort = new AbortController();
+    void studioRequest<State>("extensions/" + encodeURIComponent(extensionId), "GET", undefined, abort.signal).then(saved => {
+      if (!abort.signal.aborted) setPersonalEditor({ entryId, shared: saved.sharedStudio === true });
+    }).catch(failure => {
+      if (!abort.signal.aborted && currentStudioEntry.current === entryId)
+        setPersonalEditor({ entryId, shared: failure instanceof ApiError && [404, 410].includes(failure.status) ? false : null });
+    });
+    return () => abort.abort();
+  }, [destination, projectsReady, projectId, studioTarget, studioReadRetry]);
+  const hasPendingCreation = (entryId: string | undefined) => !!entryId && pendingRequests(session.user.id)
+    .some(item => item.entryId === entryId && item.turn.target.kind === "create");
+  const openingNewStudio = !studioTarget.extensionId && !studioTarget.conversationId && !hasPendingCreation(studioTarget.entryId);
   async function openStudio(origin: "detail" | "overview", target: StudioTarget = { extensionId: null }) {
     if (scope.current !== "PERSONAL") { setDestination("customizations"); return; }
+    if (startingShared.current?.running) return;
     const entry = ++studioEntrySerial.current;
     if (origin === "detail") {
       try {
         const collection = await studioRequest<Collection>("extensions");
         if (lifetime.current.signal.aborted || studioEntrySerial.current !== entry || !detailVisible.current) return;
-        target = { extensionId: collection.selection.revision?.extensionId ?? null };
+        target = { extensionId: collection.selection.revision?.extensionId ?? collection.selections?.TaskCreated?.revision?.extensionId ?? null };
       } catch (failure) { handleError(failure); return; }
+    }
+    if (!target.extensionId && !target.conversationId && !hasPendingCreation(target.recoveryId)) {
+      const attempt = startingShared.current ??= { operationId: crypto.randomUUID(), running: false };
+      attempt.running = true;
+      try {
+        const result = await studioRequest<{ extensionId: string }>("shared-studio/new-personal", "POST", { operationId: attempt.operationId });
+        startingShared.current = null;
+        if (studioEntrySerial.current !== entry || (origin === "detail" && !detailVisible.current)) return;
+        target = { extensionId: result.extensionId };
+      } catch (failure) {
+        if (studioEntrySerial.current === entry && !lifetime.current.signal.aborted) {
+          handleError(failure);
+          setCustomizationNotice("Could not open Studio. Try New customization again to check the same attempt.");
+        }
+        return;
+      } finally { attempt.running = false; }
     }
     setCustomizationNotice("");
     setStudioOrigin(origin);
     rememberStudio({ ...target, entryId: target.recoveryId ?? crypto.randomUUID() });
     setDestination("studio");
+  }
+  useEffect(() => {
+    if (destination === "studio" && projectsReady && scope.current === "PERSONAL" && openingNewStudio)
+      void openStudio("overview");
+  }, [destination, projectsReady, studioTarget]);
+  function openTeamStudio(legacy: boolean) {
+    if (project?.mode !== "TEAM") return;
+    studioEntrySerial.current++;
+    setTeamLegacy(legacy);
+    setDestination("studio");
+    history.pushState(null, "", location.pathname + location.search + "#teamProject=" + encodeURIComponent(project.id) + "&studio=" + (legacy ? "legacy" : "shared"));
   }
   function returnFromStudio() {
     studioEntrySerial.current++;
@@ -691,12 +752,12 @@ function Workspace({
     currentStudioEntry.current = null;
     setDestination("tasks");
   }
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (destinationFocus.current) {
       document.getElementById(destinationFocus.current)?.focus({ preventScroll: true });
       destinationFocus.current = null;
     }
-  }, [destination]);
+  }, [destination, newProject]);
   useEffect(() => {
     request<Project[]>("projects")
       .then((data) => {
@@ -791,8 +852,8 @@ function Workspace({
     }
   }, [destination]);
   useLayoutEffect(() => {
-    if (destination === "tasks" && taskScroller.current) taskScroller.current.scrollTop = taskScroll.current;
-    if ((detail || createOpen) && destination === "tasks") {
+    if (tasksVisible && taskScroller.current) taskScroller.current.scrollTop = taskScroll.current;
+    if ((detail || createOpen) && tasksVisible) {
       detailRef.current?.showModal();
       if (createOpen) document.getElementById("edit-title")?.focus();
       if (resumeDetail.current) {
@@ -802,7 +863,7 @@ function Workspace({
     }
     else {
       detailRef.current?.close();
-      if (destination === "tasks" && returnFocus.current) {
+      if (tasksVisible && returnFocus.current) {
         const opening = returnFocus.current;
         const row = opening.id ? document.getElementById(opening.id) : null;
         const fallback = returnToSearch.current ? searchHeading.current : null;
@@ -810,7 +871,11 @@ function Workspace({
         returnFocus.current = null;
       }
     }
-  }, [detail?.id, createOpen, destination]);
+    if (tasksVisible && restoreProjectLauncher.current) {
+      restoreProjectLauncher.current = false;
+      document.getElementById("new-project")?.focus({ preventScroll: true });
+    }
+  }, [detail?.id, createOpen, tasksVisible]);
   useLayoutEffect(() => {
     const previous = removedRecoveryFocus.current;
     removedRecoveryFocus.current = null;
@@ -839,28 +904,48 @@ function Workspace({
   function saveProject(event: FormEvent) {
     event.preventDefault();
     action(
-      () =>
-        request<Project>(
-          rename ? `projects/${projectId}` : "projects",
-          rename ? "PATCH" : "POST",
-          rename ? { name: projectName } : { name: projectName, mode: projectMode },
-        ),
+      () => request<Project>(`projects/${projectId}`, "PATCH", { name: projectName }),
       (saved) => {
-        setProjects((old) =>
-          rename
-            ? old.map((item) => (item.id === saved.id ? saved : item))
-            : [...old, saved],
-        );
-        projectsRef.current = rename ? projectsRef.current.map(item => item.id === saved.id ? saved : item) : [...projectsRef.current, saved];
+        projectsRef.current = projectsRef.current.map(item => item.id === saved.id ? saved : item);
+        setProjects(projectsRef.current);
         selectProject(saved.id);
         setProjectName("");
-        setNewProject(false);
-        setProjectMode("PERSONAL");
         setRename(false);
         setNotice("Project saved.");
         requestAnimationFrame(() => document.getElementById("tasks-heading")?.focus());
       },
     );
+  }
+  async function createProject(event: FormEvent) {
+    event.preventDefault();
+    if (busy || projectCreatePending.current || projectCreateUncertain) return;
+    projectCreatePending.current = true;
+    const current = generation.current;
+    setBusy(true);
+    setProjectCreateError("");
+    try {
+      const saved = await request<Project>("projects", "POST", { name: projectName, mode: projectMode });
+      if (lifetime.current.signal.aborted) return;
+      projectsRef.current = [...projectsRef.current, saved];
+      setProjects(projectsRef.current);
+      setNewProject(false);
+      if (generation.current !== current) return;
+      taskScroll.current = 0;
+      selectProject(saved.id);
+      destinationFocus.current = "tasks-heading";
+      setDestination("tasks");
+    } catch (failure) {
+      if (lifetime.current.signal.aborted) return;
+      if (failure instanceof ApiError && failure.status === 401) handleError(failure);
+      else if (failure instanceof ApiError && failure.status === 400) setProjectCreateError(failure.message);
+      else {
+        setProjectCreateUncertain(true);
+        setProjectCreateError("Could not confirm the save. Reload Tasks to check your projects before trying again.");
+      }
+    } finally {
+      projectCreatePending.current = false;
+      if (!lifetime.current.signal.aborted && generation.current === current) setBusy(false);
+    }
   }
   function addTask(event: FormEvent) {
     event.preventDefault();
@@ -1102,7 +1187,10 @@ function Workspace({
           {(task.priority === "high" || task.priority === "low") && task.dueAt && " · "}
           {task.dueAt && <time dateTime={task.dueAt}>Due {formatDueTime(task.dueAt)}</time>}
         </small>}
-        {recentCompletion === task.id && detail?.id !== task.id && <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} creation={!!task.creatorId} />}
+        {recentCompletion === task.id && detail?.id !== task.id && <>
+          <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} creation={!!task.creatorId} quietNonmatch={project?.mode !== "TEAM"} />
+           {task.creatorId && <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} />}
+        </>}
         </div>
       </li>
     );
@@ -1115,6 +1203,8 @@ function Workspace({
     </optgroup>;
   });
   function startProject() {
+    taskScroll.current = taskScroller.current?.scrollTop ?? 0;
+    if (!projectCreateUncertain) setProjectCreateError("");
     setNewProject(true); setRename(false); setProjectName(""); setProjectMode("PERSONAL");
   }
   const scopeControl = <div className="customization-scope">
@@ -1141,8 +1231,8 @@ function Workspace({
         <header className="workspace-top">
           <Brand />
           <nav className="destinations" aria-label="Main navigation">
-            <button aria-current={destination === "tasks" ? "page" : undefined} onClick={() => navigate("tasks")}>Tasks</button>
-            <button aria-current={destination !== "tasks" ? "page" : undefined} onClick={() => navigate("customizations")}>Customizations</button>
+             <button aria-current={destination === "tasks" ? "page" : undefined} disabled={newProject && busy} onClick={() => navigate("tasks")}>Tasks</button>
+             <button aria-current={destination !== "tasks" ? "page" : undefined} disabled={newProject && busy} onClick={() => navigate("customizations")}>Customizations</button>
           </nav>
           <details className="user-tools tool-menu" onKeyDown={dismissTool}>
             <summary>{session.user.name}<span aria-hidden="true">⌄</span></summary>
@@ -1167,8 +1257,34 @@ function Workspace({
             </div>
           </details>
         </header>
-          <main ref={taskScroller} className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={0}
-            onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
+        {newProject && destination === "tasks" && (
+          <main className="task-main" aria-labelledby="new-project-heading">
+            <form className="project-form project-editor new-project-form" onSubmit={createProject}>
+              <h1 id="new-project-heading">New project</h1>
+              {projectCreateError && <p className="error" role="alert">{projectCreateError}</p>}
+              <label htmlFor="new-project-name">New project name</label>
+              <input autoFocus id="new-project-name" value={projectName} required maxLength={80}
+                onChange={event => setProjectName(event.target.value)} placeholder="Name this project" readOnly={busy} />
+              <label htmlFor="project-mode">Who is this for?</label>
+              <select id="project-mode" value={projectMode} disabled={busy}
+                onChange={event => setProjectMode(event.target.value as "PERSONAL" | "TEAM")}>
+                <option value="PERSONAL">Personal · only you</option>
+                <option value="TEAM">Team · shared tasks</option>
+              </select>
+              {projectMode === "TEAM" && <p className="muted">You can invite teammates after creating the project.</p>}
+              <div className="form-line">
+                <button className="primary" disabled={busy || projectCreateUncertain}>{busy ? "Saving project…" : "Save project"}</button>
+                <button type="button" className="quiet-button" disabled={busy} onClick={() => {
+                  if (projectCreatePending.current) return;
+                  restoreProjectLauncher.current = true;
+                  setNewProject(false);
+                }}>Cancel</button>
+              </div>
+            </form>
+          </main>
+        )}
+          <main ref={taskScroller} className="task-main" hidden={!tasksVisible} aria-labelledby="tasks-heading" tabIndex={0}
+            onScroll={event => { if (tasksVisible && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
           <div className="task-page-heading">
           <div className="project-title">
             <div className="project-name">
@@ -1223,12 +1339,10 @@ function Workspace({
           <button id="new-project" className="quiet-button project-create" disabled={!projectsReady} onClick={startProject}>New project</button>
           </aside>
           <div className="project-work">
-          {(newProject || rename) && (
-            <form className="project-form project-editor" onSubmit={saveProject}>
-              <h2>{rename ? "Rename project" : "New project"}</h2>
-              <label htmlFor="project-name">
-                {rename ? "Project name" : "New project name"}
-              </label>
+           {rename && (
+             <form className="project-form project-editor" onSubmit={saveProject}>
+               <h2>Rename project</h2>
+               <label htmlFor="project-name">Project name</label>
                 <input
                   autoFocus
                   id="project-name"
@@ -1238,12 +1352,6 @@ function Workspace({
                   maxLength={80}
                   placeholder="Name this project"
                 />
-              {newProject && <div>
-                <label htmlFor="project-mode">Who is this for?</label>
-                <select id="project-mode" value={projectMode} onChange={event => setProjectMode(event.target.value as "PERSONAL" | "TEAM")}>
-                  <option value="PERSONAL">Personal · only you</option><option value="TEAM">Team · shared tasks</option>
-                </select>{projectMode === "TEAM" && <p className="muted">You can invite teammates after creating the project.</p>}
-              </div>}
               <div className="form-line">
                 <button className="primary" disabled={busy}>
                   Save project
@@ -1252,8 +1360,7 @@ function Workspace({
                   type="button"
                   className="quiet-button"
                    onClick={() => {
-                     (newProject ? document.getElementById("new-project") : document.querySelector<HTMLElement>(".project-tools > summary"))?.focus();
-                     setNewProject(false);
+                     document.querySelector<HTMLElement>(".project-tools > summary")?.focus();
                     setRename(false);
                   }}
                 >
@@ -1395,18 +1502,39 @@ function Workspace({
         {destination === "customizations" && (!projectsReady ? <CustomizationsPage><p role="status">Checking project access…</p></CustomizationsPage>
           : unavailableTeam ? <CustomizationsPage scopeControl={scopeControl}><p role="alert">That Team project is not available. Choose an accessible scope.</p></CustomizationsPage>
           : project?.mode === "TEAM" ? <TeamCustomizations key={session.contextToken + project.id} project={project}
-            request={studioRequest} scopeControl={scopeControl} open={() => { studioEntrySerial.current++; setDestination("studio"); }} />
-          : <Customizations key="personal" request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange} open={target => void openStudio("overview", target)} projects={projects.filter(item => item.mode !== "TEAM")} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} scopeControl={scopeControl} />)}
-        {destination === "studio" && projectsReady && project?.mode === "TEAM" && !unavailableTeam &&
+             request={studioRequest} scopeControl={scopeControl} open={openTeamStudio} />
+            : <Customizations key="personal" request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange} open={target => void openStudio("overview", target)} projects={projects.filter(item => item.mode !== "TEAM")} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} scopeControl={scopeControl} />)}
+         {destination === "studio" && projectsReady && !unavailableTeam && (project?.mode === "TEAM" ? !teamLegacy : personalEditor?.entryId === studioTarget.entryId && personalEditor.shared) &&
+          <main className="studio-main"><SharedCompletionStudio
+            key={project?.mode === "TEAM" ? project.id : studioTarget.extensionId}
+            target={project?.mode === "TEAM" ? `TEAM:${project.id}` : `PERSONAL:${studioTarget.extensionId}`}
+             request={studioRequest} drafts={studioDrafts.current} draftScope={session.draftScope ?? null} back={project?.mode === "TEAM" ? () => navigate("customizations") : returnFromStudio}
+              backToTasks={project?.mode === "TEAM" ? () => navigate("tasks") : returnToTasks}
+              teamControls={project?.mode === "TEAM" ? { project, openEarlier: () => openTeamStudio(true),
+                operationScope: session.draftScope ? session.user.id + ":" + session.draftScope : null } : undefined} /></main>}
+         {destination === "studio" && projectsReady && project?.mode === "TEAM" && !unavailableTeam && teamLegacy &&
           <main className="studio-main"><TeamCapability key={session.contextToken + project.id}
              project={project} request={studioRequest} scopeControl={scopeControl} back={() => navigate("customizations")} backToTasks={() => navigate("tasks")}
-            operationScope={session.draftScope ? session.user.id + ":" + session.draftScope : null} /></main>}
-        {destination === "studio" && projectsReady && project?.mode !== "TEAM" && !unavailableTeam && <main className="studio-main"><Studio key={studioTarget.entryId} request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
+             openShared={() => openTeamStudio(false)} operationScope={session.draftScope ? session.user.id + ":" + session.draftScope : null} /></main>}
+          {destination === "studio" && projectsReady && project?.mode !== "TEAM" && !unavailableTeam && openingNewStudio &&
+            <main className="studio-main">
+              {customizationNotice ? <p role="alert">{customizationNotice} <button onClick={() => void openStudio("overview")}>Try again</button></p>
+                : <p role="status">Opening Studio…</p>}
+              <button className="quiet-button" onClick={returnFromStudio}>Back to Customizations</button>
+            </main>}
+         {destination === "studio" && projectsReady && project?.mode !== "TEAM" && !unavailableTeam && studioTarget.extensionId && !studioTarget.conversationId
+           && (personalEditor?.entryId !== studioTarget.entryId || personalEditor.shared === null) && <main className="studio-main">
+             {personalEditor?.entryId === studioTarget.entryId
+               ? <p role="alert">Saved customization could not be read. <button onClick={() => setStudioReadRetry(value => value + 1)}>Try again</button></p>
+               : <p role="status">Opening customization…</p>}
+             <button className="quiet-button" onClick={returnFromStudio}>Back to Customizations</button>
+           </main>}
+          {destination === "studio" && projectsReady && project?.mode !== "TEAM" && !unavailableTeam && !openingNewStudio && (!studioTarget.extensionId || studioTarget.conversationId || personalEditor?.entryId === studioTarget.entryId && personalEditor.shared === false) && <main className="studio-main"><Studio key={studioTarget.entryId} request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
           target={studioTarget} ownerId={session.user.id} draftScope={session.draftScope ?? null} drafts={studioDrafts.current} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId} projects={projects.filter(item => item.mode !== "TEAM")}
           targeted={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) rememberStudio({ ...next, entryId: studioTarget.entryId }); }}
           openCustomization={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) void openStudio("overview", next); }}
           unavailable={() => { if (currentStudioEntry.current !== studioTarget.entryId || lifetime.current.signal.aborted) return; currentStudioEntry.current = null; setCustomizationNotice("That customization or conversation is unavailable. Choose a saved item or start a new one."); setDestination("customizations"); }} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
-          back={returnFromStudio} backToTasks={returnToTasks} createNew={() => void openStudio("overview", { extensionId: null })} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
+           back={returnFromStudio} backToTasks={returnToTasks} createNew={() => void openStudio("overview")} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
       </div>
       <dialog
         ref={detailRef}
@@ -1452,7 +1580,7 @@ function Workspace({
              hold={detail.status === "open" && completionHold?.taskId === detail.id ? completionHold.message : undefined}
             close={closeDetail}
             reactionRequest={studioRequest}
-            visible={destination === "tasks"}
+             visible={tasksVisible}
             reactionConfirmed={refreshCreatedTasks}
             openCreated={openCreatedTask}
             save={(dueAt) => {
@@ -1507,10 +1635,10 @@ function Workspace({
 }
 
 function TeamCustomizations({ project, request, scopeControl, open }: {
-  project: Project; request: Parameters<typeof TeamMembers>[0]["request"]; scopeControl: ReactNode; open: () => void;
+  project: Project; request: Parameters<typeof TeamMembers>[0]["request"]; scopeControl: ReactNode; open: (legacy: boolean) => void;
 }) {
   const [access, setAccess] = useState<"ADMIN" | "MEMBER" | "unavailable" | null>(null);
-  const [saved, setSaved] = useState<{ draft: boolean; discussion: boolean; inUse: boolean | null } | null>(null);
+  const [saved, setSaved] = useState<{ draft: boolean; discussion: boolean; active: ActiveTeam | null; controls: boolean } | null>(null);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     let controller: AbortController;
@@ -1523,12 +1651,10 @@ function TeamCustomizations({ project, request, scopeControl, open }: {
         if (signal.aborted) return;
         if (current.id !== project.id || current.mode !== "TEAM" || !["ADMIN", "MEMBER"].includes(current.role ?? "")) return setAccess("unavailable");
         if (current.role === "MEMBER") return setAccess("MEMBER");
-        const [state, thread] = await Promise.all([
-          request<{ draft: unknown; selection: { available: boolean; revisionId: string | null } }>(`projects/${project.id}/capability`, "GET", undefined, signal),
-          request<{ conversation: unknown }>(`projects/${project.id}/authoring`, "GET", undefined, signal),
-        ]);
+         const state = await request<{ conversation: unknown; savedControls: boolean; review: { draftVersion: number; activeTeam: ActiveTeam | null } }>(
+          `shared-studio/${encodeURIComponent("TEAM:" + project.id)}`, "GET", undefined, signal);
         if (signal.aborted) return;
-        setSaved({ draft: !!state.draft, discussion: !!thread.conversation, inUse: state.selection.available ? !!state.selection.revisionId : null });
+         setSaved({ draft: state.review.draftVersion > 0, discussion: !!state.conversation, active: state.review.activeTeam, controls: state.savedControls });
         setAccess("ADMIN");
       }).catch(() => { if (!signal.aborted) setAccess("unavailable"); });
     };
@@ -1536,17 +1662,14 @@ function TeamCustomizations({ project, request, scopeControl, open }: {
     window.addEventListener("focus", refresh);
     return () => { controller.abort(); window.removeEventListener("focus", refresh); };
   }, [project.id, retry]);
-  const empty = saved?.inUse === false && !saved.draft && !saved.discussion;
+  const empty = saved?.active?.status === "off" && !saved.draft && !saved.discussion && !saved.controls;
   return <CustomizationsPage scopeControl={scopeControl}
-    action={access === "ADMIN" && <button className="primary customization-start" onClick={open}>{empty ? "New customization" : "Open Studio"}</button>}>
+    action={access === "ADMIN" && <button className="primary customization-start" onClick={() => open(false)}>{empty ? "New customization" : "Open Studio"}</button>}>
     <section className="customization-list" aria-label="Team customization access">
       {access === "unavailable" ? <p className="customization-empty" role="alert">This Team project could not be accessed.{" "}
         <button className="quiet-button" onClick={() => setRetry(value => value + 1)}>Check access again</button></p>
-        : <div className="customization-empty" role="status">{access === "ADMIN" ? <>
-          <h2>{empty ? "No Team customizations yet" : saved?.inUse ? "A customization is on" : saved?.inUse === null ? "Couldn’t check what’s on" : "No customization is on"}</h2>
-          <p>{empty ? `Start one to change how tasks work in ${project.name}.` : `Open Studio to review or continue saved work in ${project.name}.`}</p>
-          <p>A customization that’s on can affect everyone’s new tasks in this project.</p>
-        </> : access === "MEMBER" ? <><h2>Team customizations</h2><p>Only project admins can open Studio and see or change this project’s customization. You can still work on Team tasks.</p></>
+         : access === "ADMIN" ? <TeamActiveRule active={saved?.active ?? null} />
+         : <div className="customization-empty" role="status">{access === "MEMBER" ? <><h2>Team customizations</h2><p>Only project admins can open Studio and see or change this project’s customization. You can still work on Team tasks.</p></>
             : <p>Checking project access…</p>}</div>}
     </section>
   </CustomizationsPage>;
@@ -1623,14 +1746,15 @@ function TeamMembers({ project, users, request, close }: {
   </dialog>;
 }
 
-function TaskReaction({ source, request, confirmed, openCreated, creation = false, bound, showTeamVersion = false }: {
+function TaskReaction({ source, request, confirmed, openCreated, creation = false, bound, version, quietNonmatch = false }: {
   source: Task;
   request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
   confirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
   creation?: boolean;
   bound?: (bound: boolean) => void;
-  showTeamVersion?: boolean;
+  version?: (revisionId: string | null) => void;
+  quietNonmatch?: boolean;
 }) {
   const [reaction, setReaction] = useState<Reaction | null>(null);
   const [created, setCreated] = useState<Task | null>(null);
@@ -1639,7 +1763,7 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const mounted = useRef(false), locked = useRef(false), serial = useRef(0), reads = useRef(0);
   const lifetime = useRef(new AbortController()), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const announced = useRef<string | null>(null);
-  const callbacks = useRef({ request, confirmed, bound }); callbacks.current = { request, confirmed, bound };
+  const callbacks = useRef({ request, confirmed, bound, version }); callbacks.current = { request, confirmed, bound, version };
   async function read(reconcile = false, automatic = false) {
     if (!mounted.current || locked.current) return;
     if (!automatic) reads.current = 0;
@@ -1653,6 +1777,7 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
       if (!["NO_BINDING", "PENDING", "STARTED", "FINISHED"].includes(next.state)) throw new Error("Unconfirmed reaction response");
       setError(""); setReaction(next);
       callbacks.current.bound?.(next.state !== "NO_BINDING");
+      callbacks.current.version?.(next.team ? next.revisionId ?? null : null);
       const observation = next.reconciliation?.receipt;
       const receipt = observation?.kind === "SUCCESS" && observation.effect === "CONFIRMED" ? observation : next.receipt;
       const isUpdate = (next.reconciliation?.capability ?? next.capability) === "tasks.update";
@@ -1660,7 +1785,10 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
         const actual = await callbacks.current.request<Task>("tasks/" + encodeURIComponent(receipt.value.id), "GET", undefined, lifetime.current.signal);
         if (!mounted.current || serial.current !== turn) return;
         if (actual.id !== receipt.value.id || typeof actual.title !== "string" || typeof actual.projectId !== "string"
-            || next.team && (actual.projectId !== source.projectId || actual.parentTaskId !== source.id)) throw new Error("Affected task could not be resolved");
+            || next.destinationProjectId !== undefined && actual.projectId !== next.destinationProjectId
+            || isUpdate && (actual.id !== source.id || actual.projectId !== source.projectId)
+            || next.team && !isUpdate && (actual.projectId !== source.projectId || next.linked !== false && actual.parentTaskId !== source.id))
+          throw new Error("Affected task could not be resolved");
         if (!isUpdate) setCreated(actual);
         if (announced.current !== actual.id) {
           try { await callbacks.current.confirmed(actual); announced.current = actual.id; }
@@ -1692,19 +1820,20 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const noEffect = !uncertain && (receipt?.effect === "NONE" || !!reaction?.outcome
     && ["COMPLETED", "BUSINESS_REJECTION", "FAILED", "LIMIT_EXCEEDED"].includes(reaction.outcome.classification ?? "")
     && Array.isArray(reaction.outcome.effects) && reaction.outcome.effects.every(effect => effect.state === "NONE" || effect.effect === "NONE"));
-  const version = showTeamVersion && reaction?.team && reaction.revisionId && <details className="task-reaction">
-    <summary>Advanced: rule version for this task</summary>
-    <p>Version reference: {reaction.revisionId}</p>
-    <p>Use this reference to identify the version in Team Studio’s emergency controls.</p>
-  </details>;
-  if (!error && (reaction?.state === "NO_BINDING" || !reaction)) return version || null;
-  return <><section className="task-reaction" aria-label={creation ? "Task creation customization outcome" : "Customization outcome"}>
+  if (!error && (reaction?.state === "NO_BINDING" || !reaction)) return null;
+  // Only an ordinary list row can omit a settled, effect-free nonmatch. Details still show its receipt.
+  const result = reaction?.outcome?.result as { status?: string } | undefined;
+  if (quietNonmatch && !error && !creation && !checking && !reaction?.team && !reaction?.revoked
+      && reaction?.state === "FINISHED" && !receipt && !reaction.reconciliation && !reaction.message
+      && reaction.outcome?.classification === "COMPLETED" && !reaction.outcome.error
+      && reaction.outcome.effects?.length === 0 && result?.status === "NO_OP") return null;
+  return <section className="task-reaction" aria-label={creation ? "Task creation customization outcome" : "Customization outcome"}>
     {linkedNextAction && <p><strong>Linked task</strong></p>}
     <p role="status">{confirmedReceipt ? update ? unchanged ? "The update made no change." : "This task was updated."
       : created ? linkedNextAction ?? `Created “${created.title}”` : checking ? "A task was added. Checking its details…" : "A task was added, but it is unavailable here."
       : unreadable ? "Could not check the rule’s conditions."
       : noEffect ? reaction?.workflow ? "This customization made no change." : "No task was added by this customization."
-      : uncertain ? reaction?.team ? "We haven’t confirmed a linked task. It may already exist." : reaction?.workflow || creation ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."
+       : uncertain ? reaction?.team && reaction.capability !== "tasks.update" ? "We haven’t confirmed a linked task. It may already exist." : reaction?.workflow || creation ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."
       : reaction?.revoked ? "This customization is no longer allowed to run."
       : reaction?.state === "PENDING" ? "This customization has not started yet."
         : !reaction ? null : reaction?.workflow || creation
@@ -1714,13 +1843,14 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
     {error && <p role="alert">{error}</p>}
     <div className="task-reaction-actions">{(!reaction?.team || !confirmedReceipt || !!error) &&
       <button type="button" className="quiet-button" aria-disabled={checking} onClick={() => void read(reaction?.team === true && !!uncertain && !confirmedReceipt)}>{reaction?.team ? "Check again" : "Check result"}</button>}
-      {!reaction?.team && (uncertain || reaction?.state === "STARTED") && <button type="button" className="quiet-button" disabled={checking} onClick={() => void read(true)}>Reconcile saved observation</button>}</div>
-    {reaction && !reaction.team && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
+      {(!reaction?.team || reaction.linked !== undefined) && (uncertain || reaction?.state === "STARTED") && <button type="button" className="quiet-button" disabled={checking} onClick={() => void read(true)}>Reconcile saved observation</button>}</div>
+    {reaction && (!reaction.team || reaction.capability === "tasks.update") && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
       {confirmedReceipt && <p>{update ? "A saved native receipt confirms the update." : "A saved native receipt confirms that a task was created."}</p>}
       {update && !unchanged && <dl>
         {update.before.priority !== update.after.priority && <><dt>Priority</dt><dd>{update.before.priority} → {update.after.priority}</dd></>}
         {update.before.tags.join(", ") !== update.after.tags.join(", ") && <><dt>Tags</dt><dd>{update.after.tags.join(", ")}</dd></>}
-        {update.before.dueAt !== update.after.dueAt && <><dt>Due time</dt><dd>{update.after.dueAt ?? "None"}{update.after.dueAt && " (UTC)"}</dd></>}
+         {update.before.dueAt !== update.after.dueAt && <><dt>Due time</dt><dd>{update.after.dueAt
+           ? reaction.linked !== undefined ? offerTime(update.after.dueAt) : formatDueTime(update.after.dueAt) : "None"}</dd></>}
       </dl>}
       {confirmedReceipt && uncertain && <p>The original runtime outcome remains uncertain. The saved native receipt is a separate confirmation.</p>}
       {reaction.message && <p>{reaction.message}</p>}
@@ -1728,7 +1858,7 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
       {receipt && <pre aria-label="Saved native receipt">{JSON.stringify(receipt, null, 2)}</pre>}
       {reaction.outcome && <pre aria-label="Original runtime outcome">{JSON.stringify(reaction.outcome, null, 2)}</pre>}
     </details>}
-  </section>{version}</>;
+  </section>;
 }
 
 function TaskDetail({
@@ -1765,6 +1895,7 @@ function TaskDetail({
   save: (dueAt?: string | null) => void;
 }) {
   const [parent, setParent] = useState<Task | null>(null);
+  const [teamRevision, setTeamRevision] = useState<string | null>(null);
   const [creationBound, setCreationBound] = useState(false), [completionBound, setCompletionBound] = useState(false);
   const [selectedCompletion, setSelectedCompletion] = useState<"selected" | "none" | "unavailable" | null>(null);
   const request = useRef(reactionRequest); request.current = reactionRequest;
@@ -1786,7 +1917,7 @@ function TaskDetail({
     return () => controller.abort();
   }, [task.parentTaskId, task.originEventId, task.projectId]);
   const atTop = !!task.creatorId && !task.parentTaskId;
-  const created = <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation bound={setCreationBound} showTeamVersion={showTeamVersion} />;
+  const created = <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation bound={setCreationBound} version={showTeamVersion ? setTeamRevision : undefined} />;
   return <TaskForm task={task} draft={draft} setDraft={setDraft} busy={busy} error={error} close={close} save={save} complete={complete}
     recovery={<>
       {hold && <section aria-label="Last completion attempt" className="task-completion-hold">
@@ -1799,8 +1930,13 @@ function TaskDetail({
         <button type="button" className="quiet-button" onClick={() => openCreated(parent)}>Open “{parent.title}”</button>
       </section>}
     </>}>
-    {task.status === "completed" && !task.creatorId && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} bound={setCompletionBound} />}
+     {task.status === "completed" && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} bound={setCompletionBound} />}
     {!atTop && created}
+    {showTeamVersion && teamRevision && <details className="task-reaction">
+      <summary>Rule version for this task</summary>
+      <p>Version reference: {teamRevision}</p>
+      <p>To identify this exact version for emergency revocation, use this reference in Saved Team history and controls.</p>
+    </details>}
     {!task.creatorId && (creationBound || completionBound || task.status === "open" && (selectedCompletion === "selected" || selectedCompletion === "unavailable")) &&
       <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>}
   </TaskForm>;
@@ -1903,7 +2039,7 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, complete, c
       </select>
       <label htmlFor="edit-due-time">Due time <span className="muted">(optional)</span></label>
       <input id="edit-due-time" ref={dueTimeInput} type="datetime-local" min="0001-01-01T00:00" max="9999-12-31T23:59:59.999" step="any"
-        value={draft.dueTime} aria-invalid={dueTimeError ? true : undefined}
+        value={draft.dueTimeEdited ? draft.dueTime : draft.dueTime.slice(0, 16)} aria-invalid={dueTimeError ? true : undefined}
         aria-describedby={dueTimeError ? "edit-due-zone edit-due-error" : "edit-due-zone"}
         onChange={event => editDueTime(event.target.value)} />
       <p id="edit-due-zone" className="muted tag-hint">Enter a local time.

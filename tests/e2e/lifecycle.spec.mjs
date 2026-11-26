@@ -467,7 +467,7 @@ test('exact authored review shows saved A, preserves unsent conversation B, and 
   const saved = await savedLifecycle(page, demo.origin);
   const conversationB = 'Unsaved conversation B: explain this proposal before changing it.';
   await ui.getByLabel('Message to Daymark assistant').fill(conversationB);
-  await ui.getByText('Technical details for this version', { exact: true }).click();
+  await ui.getByText('Advanced: saved evidence', { exact: true }).click();
   await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
   await expect(ui.getByLabel('Saved example 1 for approval', { exact: true })).toHaveText(await expectedExample(page));
   await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue(conversationB);
@@ -481,7 +481,7 @@ test('exact authored review shows saved A, preserves unsent conversation B, and 
   await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue(conversationB);
   await openSavedChanges(page);
   await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toBeEnabled();
-  await ui.getByText('Technical details for this version', { exact: true }).click();
+  await ui.getByText('Advanced: saved evidence', { exact: true }).click();
   await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
   await expect(ui.getByLabel('Saved example 1 for approval', { exact: true })).toHaveText(await expectedExample(page));
   await expect(ui.getByLabel('Message to Daymark assistant')).toHaveValue(conversationB);
@@ -503,7 +503,7 @@ test('exact authored review fails closed on unavailable or mismatched saved docu
     mode = next; await ui.getByRole('button', { name: 'Check saved results again', exact: true }).click();
   }
   await expect(approval(page)).toBeEnabled();
-  await ui.getByText('Technical details for this version', { exact: true }).click();
+  await ui.getByText('Advanced: saved evidence', { exact: true }).click();
   await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
   expect((await savedLifecycle(page, demo.origin)).approved).toBe(false);
 });
@@ -539,7 +539,7 @@ test('a held exact-source review cannot enter a different owner or a re-entered 
     await expect(ui.getByRole('button', { name: 'Turn on for tasks completed', exact: true })).toHaveCount(0);
     await openSavedChanges(page);
     await expect(approval(page)).toBeEnabled();
-    await ui.getByText('Technical details for this version', { exact: true }).click();
+    await ui.getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(ui.getByLabel('Saved source for approval', { exact: true })).toHaveText((await authoredFixture(page)).source);
     expect((await savedLifecycle(page, demo.origin)).approvedEvidenceId).toBe(null);
   } finally { release?.(); await other.close(); }

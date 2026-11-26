@@ -1,17 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
-import { taskService } from './data.mjs';
-import { digest, json, hostBindings, definitionKey } from './extension-catalog.mjs';
+import { AppError, readCustomizationTask, readOpenTaskMatch, taskService } from './data.mjs';
+import { digest, json, hostBindings, definitionKey, OWNED_GUARD_DEFINITION } from './extension-catalog.mjs';
 import { createTaskDecisionConsumer } from './task-effect-simulation.mjs';
+import { projectAccess, teamCreateSelection } from './team-native.mjs';
+import { validOpenMatchInput } from './task-workflow-values.mjs';
+import { SHARED_MANIFEST } from './shared-completion-contract.mjs';
+import { isTaskBundle } from './shared-task-bundle.mjs';
 
 const hook = 'TaskBeforeCreate';
 const blocked = Object.freeze({ status: 'BLOCKED' });
 const denied = () => ({ kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED' });
 
-export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
-  if (typeof db?.prepare !== 'function' || typeof lifecycle?.capture !== 'function'
+export function createTaskCreateGuard({ db, lifecycle, teamCapability, sharedPersonalBinding, commitReserveMs }) {
+  if (typeof db?.prepare !== 'function' || lifecycle && (typeof lifecycle.capture !== 'function'
       || typeof lifecycle.current !== 'function' || typeof lifecycle.execution !== 'function'
-      || typeof lifecycle.admissionCurrent !== 'function'
+      || typeof lifecycle.admissionCurrent !== 'function')
       || !Number.isSafeInteger(commitReserveMs) || commitReserveMs <= 0)
     throw new TypeError('Task creation requires its native lifecycle and a positive commit reserve.');
 
@@ -19,6 +23,14 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
   let closing = false, preparedSlot;
   const bindings = new Map();
   const selection = owner => db.prepare('SELECT * FROM extension_selections WHERE owner_id=? AND hook_id=?').get(owner, hook);
+  function teamExecution(projectId, selected) {
+    if (!selected?.activation_id || selected.revoked_at !== null) return null;
+    const exact = teamCapability?.sharedCompletionBinding(projectId, selected.revision_id, selected.activation_id, selected.manifest);
+    const binding = exact?.bindings?.[hook] ?? exact;
+    return binding?.hook === hook ? binding : null;
+  }
+  const sharedExecution = (context, selected) => context.teamRoot ? teamExecution(context.projectId, selected)
+    : sharedPersonalBinding?.(context.owner, selected);
 
   function withinDeadline(context, deadline) {
     const now = deadline.clock.nowMs();
@@ -30,6 +42,19 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
 
   function authority(context, deadline) {
     if (!withinDeadline(context, deadline)) return false;
+    if (context.pinned) {
+      const exact = context.pinned();
+      return projectAccess(db, context.owner, context.projectId).mode === exact?.manifest.scope
+        && digest(exact.artifact) === context.artifactDigest && withinDeadline(context, deadline);
+    }
+    if (context.scoped) {
+      if (projectAccess(db, context.owner, context.projectId).mode !== (context.teamRoot ? 'TEAM' : 'PERSONAL')) return false;
+      const chosen = context.teamRoot ? teamCreateSelection(db, context.projectId) : selection(context.owner);
+      if (json(chosen) !== context.selectionIdentity) return false;
+      const execution = sharedExecution(context, chosen);
+      return execution && json(execution.host.pins) === context.hostPinsIdentity
+        && digest(execution.artifact) === context.artifactDigest && withinDeadline(context, deadline);
+    }
     if (!db.prepare('SELECT 1 FROM users WHERE id=?').get(context.owner)
         || !db.prepare("SELECT 1 FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'").get(context.owner, context.projectId)
         || json(selection(context.owner)) !== context.selectionIdentity || !lifecycle.current(context.captured)
@@ -39,9 +64,17 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
       && digest(execution.artifactBytes) === context.artifactDigest && withinDeadline(context, deadline);
   }
 
-  function projection(capability, owner, args, deadline) {
-    if (capability === 'tasks.openMatch') return tasks.hasOpenTask(owner, args.projectId, args.title, deadline);
-    const task = tasks.getTaskForCustomization(owner, args.taskId);
+  function projection(capability, context, args, deadline) {
+    const { owner, projectId, teamRoot } = context;
+    const project = !context.ownedReads && (teamRoot || context.scoped) ? projectAccess(db, owner, projectId) : null;
+    if (capability === 'tasks.openMatch') {
+      if (!project) return tasks.hasOpenTask(owner, args.projectId, args.title, deadline);
+      if (args.projectId !== projectId || !validOpenMatchInput(args.projectId, args.title)) throw new AppError(404, 'Project not found.');
+      return readOpenTaskMatch(db, project, args.title, () => {
+        if (!withinDeadline(context, deadline)) throw new AppError(503, 'The open-task check expired.');
+      });
+    }
+    const task = project ? readCustomizationTask(db, project.owner_id, args.taskId, projectId) : tasks.getTaskForCustomization(owner, args.taskId);
     return { id: task.id, projectId: task.projectId, status: task.status === 'open' ? 'OPEN' : 'COMPLETED',
       title: task.title, tags: task.tags, priority: task.priority, ...(task.dueAt === null ? {} : { dueAt: task.dueAt }) };
   }
@@ -54,7 +87,7 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
         if (!context || protectedArgs.actorId !== context.owner || invocation.event.source !== context.projectId
             || invocation.deadline.expiresAtMs !== context.deadline.expiresAtMs || remainingMs <= 0
             || ++context.calls > 4 || !authority(context, context.deadline)) return denied();
-        const value = projection(capability, context.owner, args, context.deadline);
+        const value = projection(capability, context, args, context.deadline);
         if (!authority(context, context.deadline)) return denied();
         context.reads.push({ capability, args: { ...args }, value: json(value) });
         return { kind: 'SUCCESS', value };
@@ -70,46 +103,56 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
     const key = definitionKey(host.pins);
     if (bindings.has(key)) return bindings.get(key);
     const model = JSON.parse(host.dcmBytes), keyType = model.hostKey.type;
-    const result = bindModel(host.dcmBytes, {
-      'tasks.get': read('tasks.get', '3', keyType),
-      'tasks.openMatch': read('tasks.openMatch', '1', keyType),
-      'tasks.create': { version: '2', mode: 'real', keyType, invoke: async () => ({ ...denied(), effect: 'NONE' }) },
-      'tasks.update': { version: '1', mode: 'real', keyType, invoke: async () => ({ ...denied(), effect: 'NONE' }) },
-    });
+    const result = bindModel(host.dcmBytes, Object.fromEntries(Object.entries(model.capabilities).map(([id, cap]) =>
+      [id, cap.effect === 'READ' ? read(id, cap.version, keyType)
+        : { version: cap.version, mode: 'real', keyType, invoke: async () => ({ ...denied(), effect: 'NONE' }) }])));
     if (!result.diagnostic && result.boundModel)
       bindings.set(key, { key, modelDigest: host.pins.modelDigest, boundModel: result.boundModel, keyType });
     return bindings.get(key);
   }
 
-  async function check({ owner, input, selection: selected, deadline, operationDeadline, signal, requestKey }) {
+  async function check({ owner, input, selection: selected, deadline, operationDeadline, signal, requestKey, teamRoot = false, pinned }) {
     let context, attempts, eventId;
     try {
-      if (closing || typeof owner !== 'string' || !input || !selected?.revision_id
+      if (closing || typeof owner !== 'string' || !input || !pinned && !selected?.revision_id
           || !requestKey || typeof requestKey !== 'object'
           || typeof requestKey.value !== 'string' || !Object.isFrozen(requestKey)
           || operationDeadline?.clock !== deadline?.clock
           || !Number.isSafeInteger(operationDeadline?.expiresAtMs) || !Number.isSafeInteger(deadline?.expiresAtMs)
           || deadline.expiresAtMs > operationDeadline.expiresAtMs - commitReserveMs) return blocked;
-      const captured = lifecycle.capture(owner, hook);
-      if (!captured || captured.owner !== owner || captured.hookId !== hook
-          || captured.revisionId !== selected.revision_id || captured.generation !== selected.generation
-          || json(selection(owner)) !== json(selected)) return blocked;
-      const link = db.prepare('SELECT extension_id FROM extension_revision_links WHERE owner_id=? AND revision_id=?')
-        .get(owner, captured.revisionId);
-      if (!link) return blocked;
-      const execution = lifecycle.execution(owner, captured.revisionId, link.extension_id);
-      const binding = bindingFor(execution.host);
-      if (!binding || requestKey.type !== binding.keyType) return blocked;
-      const artifactDigest = digest(execution.artifactBytes), pins = execution.pins;
-      const selectedPins = JSON.parse(selected.binding_pins);
-      if (execution.host.pins.modelDigest !== binding.modelDigest
-          || Object.entries(execution.host.pins).some(([name, value]) => json(pins[name]) !== json(value))
-          || artifactDigest !== pins.artifactDigest
-          || typeof selectedPins.approvedEvidenceId !== 'string'
-          || json(selectedPins) !== json({ ...pins, approvedEvidenceId: selectedPins.approvedEvidenceId })) return blocked;
-      context = { owner, projectId: input.projectId, captured, extensionId: link.extension_id, signal, deadline, operationDeadline,
-        admission: { owner, itemId: link.extension_id, revisionId: captured.revisionId, hookId: hook, pins: selectedPins },
-        selectionIdentity: json(selected), pinsIdentity: json(pins), hostPinsIdentity: json(execution.host.pins), artifactDigest, lastNow: -1, reads: [], calls: 0 };
+      let execution;
+       const format = JSON.parse(selected.binding_pins ?? 'null')?.format;
+       if (pinned || teamRoot || format === SHARED_MANIFEST || isTaskBundle(format)) {
+        context = { owner, projectId: input.projectId, teamRoot, scoped: true, pinned, signal, deadline, operationDeadline,
+          selectionIdentity: json(selected), lastNow: -1, reads: [], calls: 0 };
+        const exact = pinned ? pinned() : sharedExecution(context, selected);
+        if (!exact) return blocked;
+        execution = { host: exact.host, artifactBytes: exact.artifact };
+        context.hostPinsIdentity = json(exact.host.pins);
+        context.ownedReads = !teamRoot && exact.host.pins.definitionId === OWNED_GUARD_DEFINITION;
+        context.artifactDigest = digest(exact.artifact);
+      } else {
+        if (!lifecycle) return blocked;
+        const captured = lifecycle.capture(owner, hook);
+        if (!captured || captured.owner !== owner || captured.hookId !== hook
+            || captured.revisionId !== selected.revision_id || captured.generation !== selected.generation
+            || json(selection(owner)) !== json(selected)) return blocked;
+        const link = db.prepare('SELECT extension_id FROM extension_revision_links WHERE owner_id=? AND revision_id=?')
+          .get(owner, captured.revisionId);
+        if (!link) return blocked;
+        execution = lifecycle.execution(owner, captured.revisionId, link.extension_id);
+        const artifactDigest = digest(execution.artifactBytes), pins = execution.pins;
+        const selectedPins = JSON.parse(selected.binding_pins);
+        if (Object.entries(execution.host.pins).some(([name, value]) => json(pins[name]) !== json(value))
+            || artifactDigest !== pins.artifactDigest
+            || typeof selectedPins.approvedEvidenceId !== 'string'
+            || json(selectedPins) !== json({ ...pins, approvedEvidenceId: selectedPins.approvedEvidenceId })) return blocked;
+        context = { owner, projectId: input.projectId, captured, extensionId: link.extension_id, signal, deadline, operationDeadline,
+          admission: { owner, itemId: link.extension_id, revisionId: captured.revisionId, hookId: hook, pins: selectedPins },
+          selectionIdentity: json(selected), pinsIdentity: json(pins), hostPinsIdentity: json(execution.host.pins), artifactDigest, lastNow: -1, reads: [], calls: 0 };
+      }
+      const binding = bindingFor(execution.host), { artifactDigest } = context;
+      if (!binding || requestKey.type !== binding.keyType || execution.host.pins.modelDigest !== binding.modelDigest) return blocked;
       if (!authority(context, deadline)) return blocked;
       const modelDigest = binding.modelDigest;
       if (preparedSlot?.artifactDigest !== artifactDigest || preparedSlot.definitionKey !== binding.key) {
@@ -155,7 +198,7 @@ export function createTaskCreateGuard({ db, lifecycle, commitReserveMs }) {
         // The native transaction checks facts before its own write can legitimately change them.
         if (phase === 'AFTER_WRITE') return true;
         for (const read of context.reads) {
-          if (json(projection(read.capability, context.owner, read.args, context.operationDeadline)) !== read.value) return false;
+          if (json(projection(read.capability, context, read.args, context.operationDeadline)) !== read.value) return false;
         }
         return authority(context, context.operationDeadline);
       } catch { return false; }

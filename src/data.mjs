@@ -7,14 +7,16 @@ import { resolve, join, dirname } from 'node:path';
 import { loadHost, definitionForPins, definitionKey, definitionFormats, digest, json, TASK_HOOK } from './extension-catalog.mjs';
 import { taskEffectProofMatches } from './task-effect-simulation.mjs';
 import { normalizeTaskTag, normalizeTaskTags, parseWorkflowTagsText, validOpenMatchInput, normalizeWorkflowTitle } from './task-workflow-values.mjs';
-import { addTeamProjects, addTeamCapabilities, addTeamLifecycle, addTeamControls, teamTables, projectAccess, taskAccess, admitTeamRoot } from './team-native.mjs';
+import { addTeamProjects, addTeamCapabilities, addTeamLifecycle, addTeamControls, teamTables, projectAccess, taskAccess, admitTeamRoot, teamCreateSelection } from './team-native.mjs';
+import { addSharedCompletion, addSharedPriorityFence, addSharedTaskBundles, addSharedPersonalCompletionPins, addSharedCreatedUpdates, armOwnedCreatedUpdate, sharedCompletionTables } from './shared-completion-schema.mjs';
+import { BUNDLE_MANIFEST, COMPOSED_MANIFEST, isTaskBundle } from './shared-task-bundle.mjs';
 
 const lifecycleTables = ['extension_conversation_links', 'extension_approvals', 'extension_evidence', 'extension_history', 'extension_selections',
   'legacy_extension_selections', 'extension_authored', 'extension_revision_links', 'extensions', 'extension_revisions'];
 const authoringHistoryTables = ['authoring_dispatches', 'authoring_messages', 'authoring_operations'];
 const taskEffectTables = ['task_create_operations', 'task_effect_receipts', 'task_events'];
 const createdHook = 'TaskCreated';
-const schemaVersion = 19;
+export const schemaVersion = 24;
 const addAuthoringSettlement = `
   ALTER TABLE authoring_dispatches ADD COLUMN estimated_micros INTEGER
     CHECK(estimated_micros IS NULL OR (kind='provider' AND outcome IS 'SUCCESS'
@@ -405,7 +407,12 @@ function assertDatabase(db, allowUpgrade = false) {
        if (version >= 16) expected.exec(addTeamCapabilities);
        if (version >= 17) expected.exec(addTeamLifecycle);
         if (version >= 18) expected.exec(addTeamControls);
-        if (version >= 19) expected.exec(addAuthoringSettlement);
+         if (version >= 19) expected.exec(addAuthoringSettlement);
+        if (version >= 20) expected.exec(addSharedCompletion);
+        if (version >= 21) expected.exec(addSharedPriorityFence);
+        if (version >= 22) expected.exec(addSharedTaskBundles);
+         if (version >= 23) expected.exec(addSharedPersonalCompletionPins);
+         if (version >= 24) expected.exec(addSharedCreatedUpdates);
       schemaIdentities.set(version, schemaIdentity(expected));
     }
     finally { expected.close(); }
@@ -467,7 +474,12 @@ export function openData(path, { allowUpgrade = true, seed = true } = {}) {
         if (version < 16) db.exec(addTeamCapabilities);
         if (version < 17) db.exec(addTeamLifecycle);
         if (version < 18) db.exec(addTeamControls);
-        db.exec(addAuthoringSettlement);
+        if (version < 19) db.exec(addAuthoringSettlement);
+         if (version < 20) db.exec(addSharedCompletion);
+        if (version < 21) db.exec(addSharedPriorityFence);
+         if (version < 22) db.exec(addSharedTaskBundles);
+          if (version < 23) db.exec(addSharedPersonalCompletionPins);
+          db.exec(addSharedCreatedUpdates);
         db.exec('PRAGMA user_version=' + schemaVersion);
         assertDatabase(db);
       });
@@ -483,6 +495,11 @@ export function openData(path, { allowUpgrade = true, seed = true } = {}) {
       db.exec(addTeamLifecycle);
       db.exec(addTeamControls);
       db.exec(addAuthoringSettlement);
+       db.exec(addSharedCompletion);
+        db.exec(addSharedPriorityFence);
+        db.exec(addSharedTaskBundles);
+         db.exec(addSharedPersonalCompletionPins);
+         db.exec(addSharedCreatedUpdates);
       db.exec('INSERT INTO authoring_budget (id,reserved_micros) VALUES (1, 0)');
       if (seed) seedRows(db);
       db.exec('PRAGMA user_version=' + schemaVersion);
@@ -512,7 +529,7 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
       throw new Error('Backup verification failed; original data retained.', { cause: error });
     }
     try {
-      for (const table of ['users', 'projects', 'tasks', ...teamTables, ...taskEffectTables, ...lifecycleTables, ...authoringHistoryTables, 'authoring_conversations', 'authoring_budget']) {
+      for (const table of ['users', 'projects', 'tasks', ...teamTables, ...sharedCompletionTables, ...taskEffectTables, ...lifecycleTables, ...authoringHistoryTables, 'authoring_conversations', 'authoring_budget']) {
         // Read text as bytes because SQLite's Node text reader can stop at embedded NUL.
         const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(({ name, type }) => type === 'TEXT' ? `CAST(${name} AS BLOB) AS ${name}` : name);
         const sql = `SELECT ${columns.join(',')} FROM ${table} ORDER BY rowid`;
@@ -522,6 +539,7 @@ export async function resetData(directory, confirmed, backupDatabase = backup) {
     transaction(db, () => {
       // Task origins and admission receipts reference each other; reset deletes both atomically.
       db.exec('PRAGMA defer_foreign_keys=ON');
+      for (const table of sharedCompletionTables) db.exec(`DELETE FROM ${table}`);
       for (const table of teamTables) db.exec(`DELETE FROM ${table}`);
       for (const table of taskEffectTables) db.exec(`DELETE FROM ${table}`);
       db.exec('UPDATE extensions SET draft_revision_id=NULL');
@@ -547,9 +565,12 @@ function text(value, label, max, required = true) {
   return result;
 }
 const projectColumns = 'id, name, created_at AS createdAt, updated_at AS updatedAt, mode';
-const taskColumns = 'id, project_id AS projectId, title, notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt, tags, priority, due_at AS dueAt, creator_id AS creatorId, assignee_id AS assigneeId, (SELECT name FROM users WHERE users.id=tasks.assignee_id) AS assigneeName, parent_task_id AS parentTaskId, origin_event_id AS originEventId';
+// Node's SQLite TEXT reads stop at embedded NUL. Decode the stored bytes instead.
+const taskTitleColumn = 'CAST(title AS BLOB) AS title';
+const taskText = value => Buffer.from(value).toString('utf8');
+const taskColumns = `id, project_id AS projectId, ${taskTitleColumn}, CAST(notes AS BLOB) AS notes, status, created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt, tags, priority, due_at AS dueAt, creator_id AS creatorId, assignee_id AS assigneeId, (SELECT name FROM users WHERE users.id=tasks.assignee_id) AS assigneeName, parent_task_id AS parentTaskId, origin_event_id AS originEventId`;
 const taskDto = ({ creatorId, assigneeId, assigneeName, parentTaskId, originEventId, ...row }) => ({
-  ...row, tags: JSON.parse(row.tags),
+  ...row, title: taskText(row.title), notes: taskText(row.notes), tags: JSON.parse(row.tags),
   ...(creatorId !== null ? { creatorId, assigneeId, assigneeName, parentTaskId, originEventId } : {}),
 });
 
@@ -562,13 +583,17 @@ function tags(value) {
   try { return JSON.stringify(normalizeTaskTags(value)); }
   catch (error) { throw new AppError(400, error.message); }
 }
+export function appendTaskTag(current, added) {
+  if (typeof added !== 'string' || Buffer.byteLength(added) > 256) throw new AppError(400, 'Use a tag of up to 256 input bytes.');
+  return JSON.parse(tags([...current, added]));
+}
 
-function taskPriority(value) {
+export function taskPriority(value) {
   if (!['low', 'normal', 'high'].includes(value)) throw new AppError(400, 'Choose low, normal or high priority.');
   return value;
 }
 
-function taskDueAt(value) {
+export function taskDueAt(value) {
   if (value === null) return null;
   if (typeof value === 'string' && value.length === 24 && value >= '0001-01-01T00:00:00.000Z') {
     const instant = new Date(value);
@@ -577,21 +602,34 @@ function taskDueAt(value) {
   throw new AppError(400, 'Use a valid UTC due time in YYYY-MM-DDTHH:mm:ss.sssZ format.');
 }
 
-function insertTask(db, owner, projectId, title, notes, savedTags = '[]', priority = 'normal', dueAt = null, now = new Date().toISOString(), creator = null) {
+function insertTask(db, owner, projectId, title, notes, savedTags = '[]', priority = 'normal', dueAt = null, now = new Date().toISOString(), creator = null,
+  assignee = null, parent = null, origin = null) {
   const id = randomUUID();
-  db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at,tags,priority,due_at,creator_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, projectId, title, notes, 'open', now, now, null, savedTags, priority, dueAt, creator);
+  db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,completed_at,tags,priority,due_at,creator_id,assignee_id,parent_task_id,origin_event_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, projectId, title, notes, 'open', now, now, null, savedTags, priority, dueAt, creator, assignee, parent, origin);
   return id;
 }
 
-function captureTaskEvent(db, owner, hookId, taskId, occurredAt) {
-  const selected = db.prepare(`SELECT s.*,l.extension_id FROM extension_selections s LEFT JOIN extension_revision_links l
+function captureTaskEvent(db, owner, hookId, taskId, occurredAt, { override, verify } = {}) {
+  let selected = override ?? db.prepare(`SELECT s.*,l.extension_id FROM extension_selections s LEFT JOIN extension_revision_links l
     ON l.revision_id=s.revision_id AND l.owner_id=s.owner_id WHERE s.owner_id=? AND s.hook_id=?`).get(owner, hookId);
+  const pins = JSON.parse(selected?.binding_pins ?? 'null');
+  let completionPin;
+  if (isTaskBundle(pins?.format)) {
+    if (hookId === createdHook) {
+      if (!verify) throw createGuardError('The task rule could not be checked. Your entries are kept.');
+      completionPin = verify(selected);
+    } else if (!override && (pins.format === BUNDLE_MANIFEST || pins.lifetimeCompletion)) selected = null;
+  }
   const bound = selected?.revision_id;
+  const eventId = randomUUID();
   db.prepare(`INSERT INTO task_events(event_id,owner_id,source_task_id,hook_id,original_key,item_id,revision_id,selection_generation,input,pins,state,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), owner, taskId, hookId, randomUUID(), bound ? selected.extension_id : null,
-    bound || null, selected?.generation ?? 0, JSON.stringify({ taskId, occurredAt }), bound ? selected.binding_pins : null,
-    bound ? 'PENDING' : 'NO_BINDING', occurredAt);
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(eventId, owner, taskId, hookId, randomUUID(), bound ? selected.extension_id : null,
+    bound || null, selected?.generation ?? 0, JSON.stringify({ taskId, occurredAt }),
+    bound ? completionPin ? json({ ...pins, completionPin: true }) : selected.binding_pins : null,
+     bound ? 'PENDING' : 'NO_BINDING', occurredAt);
+  if (bound && hookId === createdHook) armOwnedCreatedUpdate(db, eventId, taskId, pins?.definitionId);
+  return { eventId, completionPin };
 }
 
 function normalizeCreate(input, automation = false) {
@@ -632,20 +670,24 @@ function taskCreateLease(db, owner, context) {
   return { clock, deadline, started, validate };
 }
 
-async function prepareTaskCreate(db, owner, proposal, guard, context = {}) {
+async function prepareTaskCreate(db, owner, proposal, guard, context = {}, teamRoot = false) {
   const { clock, deadline, started, validate: lease } = taskCreateLease(db, owner, context);
   function authority() {
     lease();
-    if (!db.prepare("SELECT 1 FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'").get(owner, proposal.projectId)) throw notFound();
+    if (teamRoot ? projectAccess(db, owner, proposal.projectId).mode !== 'TEAM'
+      : !db.prepare("SELECT 1 FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'").get(owner, proposal.projectId)) throw notFound();
   }
   authority();
-  const selection = guardSelection(db, owner);
-  if (!selection) throw createGuardError('The task check is not configured. Your entries are kept.');
+  const selected = () => teamRoot ? teamCreateSelection(db, proposal.projectId) : guardSelection(db, owner);
+  const pinned = context.pinnedBeforeCreate;
+  const selection = pinned ? null : selected();
+  if (!pinned && !selection) throw createGuardError('The task check is not configured. Your entries are kept.');
   const identity = json(selection);
+  const applies = pinned || (teamRoot ? !!JSON.parse(selection.manifest ?? 'null')?.hooks?.TaskBeforeCreate : !!selection.revision_id);
   const input = freezeContext({ projectId: proposal.projectId, priority: proposal.priority, tags: [...proposal.tags],
     hasNotes: proposal.notes.trim().length > 0, hasDueDate: proposal.dueAt !== null });
   let decision = null;
-  if (selection.revision_id) {
+  if (applies) {
     if (!guard || typeof guard.check !== 'function' || typeof guard.current !== 'function'
       || !Number.isSafeInteger(guard.commitReserveMs) || guard.commitReserveMs <= 0) {
       decision = { status: 'BLOCKED' };
@@ -660,7 +702,7 @@ async function prepareTaskCreate(db, owner, proposal, guard, context = {}) {
           abort = () => resolve({ status: 'BLOCKED' });
           context.signal?.addEventListener('abort', abort, { once: true });
         });
-        decision = await Promise.race([guard.check({ owner, input, selection: freezeContext({ ...selection }),
+        decision = await Promise.race([guard.check({ owner, input, selection: freezeContext({ ...selection }), ...(teamRoot && { teamRoot }), pinned,
           deadline: { clock, expiresAtMs }, operationDeadline: deadline, signal: context.signal,
           requestKey: context.requestKey ?? Object.freeze({ type: 'demo.TaskCreateKey/1', value: randomUUID() }) }), stopped]);
         const completedAt = clock.nowMs();
@@ -671,8 +713,8 @@ async function prepareTaskCreate(db, owner, proposal, guard, context = {}) {
   }
   function validate(phase) {
     authority();
-    if (json(guardSelection(db, owner)) !== identity) throw createGuardError('The task rule changed. Check it again before adding this task.', false, true);
-    if (!selection.revision_id) return null;
+    if (!pinned && json(selected()) !== identity) throw createGuardError('The task rule changed. Check it again before adding this task.', false, true);
+    if (!applies) return null;
     let current = false;
     try { current = guard?.current(decision, phase) === true; } catch { /* Unavailable authority blocks creation. */ }
     if (!current) throw createGuardError('The task rule could not be checked. Your entries are kept.');
@@ -691,7 +733,58 @@ async function prepareTaskCreate(db, owner, proposal, guard, context = {}) {
   };
 }
 
-export function taskService(db, { guard, team } = {}) {
+// The shared adapter owns the encompassing receipt transaction. Null is an explicit lack of a pinned guard.
+export async function prepareSharedTaskCreate(db, actor, project, input, guard, context) {
+  const { parentTaskId = null, assigneeId = null, ...fields } = input;
+  const proposal = normalizeCreate(fields, true);
+  const gate = context.pinnedBeforeCreate !== null && (project.mode === 'PERSONAL' || context.pinnedBeforeCreate)
+    ? await prepareTaskCreate(db, actor, proposal, guard, context, project.mode === 'TEAM') : null;
+  return {
+    insert() {
+      gate?.validate();
+      return insertTask(db, project.owner_id, proposal.projectId, proposal.title, proposal.notes, JSON.stringify(proposal.tags),
+        proposal.priority, proposal.dueAt, undefined, project.mode === 'TEAM' ? actor : null, assigneeId, parentTaskId, context.originEventId ?? null);
+    },
+    checkCommit() { gate?.validateAfterWrite(); },
+  };
+}
+
+// Shared callers must check actor access before passing the authorized project and its storage owner.
+export function readCustomizationTask(db, owner, id, projectId) {
+  const scope = projectId === undefined
+    ? "EXISTS(SELECT 1 FROM projects WHERE projects.id=tasks.project_id AND mode='PERSONAL')" : 'project_id=?';
+  const row = db.prepare(`SELECT id, project_id AS projectId, status, ${taskTitleColumn}, tags, priority, due_at AS dueAt FROM tasks
+    WHERE owner_id=? AND id=? AND ${scope}`).get(owner, id, ...(projectId === undefined ? [] : [projectId]));
+  if (!row) throw notFound();
+  return { ...row, title: taskText(row.title), tags: JSON.parse(row.tags) };
+}
+
+// Call in the authorized effect transaction. A no-op must not invalidate another event's edit fence.
+export function writeTaskSourceUpdate(db, task, before, after) {
+  if (!db.isTransaction) throw new Error('Task source update requires a transaction');
+  const fields = [
+    ['tags', json(before.tags), json(after.tags)],
+    ['priority', before.priority, after.priority],
+    ['due_at', before.dueAt, after.dueAt],
+  ].filter(([, prior, next]) => prior !== next);
+  if (!fields.length) return;
+  if (db.prepare(`UPDATE tasks SET ${fields.map(([column]) => `${column}=?`).join(',')},updated_at=? WHERE owner_id=? AND project_id=? AND id=?`)
+    .run(...fields.map(([, , next]) => next), new Date().toISOString(), task.owner_id, task.project_id, task.id).changes !== 1)
+    throw notFound();
+}
+
+const openTaskMatch = `EXISTS(SELECT 1 FROM tasks WHERE owner_id=projects.owner_id AND project_id=projects.id
+  AND status='open' AND title COLLATE BINARY=?) AS matches`;
+export function readOpenTaskMatch(db, scope, exactTitle, check) {
+  check();
+  const row = db.prepare(`SELECT ${openTaskMatch} FROM projects WHERE owner_id=? AND id=? AND mode=?`)
+    .get(exactTitle, scope.owner_id, scope.id, scope.mode);
+  check();
+  if (!row) throw notFound();
+  return { matches: Boolean(row.matches) };
+}
+
+export function taskService(db, { guard, team, sharedCompletion } = {}) {
   function operationId(value) {
     if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value))
       throw new AppError(400, 'Use a valid task creation ID.');
@@ -763,7 +856,7 @@ export function taskService(db, { guard, team } = {}) {
       });
     },
     listTasks(owner, id) { const scope = projectAccess(db, owner, id); return db.prepare(`SELECT ${taskColumns} FROM tasks WHERE owner_id = ? AND project_id = ? ORDER BY created_at, id`).all(scope.owner_id, id).map(taskDto); },
-    searchTasks(owner, id, input, { allowAll = false } = {}) {
+    searchTasks(owner, id, input, { allowAll = false, searchNotes = true } = {}) {
       const scope = projectAccess(db, owner, id);
       fields(input, ['q', 'tag', 'after']);
       const conditions = ['owner_id = ?', 'project_id = ?'];
@@ -771,8 +864,9 @@ export function taskService(db, { guard, team } = {}) {
       if (Object.hasOwn(input, 'q')) {
         if (typeof input.q !== 'string' || !input.q.isWellFormed() || /\p{Cc}/u.test(input.q)) throw new AppError(400, 'Use search text without control characters.');
         const query = text(input.q, 'Search text', 120);
-        conditions.push('(instr(lower(title), lower(?)) > 0 OR instr(lower(notes), lower(?)) > 0)');
-        args.push(query, query);
+        conditions.push(searchNotes ? '(instr(lower(title), lower(?)) > 0 OR instr(lower(notes), lower(?)) > 0)'
+          : 'instr(lower(title), lower(?)) > 0');
+        args.push(query, ...(searchNotes ? [query] : []));
       }
       if (Object.hasOwn(input, 'tag')) {
         conditions.push('EXISTS (SELECT 1 FROM json_each(tasks.tags) WHERE value = ?)');
@@ -793,11 +887,7 @@ export function taskService(db, { guard, team } = {}) {
     },
     getTask: task,
     getTaskForCustomization(owner, id) {
-      // SQLite TEXT reads stop at embedded NUL; the model must see the saved title without truncation.
-      const row = db.prepare(`SELECT id, project_id AS projectId, status, CAST(title AS BLOB) AS title, tags, priority, due_at AS dueAt FROM tasks
-        WHERE owner_id=? AND id=? AND EXISTS(SELECT 1 FROM projects WHERE projects.id=tasks.project_id AND mode='PERSONAL')`).get(owner, id);
-      if (!row) throw notFound();
-      return { ...row, title: Buffer.from(row.title).toString('utf8'), tags: JSON.parse(row.tags) };
+      return readCustomizationTask(db, owner, id);
     },
     hasOpenTask(owner, projectId, exactTitle, deadline) {
       if (!validOpenMatchInput(projectId, exactTitle)) throw new AppError(400, 'Choose a project and exact task title.');
@@ -806,12 +896,7 @@ export function taskService(db, { guard, team } = {}) {
         if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(deadline.expiresAtMs) || now >= deadline.expiresAtMs)
           throw new AppError(503, 'The open-task check expired.');
       };
-      checkDeadline();
-      const result = db.prepare(`SELECT EXISTS(SELECT 1 FROM tasks WHERE owner_id=projects.owner_id AND project_id=projects.id
-        AND status='open' AND title COLLATE BINARY=?) AS matches FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'`).get(exactTitle, owner, projectId);
-      checkDeadline();
-      if (!result) throw notFound();
-      return { matches: Boolean(result.matches) };
+      return readOpenTaskMatch(db, { owner_id: owner, id: projectId, mode: 'PERSONAL' }, exactTitle, checkDeadline);
     },
     getCreateOperation(owner, id, context = {}) {
       operationId(id);
@@ -829,13 +914,13 @@ export function taskService(db, { guard, team } = {}) {
       if (prior) return returnOperation(id, prior);
       let gate, failure;
       try {
-        if (scope.mode === 'TEAM') {
+        if (scope.mode === 'TEAM' && !sharedCompletion) {
           const lease = taskCreateLease(db, owner, context);
           const validate = () => { lease.validate(); projectAccess(db, owner, scope.id); };
           validate();
           gate = { validate, validateAfterWrite: validate };
         } else gate = await prepareTaskCreate(db, owner, proposal, guard, { ...context,
-          requestKey: Object.freeze({ type: 'demo.TaskWorkflowKey/1', value: id }) });
+          requestKey: Object.freeze({ type: 'demo.TaskWorkflowKey/1', value: id }) }, scope.mode === 'TEAM');
       }
       catch (error) { failure = error; }
       const result = transaction(db, () => {
@@ -854,8 +939,15 @@ export function taskService(db, { guard, team } = {}) {
             const now = new Date().toISOString();
             const current = projectAccess(db, owner, proposal.projectId);
             const taskId = insertTask(db, current.owner_id, proposal.projectId, proposal.title, proposal.notes, JSON.stringify(proposal.tags), proposal.priority, proposal.dueAt, now, current.mode === 'TEAM' ? owner : null);
-            if (current.mode === 'TEAM') admitTeamRoot(db, owner, taskId, id, now);
-            else captureTaskEvent(db, owner, createdHook, taskId, now);
+            if (current.mode === 'TEAM') admitTeamRoot(db, owner, taskId, id, now, sharedCompletion?.teamAdmission);
+             else {
+               const { eventId, completionPin } = captureTaskEvent(db, owner, createdHook, taskId, now, { verify: sharedCompletion?.verifyPersonalAdmission });
+               const pin = completionPin ?? sharedCompletion?.personalCompletionAdmission(owner, guardSelection(db, owner));
+               if (pin && db.prepare(`INSERT INTO shared_personal_completion_pins(event_id,owner_id,item_id,revision_id,selection_generation,pins)
+                 SELECT ?,owner_id,extension_id,revision_id,?,? FROM extension_revision_links WHERE owner_id=? AND revision_id=?`)
+                 .run(eventId, pin.generation, pin.pins, owner, pin.revisionId).changes !== 1)
+                 throw createGuardError('The task rule could not be checked. Your entries are kept.');
+             }
             gate.validateAfterWrite();
             terminal = { state: 'CREATED', task: task(owner, taskId) };
             record(terminal);
@@ -897,10 +989,31 @@ export function taskService(db, { guard, team } = {}) {
         return team.complete(owner, id, context);
       }
       return transaction(db, () => {
+        if (sharedCompletion && context.authorize && context.authorize() !== owner)
+          throw new AppError(401, 'Your demo session changed. Sign in again.');
         task(owner, id);
         const now = new Date().toISOString();
         const changed = db.prepare("UPDATE tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE owner_id = ? AND id = ? AND status = 'open'").run(now, now, owner, id).changes;
-        if (changed) captureTaskEvent(db, owner, TASK_HOOK, id, now);
+        if (changed) {
+          // Generated inserts have no creation anchor; a later human completion is its own event.
+          const anchor = db.prepare(`SELECT * FROM task_events WHERE owner_id=? AND source_task_id=? AND hook_id='TaskCreated'`).get(owner, id);
+          const pins = JSON.parse(anchor?.pins ?? 'null');
+          const separate = anchor && db.prepare('SELECT * FROM shared_personal_completion_pins WHERE event_id=?').get(anchor.event_id);
+          const requiresPin = pins?.completionPin === true;
+          if (requiresPin && (!separate || pins.format !== COMPOSED_MANIFEST || !pins.lifetimeCompletion
+              || separate.item_id !== anchor.item_id || separate.revision_id !== anchor.revision_id
+              || sharedCompletion?.personalCompletionPins(anchor) !== separate.pins)
+              || separate && (separate.owner_id !== owner || pins?.format === BUNDLE_MANIFEST || pins?.lifetimeCompletion && !requiresPin))
+            throw new AppError(503, 'The pinned task policy is unavailable.');
+          const admission = separate ? { ...separate, hook_id: TASK_HOOK } : pins?.format === BUNDLE_MANIFEST
+            || pins?.format === COMPOSED_MANIFEST && pins.lifetimeCompletion ? anchor : null;
+          if (admission && !sharedCompletion?.personalCompletionPins) throw new AppError(503, 'The pinned task policy is unavailable.');
+          captureTaskEvent(db, owner, TASK_HOOK, id, now, { override: admission ? {
+            revision_id: admission.revision_id, generation: admission.selection_generation, extension_id: admission.item_id,
+            binding_pins: sharedCompletion.personalCompletionPins(admission),
+          } : undefined });
+          sharedCompletion?.capture(owner, id, now);
+        }
         return task(owner, id);
       });
     },
@@ -909,7 +1022,10 @@ export function taskService(db, { guard, team } = {}) {
 
 // Called inside the lifecycle transaction; revocation never erases settled native evidence.
 export function revokeTaskAdmissions(db, owner, itemId) {
-  db.prepare("UPDATE task_events SET revoked_at=? WHERE owner_id=? AND item_id=? AND state IN ('PENDING','STARTED') AND revoked_at IS NULL")
+  db.prepare(`UPDATE task_events SET revoked_at=? WHERE owner_id=? AND item_id=? AND revoked_at IS NULL
+     AND (state IN ('PENDING','STARTED') OR hook_id='TaskCreated' AND json_extract(pins,'$.format') IN (?,?))`)
+    .run(Date.now(), owner, itemId, BUNDLE_MANIFEST, COMPOSED_MANIFEST);
+  db.prepare('UPDATE shared_personal_completion_pins SET revoked_at=? WHERE owner_id=? AND item_id=? AND revoked_at IS NULL')
     .run(Date.now(), owner, itemId);
   db.prepare(`UPDATE extension_selections SET revision_id=NULL,binding_pins=NULL,generation=generation+1
     WHERE owner_id=? AND revision_id IN
@@ -1029,12 +1145,11 @@ export function taskEffectService(db, options = {}) {
       const before = { tags: task.tags, priority: task.priority, dueAt: task.dueAt };
       if (!Object.keys(input).length || input.dueAt === null) return { response: rejection('TASK_INVALID') };
       const after = {
-        tags: Object.hasOwn(input, 'addTag') ? JSON.parse(tags([...task.tags, input.addTag])) : task.tags,
+        tags: Object.hasOwn(input, 'addTag') ? appendTaskTag(task.tags, input.addTag) : task.tags,
         priority: Object.hasOwn(input, 'priority') ? taskPriority(input.priority) : task.priority,
         dueAt: Object.hasOwn(input, 'dueAt') ? taskDueAt(input.dueAt) : task.dueAt,
       };
-      if (json(before) !== json(after)) db.prepare('UPDATE tasks SET tags=?,priority=?,due_at=?,updated_at=? WHERE owner_id=? AND id=?')
-        .run(JSON.stringify(after.tags), after.priority, after.dueAt, new Date().toISOString(), owner, id);
+      writeTaskSourceUpdate(db, { owner_id: owner, project_id: task.projectId, id }, before, after);
       return { response: success(id), observation: { updated: { id, before, after } } };
     } catch (error) {
       if (error instanceof AppError && error.status === 404) return { response: rejection('TASK_NOT_FOUND') };

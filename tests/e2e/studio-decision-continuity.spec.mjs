@@ -192,7 +192,7 @@ for (const resource of ['proof', 'source']) test(`closing and reopening explicit
     hold.release(); await hold.finished;
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await expect(review(page)).not.toContainText('could not be confirmed');
-    await review(page).getByText('Technical details for this version', { exact: true }).click();
+    await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(review(page).getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
     await closeReview(page);
     await expect(composer(page)).toHaveValue('Keep my unsent discussion');
@@ -299,7 +299,7 @@ for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preser
     await openReview(page);
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     if (!await review(page).getByLabel('Saved source for approval', { exact: true }).isVisible())
-      await review(page).getByText('Technical details for this version', { exact: true }).click();
+      await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(review(page)).toContainText('Evidence: ' + state.evidence.id);
     await composer(page).fill('Please continue checking my request');
     await composer(page).press('Enter');
@@ -324,7 +324,7 @@ for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preser
     await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     if (!await review(page).getByLabel('Saved source for approval', { exact: true }).isVisible())
-      await review(page).getByText('Technical details for this version', { exact: true }).click();
+      await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(review(page)).toContainText('Evidence: ' + latest.evidence.id);
     expect(decisions).toEqual([]);
     expect((await api(page, path)).approved).toBe(false);
@@ -365,7 +365,7 @@ test('an earlier run stays read-only when it becomes the approved decision until
     await expect(results.getByRole('button', { name: /^(Turn on for tasks completed)$/ })).toHaveCount(0);
     await openReview(page);
     await expect(activate(page)).toBeEnabled();
-    await review(page).getByText('Technical details for this version', { exact: true }).click();
+    await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(review(page)).toContainText('Evidence: ' + first.evidence.id);
     expect(decisions).toEqual([]);
     expect(await api(page, path)).toEqual(approved);

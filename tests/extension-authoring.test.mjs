@@ -2,6 +2,7 @@ import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { openData } from '../src/data.mjs';
 import { createApp } from '../src/app.mjs';
+import { createAuthoringService } from '../src/authoring-service.mjs';
 import { createLifecycle } from '../src/extension-lifecycle.mjs';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { digest, TASK_HOOK, TASK_DEFINITION } from '../src/extension-catalog.mjs';
@@ -32,7 +33,8 @@ function scriptedProvider({ onCall = () => {}, question = 'Would creating a task
         if (typeof current === 'string' && /^no\b/i.test(current)) return response(null, 'No changes were made.');
         if (typeof current === 'string' && /\byes\b|\bagree\b/i.test(current)) {
           compileRequested = true;
-          return response(call('compile_draft', 'compile-' + requests.length, { sourceJson: source, expectedDraftVersion: 0 }));
+          return response(call('offer_proposal', 'offer-' + requests.length, { hookId: TASK_HOOK, sourceJson: source,
+            cases: fixture.cases, expectedDraftVersion: 0, summary: 'Create a follow-up in the chosen project.' }));
         }
         if (n === 0) return response(call('discover_catalog', 'discover-' + requests.length));
         if (n === 1) {
@@ -51,15 +53,21 @@ async function api(t, { provider, checkpointFault, compiler: appCompiler = compi
   const db = openData(':memory:');
   for (const [id, name] of [[fixture.metadata.projectId, 'Customer project'], [fixture.metadata.otherProjectId, 'Other project']])
     db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at) VALUES (?,?,?,?,?)').run(id, 'maya', name, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
-  const app = await createApp({ db, origin, compiler: appCompiler, authoring: {
-    config, providerFactory: provider?.providerFactory ?? scriptedProvider().providerFactory, checkpointFault,
-  } });
+  const authoring = { config, providerFactory: provider?.providerFactory ?? scriptedProvider().providerFactory, checkpointFault };
+  const app = await createApp({ db, origin, compiler: appCompiler, authoring });
   t.after(async () => { await app.close(); db.close(); });
   let auth = {};
   const callApi = (path, payload, headers = {}) => app.inject({ url: '/api/' + path, method: payload === undefined ? 'GET' : 'POST',
     headers: { host: '127.0.0.1:32123', origin, 'content-type': 'application/json', ...auth, ...headers },
     ...(payload === undefined ? {} : { payload }) });
-  return { db, call: callApi, getAuth: () => ({ ...auth }), async login(userId = 'maya') {
+  return { db, call: callApi, async earlierTurn(input) {
+    const service = createAuthoringService({ db, lifecycle: createLifecycle(db, { compiler: appCompiler }), ...authoring });
+    try {
+      const accepted = await service.turn('maya', input, { sessionId: 'earlier-fixture', current: () => true });
+      await service.wait('maya', accepted.conversation.id);
+      return accepted;
+    } finally { await service.close(); }
+  }, getAuth: () => ({ ...auth }), async login(userId = 'maya') {
     const bootstrap = (await callApi('session')).json();
     const signedIn = await callApi('session', { userId }, { 'x-session-context': bootstrap.contextToken });
     assert.equal(signedIn.statusCode, 200);
@@ -89,7 +97,7 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
     linked: count(db, "SELECT count(*) n FROM extension_conversation_links WHERE owner_id='maya'"),
     args,
   }) });
-  const { db, call: callApi, login } = await api(t, { provider, checkpointFault: point => {
+  const { db, call: callApi, login, earlierTurn } = await api(t, { provider, checkpointFault: point => {
     if (point.stage === 'afterCommit' && point.phase === 'ADMIT') {
       const row = db.prepare(`SELECT e.id,e.hook_id,e.draft_version,e.draft_revision_id,c.id conversation_id,l.purpose,json_extract(c.state,'$.definitionId') definition_id
         FROM extensions e JOIN extension_conversation_links l ON l.extension_id=e.id
@@ -112,9 +120,9 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
 
   const request = start('create-chat', 'Help me make a useful task extension.');
   assert.equal(Object.keys(request).length, 6);
-  const created = await callApi('authoring/turn', request);
-  assert.equal(created.statusCode, 202);
-  const conversationId = created.json().conversation.id;
+  assert.equal((await callApi('authoring/turn', request)).statusCode, 409);
+  const created = await earlierTurn(request);
+  const conversationId = created.conversation.id;
   const conversation = await settled(callApi, conversationId);
   assert.equal(conversation.status, 'AWAITING_USER');
   assert.equal(conversation.purpose, 'CREATE');
@@ -150,7 +158,7 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   const replay = await callApi('authoring/turn', request);
   assert.equal(replay.statusCode, 202);
   assert.equal(replay.json().conversation.id, conversationId);
-  assert.deepEqual(replay.json().operation, created.json().operation);
+  assert.deepEqual(replay.json().operation, created.operation);
   assert.equal(provider.requests.length, requestCount, 'creation replay reads its receipt before checking the advanced head');
   assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, heldBeforeReplay);
   assert.equal((await callApi('authoring/turn', { ...request, text: 'Different creation intent.' })).statusCode, 409);
@@ -172,11 +180,9 @@ test('create admission, item-filtered reads, deduplication, stale resume and exp
   assert.deepEqual({ ...link }, { extension_id: conversation.extensionId, purpose: 'REVISE', base_revision_id: compiled.json().draft.id,
     base_generation: compiled.json().selection.generation });
 
-  const secondItem = await callApi('authoring/turn', start('second-item', 'Discuss another task customization.'));
-  assert.equal(secondItem.statusCode, 202);
-  await settled(callApi, secondItem.json().conversation.id);
-  assert.notEqual(secondItem.json().conversation.extensionId, conversation.extensionId);
-  const mismatch = await callApi('authoring/turn', start('wrong-resume-item', 'Continue.', { kind: 'resume', extensionId: secondItem.json().conversation.extensionId }, {
+  const secondItem = admitTaskDraft(db, createLifecycle(db));
+  assert.notEqual(secondItem.extensionId, conversation.extensionId);
+  const mismatch = await callApi('authoring/turn', start('wrong-resume-item', 'Continue.', { kind: 'resume', extensionId: secondItem.extensionId }, {
     conversationId, expectedVersion: conversation.version, expectedDraftVersion: 1,
   }));
   assert.equal(mismatch.statusCode, 404);
@@ -228,7 +234,9 @@ test('unsupported requests wait for a decision; refusal leaves no program, assen
     compiler: countedCompiler });
   await login();
   const selectionBefore = (await callApi('extensions')).json().selection;
-  const unsupported = await callApi('authoring/turn', start('unsupported-create', 'Send a weekly email automatically.'));
+  const earlier = admitTaskDraft(db, createLifecycle(db));
+  const unsupported = await callApi('authoring/turn', start('unsupported-create', 'Send a weekly email automatically.',
+    { kind: 'resume', extensionId: earlier.extensionId }, { conversationId: earlier.conversationId }));
   assert.equal(unsupported.statusCode, 202);
   const pending = await settled(callApi, unsupported.json().conversation.id);
   assert.equal(pending.status, 'AWAITING_USER');
@@ -251,7 +259,9 @@ test('unsupported requests wait for a decision; refusal leaves no program, assen
   assert.equal(count(db, 'SELECT count(*) n FROM extension_approvals'), 0);
   assert.deepEqual((await callApi('extensions')).json().selection, selectionBefore);
 
-  const assent = await callApi('authoring/turn', start('assent-create', 'Help me create a task after completion in my project.'));
+  const alternative = admitTaskDraft(db, createLifecycle(db));
+  const assent = await callApi('authoring/turn', start('assent-create', 'Help me create a task after completion in my project.',
+    { kind: 'resume', extensionId: alternative.extensionId }, { conversationId: alternative.conversationId }));
   assert.equal(assent.statusCode, 202);
   const awaitingAssent = await settled(callApi, assent.json().conversation.id);
   assert.equal(awaitingAssent.status, 'AWAITING_USER');
@@ -259,13 +269,19 @@ test('unsupported requests wait for a decision; refusal leaves no program, assen
     kind: 'resume', extensionId: awaitingAssent.extensionId,
   }, { conversationId: awaitingAssent.id, expectedVersion: awaitingAssent.version }));
   assert.equal(compiled.statusCode, 202);
-  assert.equal((await settled(callApi, awaitingAssent.id)).status, 'IDLE');
+  const offered = await settled(callApi, awaitingAssent.id);
+  assert.equal(offered.status, 'AWAITING_USER');
+  assert.equal(compileCalls, 0, 'Assent in chat is not confirmation.');
+  assert.equal((await callApi(`authoring/conversations/${offered.id}/confirm`, {
+    runId: offered.runId, expectedVersion: offered.version, offerDigest: offered.offer.digest,
+  })).statusCode, 202);
+  assert.equal((await settled(callApi, offered.id)).status, 'REVIEW_AVAILABLE');
   const draft = (await callApi(`extensions/${awaitingAssent.extensionId}`)).json();
   assert.equal(draft.extension.hookId, TASK_HOOK);
   assert.ok(draft.revisionId);
-  assert.equal(draft.evidence, null);
+  assert.equal(draft.evidence.passed, true);
   assert.equal(draft.approved, false);
-  assert.equal(compileCalls, 1, 'only the explicit assent triggers compilation');
+  assert.equal(compileCalls, 1, 'only explicit confirmation triggers compilation');
   assert.deepEqual((await callApi('extensions')).json().selection, selectionBefore);
 });
 
@@ -275,8 +291,7 @@ test('ADMIT rollback leaves no item/chat/credit; post-commit uncertainty preserv
   } });
   await before.login();
   const initialItems = count(before.db, "SELECT count(*) n FROM extensions WHERE owner_id='maya'");
-  const rejected = await before.call('authoring/turn', start('rollback-create', 'Create a task extension.'));
-  assert.equal(rejected.statusCode, 503);
+  await assert.rejects(before.earlierTurn(start('rollback-create', 'Create a task extension.')), { status: 503 });
   assert.equal(count(before.db, "SELECT count(*) n FROM extensions WHERE owner_id='maya'"), initialItems);
   assert.equal(count(before.db, 'SELECT count(*) n FROM authoring_conversations'), 0);
   assert.equal(count(before.db, 'SELECT count(*) n FROM extension_conversation_links'), 0);
@@ -289,9 +304,8 @@ test('ADMIT rollback leaves no item/chat/credit; post-commit uncertainty preserv
   } });
   await after.login();
   const request = start('uncertain-create', 'Create another task extension.');
-  const admitted = await after.call('authoring/turn', request);
-  assert.equal(admitted.statusCode, 202);
-  const first = await settled(after.call, admitted.json().conversation.id);
+  const admitted = await after.earlierTurn(request);
+  const first = await settled(after.call, admitted.conversation.id);
   assert.equal(first.status, 'BLOCKED');
   assert.equal(providerCalls, 0);
   assert.equal(count(after.db, 'SELECT count(*) n FROM extensions WHERE creation_operation_id=?', request.operationId), 1);
@@ -300,7 +314,7 @@ test('ADMIT rollback leaves no item/chat/credit; post-commit uncertainty preserv
   const retry = await after.call('authoring/turn', request);
   assert.equal(retry.statusCode, 202);
   assert.equal(retry.json().conversation.id, first.id);
-  assert.deepEqual(retry.json().operation, admitted.json().operation);
+  assert.deepEqual(retry.json().operation, admitted.operation);
   assert.equal(providerCalls, 0);
   assert.equal(count(after.db, 'SELECT count(*) n FROM extensions WHERE creation_operation_id=?', request.operationId), 1);
 });

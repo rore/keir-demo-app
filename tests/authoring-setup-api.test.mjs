@@ -123,10 +123,12 @@ test('valid setup saves without provider traffic, applies immediately, survives 
   assertPrivate((await first.app.inject({ url: '/api/authoring', headers: { host: '127.0.0.1:32123', ...first.getAuth() } })).body, file);
   assertPrivate((await first.app.inject({ url: '/', headers: { host: '127.0.0.1:32123' } })).body, file);
   assertPrivate(saved.json(), file);
-  const turn = await first.app.inject({ method: 'POST', url: '/api/authoring/turn', headers: {
-    host: '127.0.0.1:32123', origin, 'content-type': 'application/json', ...first.getAuth()
-  }, payload: { target: { kind: 'create' }, conversationId: null, operationId: 'setup-dispatch', text: 'Help with task advice.', expectedVersion: 0, expectedDraftVersion: 0 } });
-  assert.equal(turn.statusCode, 202);
+  const headers = { host: '127.0.0.1:32123', origin, 'content-type': 'application/json', ...first.getAuth() };
+  const created = await first.app.inject({ method: 'POST', url: '/api/shared-studio/new-personal', headers, payload: { operationId: 'setup-new' } });
+  assert.equal(created.statusCode, 200, created.body);
+  const turn = await first.app.inject({ method: 'POST', url: `/api/shared-studio/PERSONAL:${created.json().extensionId}/turn`, headers,
+    payload: { operationId: 'setup-dispatch', text: 'Help with task advice.', expectedVersion: 0, expectedDraftVersion: 0 } });
+  assert.equal(turn.statusCode, 200);
   assert.deepEqual(seenKeys, [sentinel]);
 
   const reopened = await appFor(t, file); await reopened.login();

@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
-import { describeRule, type RuleCondition, type RuleDescription } from "./rule-description";
+import { describeRule, readableTime, type RuleCondition, type RuleDescription } from "./rule-description";
 import StudioComposer from "./StudioComposer";
 import "./Studio.css";
 
 type Revision = { id: string; templateId: string; kind?: "authored" | "prepared"; suiteDigest?: string | null; label: string; ruleDescription?: RuleDescription; pins: { artifactDigest?: string; rawSourceDigest?: string; compiledSourceDigest?: string; modelRef?: { format?: string } }; provenance: "operator" | "customer" };
 type History = { id: number; generation: number; operation: string; revisionId: string | null; label?: string | null };
 export type State = {
+  sharedStudio?: boolean;
   retired?: boolean;
   legacySelection?: { generation: number; revision: Revision; eligible: false };
   executionAvailability?: { available: boolean; message: string | null };
@@ -79,11 +80,12 @@ type Conversation = {
   retired?: boolean;
   extensionId: string | null; purpose: "CREATE" | "REVISE" | null;
   id: string; version: number; status: "IDLE" | "RUNNING" | "CANCELLING" | "AWAITING_USER" | "REVIEW_AVAILABLE" | "CANCELLED" | "BLOCKED" | "INTERRUPTED";
-  runId: string; operation: Operation; messages: { id: string; role: "user" | "assistant"; text: string; kind: "text" | "clarification" | "review";
+  runId: string; operation: Operation; messages: { id: string; role: "user" | "assistant" | "host"; text: string; kind: "text" | "clarification" | "review";
     openCustomization?: OpenCustomization;
     receipt?: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string } }[];
   messagesBefore?: string | null;
   code: string | null; review: { revisionId: string; draftVersion: number; suiteDigest: string; evidenceId: string; eligible: boolean } | null;
+  offer?: { digest: string; summary: string } | null;
   draft: { revisionId: string | null; draftVersion: number; suiteDigest: string | null }; selection: { revisionId: string | null; generation: number };
 };
 type Transcript = { messages: (Conversation["messages"][number] & { conversationId: string })[]; next: string | null };
@@ -155,7 +157,6 @@ function authoringReason(code: string | null | undefined) {
   if (code === "CONVERSATION_LIMIT") return "An earlier authoring policy stopped this request. Your saved conversations remain available.";
   if (["STALE_CONTEXT", "STALE_DRAFT", "STALE_CONVERSATION", "CHECKPOINT_UNCERTAIN"].includes(code)) return "The request needs saved-state readback before another change. No approval or activation is implied.";
   if (code === "REVIEW_NOT_READY") return "The exact saved review could not be confirmed. Ask Studio to check the current changes, or keep discussing the draft.";
-  if (code === "DISCUSSION_ONLY") return "This was understood as discussion. Describe the change you want to prepare, or clarify your request.";
   return "AI authoring is unavailable for this request. Check saved state; native tasks and saved work remain available.";
 }
 type Props = {
@@ -257,13 +258,12 @@ const summarizeExamples = (proof: Evidence | null) => [...new Set(proof?.reports
   return observed.updatedTasks?.map(update => confirmedUpdate(update, item.report.scenario?.task).replace(/\.$/, "")).join(". ") || "Could not check";
 }) ?? [])].join("; ");
 const priorityLabel = (value: string) => value[0]?.toUpperCase() + value.slice(1).toLowerCase();
-const utc = (value: string) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) ? value.replace("T", " ").replace("Z", " UTC") : value;
 function taskDetails(task: TaskFields) {
-  return [task.priority && `Priority ${priorityLabel(task.priority)}`, task.dueAt && `Due ${utc(task.dueAt)}`,
+  return [task.priority && `Priority ${priorityLabel(task.priority)}`, task.dueAt && `Due ${readableTime(task.dueAt)}`,
     task.tags?.length && `Tags ${task.tags.join(", ")}`, task.notes !== undefined && `Notes “${task.notes}”`].filter(Boolean).join(" · ");
 }
 function expectedUpdate(update: TaskUpdate) {
-  const fields = [update.priority && `Priority ${priorityLabel(update.priority)}`, update.dueAt && `Due date ${utc(update.dueAt)}`,
+  const fields = [update.priority && `Priority ${priorityLabel(update.priority)}`, update.dueAt && `Due date ${readableTime(update.dueAt)}`,
     update.addTag && `Add tag “${update.addTag}”`].filter(Boolean).join(" · ");
   return `Update this task.${fields ? ` ${fields}.` : ""}`;
 }
@@ -275,7 +275,7 @@ function confirmedUpdate(update: TaskUpdate, before?: TaskPreview) {
     if (!before.priority) unknown = true;
     else if (before.priority !== update.priority) changes.push(`Priority ${priorityLabel(before.priority)} → ${priorityLabel(update.priority)}`);
   }
-  if (update.dueAt !== undefined && before.dueAt !== update.dueAt) changes.push(`Due date ${before.dueAt ? utc(before.dueAt) : "No due date"} → ${utc(update.dueAt)}`);
+  if (update.dueAt !== undefined && before.dueAt !== update.dueAt) changes.push(`Due date ${before.dueAt ? readableTime(before.dueAt) : "No due date"} → ${readableTime(update.dueAt)}`);
   if (update.addTag !== undefined) {
     if (!Array.isArray(before.tags)) unknown = true;
     else if (!before.tags.includes(update.addTag)) changes.push(`Added tag “${update.addTag}”`);
@@ -287,7 +287,7 @@ const continuationPrefix = "Continue my saved proposal and examples using these 
 function conversationMessage(id: string, item: Conversation["messages"][number]): Message {
   return { id: `ai:${id}:${item.id}`, conversationId: id, who: item.role === "user" ? "You" : "Studio",
     text: item.role === "user" && item.text.startsWith(continuationPrefix) ? "Continue from saved work." : item.text,
-    evidenceId: item.role === "assistant" ? item.receipt?.evidenceId : undefined,
+    evidenceId: item.role !== "user" ? item.receipt?.evidenceId : undefined,
     openCustomization: item.role === "assistant" ? item.openCustomization : undefined,
     context: item.role === "user" && item.text.startsWith(continuationPrefix) ? item.text : undefined };
 }
@@ -823,7 +823,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
           <div><dt>Check result</dt><dd>{result}</dd></div>
           <div><dt>Coverage limit</dt><dd>This saved input records whether notes are present, not raw note text. It does not prove whitespace normalization. Example tasks only; your tasks are unchanged.</dd></div>
         </dl>
-        <details className="rs-case-raw"><summary>Exact scenario and results</summary><pre>{JSON.stringify({ id: item.id, expected: item.expected, observed: item.report }, null, 2)}</pre></details>
       </details> : <><h4>{label}</h4><dl>{situation}{expectedBlock}
         <div><dt>What happened</dt><dd>{outcome(observed)}</dd></div>
         <div><dt>Result</dt><dd><p className={matches ? "rs-match" : "rs-mismatch"}>{result}</p></dd></div>
@@ -841,14 +840,14 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       const matches = saved && saved.title === call.args?.title && saved.projectId === call.args?.projectId ? saved.matches : undefined;
       return { step: call.step, title: call.args?.title, projectId: call.args?.projectId, project: projectName(call.args?.projectId), matches };
     }) ?? [];
-    const readUnavailable = observed?.effect === "NONE" && !!native?.error && ["tasks.get", "tasks.openMatch"].includes(calls?.at(-1)?.capability ?? "");
+    const lastCall = calls?.at(-1)?.capability;
+    const readUnavailable = observed?.effect === "NONE" && !!native?.error && ["tasks.get", "tasks.openMatch"].includes(lastCall ?? "");
+    const writeRejected = observed?.effect === "NONE" && !!native?.error && ["tasks.create", "tasks.update"].includes(lastCall ?? "");
     const readMessage = native?.error?.code === "TASK_NOT_FOUND" ? "The task could not be found."
       : native?.error?.code === "ACCESS_DENIED" ? "The task could not be checked because access was denied."
       : native?.error?.code === "ADAPTER_TRANSIENT" ? "The task was temporarily unavailable." : "Could not check the triggering task.";
-    const openUnavailable = openChecks.some(check => check.matches === undefined);
     const unknown = observed?.effect === "UNKNOWN";
     const failed = ["FAIL", "MISMATCH"].includes(item.report.status);
-    const passed = item.report.status === "PASS";
     const expected = item.expected;
     const currentRule = compact && reviewEvidence?.revisionId === summaryRevision ? workflowSummary : null;
     const uncertainWrite = unknown && currentRule?.capability === "tasks.update" && currentRule.step
@@ -895,7 +894,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     }
     const title = knownScenarioTask(task) ? `“${task!.title}”` : exampleLabel(item, index);
     const project = task?.projectName || projectName(task?.projectId);
-    const taskReadUnavailable = readUnavailable && calls?.at(-1)?.capability === "tasks.get";
+    const taskReadUnavailable = readUnavailable && lastCall === "tasks.get";
     const absentDueRule = currentRule?.conditions?.some(fact => fact.field === "dueAbsent" && fact.step === taskRead?.step);
     const addedTask = scenario?.hookId === "TaskCreated" || currentRule && summarized?.hook === "TaskCreated";
     const anotherProject = addedTask && currentRule?.conditions !== undefined && !currentRule.conditions.some(fact => fact.field === "projectId")
@@ -907,24 +906,25 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       : noChangeReason ? noChangeReason.replace(/\.$/, "")
       : taskRead ? `${addedTask ? "New task" : task?.status === "COMPLETED" ? "Task completed" : "Task is still unfinished"}${project ? ` in ${project}` : ""}`
       : exampleLabel(item, index);
-    const unavailable = readUnavailable || openUnavailable || observed?.effect === "NOT_OBSERVED" || !observed;
     const dueInOutput = [expected.createdTasks, expected.updatedTasks, observed?.createdTasks, observed?.updatedTasks]
       .some(tasks => tasks?.some(entry => !!entry.dueAt));
+    const exampleTime = dueInOutput && scenario?.occurredAt;
     const changedFields = Object.keys(observed?.updatedTasks?.[0] ?? {}).filter(field => field !== "id");
     const result = facts ? ({ changed: observed?.createdTasks?.length ? "Task created as intended"
       : changedFields.length === 1 ? ({ dueAt: task?.dueAt ? "Due date changed as intended" : "Due date added as intended", priority: "Priority changed as intended", addTag: "Tag added as intended" } as Record<string, string>)[changedFields[0]] ?? "Changed as intended" : "Changed as intended",
       unchanged: absentDueRule && task?.dueAt ? "Existing date kept" : "Left unchanged as intended",
-      "handled-problem": readUnavailable ? "No change when task details were unavailable—as intended" : "Problem handled as intended", uncertain: "Change not confirmed",
+       "handled-problem": readUnavailable ? "No change when task details were unavailable—as intended"
+         : writeRejected && lastCall === "tasks.create" ? "No task added, as expected" : "Task stayed unchanged, as expected", uncertain: "Change not confirmed",
       unchecked: "We could not finish checking", mismatch: "Different from what we wanted" }[facts.outcome]) : "Example summary unavailable";
     const matched = facts?.verification === "matched";
     const lookupOutcome = `${currentRule?.capability === "tasks.create" ? "No task was created" : "No change"} because an open task matched.`;
-    const observedOutcome = observed?.effect === "NOT_OBSERVED" || !observed ? "The simulation did not establish a write outcome."
-      : observed.effect === "NONE" && native?.error && ["tasks.create", "tasks.update"].includes(calls?.at(-1)?.capability ?? "") ? "No change. The write could not be applied."
+    const observedOutcome = observed?.effect === "NOT_OBSERVED" || !observed ? "This example could not show whether a task changed."
+      : writeRejected ? lastCall === "tasks.create" ? "Daymark couldn’t add the new task." : "Daymark couldn’t update the task. It stayed unchanged."
       : noChangeReason ? `No change. ${noChangeReason}` : effects(observed, true);
     const body = <>
       <dl>
-        <div><dt>Situation</dt><dd>{title}{project && ` in “${project}”`}{task?.status && ` · ${task.status === "COMPLETED" ? "Completed" : "Unfinished"}`}
-          {dueInOutput && scenario?.occurredAt && ` · Event ${utc(scenario.occurredAt)}`}{task && taskDetails(task) && ` · ${taskDetails(task)}`}</dd></div>
+        <div><dt>Situation</dt><dd>{title}{project && ` in “${project}”`}{task?.status && !(exampleTime && task.status === "COMPLETED") && ` · ${task.status === "COMPLETED" ? "Completed" : "Unfinished"}`}
+          {exampleTime && ` · ${addedTask ? "Added" : task?.status === "COMPLETED" ? "Completed" : "Example time"} ${readableTime(exampleTime)}`}{task && taskDetails(task) && ` · ${taskDetails(task)}`}</dd></div>
         <div><dt>What we wanted</dt><dd>{effects(expected, false)}</dd></div>
         <div><dt>What happened</dt><dd>
           {openChecks.map((check, index) => <p key={index}>Open-task check{check.title ? ` for the exact title “${check.title}”` : ""} {check.project ? `in “${check.project}”` : "in the chosen project"}. {check === blockingLookup ? lookupOutcome : check.matches === true ? "A matching open task was found." : check.matches === false ? "No matching open task was found." : "Could not check for a matching open task."}</p>)}
@@ -935,10 +935,8 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!compact && <div><dt>Result</dt><dd>
           <p className={facts?.verification === "mismatched" ? "rs-mismatch" : matched && !unknown ? "rs-match" : undefined}>{result}</p>
           {facts?.verification === "mismatched" && <p className="rs-mismatch">The observed result did not match what was wanted.</p>}
-          {matched && readUnavailable && <p>The example deliberately made the read unavailable. The check finished and matched the expected no-change result.</p>}
         </dd></div>}
       </dl>
-      {compact && matched && readUnavailable && <p>This problem was deliberately simulated. The task stayed unchanged, as intended.</p>}
       {unknown && <p>The task may have changed. Check before trying again.</p>}
       {compact && failed && viewingCurrentFailure && <button type="button" className="rs-link" disabled={sendDisabled || !authoring?.availability.available}
         onClick={() => document.getElementById("studio-message")?.focus()}>Describe a correction</button>}
@@ -946,13 +944,10 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     return <article className="rs-example rs-workflow-case" key={item.id} aria-label={"Example: " + situation}
       data-result={compact ? facts?.verification === "mismatched" ? "mismatch" : unknown ? "unknown" : matched ? "match" : "unavailable" : undefined}>
       {compact ? <details className="rs-case-disclosure" open={facts?.verification === "mismatched" || facts?.outcome === "uncertain" || undefined}>
-        <summary className="rs-case-overview"><span className="rs-case-situation"><strong>{situation}</strong>
-          {matched && readUnavailable && <small>The example deliberately made the read unavailable.</small>}</span>
+        <summary className="rs-case-overview"><span className="rs-case-situation"><strong>{situation}</strong></span>
           <span className="rs-case-outcome">{blockingLookup ? lookupOutcome : observedOutcome}</span>
           <span className={`rs-example-result ${facts?.verification === "mismatched" ? "rs-mismatch" : matched && !unknown ? "rs-match" : ""}`}>{result}</span></summary>
-        <div className="rs-case-support">{body}
-          <details className="rs-case-raw"><summary>Exact scenario and results</summary><pre>{JSON.stringify({ id: item.id, expected: item.expected, observed: item.report }, null, 2)}</pre></details>
-        </div>
+        <div className="rs-case-support">{body}</div>
       </details> : body}
     </article>;
   }
@@ -966,11 +961,9 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const after = created ?? (update ? { ...before, ...update,
       ...(update.addTag && Array.isArray(before.tags) && { tags: [...new Set([...before.tags, update.addTag])] }) } : null);
     if (!after) return null;
-    const date = (value: string) => Number.isFinite(Date.parse(value))
-      ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(value)) + " UTC" : value;
     const recorded = (task: TaskPreview, key: keyof TaskPreview) => Object.hasOwn(task, key) && task[key] !== undefined;
     const fields: { key: keyof TaskPreview; label: string; value: (task: TaskPreview) => string }[] = [
-      { key: "dueAt", label: "Due date", value: task => task.dueAt ? date(task.dueAt) : "None" },
+      { key: "dueAt", label: "Due date", value: task => task.dueAt ? readableTime(task.dueAt) : "None" },
       { key: "priority", label: "Priority", value: task => priorityLabel(task.priority!) },
       { key: "tags", label: "Tags", value: task => task.tags?.join(", ") || "None" },
       { key: "notes", label: "Notes", value: task => task.notes || "Empty" },
@@ -991,7 +984,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {index === 1 && partialTags && <p className="rs-changed-field">Added tag: <strong>{update!.addTag}</strong><br />Starting tags were not recorded; the complete resulting tag list is unknown.</p>}
         {index === 1 && created && <p className="muted">Only the values recorded in this example are shown. Other task details were not checked here.</p>}
         {index === 1 && update && !created && <p className="muted">Other task details stayed the same.</p>}
-        {!index && item.report.scenario?.occurredAt && <p className="muted">{event === "TaskCreated" ? "Added" : event === "TaskCompleted" ? "Completed" : "Event"}: {date(item.report.scenario.occurredAt)}</p>}
+        {!index && item.report.scenario?.occurredAt && <p className="muted">{event === "TaskCreated" ? "Added" : event === "TaskCompleted" ? "Completed" : "Example time"}: {readableTime(item.report.scenario.occurredAt)}</p>}
         <details><summary>All example task details</summary><p>{taskDetails(task) || "No additional task details were recorded."}</p></details>
       </article>)}</div>
     </section>;
@@ -1012,7 +1005,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     if (!summary) return <p>The example summary could not be confirmed. Exact results remain available in the details.</p>;
     const counts = summary.counts.outcome;
     const parts = [counts.changed && `${counts.changed} changed a task as intended`, counts.unchanged && `${counts.unchanged} left it unchanged as intended`,
-      counts["handled-problem"] && `${counts["handled-problem"]} handled a simulated problem as intended`,
+      counts["handled-problem"] && `${counts["handled-problem"]} left tasks unchanged when something couldn’t be checked or changed`,
       counts.mismatch && `${counts.mismatch} differed from what was wanted`, counts.uncertain && `${counts.uncertain} left a change unconfirmed`,
       counts.unchecked && `${counts.unchecked} could not be checked`].filter(Boolean) as string[];
     return <p className="rs-example-overview">{beforeCreate ? `${summary.counts.verification.matched} / ${summary.returnedCases} example decisions matched. ${summarizeExamples(proof)}.`
@@ -1077,7 +1070,6 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         </dl>
         {failed && viewingCurrentFailure && <button type="button" className="rs-link rs-case-correction" disabled={sendDisabled || !authoring?.availability.available}
           onClick={() => document.getElementById("studio-message")?.focus()}>Describe a correction</button>}
-        <details className="rs-case-raw"><summary>Exact scenario and results</summary><pre>{JSON.stringify({ id: item.id, expected: item.expected, observed: item.report }, null, 2)}</pre></details>
         </div>
         </details>
       </article>;
@@ -1603,7 +1595,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     const operationId = crypto.randomUUID();
     void submitAuthoring({ target: { kind: "resume", extensionId: extensionId.current! }, conversationId: conversation.id,
        operationId, text: "Continue from saved work. Ask before changing any independent examples.",
-      expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion, intent: "discuss" });
+       expectedVersion: conversation.version, expectedDraftVersion: state!.draftVersion });
   }
   async function recoverTurn(input: Turn, turn: number) {
     let recoveredResponse = false;
@@ -1641,6 +1633,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if ((failure as { status?: number }).status !== 404) throw failure;
     }
     if (!mounted.current || serial.current !== turn) return;
+    if (input.target.kind === "create") {
+      setRetryTurn(false);
+      setAuthoringError("There is no saved result for this earlier request. Copy the request above if you want to send it in Shared Studio.");
+      return;
+    }
     setRetryTurn(true);
     setAuthoringError("Saved state was checked, but acceptance of this request is unconfirmed. You may explicitly retry the same submitted request; it keeps its operation identity.");
   }
@@ -1705,6 +1702,37 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
     } catch (failure) {
       if (mounted.current && serial.current === turn && deletedOutcome(failure, input.operationId)) return;
       if (mounted.current && serial.current === turn) setAuthoringError("The submitted request's outcome could not be checked. Check authoring status before retrying; nothing will be sent automatically.");
+    } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
+  }
+  async function confirmBehavior() {
+    if (locked.current || historyView || staleConversation || observationPaused || !conversation?.offer) return;
+    const { id, runId, version, offer } = conversation;
+    const path = `authoring/conversations/${encodeURIComponent(id)}`;
+    locked.current = true;
+    const turn = ++serial.current;
+    setBusy("Preparing and checking…"); setAuthoringError("");
+    const restoreFocus = document.activeElement;
+    try {
+      const request = callbacks.current.request, signal = authoringLifetime.current.signal;
+      let next: Conversation;
+      try {
+        next = await request<Conversation>(`${path}/confirm`, "POST", { runId, expectedVersion: version, offerDigest: offer.digest }, signal);
+      } catch (failure) {
+        next = await request<Conversation>(path, "GET", undefined, signal);
+        if (mounted.current && serial.current === turn && next.offer) {
+          if ((failure as { status?: number }).status === 409) next = { ...next, offer: null };
+          setAuthoringError("Confirmation was not recorded. Check that the proposal is still current.");
+        }
+      }
+      if (next.id !== id || next.runId !== runId || next.version !== version) throw new Error("The conversation changed");
+      await adoptConversation(next, turn);
+      if (restoreFocus instanceof HTMLElement && !restoreFocus.isConnected && document.activeElement === document.body)
+        document.getElementById("studio-message")?.focus({ preventScroll: true });
+    } catch {
+      if (mounted.current && serial.current === turn) {
+        setObservationPaused(true);
+        setAuthoringError("The result could not be checked. Use Check authoring status before continuing. Nothing will be submitted again automatically.");
+      }
     } finally { if (mounted.current && serial.current === turn) { locked.current = false; setBusy(""); } }
   }
   async function stopAuthoring() {
@@ -2057,7 +2085,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
       if (/[\uD800-\uDFFF]/u.test(text) || new TextEncoder().encode(text).length > 8192) { setAuthoringError("Use valid text within the 8 KiB description limit."); return; }
       const target = turnTarget(), resumed = target.kind === "resume" ? conversation : null;
       const input: Turn = { target, conversationId: resumed?.id ?? null, operationId: crypto.randomUUID(), text,
-        expectedVersion: resumed?.version ?? 0, expectedDraftVersion: state!.draftVersion, intent: "auto" };
+         expectedVersion: resumed?.version ?? 0, expectedDraftVersion: state!.draftVersion };
       submittedDraft.current = { operationId: input.operationId, edit: draftEdits.current };
       draftValue.current = null;
       keepDraft(draftBinding.current.key, null);
@@ -2197,7 +2225,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             </article>;
           })}
           {retired && <article className="rs-message rs-decision" aria-label="Retired customization"><h3>This earlier customization is retired</h3>{state?.legacySelection && <p>Previously selected · unavailable to run</p>}<p>Its source, examples, discussion and history remain available to read. A new customization needs its own checks and approval.</p><button className="rs-primary" disabled={!!busy} onClick={createNew}>Start a new customization</button></article>}
-          {historyView && !activeAuthoring && <article className="rs-message rs-decision"><p>Earlier discussion · read-only. These messages and examples cannot change or approve your current proposal.</p>
+           {historyView && !activeAuthoring && <article className="rs-message rs-decision"><p>Earlier discussion · read-only. These messages and examples cannot change or approve your current proposal.</p>
             <button disabled={!!busy || !!pendingTurn} onClick={returnToCurrent}>Return to current changes</button></article>}
           {conversation?.review && !eligibleOffer && <article className="rs-message"><p>These saved examples do not support approval of the current changes.</p>
             <button className="rs-link" disabled={!!busy || !trusted || !!pendingTurn} onClick={() => void (inlineAvailable && conversation.review!.evidenceId === failedEvidenceId
@@ -2212,7 +2240,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
             <button id="studio-view-active" className="rs-link" disabled={!!busy} onClick={() => void showActive()}>View what’s in use</button>
           </article>}
 
-          {authoringError && <p role="alert">{authoringError}</p>}
+           {conversation?.offer && !historyView && !staleConversation && <article className="rs-message rs-decision">
+             <p>Confirming saves a draft and checks its examples. It does not approve or turn it on.</p>
+             <button className="rs-primary" disabled={disabled || observationPaused} onClick={() => void confirmBehavior()}>Confirm this behavior</button>
+           </article>}
+           {authoringError && <p role="alert">{authoringError}</p>}
           {recoveryError && <p role="alert">{recoveryError}</p>}
           {pendingTurn && <article className="rs-message"><strong>Submitted request</strong><p>{pendingTurn.text}</p></article>}
           {(authoringError || observationPaused || pendingTurn) && <div className="rs-recovery"><button disabled={!!busy} onClick={() => pendingTurn ? void submitAuthoring(pendingTurn, true) : void loadAuthoring()}>{!authoring && authoringError ? "Retry status" : "Check authoring status"}</button>
@@ -2299,7 +2331,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
                       "This change is approved and ready to turn on. Your current setup has not changed.");
                   }}>Approve this change</button></>}
                 </div>}
-              <details><summary>Technical details for this version</summary>
+               <details><summary>Advanced: saved evidence</summary>
                 <p>Revision: {savedReview.revision.id}</p><p>Evidence: {savedReview.evidenceId}</p>
                 <pre aria-label="Exact checked examples">{JSON.stringify(reviewEvidence, null, 2)}</pre>
                 {reviewSource && <>
@@ -2320,7 +2352,11 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         </div>
         {newMessages && <button className="rs-new-messages" onClick={() => {
           if (documentReturn.current) closeDocument();
-          requestAnimationFrame(() => { const log = conversationScroller(); if (log) log.scrollTop = log.scrollHeight; followConversation.current = true; setNewMessages(false); });
+          requestAnimationFrame(() => {
+            const log = conversationScroller(); if (log) log.scrollTop = log.scrollHeight;
+            followConversation.current = true; setNewMessages(false);
+            visibleFocus(document.getElementById("studio-view-saved"), document.getElementById("studio-message"), log)?.focus({ preventScroll: true });
+          });
         }}>New messages ↓</button>}
           {restart && <article id="studio-restart-confirm" tabIndex={-1} className="rs-message rs-decision rs-current-decision" aria-label="Start from version in use">
             <div className="rs-restart-body">
@@ -2335,7 +2371,7 @@ export default function Studio({ request, changed, beforeSelectionChange, back, 
         {!restart && authoring && !authoring.availability.available && !["AI_NOT_CONFIGURED", "AI_CONFIG_INVALID", "AI_CREDENTIALS_MISSING"].includes(authoring.availability.code ?? "") && <p className="rs-setup-notice" role="status">{authoringReason(authoring.availability.code)}</p>}
         {!restart && setupNotice && <p className="rs-setup-notice" role="status">{setupNotice}</p>}
         {activeAuthoring && <div className="rs-working" role="status"><span>{conversation?.status === "CANCELLING" ? "Stopping; waiting for accepted work to settle…" : "Working on your request…"}</span></div>}
-        <StudioComposer hidden={retired || historyView || !!restart} submit={submit} text={text}
+         <StudioComposer hidden={!target.extensionId || retired || historyView || !!restart} submit={submit} text={text}
           canSend={!sendDisabled && !!authoring?.availability.available && !!text.trim()}
           isLocked={() => locked.current}
           onFocus={() => { readingRevision.current++; }}

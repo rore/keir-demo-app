@@ -8,6 +8,9 @@ import { createCompiler } from './compiler.mjs';
 import { digest, json } from './extension-catalog.mjs';
 import { normalizeTeamCases, simulateTeam, TEAM_HARNESS } from './team-simulation.mjs';
 import { normalizeTeamAgreement, qualifyAuthoredTeam, teamAgreementUsers, TEAM_BINDINGS, TEAM_QUALIFICATION } from './team-qualification.mjs';
+import { scopedCompletionManifest, readCompletionManifest, completionOffer, completionCases, completionHarness, completionProofMatches, SHARED_MANIFEST, sharedHook, sharedHost } from './shared-completion-contract.mjs';
+import { BUNDLE_MANIFEST, isTaskBundle, presentHooks, cachedBundleProof, cachedTaskBundle, checkTaskBundle, compileTaskBundle } from './shared-task-bundle.mjs';
+import { checkSharedCompletion } from './shared-completion.mjs';
 
 const hooks = ['TaskCreated', 'TaskBeforeComplete'];
 const template = readFileSync(new URL('../keir/team-review-v1.json', import.meta.url), 'utf8');
@@ -31,7 +34,8 @@ const operationId = value => {
   return value;
 };
 
-export function createTeamCapability(db, { compiler = createCompiler({ modelBytes: teamModelBytes, javaExecutable: process.env.KEIR_JAVA_BIN }) } = {},
+export function createTeamCapability(db, { compiler = createCompiler({ modelBytes: teamModelBytes, javaExecutable: process.env.KEIR_JAVA_BIN }),
+  sharedCompiler = compiler } = {},
   { simulate = simulateTeam, now = () => Math.floor(performance.now()) } = {}) {
   const operations = new Set(), simulations = new Set();
   let closed = false, simulationCount = 0;
@@ -75,6 +79,7 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
       ...(parameters?.kind === 'authored-team/1' ? { agreement: parameters.agreement } : {}) };
   };
   const authored = row => JSON.parse(row.source_bundle).parameters.kind === 'authored-team/1';
+  const shared = row => Object.hasOwn(JSON.parse(row.manifest), 'format');
   const latestEvidence = (projectId, revisionId) => db.prepare('SELECT * FROM team_evidence WHERE project_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(projectId, revisionId);
   const receipt = (row, includeInput = true) => ({
     kind: row.kind, id: row.id, operationId: row.operation_id, actorId: row.actor_id, createdAt: row.created_at,
@@ -106,6 +111,19 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
   }
   function executable(projectId, row) {
     const source = JSON.parse(row.source_bundle), manifest = JSON.parse(row.manifest), artifacts = JSON.parse(row.artifacts);
+    if (isTaskBundle(manifest.format)) {
+      const present = presentHooks(manifest);
+      if (source.parameters?.kind !== manifest.format || Object.keys(artifacts).length !== present.length) throw conflict();
+      const bytes = Object.fromEntries(present.map(hook => [hook, Buffer.from(artifacts[manifest.hooks[hook].artifactDigest])]));
+      return { source, manifest, bundle: readTaskBundle('TEAM', projectId, source.sources, bytes, source.cases, manifest) };
+    }
+    if (Object.hasOwn(manifest, 'format')) {
+      if (manifest.format !== SHARED_MANIFEST || source.parameters?.kind !== SHARED_MANIFEST
+          || Object.keys(artifacts).length !== 1 || typeof artifacts[manifest.hooks?.[sharedHook(manifest)]?.artifactDigest] !== 'string') throw conflict();
+      const binding = readCompletionManifest('TEAM', projectId, manifest, source.source,
+         Buffer.from(artifacts[manifest.hooks[sharedHook(manifest)].artifactDigest]), source.cases);
+      return { source, manifest, binding };
+    }
     const compilerPins = load('compiler-provenance.json'), runtimePins = load('provenance.json');
     const runtime = { package: runtimePins.package, version: runtimePins.version, sha256: runtimePins.sha256, integrity: runtimePins.integrity };
     if (!['scripted-review/1', 'authored-team/1'].includes(source.parameters?.kind) || json(source.runtime) !== json(runtime)
@@ -140,9 +158,22 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
         && json(normalizeTeamAgreement(source.parameters.agreement)) !== json(source.parameters.agreement)) throw conflict();
     return { source, manifest };
   }
-  function qualify(projectId, row, proof, submitted) {
+  const readTaskBundle = cachedTaskBundle(), verifiedBundleProof = cachedBundleProof();
+  function qualify(projectId, row, proof, submitted, exact) {
     if (!proof || proof.revision_id !== row.revision_id || proof.project_id !== projectId || row.revoked_at !== null) throw conflict();
-    const { source, manifest } = executable(projectId, row);
+    const { source, manifest, binding, bundle } = exact ?? executable(projectId, row);
+    if (bundle) {
+      if (proof.passed !== 1 || proof.harness !== manifest.harness || proof.executable_identity !== bundle.executableIdentity
+          || proof.case_digest !== manifest.caseDigest || proof.cases !== json(source.cases)
+          || submitted && json(submitted) !== proof.cases || !verifiedBundleProof(bundle, row.revision_id, proof.report)) throw conflict();
+      return proof;
+    }
+    if (binding) {
+      if (proof.passed !== 1 || proof.harness !== binding.harness || proof.executable_identity !== binding.executableIdentity
+          || proof.case_digest !== manifest.caseDigest || proof.cases !== json(binding.cases)
+          || submitted && json(submitted) !== proof.cases || !completionProofMatches(binding, row.revision_id, JSON.parse(proof.report))) throw conflict();
+      return proof;
+    }
     reviewer(projectId, source.parameters);
     const isAuthored = source.parameters.kind === 'authored-team/1';
     const cases = normalizeTeamCases(JSON.parse(proof.cases), { authored: isAuthored }), contract = normalizeTeamCases(JSON.parse(examples));
@@ -199,13 +230,13 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
     if (rev) {
       try { qualify(projectId, rev, latestEvidence(projectId, rev.revision_id)); eligibility = { eligible: true, reason: '' }; }
       catch (error) { eligibility = { eligible: false, reason: error.code === 'TEAM_UNVERIFIED' ? error.message
-        : authored(rev) ? 'This draft needs current matching native evidence, complete agreed coverage and current project access.'
-        : 'This draft needs the complete current six-example check and current reviewer access.' }; }
+        : shared(rev) || authored(rev) ? 'This draft needs current matching native evidence, complete agreed coverage and current project access.'
+          : 'This draft needs the complete current six-example check and current reviewer access.' }; }
     }
     access(actor, projectId, authorize);
     return { project: { id: project.id, name: project.name, role: project.role }, draftVersion: d.draft_version,
       draft: summary(rev), selected: selected?.revision_id ? summary(selected) : null, evidence,
-      examples: rev && authored(rev) ? JSON.parse(rev.source_bundle).parameters.agreement.examples : JSON.parse(examples),
+       examples: rev && shared(rev) ? JSON.parse(rev.source_bundle).cases : rev && authored(rev) ? JSON.parse(rev.source_bundle).parameters.agreement.examples : JSON.parse(examples),
       eligibility, approval: approval ? receipt(approval, false) : null, selection: selectionView(projectId) };
   }
   async function operation(ms, signal, action) {
@@ -243,7 +274,11 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
       ...(kind === 'activations' ? ['approvalId', 'expectedSelectionGeneration'] : [])]);
     operationId(input.operationId); version(input.expectedDraftVersion); id(input.revisionId); id(input.evidenceId);
     if (kind === 'activations') { id(input.approvalId); version(input.expectedSelectionGeneration); }
-    const normalized = { kind, ...input, cases: normalizeTeamCases(input.cases, { authored: authored(revision(projectId, input.revisionId)) }) }, encoded = bounded(normalized, 40960, 'Action');
+    const chosen = revision(projectId, input.revisionId), isShared = shared(chosen), manifest = JSON.parse(chosen.manifest);
+    const isBundle = isTaskBundle(manifest.format);
+    const normalized = { kind, ...input, cases: isBundle ? input.cases : isShared ? completionCases(input.cases, completionHarness(manifest))
+      : normalizeTeamCases(input.cases, { authored: authored(chosen) }) };
+    const encoded = bounded(normalized, 40960, 'Action');
     return operation(2000, signal, lease => {
       const historical = () => {
         lease.check(); access(actor, projectId, authorize);
@@ -262,6 +297,9 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
         if (!proof) throw notFound();
         if (latestEvidence(projectId, row.revision_id)?.id !== proof.id) throw conflict();
         qualify(projectId, row, proof, normalized.cases);
+        const cases = isBundle ? Object.values(normalized.cases).flat() : normalized.cases;
+        if (isShared && cases.some(c => c.expect?.assigneeId &&
+            !db.prepare('SELECT 1 FROM project_members WHERE project_id=? AND user_id=?').get(projectId, c.expect.assigneeId))) throw conflict();
         if (kind === 'activations' && !db.prepare(`SELECT 1 FROM team_approvals
           WHERE project_id=? AND revision_id=? AND evidence_id=? AND id=?`)
           .get(projectId, row.revision_id, proof.id, normalized.approvalId)) throw notFound();
@@ -275,7 +313,7 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
           db.prepare(`INSERT INTO team_approvals(id,project_id,revision_id,evidence_id,actor_id,operation_id,input,created_at)
             VALUES (?,?,?,?,?,?,?,?)`).run(recordId, projectId, normalized.revisionId, normalized.evidenceId, actor, normalized.operationId, encoded, at);
         } else {
-          if (db.prepare('UPDATE team_selections SET revision_id=? WHERE project_id=? AND generation=?')
+          if (db.prepare(`UPDATE team_selections SET revision_id=? WHERE project_id=? AND generation=?${isShared ? ' AND revision_id IS NULL' : ''}`)
             .run(normalized.revisionId, projectId, normalized.expectedSelectionGeneration).changes !== 1) throw conflict();
           check();
           const selected = selectionView(projectId);
@@ -386,6 +424,115 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
   }
   return {
     state,
+    savedWork(actor, projectId) {
+      access(actor, projectId);
+      const { revision_id } = draft(projectId);
+      return {
+        legacyDraft: !!revision_id && !shared(revision(projectId, revision_id)),
+        revisions: !!db.prepare('SELECT 1 FROM team_revisions WHERE project_id=? LIMIT 1').get(projectId),
+      };
+    },
+    async confirmSharedCompletion(actor, projectId, input, authorize, { signal, saved, checked, prepared } = {}) {
+      access(actor, projectId, authorize);
+      fields(input, ['expectedDraftVersion', 'expectedSelectionGeneration', 'offer']);
+      version(input.expectedDraftVersion); version(input.expectedSelectionGeneration);
+      const { source, cases, hook, harness } = completionOffer(input.offer), host = sharedHost('TEAM', harness);
+      return operation(15000, signal, async lease => {
+        const check = (version, revisionId, allowRevoked = false) => {
+          lease.check(); access(actor, projectId, authorize); current(projectId, version, revisionId, allowRevoked);
+          if (selectionView(projectId).generation !== input.expectedSelectionGeneration) throw conflict();
+        };
+        const expected = input.expectedDraftVersion, id = randomUUID();
+        const outgoing = draft(projectId).revision_id;
+        const checkOutgoing = () => check(expected, outgoing, true);
+        checkOutgoing();
+        const result = await sharedCompiler.compile(Buffer.from(source), { definition: host, signal: lease.signal });
+        checkOutgoing();
+        if (!result.artifact) throw new AppError(422, 'The shared completion source did not compile.');
+        const manifest = scopedCompletionManifest('TEAM', projectId, source, result.artifact, cases, harness);
+        readCompletionManifest('TEAM', projectId, manifest, source, result.artifact, cases);
+        prepared?.(manifest.hooks[hook].artifactDigest);
+        const sourceBundle = bounded({ parameters: { kind: SHARED_MANIFEST }, source, cases }, 262144, 'Source bundle');
+        const art = bounded({ [manifest.hooks[hook].artifactDigest]: Buffer.from(result.artifact).toString('utf8') }, 2097152, 'Artifacts');
+        transaction(db, () => {
+          checkOutgoing();
+          db.prepare('INSERT INTO team_revisions(project_id,revision_id,manifest,artifacts,source_bundle) VALUES (?,?,?,?,?)')
+            .run(projectId, id, json(manifest), art, sourceBundle);
+          if (db.prepare('UPDATE team_drafts SET revision_id=?,draft_version=draft_version+1 WHERE project_id=? AND draft_version=?')
+            .run(id, projectId, expected).changes !== 1) throw conflict();
+          check(expected + 1, id);
+          saved?.({ revisionId: id, draftVersion: expected + 1 });
+        });
+        const exact = () => check(expected + 1, id);
+        const { binding } = executable(projectId, revision(projectId, id));
+        const members = db.prepare('SELECT user_id FROM project_members WHERE project_id=? LIMIT 33').all(projectId);
+        if (members.length > 32) throw conflict();
+        const report = await checkSharedCompletion(binding, id, actor, members.map(m => m.user_id), exact);
+        const evidenceId = randomUUID();
+        const proof = { revisionId: id, draftVersion: expected + 1, evidenceId, passed: report.passed,
+          eligible: completionProofMatches(binding, id, report) };
+        transaction(db, () => {
+          exact();
+          db.prepare(`INSERT INTO team_evidence(id,project_id,revision_id,executable_identity,case_digest,harness,cases,report,passed,created_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`).run(evidenceId, projectId, id, binding.executableIdentity, manifest.caseDigest, report.harness,
+            json(cases), bounded(report, 262144, 'Report'), Number(report.passed), new Date().toISOString());
+          checked?.(proof);
+          exact();
+        });
+        return proof;
+      });
+    },
+    sharedCompletionBinding(projectId, revisionId, activationId, manifest) {
+      const row = revision(projectId, revisionId);
+      if (row.manifest !== manifest || row.revoked_at !== null) throw conflict();
+      const activated = db.prepare(`SELECT a.id, p.evidence_id FROM team_activations a JOIN team_approvals p
+        ON a.approval_id=p.id AND a.project_id=p.project_id AND a.revision_id=p.revision_id
+        WHERE a.id=? AND a.project_id=? AND a.revision_id=?`).get(activationId, projectId, revisionId);
+      const proof = activated && db.prepare('SELECT * FROM team_evidence WHERE id=?').get(activated.evidence_id);
+      const exact = executable(projectId, row);
+      if (!exact.binding && !exact.bundle) throw conflict();
+      qualify(projectId, row, proof, undefined, exact);
+      return exact.bundle ?? exact.binding;
+    },
+    async confirmTaskBundle(actor, projectId, input, authorize, { signal, saved, checked, prepared } = {}) {
+      access(actor, projectId, authorize);
+      fields(input, ['expectedDraftVersion', 'expectedSelectionGeneration', 'offer', ...(Object.hasOwn(input, 'format') ? ['format'] : [])]);
+      version(input.expectedDraftVersion); version(input.expectedSelectionGeneration);
+      return operation(15000, signal, async lease => {
+        const expected = input.expectedDraftVersion, id = randomUUID(), outgoing = draft(projectId).revision_id;
+        const check = (version, revisionId, allowRevoked = false) => {
+          lease.check(); access(actor, projectId, authorize); current(projectId, version, revisionId, allowRevoked);
+          if (selectionView(projectId).generation !== input.expectedSelectionGeneration) throw conflict();
+        };
+        const before = () => check(expected, outgoing, true), after = () => check(expected + 1, id);
+         const bundle = await compileTaskBundle(sharedCompiler, 'TEAM', projectId, input.offer, before, lease.signal, input.format ?? BUNDLE_MANIFEST);
+        prepared?.(bundle.executableIdentity);
+        const { manifest, sources, cases, artifacts } = bundle;
+         const source = bounded({ parameters: { kind: manifest.format }, sources, cases }, 262144, 'Source bundle');
+         const bytes = bounded(Object.fromEntries(presentHooks(manifest).map(hook => [manifest.hooks[hook].artifactDigest,
+          Buffer.from(artifacts[hook]).toString('utf8')])), 2097152, 'Artifacts');
+        transaction(db, () => {
+          before();
+          db.prepare('INSERT INTO team_revisions(project_id,revision_id,manifest,artifacts,source_bundle) VALUES (?,?,?,?,?)')
+            .run(projectId, id, json(manifest), bytes, source);
+          if (db.prepare('UPDATE team_drafts SET revision_id=?,draft_version=draft_version+1 WHERE project_id=? AND draft_version=?')
+            .run(id, projectId, expected).changes !== 1) throw conflict();
+          after(); saved?.({ revisionId: id, draftVersion: expected + 1 });
+        });
+        const members = db.prepare('SELECT user_id FROM project_members WHERE project_id=? LIMIT 33').all(projectId);
+        if (members.length > 32) throw conflict();
+        const report = await checkTaskBundle(bundle, id, actor, members.map(m => m.user_id), after), evidenceId = randomUUID();
+        const proof = { revisionId: id, draftVersion: expected + 1, evidenceId, passed: report.passed, eligible: report.eligible };
+        transaction(db, () => {
+          after();
+          db.prepare(`INSERT INTO team_evidence(id,project_id,revision_id,executable_identity,case_digest,harness,cases,report,passed,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)`).run(evidenceId, projectId, id, bundle.executableIdentity, manifest.caseDigest, report.harness,
+            json(cases), bounded(report, 262144, 'Report'), Number(report.passed), new Date().toISOString());
+          checked?.(proof); after();
+        });
+        return proof;
+      });
+    },
     async proposeAuthored(actor, projectId, input, authorize, context) {
       access(actor, projectId, authorize);
       fields(input, ['expectedDraftVersion', 'bindings', 'agreement']);
@@ -462,7 +609,9 @@ export function createTeamCapability(db, { compiler = createCompiler({ modelByte
       access(actor, projectId, authorize);
       fields(input, ['expectedDraftVersion', 'revisionId', 'cases']);
       version(input.expectedDraftVersion); id(input.revisionId);
-      const isAuthored = authored(revision(projectId, input.revisionId));
+      const candidate = revision(projectId, input.revisionId);
+      if (shared(candidate)) throw conflict();
+      const isAuthored = authored(candidate);
       const cases = normalizeTeamCases(input.cases, { authored: isAuthored }), expected = input.expectedDraftVersion, revisionId = input.revisionId;
       bounded({ expectedDraftVersion: expected, revisionId, cases }, 32768, 'Simulation');
       current(projectId, expected, revisionId);

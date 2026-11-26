@@ -10,8 +10,9 @@ export type RuleDescription = { coverage: "complete" | "partial" | "unavailable"
   action?: { capability: "tasks.create" | "tasks.update"; step: string; target: "newTask" | "triggeringTask"; fields: Record<string, RuleValue> }; reason?: string };
 
 const priority = (value: string) => value[0]?.toUpperCase() + value.slice(1).toLowerCase();
-export const readableTime = (value: string) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value)
-  ? value.replace("T", " ").replace("Z", " UTC") : value;
+const exampleClock = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+export const readableTime = (value: string) => Number.isFinite(Date.parse(value))
+  ? `${exampleClock.format(new Date(value))} UTC` : value;
 export function elapsedTime(seconds: number) {
   const amount = Math.abs(seconds);
   if (amount && amount % 86400 === 0) return `${amount / 86400} ${amount === 86400 ? "day" : "days"} (${amount / 3600} elapsed hours)`;

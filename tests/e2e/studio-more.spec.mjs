@@ -219,7 +219,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(await studio(page).evaluate(node => (getComputedStyle(node).overflowY === 'auto' ? node : node.querySelector('[role="log"]')).scrollTop)).toBe(reading);
       expect(await frame()).toEqual(geometry);
       expect(await read(page, `extensions/${id}`)).toEqual(before);
-      expect(fixture.requests.filter(request => request.name === 'resolve_intent').map(request => request.intent)).toEqual(Array(4).fill('discuss'));
+      expect(fixture.requests.some(request => request.name === 'offer_proposal')).toBe(false);
       await page.screenshot({ path: info.outputPath('restored-conversation.png') });
     } finally { await page.close(); await fixture.close(); }
   });

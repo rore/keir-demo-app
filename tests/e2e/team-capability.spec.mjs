@@ -4,7 +4,11 @@ import { navigate, openWorkspaceTool, switchPerson } from '../fixtures/workspace
 import { teamProjectService } from '../../src/team-native.mjs';
 import { createTeamCapability } from '../../src/team-capability.mjs';
 
-const openStudio = page => page.getByRole('button', { name: /^(Open Studio|New customization)$/ }).click();
+async function openStudio(page) {
+  await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+  await page.getByText('More', { exact: true }).click();
+  await page.getByRole('button', { name: 'Open earlier Team work' }).click();
+}
 const scope = page => page.getByLabel('Personal or Team project', { exact: true });
 const checkExamples = page => page.getByRole('button', { name: 'Check examples', exact: true });
 const examples = page => page.getByRole('region', { name: 'Examples', exact: true });
@@ -31,7 +35,6 @@ async function setup(page, origin) {
   await dialog.getByRole('button', { name: 'Add member', exact: true }).click();
   await expect(dialog.getByText('Leo · Member', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
-  await navigate(page, 'Customizations');
   return { project, personalId };
 }
 async function prepare(fixture, project, mismatch = false) {
@@ -69,6 +72,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         .map(table => fixture.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
       const before = snapshot();
       await prepare(fixture, project, true);
+      await navigate(page, 'Customizations');
       await openStudio(page);
       const result = examples(page);
       await expect(result.getByRole('heading', { name: 'Some examples did not match' })).toBeVisible();
@@ -107,6 +111,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.setViewportSize(viewport);
       const { project } = await setup(page, fixture.origin);
       await prepare(fixture, project);
+      await navigate(page, 'Customizations');
       await openStudio(page);
       await expect(page.getByText('Support diagnostics', { exact: true })).toHaveCount(0);
       let posts = 0;
@@ -133,8 +138,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await openStudio(page);
       await expect(examples(page)).toBeVisible();
       fixture.db.prepare("UPDATE project_members SET role='MEMBER' WHERE project_id=? AND user_id='maya'").run(project.id);
+      const denied = page.waitForResponse(response => new URL(response.url()).pathname === `/api/projects/${project.id}/authoring`);
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await expect(page.getByRole('alert')).toContainText('Only a current project admin');
+      expect((await denied).status()).toBe(403);
+      await expect(page.getByRole('alert')).toContainText('Only a project admin can change this.');
       await expect(examples(page)).toHaveCount(0);
       await expect(checkExamples(page)).toHaveCount(0);
       teamProjectService(fixture.db).members('leo', project.id);

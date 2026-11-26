@@ -198,11 +198,78 @@ test('bounds request and chunked response bytes and rejects non-JSON content', a
     cancel() { cancelled = true; } });
   await assert.rejects(createAuthoringProvider(config('openai'), { maxBytes: 2048,
     fetchImpl: async () => new Response(stream, { headers: { 'content-type': 'application/json' } }) })
-    .complete(request), errorCode('BYTE_LIMIT'));
+    .complete(request), errorCode('PROVIDER_REPLY_BODY_LIMIT'));
   assert.equal(cancelled, true);
   await assert.rejects(createAuthoringProvider(config('openai'), {
     fetchImpl: async () => new Response('{}', { headers: { 'content-type': 'text/html' } }) })
     .complete(request), errorCode('PROVIDER_REPLY_FORMAT'));
+});
+
+test('OpenAI accepts measured response envelopes without retaining outer fields', async () => {
+  const size = value => Buffer.byteLength(JSON.stringify(value));
+  for (const [requestBytes, responseBytes, outputBytes] of [[58434, 149007, 12930], [95726, 181799, 5985]]) {
+    const output = [
+      { type: 'reasoning', id: 'reason', summary: [], encrypted_content: '' },
+      { type: 'function_call', call_id: 'offer', name: 'offer_proposal', arguments: '{"witness":true}' },
+    ];
+    output[0].encrypted_content = 'r'.repeat(outputBytes - size(output));
+    const reply = { ...openai(output), instructions: '' };
+    reply.instructions = 'x'.repeat(responseBytes - size(reply));
+    let requestPadding;
+    const provider = createAuthoringProvider(config('openai'), { fetchImpl: async (_url, init) => {
+      assert.equal(Buffer.byteLength(init.body), requestBytes);
+      return json(reply);
+    } });
+    const probe = createAuthoringProvider(config('openai'), { fetchImpl: async (_url, init) => {
+      requestPadding = requestBytes - Buffer.byteLength(init.body);
+      return json(openai([]));
+    } });
+    await probe.complete({ ...request, input: '' });
+    const result = await provider.complete({ ...request, input: 'i'.repeat(requestPadding) });
+    assert.equal(size(output), outputBytes);
+    assert.equal(size(reply), responseBytes);
+    assert.deepEqual(result.calls, [{ id: 'offer', name: 'offer_proposal', arguments: { witness: true } }]);
+    assert.deepEqual(result.continuation.items.slice(1), output);
+    assert.equal(Object.hasOwn(result, 'instructions'), false);
+  }
+});
+
+test('keeps OpenAI envelope/output limits distinct and Anthropic at its original reply limit', async () => {
+  const declared = createAuthoringProvider(config('openai'), { fetchImpl: async () => new Response('{}', {
+    headers: { 'content-type': 'application/json', 'content-length': '262145' },
+  }) });
+  await assert.rejects(declared.complete(request), errorCode('PROVIDER_REPLY_DECLARED_LIMIT'));
+
+  const oversized = createAuthoringProvider(config('openai'), {
+    fetchImpl: async () => json({ ...openai([]), instructions: 'x'.repeat(262144) }),
+  });
+  await assert.rejects(oversized.complete(request), errorCode('PROVIDER_REPLY_BODY_LIMIT'));
+
+  const oversizedOutput = createAuthoringProvider(config('openai'), {
+    fetchImpl: async () => json(openai([{ type: 'function_call', call_id: 'offer', name: 'offer_proposal',
+      arguments: 'x'.repeat(131072) }])),
+  });
+  await assert.rejects(oversizedOutput.complete(request), errorCode('PROVIDER_REPLY_OUTPUT_LIMIT'));
+
+  const anthropicEnvelope = createAuthoringProvider(config('anthropic'), {
+    fetchImpl: async () => json({ ...anthropic([]), metadata: { padding: 'x'.repeat(131072) } }),
+  });
+  await assert.rejects(anthropicEnvelope.complete(request), errorCode('PROVIDER_REPLY_BODY_LIMIT'));
+});
+
+test('keeps the normalized-result limit even with an in-limit request and OpenAI output', async () => {
+  const argument = 'a'.repeat(3800);
+  const reply = openai([
+    { type: 'reasoning', id: 'reasoning', summary: [], encrypted_content: 'x'.repeat(125800) },
+    { type: 'function_call', call_id: 'offer', name: 'offer_proposal', arguments: JSON.stringify({ argument }) },
+  ]);
+  const normalized = createAuthoringProvider(config('openai'), { fetchImpl: async (_url, init) => {
+    assert.ok(Buffer.byteLength(init.body) < 131072);
+    assert.ok(Buffer.byteLength(JSON.stringify(reply)) < 131072);
+    return json(reply);
+  } });
+  await assert.rejects(normalized.complete({ ...request, input: 'x'.repeat(130000), tools: [] }),
+    errorCode('PROVIDER_REPLY_NORMALIZED_LIMIT'));
 });
 
 for (const name of ['openai', 'anthropic']) test(`${name} preflight checks the exact full wire envelope at its UTF-8 byte boundary without fetching`, async () => {

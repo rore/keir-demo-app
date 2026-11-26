@@ -16,49 +16,28 @@ async function expandExamples(review) {
   }
 }
 
-test('workflow starters are capability gated and preserve the mounted composer at 320px', async ({ page }) => {
+test('new Personal Studio has one composer and keeps its unsent draft at 320px', async ({ page }) => {
   const fixture = await startAuthoringFixture({ unconfigured: true });
   const turns = [];
   page.on('request', request => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/authoring/turn') turns.push(request);
+    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/turn')) turns.push(request);
   });
   try {
     await page.setViewportSize({ width: 320, height: 740 });
-    let openMatch = false;
-    await page.route('**/api/extensions/catalog', route => route.fulfill({ json: {
-      hooks: [{ id: 'TaskCreated', label: 'Task added', description: 'After a task is added' },
-        { id: 'TaskCompleted', label: 'Task completed', description: 'After a task is completed' }],
-      model: { digest: 'sha256:fixture', dcm: JSON.stringify({ capabilities: {
-        'tasks.get': {}, 'tasks.create': {}, 'tasks.update': {}, ...(openMatch && { 'tasks.openMatch': {} }),
-      } }) },
-    } }));
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
     await page.getByRole('button', { name: 'New customization', exact: true }).click();
     const studio = page.getByRole('region', { name: 'Customization Studio', exact: true });
     const composer = studio.getByLabel('Message to Daymark assistant', { exact: true });
-    await expect(studio.getByRole('heading', { name: 'What would you like Daymark to do for you?' })).toBeVisible();
-    await expect(studio.getByRole('button', { name: 'Avoid another follow-up' })).toHaveCount(0);
-    await expect(studio.getByRole('button', { name: 'Arrange a review' })).toBeVisible();
-    await expect(studio.getByRole('button', { name: 'Add missing due dates' })).toBeVisible();
-
-    const intake = studio.getByRole('button', { name: 'Prioritize new requests' });
-    await intake.focus();
-    await page.keyboard.press('Enter');
-    await expect(composer).toBeFocused();
-    await expect(composer).toHaveValue(/title is exactly .*Quote for spring launch/);
+    await expect(composer).toHaveCount(1);
+    await expect(studio.getByRole('button', { name: /Avoid another follow-up|Arrange a review|Add missing due dates|Prioritize new requests/ })).toHaveCount(0);
     await composer.fill(' Keep this unsent text. ');
-    await studio.getByRole('button', { name: 'Arrange a review' }).click();
-    await expect(composer).toBeFocused();
-    await expect(composer).toHaveValue(' Keep this unsent text. ');
-    await expect(studio.getByText('Clear your draft before choosing another starting point.')).toBeVisible();
     expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     expect(turns).toHaveLength(0);
 
-    openMatch = true;
     await page.reload();
-    await expect(studio.getByRole('button', { name: 'Avoid another follow-up' })).toBeVisible();
+    await expect(composer).toHaveValue(' Keep this unsent text. ');
   } finally { await fixture.close(); }
 });
 
@@ -125,7 +104,14 @@ test('Studio reads the four admitted rules from pinned source and falls back aft
         await expect(review).not.toContainText('A matching open task was found.');
         await expect(review).toContainText('Could not check for a matching open task.');
       }
-      if (workflow === 'onboarding') await expect(review).toContainText('Event 2026-03-07 16:00:00.417 UTC');
+      if (workflow === 'onboarding') {
+        await expect(review).toContainText('Added Mar 7, 2026, 4:00 PM UTC');
+        const exact = review.getByLabel('Exact checked examples');
+        await expect(exact).toBeHidden();
+        await review.getByText('Advanced: saved evidence', { exact: true }).click();
+        await expect(exact).toContainText('2026-03-07T16:00:00.417Z');
+        await review.getByText('Advanced: saved evidence', { exact: true }).click();
+      }
       expect(await studio.locator('.rs-messages').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
       if (noChangeReason) {
         await review.locator('.rs-case-support').getByText(noChangeReason).scrollIntoViewIfNeeded();

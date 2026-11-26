@@ -167,12 +167,15 @@ test('ordinary HTTP admin-only exact project/revision/evidence routes and closed
       ['GET', '/revisions/foreign', undefined], ['GET', '/evidence/foreign', undefined]])
       assert.equal((await call(auth, method, path + suffix, payload)).statusCode, status);
   assert.equal((await call(maya, 'GET', path + '?actor=leo')).statusCode, 400);
+  assert.equal((await call(maya, 'POST', path + '/proposals', f.input)).statusCode, 409);
+  const earlier = await f.api.propose('maya', f.project.id, f.input);
+  const next = { ...f.input, expectedDraftVersion: earlier.draftVersion };
   assert.equal((await call(maya, 'POST', path + '/proposals', { ...f.input, owner: 'maya' })).statusCode, 400);
   assert.equal((await call(maya, 'POST', path + '/proposals', { ...f.input, intent: 'a'.repeat(17000) })).statusCode, 413);
-  const r = await call(maya, 'POST', path + '/proposals', f.input);
+  const r = await call(maya, 'POST', path + '/proposals', next);
   assert.equal(r.statusCode, 200, r.body); const state = r.json();
   assert.equal((await call(maya, 'GET', `${path}/revisions/${state.draft.revisionId}`)).statusCode, 200);
-  const simulation = await call(maya, 'POST', path + '/simulations', { expectedDraftVersion: 1, revisionId: state.draft.revisionId, cases: state.examples });
+  const simulation = await call(maya, 'POST', path + '/simulations', { expectedDraftVersion: state.draftVersion, revisionId: state.draft.revisionId, cases: state.examples });
   assert.equal(simulation.statusCode, 200, simulation.body);
   const evidenceId = simulation.json().evidenceId;
   const e = await call(maya, 'GET', path + '/evidence/' + evidenceId);

@@ -82,7 +82,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await taskButton(page, 'Save changes').click();
     await expect(detail).not.toBeVisible();
     await expect(task).toBeFocused();
-    await expect(page.locator('time[datetime="2028-02-29T17:42:37.123Z"]')).toContainText('12:42:37.123 PM GMT-5');
+    await expect(page.locator('time[datetime="2028-02-29T17:42:37.123Z"]')).toHaveText(/Due .*12:42 PM GMT-5$/);
     expect(demo.db.prepare("SELECT due_at FROM tasks WHERE title='Gather material references'").get().due_at).toBe('2028-02-29T17:42:37.123Z');
     await openWithoutRule();
     await expect(tags).toHaveValue('material, priority');
@@ -99,7 +99,7 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await openWithoutRule();
     await expect(tags).toHaveValue('material, priority');
     await expect(priority).toHaveValue('high');
-    await expect(dueTime).toHaveValue('2028-02-29T12:42:37.123');
+    await expect(dueTime).toHaveValue('2028-02-29T12:42');
     await tags.fill('material');
     await dueTime.fill('');
     await taskButton(page, 'Save changes').click();
@@ -403,7 +403,8 @@ test('a delayed metadata save merges normalized tags without overwriting newer e
 });
 
 for (const fallback of [false, true]) test(`local due time rejects gaps and repeated times with ${fallback ? 'the fallback' : 'native Temporal'}`, async ({ page, demo }) => {
-  const saved = '2025-11-02T06:30:00.123Z';
+  await page.setViewportSize({ width: 390, height: 844 });
+  const saved = '2025-11-02T06:30:37.123Z';
   const task = demo.db.prepare("SELECT id FROM tasks WHERE title='Gather material references'").get();
   demo.db.prepare('UPDATE tasks SET due_at=? WHERE id=?').run(saved, task.id);
   const stored = () => demo.db.prepare('SELECT due_at FROM tasks WHERE id=?').get(task.id).due_at;
@@ -419,10 +420,10 @@ for (const fallback of [false, true]) test(`local due time rejects gaps and repe
   const save = taskButton(page, 'Save changes');
   const dueTime = page.getByLabel('Due time (optional)', { exact: true });
   const detail = page.getByRole('dialog', { name: 'Task details' });
-  await expect(page.locator(`time[datetime="${saved}"]`)).toContainText('GMT-5');
+  await expect(page.locator(`time[datetime="${saved}"]`)).toHaveText(/Due .*1:30 AM GMT-5$/);
   await open.click();
-  await expect(dueTime).toHaveValue('2025-11-02T01:30:00.123');
-  await expect(dueTime).toHaveAccessibleDescription(/local time.*GMT-5/);
+  await expect(dueTime).toHaveValue('2025-11-02T01:30');
+  await expect(dueTime).toHaveAccessibleDescription(/local time.*1:30 AM GMT-5/);
   await page.getByLabel('Priority', { exact: true }).selectOption('high');
   await save.click();
   await expect(detail).not.toBeVisible();

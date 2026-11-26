@@ -8,8 +8,8 @@ type Example = { id: string; name: string; fault: string; actors: { id: string; 
   initialTasks: { ref: string; actor: string; title: string; priority?: string }[];
   actions: { op: string; actor?: string; ref: string; title?: string; priority?: string; expect: Record<string, string | number> }[] };
 type Agreement = { summary: string; claims: { hook: string; outcomes: { id: string; when: Record<string, unknown>; expect: Record<string, unknown> }[] }[] };
-type Revision = { revisionId: string; parameters: Parameters | null; agreement?: Agreement; revoked: boolean };
-type Discussion = { availability: { available: boolean; code?: string | null }; conversation: { version: number; runId: string; status: string;
+type Revision = { revisionId: string; parameters: Parameters | null; agreement?: Agreement; revoked: boolean; manifest?: { format?: string } };
+type Discussion = { savedControls: boolean; canContinue: boolean; availability: { available: boolean; code?: string | null }; conversation: { version: number; runId: string; status: string;
   agreement: Agreement | null; confirmRejected?: boolean; checkUnavailable?: boolean; messages: { id: string; role: string; text: string }[] } | null };
 type ChoiceInput = { operationId: string; expectedDraftVersion: number; revisionId: string; evidenceId: string; cases: Example[];
   approvalId?: string; expectedSelectionGeneration?: number };
@@ -35,7 +35,7 @@ const facts: Record<string, Record<string, string>> = {
 const fact = (key: string, value: unknown) => facts[key]?.[String(value)] ?? "No supported observation was recorded";
 const identity = (value: unknown): string => JSON.stringify(value, (_, v) => v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
-function replyText(text: string) {
+export function replyText(text: string) {
   const inline = (line: string) => line.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/).map((part, i) =>
     part.startsWith("**") && part.endsWith("**") && part.length > 4 ? <strong key={i}>{part.slice(2, -2)}</strong>
       : part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <code key={i}>{part.slice(1, -1)}</code> : part);
@@ -55,9 +55,10 @@ const actionMessages = { approvals: "Draft approved. It’s not on yet.", activa
   deactivations: "Turned off for new tasks. Existing tasks keep the rule they started with.",
   revocations: "The chosen version was permanently revoked. Saved work was not undone." };
 
-export default function TeamCapability({ project, request, scopeControl, back, backToTasks, operationScope }: {
+export default function TeamCapability({ project, request, scopeControl, back, backToTasks, openShared, operationScope, controlsOnly, onControl }: {
   project: { id: string; name: string }; request: Request; scopeControl: ReactNode;
-  back: () => void; backToTasks: () => void; operationScope: string | null;
+  back: () => void; backToTasks: () => void; openShared: () => void; operationScope: string | null;
+  controlsOnly?: boolean; onControl?: () => void;
 }) {
   const [state, setState] = useState<State | null>(null), [members, setMembers] = useState<{ id: string; name: string }[]>([]);
   const [discussion, setDiscussion] = useState<Discussion | null>(null), [text, setText] = useState("");
@@ -145,15 +146,15 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     setError("");
     try {
       const access = await request<{ members: { id: string; name: string }[] }>(`projects/${project.id}/members`, "GET", undefined, lifetime.current.signal);
-      const next = await request<State>(base, "GET", undefined, lifetime.current.signal);
       const thread = await request<Discussion>(chat, "GET", undefined, lifetime.current.signal);
+      const next = await request<State>(base, "GET", undefined, lifetime.current.signal);
       if (read !== serial.current || lifetime.current.signal.aborted) return;
       if (initial || next.draft?.revisionId !== stateRef.current?.draft?.revisionId) {
         setCases(next.examples); edits.current++; setEvidence(null);
       }
       setState(next); setMembers(access.members); setDiscussion(thread);
       await readRevisions(undefined, read);
-      if (next.evidence) await readEvidence(next.evidence.id, next, read, initial);
+       if (next.evidence && !next.draft?.manifest?.format) await readEvidence(next.evidence.id, next, read, initial);
       return next;
     } catch (e) { if (read === serial.current) failure(e); }
   }
@@ -267,6 +268,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
         throw new Error("The saved result does not match this action. Nothing was retried.");
       setChoiceReceipt(result.receipt); setChoiceNotice(""); rememberChoice(null);
       await refresh();
+      onControl?.();
     } catch (e) { if (read === serial.current) failure(e); }
     finally { if (!lifetime.current.signal.aborted) setBusy(""); }
   }
@@ -288,6 +290,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
       setChoiceReceipt(result.receipt); rememberChoice(null);
       if (kind !== "revocations") choiceFocus.current = true;
       await refresh();
+      onControl?.();
     } catch (e) {
       if (read === serial.current) {
         failure(e);
@@ -320,10 +323,11 @@ export default function TeamCapability({ project, request, scopeControl, back, b
   const name = (id: unknown) => members.find(member => member.id === id)?.name ?? "the selected teammate";
   const scriptedSummary = (params: Parameters | null | undefined) => params?.title && params.reviewerId
     ? `Adds “${params.title}” for ${name(params.reviewerId)} and waits for that task before completion.`
-    : "An earlier customization is on.";
+    : "A saved customization is on.";
   const currentUse = !state?.selection.available ? "Current use could not be checked."
     : state.selection.revisionId === null ? "Nothing is on for new tasks."
-    : selectedAvailable ? state.selected?.agreement?.summary ?? scriptedSummary(state.selected?.parameters) : "The selected customization is unavailable.";
+    : selectedAvailable ? state.selected?.manifest?.format ? "A Shared Studio rule is on for new tasks. Open Studio to review it."
+      : state.selected?.agreement?.summary ?? scriptedSummary(state.selected?.parameters) : "The selected customization is unavailable.";
   const describe = (result: Record<string, unknown>) => {
     if (result.decision === "DENY") return typeof result.message === "string" && result.message ? `The task stays open. ${result.message}` : "The task stays open.";
     if (result.decision === "ALLOW") return result.status === "completed" ? "The task can be completed." : "Completion is allowed.";
@@ -377,7 +381,8 @@ export default function TeamCapability({ project, request, scopeControl, back, b
     ? normalExamples?.find(c => hasChild(c) && c.events.some(e => e.action === "complete" && /\.(child|review)$/.test(e.ref) && e.observed.decision === "ALLOW"))
       ?? normalExamples?.find(hasChild)
       ?? normalExamples?.[0] : null;
-  const currentDraftOn = !!state?.draft && state.draft.revisionId === state.selection.revisionId;
+  const draft = controlsOnly || state?.draft?.manifest?.format ? null : state?.draft;
+  const currentDraftOn = !!draft && draft.revisionId === state?.selection.revisionId;
   const showActive = currentDraftOn && !state?.draft?.revoked;
   const approvalReason = !state?.evidence
     ? conversation?.checkUnavailable ? "The draft was saved, but its examples couldn’t be checked." : "Check the saved draft before approving it."
@@ -428,29 +433,30 @@ export default function TeamCapability({ project, request, scopeControl, back, b
        submit={event => { event.preventDefault(); void chatAction("turn"); }} />
      <div ref={conversationEnd} />
   </>;
-  return <section className="read-studio team-capability" aria-label="Customization Studio">
+  return <section className={controlsOnly ? undefined : "read-studio team-capability"} aria-label="Saved Team history and controls">
     <div className="team-capability-body">
-    <header className="rs-header">
-      <h1 ref={heading} tabIndex={-1}>Customization Studio</h1>
+    {!controlsOnly && <header className="rs-header">
+      <h1 ref={heading} tabIndex={-1}>Saved Team history and controls</h1>
        <div className="rs-header-actions"><button onClick={back}>Back to Customizations</button>
       </div>
       <div className="team-scope">{scopeControl}</div>
-    </header>
+    </header>}
       {error && <div className="team-feedback" role="alert">{error}
         {!recoveryNeeded && <button disabled={!!busy} onClick={() => void refresh()}>Check saved state</button>}</div>}
       {!state && !error && <p role="status">Checking saved work…</p>}
       {uncertain && <div className="team-feedback" role="status"><p>The reply was not confirmed. Check the saved examples; this does not run them again. Another action may have saved the results.</p>
         <button onClick={() => void refresh()}>Check saved result</button>
         <button onClick={() => { setUncertain(false); setError(""); }}>I checked saved state</button></div>}
-      {state && <>
+        {!controlsOnly && discussion && <p>{!discussion.canContinue ? "There is no earlier draft or discussion to continue. " : ""}
+          <button className="quiet-button" onClick={openShared}>Open Studio</button> to start new work.</p>}
+       {state && discussion?.savedControls !== false && <>
          {(pendingChoice || choiceNotice) && <section aria-label="Saved Team action">
            {pendingChoice && <><p>This action is still unconfirmed. Check whether it was saved. Nothing will be sent again.</p>
             <button disabled={!!busy} onClick={() => void checkChoice()}>Check saved action</button></>}
            {choiceNotice && <p role="status">{choiceNotice}</p>}
          </section>}
-         {(!state.draft || conversation?.agreement) && <section aria-label="Conversation" className="rs-chat">
-            {!conversation && <><h2>What should happen in this project?</h2>
-              <p className="team-starter">Ask what Daymark can do, or describe a change. For example: “Add a follow-up for high-priority tasks.”</p></>}
+           {!controlsOnly && discussion?.canContinue && (!draft || conversation?.agreement) && <section aria-label="Conversation" className="rs-chat">
+            {state.draft && !draft && <p>Saving an earlier-format rule here replaces the current draft. Its saved revision stays in history. This does not change what’s on.</p>}
             {transcript}
             {conversation?.agreement && <article className="rs-message rs-decision" aria-label="Proposed behavior">
                <h2>Proposed behavior for {project.name}</h2>
@@ -472,7 +478,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
             </article>}
             {composer}
           </section>}
-          {state.draft && !conversation?.agreement && <>
+           {state.draft && draft && !conversation?.agreement && <>
              <section ref={decision} aria-label="Review and current use" className="team-decision">
                <h2 ref={draftHeading} tabIndex={-1}>{showActive ? "Customization in use" : state.draft.agreement ? "Proposed customization" : "Earlier saved customization"}</h2>
                <p className="team-project-name">{project.name} · Team</p>
@@ -512,7 +518,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
                </article>}
            </section>}
           </>}
-            {state.draft && !conversation?.agreement && <details className="team-more" open={authoring ? true : undefined}>
+              {discussion?.canContinue && draft && !conversation?.agreement && <details className="team-more" open={authoring ? true : undefined}>
               <summary>Continue the conversation</summary>{transcript}{composer}
             </details>}
             {state.selection.available && selectedAvailable && <section className="team-control" aria-label="Stop current use">
@@ -530,7 +536,7 @@ export default function TeamCapability({ project, request, scopeControl, back, b
               {(!revisionPage || revisionPage.items.length > 0) && <details className="team-control"><summary>Advanced: emergency revocation</summary>
                 <p>Project admins only. Permanently stop one version if it must stop affecting existing tasks. To stop using the current version only for new tasks, turn it off instead.</p>
                 <p>Revoking a version stops its future actions and prevents unfinished original tasks that use it from being completed. Linked reviews can still be completed. Saved work and other versions are unchanged.</p>
-                <p>Earlier versions can still affect tasks. Match the version reference shown under Advanced in an affected original task’s details. Counts are a guide: a completed task can still have an unfinished rule action.</p>
+                 <p>Earlier versions can still affect tasks. Match the reference under Rule version for this task in an affected original task’s details. Counts are a guide: a completed task can still have an unfinished rule action.</p>
                {!revisionPage ? <><p>The version list is unavailable.</p><button disabled={!!busy || lifecycleBusy} onClick={() => void readRevisions()}>Read version list</button></> : <>
                  <label htmlFor="team-revocation-target">Version to revoke</label>
                  <select id="team-revocation-target" value={targetRevisionId} disabled={!!busy || lifecycleBusy} onChange={e => setTargetRevisionId(e.target.value)}>

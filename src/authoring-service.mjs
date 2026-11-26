@@ -6,15 +6,17 @@ import { AuthoringError, createAuthoringProvider, PROVIDER_REPLY_CODES } from '.
 import { createAuthoringState, loadAuthoringInstructions, runAuthoringTurn } from './authoring-agent.mjs';
 import { authoringExample, businessContext, evidenceSummary } from './authoring-example.mjs';
 import { createAuthoringContext } from './authoring-context.mjs';
-import { createTeamAuthoringTurns } from './team-authoring-turns.mjs';
+import { createScopedAuthoringTurns, createTeamAuthoringTurns } from './team-authoring-turns.mjs';
+import { sharedCompletionAuthoring } from './shared-completion-authoring.mjs';
 import { projectAccess } from './team-native.mjs';
+import { authoringTranscript } from './authoring-transcript.mjs';
 
 export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_INVALID', 'AI_CREDENTIALS_MISSING', 'HOST_UNAVAILABLE', 'LEGACY_CUSTOMIZATION_RETIRED',
   'AUTHORING_GUIDE_UNAVAILABLE',
   'SPEND_LIMIT', 'BUDGET_EXHAUSTED', 'CONVERSATION_LIMIT', 'CONFIG_CHANGED', 'BYTE_LIMIT', 'CONTEXT_LIMIT', 'TOKEN_LIMIT', 'TIME_LIMIT', 'EXPIRED',
   'RUN_INTERRUPTED', 'CANCELLED', 'STALE_CONTEXT', 'STALE_DRAFT', 'STALE_CONVERSATION', 'AI_BUSY', 'PROVIDER_TIMEOUT',
   'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', ...PROVIDER_REPLY_CODES,
-  'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'TEAM_OFFER_INVALID', 'DISCUSSION_ONLY', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
+  'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'TEAM_OFFER_INVALID', 'PERSONAL_OFFER_INVALID', 'SHARED_OFFER_INVALID', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
 const codeFor = value => AUTHORING_CODES.includes(value) ? value : 'TOOL_FAILED';
 const safeMessage = code => PROVIDER_REPLY_CODES.includes(code)
   ? 'Daymark couldn’t use the assistant’s reply. It stopped without retrying. Your saved work is kept. Ask whoever manages assistant settings to check what happened before you send another request.'
@@ -33,7 +35,8 @@ const safeMessage = code => PROVIDER_REPLY_CODES.includes(code)
   BUDGET_EXHAUSTED: 'This authoring run reached its resource limit.', REVIEW_NOT_READY: 'Run the current independent examples before offering review.',
   INVALID_TOOL_ARGUMENTS: 'The assistant could not finish preparing the example checks. Saved work is kept. Continue explicitly to try again.',
   TEAM_OFFER_INVALID: 'Daymark couldn’t prepare a proposal. No draft was saved. You can send a new message with the change you want, including any details you’ve already agreed to.',
-  DISCUSSION_ONLY: 'This message was understood as discussion. Describe the change you want to prepare, or clarify your request. Approval and turning it on are separate.',
+  SHARED_OFFER_INVALID: 'Daymark couldn’t prepare a proposal. Nothing was saved. Ask the assistant to try again before confirming.',
+  PERSONAL_OFFER_INVALID: 'Daymark could not compile the proposed rule or validate its examples. No draft was saved. Ask the assistant to correct the proposal, then review it before confirming again.',
 }[code] ?? 'Authoring could not finish safely. Check saved state before continuing.');
 const error = (status, code) => { const value = new AppError(status, safeMessage(code)); value.code = codeFor(code); return value; };
 const stop = code => { throw new AuthoringError(code); };
@@ -51,13 +54,15 @@ const readableDefinition = id => id === TASK_DEFINITION || id === 'daymark.task-
 
 // One app/data owner. The database journals work; the map contains only live cancellation/settlement handles.
 export function createAuthoringService({ db, lifecycle, teamCapability, teamProjects, config = readAuthoringConfig(), fetchImpl,
-  checkpointFault = () => {}, providerFactory = value => createAuthoringProvider(value, { fetchImpl }) }) {
+   checkpointFault = () => {}, providerFactory = value => createAuthoringProvider(value, { fetchImpl }), sharedCompletionCompiler }) {
   const live = new Map(); let closing = false; const definitions = new Map();
   for (const hook of TASK_HOOKS) {
     try { definitions.set(hook, loadHost(hook)); } catch { /* AI setup failure never disables native tasks. */ }
   }
   const rowFor = (owner, id) => db.prepare('SELECT * FROM authoring_conversations WHERE id=? AND owner_id=?').get(id, owner);
   const linkFor = (owner, id) => db.prepare('SELECT * FROM extension_conversation_links WHERE owner_id=? AND conversation_id=?').get(owner, id);
+  const selectionGeneration = (owner, current, hookId) => current.extension?.hookId === hookId
+    ? current.selection.generation : lifecycle.collection(owner).selections[hookId].generation;
   const held = () => {
     const value = db.prepare('SELECT reserved_micros FROM authoring_budget WHERE id=1').get()?.reserved_micros;
     if (!integer(value)) stop('CHECKPOINT_UNCERTAIN'); return value;
@@ -114,7 +119,18 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
       if (value.state.definitionId !== TASK_DEFINITION || !linkFor(row.owner_id, row.id)) continue;
       value.state.status = 'BLOCKED'; value.state.lastResult = { status: 'BLOCKED', code: 'RUN_INTERRUPTED' };
       value.state.continuation = undefined; value.state.pending = undefined; value.state.evidenceHandle = null;
-      value.view.code = 'RUN_INTERRUPTED'; value.view.review = null;
+      value.view.code = 'RUN_INTERRUPTED'; delete value.view.proposal;
+      if (value.view.confirmation !== 'saved') value.view.review = null;
+      if (value.view.confirmation === 'preparing') {
+        value.view.confirmation = 'unsaved';
+        appendMessage(row.owner_id, row.id, { id: `${row.run_id}-confirm`, role: 'host', kind: 'text', text: 'Preparation stopped before saving a draft.' });
+      } else if (value.view.confirmation === 'saved') {
+        const { review } = value.view;
+        if (review) value.view.confirmation = review.eligible ? 'passed' : 'failed';
+        appendMessage(row.owner_id, row.id, { id: `${row.run_id}-confirm`, role: 'host', kind: review ? 'review' : 'text',
+          text: 'The draft was saved. Read its example checks before continuing.',
+          ...(review && { receipt: { ...value.state.handles, evidenceId: review.evidenceId } }) });
+      }
       db.prepare("UPDATE authoring_dispatches SET outcome='UNKNOWN' WHERE conversation_id=? AND owner_id=? AND outcome IS NULL").run(row.id, row.owner_id);
       db.prepare("UPDATE authoring_conversations SET status='INTERRUPTED',cancel_requested=1,state=?,view=? WHERE id=? AND run_id=?")
         .run(encode(value.state), encode(value.view), row.id, row.run_id);
@@ -139,6 +155,12 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
     const page = rows.slice(0, 20), last = page.at(-1);
     return { projects: page.map(row => ({ id: row.id, name: Buffer.from(row.name).toString('utf8') })),
       next: rows.length > page.length ? cursor({ scope, id: last.id, createdAt: last.created_at }) : null };
+  }
+  function readProjects(owner, before) {
+    try { return projects(owner, before); } catch (cause) {
+      if (cause.code === 'INVALID_TOOL_ARGUMENTS') stop('INVALID_TOOL_ARGUMENTS');
+      throw cause;
+    }
   }
   function messagePage(owner, id, before, maxBytes = 262144) {
     const row = rowFor(owner, id), link = linkFor(owner, id);
@@ -200,26 +222,6 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
     }
     return { messages, next };
   }
-  function priorUserMessages(ctx) {
-    const texts = []; let clarification, sawAssistant = false;
-    if (ctx.input.target.kind === 'create') return { texts, truncated: false };
-    let scanned = 0;
-    for (const row of itemMessageRows(ctx.owner, ctx.extensionId)) {
-      if (++scanned > 60) return { texts, truncated: true };
-      const { id, role, text, kind, openCustomization } = JSON.parse(row.payload);
-      if (!sawAssistant && role === 'assistant') {
-        sawAssistant = true;
-        if (kind === 'clarification' && !openCustomization && typeof text === 'string' && Buffer.byteLength(text) <= 2048)
-          clarification = { question: text };
-      }
-      if (role !== 'user' || typeof text !== 'string' || !text.trim()
-          || row.conversationId === ctx.id && id === ctx.input.operationId
-          || text === 'Continue from saved work. Ask before changing any independent examples.') continue;
-      if (texts.length === 6 || length([text, ...texts]) > 8192) return { texts, truncated: true, clarification };
-      texts.unshift(text);
-    }
-    return { texts, truncated: false, clarification };
-  }
   function appendMessage(owner, id, message) {
     if (db.prepare('SELECT 1 FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(id, message.id)) return;
     const sequence = db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS n FROM authoring_messages WHERE conversation_id=?').get(id).n;
@@ -237,6 +239,10 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
       operation: operation(operations.at(-1).id, operations.at(-1).runId, operations.at(-1).version), messages: [], messagesBefore: null,
       extensionId: link.extension_id, purpose: link.purpose, retired,
       code: view.code ? codeFor(view.code) : null, review, draft: state.handles ?? { revisionId: null, draftVersion: 0, suiteDigest: null },
+      ...(view.confirmation && { confirmation: view.confirmation }),
+       offer: row.status === 'AWAITING_USER' && view.proposal && !retired && same(state.handles, draftHandles(current))
+         && selectionGeneration(row.owner_id, current, view.proposal.hookId) === view.proposal.selectionGeneration
+        ? { digest: digest(json(view.proposal)), summary: view.proposal.summary } : null,
       selection: { revisionId: current.selection.revision?.id ?? null, generation: current.selection.generation } };
     if (bounded) {
       const page = messagePage(row.owner_id, row.id, undefined, 131072 - length(result) - 64);
@@ -302,8 +308,12 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
   }
   function publicView(value, state, ctx) {
     const view = structuredClone(value);
+    view.messages ??= [];
     if (state.checkpoint.phase === 'ADMIT') {
       view.messages.push({ id: ctx.input.operationId, role: 'user', text: ctx.input.text, kind: 'text' }); view.code = null; view.review = null;
+      delete view.proposal;
+      delete view.confirmation;
+      delete view.confirmationDigest;
     }
     if (state.checkpoint.phase === 'TERMINAL') {
       const result = state.lastResult; const id = ctx.runId + '-assistant';
@@ -313,6 +323,7 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
         ...(result.review && { receipt: { revisionId: result.review.revisionId, draftVersion: result.review.draftVersion,
           suiteDigest: result.review.suiteDigest, evidenceId: result.review.evidenceId } }) });
       view.code = result?.code ? codeFor(result.code) : null;
+      if (result?.proposal) view.proposal = result.proposal;
       view.review = result?.review ? { revisionId: result.review.revisionId, draftVersion: result.review.draftVersion,
         suiteDigest: result.review.suiteDigest, evidenceId: result.review.evidenceId, eligible: result.review.eligible === true } : null;
     }
@@ -352,19 +363,7 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
           if (!row || row.run_id !== ctx.runId || row.version !== state.version || row.cancel_requested || row.status !== 'RUNNING') stop('STALE_CONTEXT');
           lifecycle.assertAvailable(ctx.owner, ctx.extensionId);
         }
-        if (cp.phase === 'ADMIT' || cp.phase === 'DISPATCH' && cp.kind === 'tool') {
-          const current = lifecycle.state(ctx.owner, ctx.extensionId);
-          // Journal the immutable suite before any tool can replace its revision, even without discovery.
-          if (current.draft?.suiteDigest) state.scenarioSource = { revisionId: current.draft.id, suiteDigest: current.draft.suiteDigest };
-        }
-        const previous = cp.phase === 'ADMIT' ? prior?.state ?? state : prior.state;
-        const expectedIntent = ctx.resolvedIntent;
-        if (state.resolvedIntent !== expectedIntent) {
-          const current = lifecycle.state(ctx.owner, ctx.extensionId);
-          if (ctx.input.intent !== 'auto' || expectedIntent !== null || cp.phase !== 'RESULT' || cp.kind !== 'provider' || cp.ordinal !== 1
-              || !['discuss', 'prepare', 'clarify'].includes(state.resolvedIntent)
-              || !same(draftHandles(current), state.handles) || current.selection.generation !== ctx.resolutionGeneration) stop('STALE_CONTEXT');
-        }
+         const previous = cp.phase === 'ADMIT' ? prior?.state ?? state : prior.state;
         for (const group of ['counts', 'usage']) for (const [key, n] of Object.entries(state[group])) {
           if (!integer(n) || n < previous[group][key]) stop('HOST_RESULT_INVALID');
         }
@@ -387,15 +386,12 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
         const saved = { ...state, transport: { provider: config.provider, model: config.model, policy: resourcePolicy,
           settingsRevision: config.settingsRevision ?? null },
           runLedger: { base: ledger.base, reserved: additional, ordinal: cp.phase === 'DISPATCH' ? cp.ordinal : ledger.ordinal } };
-        delete saved.journal; delete saved.inputIds; delete saved.callIds;
+         delete saved.journal; delete saved.inputIds; delete saved.callIds;
+         delete saved.continuation; delete saved.pending;
+         if (saved.lastResult?.proposal) saved.lastResult = { status: saved.lastResult.status };
         const ops = [{ id: ctx.input.operationId, hash: ctx.hash, runId: ctx.runId, version: state.version }];
         const view = publicView(prior?.view ?? { messages: [], code: null, review: null }, state, ctx);
         const messages = view.messages; view.messages = [];
-        // A completed effect keeps its definitive receipt even when its native chain is full.
-        if (['RESULT', 'TERMINAL'].includes(cp.phase) && length(saved) + length(ops) + length(view) > 262144) {
-          state.continuation = saved.continuation = undefined; state.pending = saved.pending = undefined;
-          if (cp.phase === 'RESULT') state.contextFull = saved.contextFull = true;
-        }
         if (length(saved) + length(ops) + length(view) > 262144) stop('CONTEXT_LIMIT');
         if (messages.some(message => length(message) > 131072)) stop('BYTE_LIMIT');
         const status = cp.phase === 'TERMINAL' ? state.status : 'RUNNING';
@@ -415,7 +411,7 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
           .run(ctx.id, ctx.owner, ctx.input.operationId, ctx.hash, ctx.runId, state.version);
         for (const message of messages) appendMessage(ctx.owner, ctx.id, message);
       });
-      committed = true; ctx.admitted = true; ctx.state = state; ctx.resolvedIntent = state.resolvedIntent;
+       committed = true; ctx.admitted = true; ctx.state = state;
       ctx.context.budget.remainingMicros = Math.max(0, config.maxMicros - effectiveHeld());
       checkpointFault({ stage: 'afterCommit', phase: cp.phase, runId: ctx.runId, ordinal: cp.ordinal });
     } catch (cause) {
@@ -430,40 +426,21 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
   function bindings(ctx) {
     const authorize = () => { if (!ctx.context.current()) stop('STALE_CONTEXT'); };
     const mapped = () => draftHandles(lifecycle.state(ctx.owner, ctx.extensionId));
-    const invoke = (work, scenario = false) => tracked(ctx, async () => {
-      authorize(); if (ctx.input.intent === 'discuss' || ctx.resolvedIntent !== 'prepare') stop('DISCUSSION_ONLY');
-      try { return await work(); }
-      catch (cause) {
-        if (cause instanceof AuthoringError) throw cause;
-        if (cause?.code === 'LEGACY_CUSTOMIZATION_RETIRED') stop(cause.code);
-        if (scenario && cause instanceof AppError && cause.status === 400 && Array.isArray(cause.diagnostics)
-            && cause.diagnostics.length === 1 && cause.diagnostics.every(item => object(item) && Object.keys(item).length === 2
-              && ['INVALID_SCENARIO', 'DUPLICATE_SCENARIO_ID'].includes(item.code) && typeof item.path === 'string' && /^\/cases\/[0-7]$/.test(item.path)))
-          return { diagnostics: cause.diagnostics.map(({ code, path }) => ({ code, path })) };
-        if (!scenario && cause?.status === 422 && Array.isArray(cause.diagnostics)) return { diagnostics: cause.diagnostics };
-        stop(cause?.status === 409 ? 'STALE_DRAFT' : cause?.status === 429 ? 'AI_BUSY' : cause?.status === 499 ? 'CANCELLED' : 'TOOL_FAILED');
-      }
-    });
     const reviewFor = (current, proof) => ({ ...current, evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest, eligible: proof.passed,
       summary: Object.hasOwn(proof, 'summary') && !proof.summary ? null
         : evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases, { presentation: false }) });
-    const proofFor = handle => {
+    const proofFor = () => {
       authorize();
-      if (!handle) {
-        const current = ctx.state.handles;
-        if (!current.revisionId || !current.suiteDigest) return null;
-        try {
-          const proof = lifecycle.currentReviewEvidence(ctx.owner, { ...current, extensionId: ctx.extensionId });
-          return proof ? reviewFor(current, proof) : null;
-        } catch (cause) {
-          if (cause instanceof AppError && [404, 409, 410].includes(cause.status)
-            || cause instanceof SyntaxError || cause instanceof TypeError) return null;
-          throw cause;
-        }
+      const current = ctx.state.handles;
+      if (!current.revisionId || !current.suiteDigest) return null;
+      try {
+        const proof = lifecycle.currentReviewEvidence(ctx.owner, { ...current, extensionId: ctx.extensionId });
+        return proof ? reviewFor(current, proof) : null;
+      } catch (cause) {
+        if (cause instanceof AppError && [404, 409, 410].includes(cause.status)
+          || cause instanceof SyntaxError || cause instanceof TypeError) return null;
+        throw cause;
       }
-      const current = mapped(), proof = lifecycle.evidence(ctx.owner, handle.evidenceId, ctx.extensionId);
-      if (!same(current, handle) || proof.revisionId !== handle.revisionId || proof.identity?.suiteDigest !== handle.simulationSuiteIdentity) stop('STALE_DRAFT');
-      return reviewFor(current, proof);
     };
     const currentUse = (current, extensionId = ctx.extensionId) => {
       if (!current.extension?.hookId) return { generation: null, relation: 'none', selected: null,
@@ -505,11 +482,17 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
     };
     return {
       ...createAuthoringContext({ db, lifecycle, owner: ctx.owner, extensionId: ctx.extensionId,
-        intent: ctx.input.intent ?? 'prepare', authorize, currentUse }),
+        authorize, currentUse }),
       readDraft: () => { authorize(); return mapped(); },
-      projects: before => { authorize(); try { return projects(ctx.owner, before); } catch (cause) {
-        if (cause.code === 'INVALID_TOOL_ARGUMENTS') stop('INVALID_TOOL_ARGUMENTS'); throw cause;
-      } },
+      offerPins(hookId) {
+        authorize();
+        const current = lifecycle.state(ctx.owner, ctx.extensionId);
+        if (!definitions.has(hookId) || current.extension.hookId && current.extension.hookId !== hookId) stop('INVALID_TOOL_ARGUMENTS');
+        const base = current.revisionId ?? ctx.baseRevisionId;
+        return { modelDigest: authoringDefinition(hookId, base ? lifecycle.source(ctx.owner, base, ctx.extensionId).pins.modelDigest : undefined).pins.modelDigest,
+          selectionGeneration: selectionGeneration(ctx.owner, current, hookId) };
+      },
+      projects: before => { authorize(); return readProjects(ctx.owner, before); },
       discover: () => {
         authorize(); const current = lifecycle.state(ctx.owner, ctx.extensionId), selectedHook = current.extension?.hookId ?? null;
         const baseId = current.draft?.id ?? ctx.baseRevisionId;
@@ -526,57 +509,26 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
           suiteDigest: proposal.suiteDigest, truncated: false } : null;
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.cases = null; currentProposal.truncated = true; }
         if (currentProposal && length(currentProposal) > 65536) { currentProposal.source = null; currentProposal.truncated = true; }
-        let priorScenarios;
-        const reference = ctx.state.scenarioSource;
-        if (reference && !current.draft?.suiteDigest) {
-          if (!token(reference.revisionId) || !/^sha256:[0-9a-f]{64}$/.test(reference.suiteDigest)) stop('CONTEXT_LIMIT');
-          let saved;
-          try { saved = lifecycle.source(ctx.owner, reference.revisionId, ctx.extensionId); }
-          catch { stop('CONTEXT_LIMIT'); }
-          if (!object(saved) || saved.extensionId !== ctx.extensionId || saved.revisionId !== reference.revisionId
-              || saved.suiteDigest !== reference.suiteDigest || saved.truncated
-              || !Array.isArray(saved.cases) || !saved.cases.length || saved.cases.some(value => typeof value !== 'string')
-              || length(saved.cases) > 49152) stop('CONTEXT_LIMIT');
-          priorScenarios = { extensionId: ctx.extensionId, ...reference, cases: saved.cases };
-        }
-        const recent = []; let truncated = false;
-        for (const row of db.prepare('SELECT payload FROM authoring_messages WHERE conversation_id=? AND owner_id=? ORDER BY sequence DESC').iterate(ctx.id, ctx.owner)) {
-          const { role, text } = JSON.parse(row.payload);
-          if (length([{ role, text }, ...recent]) > 16384) { truncated = true; break; }
-          recent.unshift({ role, text });
-        }
+        const rejected = ctx.rejectedOffer;
+        const rejectedOffer = rejected && same(ctx.state.handles, draftHandles(current))
+          && rejected.proposal.selectionGeneration === selectionGeneration(ctx.owner, current, rejected.proposal.hookId)
+          ? { diagnostics: rejected.diagnostics, ...(length([currentProposal, rejected.proposal]) <= 32768
+            ? { source: rejected.proposal.sourceJson, cases: rejected.proposal.cases, hookId: rejected.proposal.hookId }
+            : { truncated: true }) } : null;
         return { dcm: JSON.parse(Buffer.from(definition.dcmBytes).toString('utf8')), ...sharedPins, ...definitionFormats(definition.pins), selectedHook,
-          currentDraft: draftHandles(current), currentProposal, ...(priorScenarios && { priorScenarios }),
+          currentDraft: draftHandles(current), currentProposal, ...(rejectedOffer && { rejectedOffer }),
           currentUse: currentUse(current), extension: current.extension, purpose: ctx.purpose,
-          supportedHooks: lifecycle.hostCatalog().hooks, conversationContext: { messages: recent, truncated },
+          supportedHooks: lifecycle.hostCatalog().hooks,
           businessContext, projects: projects(ctx.owner),
           ...(selectedHook ? { hook, consumer, ...syntax(definition) } : {
             examplesByHook: Object.fromEntries([...definitions].map(([id, host]) => [id, syntax(host)])),
           }) };
       },
-      compile: (source, version, signal, hookId) => invoke(async () => {
-        const current = lifecycle.state(ctx.owner, ctx.extensionId), selectedHook = current.extension?.hookId;
-        if (!definitions.has(hookId) || selectedHook && selectedHook !== hookId || ctx.state.definitionId !== TASK_DEFINITION) stop('INVALID_TOOL_ARGUMENTS');
-        const definition = authoringDefinition(hookId, current.draft?.pins.modelDigest);
-        const value = await lifecycle.compile(ctx.owner, { extensionId: ctx.extensionId, hookId, modelDigest: definition.pins.modelDigest,
-          source: source.toString('utf8'), draftVersion: version }, authorize, { signal }); return draftHandles(value);
-      }),
-      proposeScenarios: (revisionId, cases, version) => invoke(async () => draftHandles(await lifecycle.proposeScenarios(ctx.owner,
-        { extensionId: ctx.extensionId, revisionId, cases, draftVersion: version }, authorize, { signal: ctx.controller.signal })), true),
-      simulate: (revisionId, version, signal) => invoke(async () => {
-        const value = await lifecycle.simulate(ctx.owner, { extensionId: ctx.extensionId, revisionId, draftVersion: version }, authorize, { signal });
-        if (value.revisionId !== revisionId || value.draftVersion !== version || !value.evidence?.id) stop('HOST_RESULT_INVALID');
-        const proof = lifecycle.evidence(ctx.owner, value.evidence.id, ctx.extensionId);
-        if (proof.revisionId !== revisionId) stop('HOST_RESULT_INVALID');
-        return { ...draftHandles(value), evidenceId: proof.id, simulationSuiteIdentity: proof.identity.suiteDigest,
-          summary: Object.hasOwn(proof, 'summary') && !proof.summary ? null
-            : evidenceSummary(proof, lifecycle.source(ctx.owner, proof.revisionId, ctx.extensionId).cases, { presentation: false }) };
-      }),
-      readEvidence: () => proofFor(ctx.state.evidenceHandle),
+       readEvidence: proofFor,
     };
   }
 
-  function prepare(owner, input, lease) {
+  function prepare(owner, input, lease, continueOnly) {
     validate(input); assertLease(lease);
     let row = input.conversationId ? rowFor(owner, input.conversationId)
       : db.prepare('SELECT * FROM authoring_conversations WHERE owner_id=? AND creation_operation_id=?').get(owner, input.operationId);
@@ -589,6 +541,8 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
       if (link) lifecycle.assertAvailable(owner, link.extension_id, true);
       return { duplicate: { operation: operation(priorOperation.id, priorOperation.runId, priorOperation.version), conversation: dto(row) } };
     }
+    if (continueOnly && input.target.kind === 'create')
+      throw new AppError(409, 'Start a new customization in Shared Studio.');
     if (row && prior.state.definitionId !== TASK_DEFINITION) throw error(410, 'LEGACY_CUSTOMIZATION_RETIRED');
     if (row && db.prepare('SELECT 1 FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(row.id, input.operationId)) throw error(409, 'STALE_CONVERSATION');
     const link = row ? linkFor(owner, row.id) : null;
@@ -597,6 +551,7 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
     const currentState = input.target.kind === 'create'
       ? { revisionId: null, draftVersion: 0, suiteDigest: null, selection: lifecycle.collection(owner).selection }
       : lifecycle.state(owner, extensionId);
+    if (currentState.sharedStudio) throw error(409, 'STALE_DRAFT');
     if (!row && input.target.kind !== 'create' && currentState.retired !== false) throw error(410, 'LEGACY_CUSTOMIZATION_RETIRED');
     const current = draftHandles(currentState);
     if (current.draftVersion !== input.expectedDraftVersion) throw error(409, 'STALE_DRAFT');
@@ -620,14 +575,13 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
       dispatchOrdinal: 0, inFlight: null, checkpoint: null, lastResult: null });
     // Each explicit turn starts from fresh host context; old native tool chains are never replayed.
     state.continuation = undefined; state.pending = undefined; state.callIds = []; state.inputIds = []; state.evidenceHandle = null;
-    delete state.contextFull;
+     delete state.contextFull; delete state.scenarioSource; delete state.resolvedIntent;
     const ctx = { owner, id, runId, lease, controller, input, hash, state, extensionId, instructions,
       purpose: link?.purpose ?? (input.target.kind === 'create' ? 'CREATE' : 'REVISE'),
       baseRevisionId: link?.base_revision_id ?? (input.target.kind === 'revise' ? input.target.baseRevisionId : null),
       baseGeneration: link?.base_generation ?? (input.target.kind === 'revise' ? input.target.selectionGeneration : null),
-      tracked: new Set(), admitted: false, resolvedIntent: input.intent === 'auto' ? null : input.intent ?? 'prepare',
-      resolutionGeneration: currentState.selection.generation };
-    ctx.context = { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId, intent: input.intent ?? 'prepare',
+      tracked: new Set(), admitted: false, rejectedOffer: prior?.view.rejectedOffer };
+     ctx.context = { ownerId: owner, sessionId: lease.sessionId, conversationId: id, runId,
       budget: { remainingMicros: Math.max(0, config.maxMicros - effectiveHeld()) },
       current: () => {
         if (closing || controller.signal.aborted || lease.current() !== true) return false;
@@ -656,10 +610,11 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
         db.prepare("UPDATE authoring_dispatches SET outcome='UNKNOWN' WHERE conversation_id=? AND owner_id=? AND run_id=? AND outcome IS NULL").run(ctx.id, ctx.owner, ctx.runId);
         value.view.code = code;
         if (code) {
-          // Blocked native chains cannot be replayed; retain intent and dispatch evidence.
+           // Retain dispatch evidence, not native continuation.
           value.state.continuation = undefined; value.state.pending = undefined; value.state.evidenceHandle = null;
           value.state.lastResult = { status, code };
-          value.view.review = null;
+           value.view.review = null;
+           delete value.view.proposal;
           const id = ctx.runId + '-assistant';
           appendMessage(ctx.owner, ctx.id, { id, role: 'assistant', kind: 'text', text: safeMessage(code) });
         }
@@ -668,15 +623,15 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
       });
     } finally { if (live.get(ctx.runId) === ctx) live.delete(ctx.runId); }
   }
-  async function turn(owner, input, lease) {
-    const ctx = prepare(owner, input, lease); if (ctx.duplicate) return ctx.duplicate;
-    const history = priorUserMessages(ctx);
+  async function turn(owner, input, lease, { continueOnly = false } = {}) {
+    const ctx = prepare(owner, input, lease, continueOnly); if (ctx.duplicate) return ctx.duplicate;
+     const transcript = authoringTranscript(input.target.kind === 'create' ? [] : itemMessageRows(owner, ctx.extensionId));
     let native; try { native = providerFactory(config); } catch { throw error(503, 'TOOL_FAILED'); }
     live.set(ctx.runId, ctx);
     const provider = { ...native, complete: args => tracked(ctx, () => native.complete(args)) };
     const task = runAuthoringTurn({ provider, host: ctx.host, context: ctx.context, state: ctx.state,
-      input: { id: input.operationId, text: input.text, expectedVersion: input.expectedVersion, intent: input.intent ?? 'prepare' },
-      priorUserMessages: history, signal: ctx.controller.signal, instructions: ctx.instructions });
+       input: { id: input.operationId, text: input.text, expectedVersion: input.expectedVersion },
+       transcript, signal: ctx.controller.signal, instructions: ctx.instructions });
     ctx.promise = (async () => {
       let result;
       try { result = await task; await Promise.allSettled([...ctx.tracked]); }
@@ -688,6 +643,96 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
       const result = await ctx.promise; throw error(result.code?.startsWith('STALE') ? 409 : 503, codeFor(result.code));
     }
     return { operation: operation(input.operationId, ctx.runId, input.expectedVersion + 1), conversation: read(owner, ctx.id) };
+  }
+  function confirm(owner, id, input, lease) {
+    assertLease(lease);
+    if (!object(input) || Object.keys(input).length !== 3 || !token(input.runId) || !integer(input.expectedVersion)
+        || !/^sha256:[a-f0-9]{64}$/.test(input.offerDigest)) throw error(400, 'INVALID_TOOL_ARGUMENTS');
+    const row = rowFor(owner, id), link = linkFor(owner, id);
+    if (!row || !link) throw error(404, 'STALE_CONVERSATION');
+    const { state, view } = decode(row), extensionId = link.extension_id;
+    lifecycle.assertWritable(owner, extensionId);
+    if (row.run_id !== input.runId || row.version !== input.expectedVersion || state.sessionId !== lease.sessionId
+        || state.definitionId !== TASK_DEFINITION || latestSegment(owner, extensionId)?.id !== id) throw error(409, 'STALE_CONVERSATION');
+    if (view.confirmationDigest === input.offerDigest) return dto(row); // Readback only, not another preparation attempt.
+    if (row.status !== 'AWAITING_USER' || row.cancel_requested || !view.proposal
+        || digest(json(view.proposal)) !== input.offerDigest || !transportMatches(state)) throw error(409, 'STALE_CONVERSATION');
+    const base = state.handles, { proposal } = view, current = () => lifecycle.state(owner, extensionId);
+    const currentIs = handles => {
+      const actual = current();
+      return same(handles, draftHandles(actual)) && selectionGeneration(owner, actual, proposal.hookId) === proposal.selectionGeneration;
+    };
+    if (!currentIs(base) || proposal.expectedDraftVersion !== base.draftVersion) throw error(409, 'STALE_DRAFT');
+    if (closing || live.size >= 2 || [...live.values()].some(job => job.owner === owner)) throw error(409, 'AI_BUSY');
+    const controller = new AbortController(), { signal } = controller, runId = row.run_id;
+    const job = { owner, id, extensionId, runId, lease, controller };
+    const startingView = { confirmation: 'preparing', confirmationDigest: input.offerDigest };
+    const update = (status, value, nextView) => {
+      value.status = status;
+      if (db.prepare('UPDATE authoring_conversations SET status=?,state=?,view=?,updated_at=? WHERE id=? AND owner_id=? AND run_id=? AND version=?')
+        .run(status, encode(value), encode(nextView), Date.now(), id, owner, runId, row.version).changes !== 1) stop('STALE_CONTEXT');
+    };
+    update('RUNNING', state, startingView);
+    const authorize = () => {
+      assertLease(lease);
+      const now = rowFor(owner, id);
+      if (closing || signal.aborted || now?.run_id !== runId || now.version !== row.version || now.cancel_requested
+          || now.status !== 'RUNNING' || latestSegment(owner, extensionId)?.id !== id) stop('STALE_CONTEXT');
+      if (!currentIs(decode(now).state.handles)) stop('STALE_DRAFT');
+    };
+    live.set(runId, job);
+    job.promise = (async () => {
+      try {
+        let failure;
+        try {
+          const { hookId, modelDigest, sourceJson: source, cases } = proposal;
+          await lifecycle.compile(owner, { extensionId, hookId, modelDigest, source, draftVersion: base.draftVersion }, authorize,
+            { signal, confirmed: { cases, saved(handles) {
+              // Record the exact save in the same transaction as the revision and suite.
+              update('RUNNING', { ...state, handles }, { ...startingView, confirmation: 'saved' });
+            } } });
+          authorize();
+          const saved = decode(rowFor(owner, id));
+           await lifecycle.simulate(owner, { ...saved.state.handles, extensionId }, authorize, { signal, checked(proof) {
+             update('RUNNING', saved.state, { ...saved.view, review: { ...saved.state.handles, ...proof } });
+           } });
+        } catch (cause) { failure = cause; }
+        transaction(db, () => {
+          const now = rowFor(owner, id);
+          if (now?.run_id !== runId || now.version !== row.version) return;
+          const saved = decode(now), result = saved.view, handles = saved.state.handles;
+          const cancelled = now.cancel_requested || signal.aborted || lease.current() !== true;
+          const committed = result.confirmation === 'saved';
+          let latest;
+          try { latest = current(); } catch { /* Do not guess if saved state is no longer readable. */ }
+           const review = committed && result.review && same(result.review, handles) ? result.review : null;
+          result.confirmation = review ? (review.eligible ? 'passed' : 'failed')
+            : committed ? 'saved' : same(base, latest && draftHandles(latest)) ? 'unsaved' : 'uncertain';
+          result.review = review;
+          result.code = review || committed ? null : cancelled ? 'CANCELLED'
+            : result.confirmation === 'unsaved' && [400, 413, 422].includes(failure?.status) ? 'PERSONAL_OFFER_INVALID' : 'CHECKPOINT_UNCERTAIN';
+          if (result.code === 'PERSONAL_OFFER_INVALID') {
+            const diagnostics = Array.isArray(failure.diagnostics) ? failure.diagnostics.slice(0, 4).flatMap(item =>
+              typeof item?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(item.code)
+              && typeof item.path === 'string' && /^\/(?:source|cases)(?:\/[a-zA-Z0-9_]+)*$/.test(item.path) && item.path.length <= 256
+                ? [{ code: item.code, path: item.path }] : []) : [];
+            result.rejectedOffer = { proposal, diagnostics };
+          }
+          const text = { passed: 'The draft was saved and its examples passed. It is not approved or turned on.',
+            failed: 'The draft was saved, but some examples did not pass. It is not ready for approval.',
+            saved: 'The draft was saved. Its example checks are unavailable.',
+            unsaved: result.code === 'PERSONAL_OFFER_INVALID'
+              ? safeMessage(result.code)
+              : 'No draft was saved. Your earlier saved work is unchanged.',
+            uncertain: 'Daymark could not verify the result. Read the current draft before continuing.' }[result.confirmation];
+          appendMessage(owner, id, { id: `${runId}-confirm`, role: 'host', kind: review ? 'review' : 'text', text,
+            ...(review && { receipt: { ...handles, evidenceId: review.evidenceId } }) });
+          update(review ? 'REVIEW_AVAILABLE' : cancelled ? 'CANCELLED' : committed ? 'IDLE' : 'BLOCKED', saved.state, result);
+        });
+      } finally { live.delete(runId); }
+    })();
+    void job.promise.catch(() => {});
+    return read(owner, id);
   }
   function cancel(owner, id, input, lease) {
     assertLease(lease);
@@ -704,12 +749,8 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
     }
     return read(owner, id);
   }
-  const team = teamCapability && createTeamAuthoringTurns({
-    db, capability: teamCapability, projects: teamProjects, live, safeMessage, codeFor,
-    access(actor, projectId, lease) {
-      if (closing || !lease || !token(lease.sessionId) || lease.current() !== true) throw error(401, 'STALE_CONTEXT');
-      if (projectAccess(db, actor, projectId, true).mode !== 'TEAM') throw error(404, 'STALE_CONTEXT');
-    },
+  const scopedTurns = {
+    db, live, safeMessage, codeFor,
     availability: ready => availability(ready, true),
     provider: () => providerFactory(config),
     budget: () => Math.max(0, config.maxMicros - effectiveHeld()), recordDispatchResult,
@@ -717,9 +758,22 @@ export function createAuthoringService({ db, lifecycle, teamCapability, teamProj
       if (!integer(micros) || micros !== config.reserveMicros || effectiveHeld() + micros > config.maxMicros) stop('SPEND_LIMIT');
       db.prepare('UPDATE authoring_budget SET reserved_micros=? WHERE id=1').run(held() + micros);
     },
+  };
+  const team = teamCapability && createTeamAuthoringTurns({
+    ...scopedTurns, capability: teamCapability, projects: teamProjects,
+    access(actor, projectId, lease) {
+      if (closing || !lease || !token(lease.sessionId) || lease.current() !== true) throw error(401, 'STALE_CONTEXT');
+      if (projectAccess(db, actor, projectId, true).mode !== 'TEAM') throw error(404, 'STALE_CONTEXT');
+    },
   });
+   const shared = sharedCompletionCompiler !== undefined && sharedCompletionAuthoring({ db, lifecycle, teamCapability, live, compiler: sharedCompletionCompiler,
+     projects: readProjects,
+    assertLease: lease => { if (closing) stop('STALE_CONTEXT'); assertLease(lease); }, fault: checkpointFault });
   return {
-    list, read, turn, cancel, availability, allowance, messages: messagePage, transcript, team,
+    list, read, turn, confirm, cancel, availability, allowance, messages: messagePage, transcript, team,
+    ...(shared && { sharedCompletion: { ...createScopedAuthoringTurns({ ...scopedTurns, access: shared.access, shared,
+      availability: guideReady => sharedCompletionCompiler ? availability(guideReady, true) : { available: false, code: 'HOST_UNAVAILABLE' } }),
+      review: shared.review, decide: shared.decide } }),
     assertItemIdle(owner, extensionId) {
       if ([...live.values()].some(ctx => ctx.owner === owner && ctx.extensionId === extensionId)) {
         const failure = new AppError(409, 'Open this customization and use Stop, then wait for authoring to settle before deleting it.');

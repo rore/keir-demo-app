@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { openData, resetData, taskService } from '../src/data.mjs';
+import { openData, resetData } from '../src/data.mjs';
 import { addTeamProjects, addTeamCapabilities, teamProjectService } from '../src/team-native.mjs';
 import { createTeamRuntime, installTeamRevision } from '../src/team-runtime.mjs';
 import { compileTeamFixture } from '../scripts/team-native-fixture.mjs';
@@ -46,11 +46,26 @@ async function populated15(t) {
   }
   installTeamRevision(db, 'maya', projectId, 'saved-manual', assets.first);
   teamProjectService(db).setSelection('maya', projectId, 'saved-manual');
-  const runtime = createTeamRuntime({ db }), tasks = taskService(db, { team: runtime });
+  // The current create seam reads the selection generation added after v15.
+  // Seed the original admission, then run its real pinned effect on v15.
+  const taskId = randomUUID(), eventId = randomUUID();
+  db.prepare(`INSERT INTO tasks(id,owner_id,project_id,title,notes,status,created_at,updated_at,creator_id)
+    VALUES (?,'maya',?,'Already-started deliverable','','open',?,?,'maya')`).run(taskId, projectId, now, now);
+  db.prepare(`INSERT INTO team_admissions(event_id,project_id,source_task_id,initiator_id,operation_id,original_key,
+    revision_id,policy_state,manifest,state,created_at)
+    SELECT ?,project_id,?,'maya',?,?,revision_id,'PINNED',manifest,'PENDING',?
+    FROM team_revisions WHERE project_id=? AND revision_id='saved-manual'`).run(eventId, taskId, randomUUID(), randomUUID(), now, projectId);
+  const runtime = createTeamRuntime({ db });
   try {
-    await tasks.createTask('maya', { projectId, title: 'Already-started deliverable' }, { operationId: randomUUID() });
     await runtime.wake();
-    assert.ok(db.prepare('SELECT receipt FROM team_admissions').get().receipt);
+    const saved = db.prepare('SELECT child_id,receipt,state FROM team_admissions WHERE event_id=?').get(eventId);
+    assert.equal(saved.state, 'CLOSED');
+    const receipt = JSON.parse(saved.receipt);
+    assert.equal(receipt.effect, 'CONFIRMED');
+    assert.equal(receipt.eventId, eventId);
+    assert.equal(receipt.result.value.id, saved.child_id);
+    const child = db.prepare('SELECT parent_task_id,origin_event_id,assignee_id FROM tasks WHERE id=?').get(saved.child_id);
+    assert.deepEqual({ ...child }, { parent_task_id: taskId, origin_event_id: eventId, assignee_id: 'leo' });
   } finally { await runtime.close(); }
   const queries = inventory(db), snapshot = db => queries.map(sql => db.prepare(sql).all()), before = snapshot(db);
   db.close();
@@ -63,7 +78,7 @@ test('populated v15 upgrades once without rewriting pins/receipts/Personal draft
   const f = await populated15(t);
   let db = openData(f.path);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 19);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 24);
     assert.deepEqual(f.snapshot(db), f.before);
     assert.equal(db.prepare('SELECT source_bundle FROM team_revisions').get().source_bundle, null);
     assert.deepEqual(db.prepare('SELECT revision_id,draft_version FROM team_drafts ORDER BY project_id').all().map(Object.values), [[null, 0], [null, 0]]);
@@ -114,7 +129,7 @@ test('each schema16 DDL, slot initialization and version marker boundary rolls b
         throw new Error('Capability migration interrupted');
       }
       const result = exec.call(this, sql);
-      if (sql === 'PRAGMA user_version=19' && boundary === statements.length) { interrupted = true; throw new Error('Capability migration interrupted'); }
+      if (sql === 'PRAGMA user_version=24' && boundary === statements.length) { interrupted = true; throw new Error('Capability migration interrupted'); }
       return result;
     };
     try { assert.throws(() => openData(f.path), /Capability migration interrupted/); }

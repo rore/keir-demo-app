@@ -30,24 +30,25 @@ test('project discovery pages are read-only tool results and task compilation re
   assert.equal(names.some(name => /approve|activate|event|create_task|write_task/.test(name)), false);
 });
 
-for (const hook of ['TaskCreated', 'TaskBeforeCreate']) test('the compile tool passes the exact ' + hook + ' hook to the host', async () => {
-  const f = fixture([call('discover_catalog'), call('compile_draft', {
-    hookId: hook, sourceJson: JSON.stringify({ entrypoint: hook }), expectedDraftVersion: 0,
+for (const hook of ['TaskCreated', 'TaskBeforeCreate']) test('the inert offer binds the exact ' + hook + ' hook to the host', async () => {
+  const sourceJson = JSON.stringify({ entrypoint: hook });
+  const f = fixture([call('discover_catalog'), call('offer_proposal', {
+    hookId: hook, sourceJson, cases: ['{}'], expectedDraftVersion: 0, summary: 'Proposed behavior.',
   })]);
-  const compile = f.host.compile;
-  f.host.compile = (source, version, signal, actualHook) => {
+  f.host.offerPins = actualHook => {
     assert.equal(actualHook, hook);
-    assert.equal(JSON.parse(source).entrypoint, actualHook);
-    return compile(source, version, signal);
+    return { modelDigest: suite };
   };
-  await f.run();
-  assert.equal(f.state.handles.revisionId, 'revision1');
+  const result = await f.run();
+  assert.equal(result.proposal.sourceJson, sourceJson);
+  assert.equal(result.proposal.modelDigest, suite);
+  assert.equal(f.state.handles.revisionId, null);
 });
 
 test('task coaching requires discovered constants and independent expectations without treating program labels as native effects', async () => {
   const f = fixture(); await f.run();
   const instructions = f.requests[0].instructions;
-  for (const phrase of ['discover_projects', 'Project names may repeat', 'selectedHook', 'FORMAT ONLY',
+  for (const phrase of ['discover_projects', 'Clarify ambiguous project names', 'selectedHook', 'format only',
     'Only host-observed effect evidence', 'UNKNOWN never means no effect or safe retry', 'later completes that generated task',
     'independent expected scenarios', 'Numeric keir-dcm/4 uses source keir/3', 'retained keir-dcm/3 uses keir/2',
     'New compiler outputs use artifact/scenario /4', 'size(input.tags) > 3 && !input.hasNotes', 'duration("604800s")',
@@ -179,23 +180,25 @@ test('Keir authoring uses another host contract and scoped tools without Daymark
   const source = '{"entrypoint":"InvoicePosted","operation":"invoice.flag"}';
   const f = fixture([
     call('discover_catalog'), call('list_labels'),
-    call('compile_draft', { hookId: 'InvoicePosted', sourceJson: source, expectedDraftVersion: 0 }),
+     call('offer_proposal', { source }),
   ]);
   const contract = { supportedHooks: ['InvoicePosted'], fields: ['amount'], capabilities: ['invoice.flag'] };
   f.host.discover = () => contract;
-  const compile = f.host.compile;
-  f.host.compile = (bytes, version, signal, hook) => {
-    assert.equal(hook, 'InvoicePosted');
-    assert.equal(bytes.toString(), source);
-    return compile(bytes, version, signal);
-  };
+   f.host.compile = () => assert.fail('An offer cannot compile');
   const definition = tool('list_labels', 'List permitted invoice labels.', {});
-  const tools = [...KEIR_TOOLS, definition];
-  const hostTools = { list_labels: { readOnly: true, run: () => ({ output: ['Needs review'] }) } };
-  const run = (fixture, text) => runKeirTurn({ ...fixture, tools, hostTools,
+   const tools = [...KEIR_TOOLS.slice(0, 2), definition, tool('offer_proposal', 'Offer an invoice rule.', { source: { type: 'string' } })];
+   const hostTools = { list_labels: { readOnly: true, run: () => ({ output: ['Needs review'] }) },
+     offer_proposal: { run(_host, args) {
+       assert.equal(args.source, source);
+       return { event: { result: { status: 'AWAITING_USER' }, terminal: { status: 'AWAITING_USER', proposal: args } } };
+     } } };
+   const run = (fixture, text) => runKeirTurn({ ...fixture, tools, hostTools,
+     transcript: { messages: [{ role: 'assistant', text: 'Which invoices should be flagged?' }], truncated: false },
     input: { id: 'input1', text, expectedVersion: 0 } });
-  await run(f, 'Flag posted invoices over 500 for review.');
-  assert.equal(f.state.handles.revisionId, 'revision1');
+   const offered = await run(f, 'Flag posted invoices over 500 for review.');
+   assert.equal(offered.proposal.source, source);
+   assert.equal(f.state.handles.revisionId, null);
+   assert.equal(JSON.parse(f.requests[0].input).transcript.messages[0].text, 'Which invoices should be flagged?');
   assert.deepEqual(JSON.parse(f.requests[1].toolResult.output).result, contract);
   assert.deepEqual(JSON.parse(f.requests[2].toolResult.output).result, ['Needs review']);
   assert.doesNotMatch(f.requests[0].instructions.split('\n\n# Customer authoring guide')[0], /Daymark|TaskBeforeCreate|search_tasks/);
@@ -212,24 +215,9 @@ test('Keir authoring uses another host contract and scoped tools without Daymark
   assert.equal(f.requests[0].instructions, unsupported.requests[0].instructions);
 });
 
-test('real loop compiles, repairs, replaces scenarios, consumes returned IDs and offers only host evidence', async () => {
-  const f = fixture([
-    call('discover_catalog'), call('compile_draft', { sourceJson: 'bad', expectedDraftVersion: 0 }),
-    call('compile_draft', { sourceJson: '{"program":"independent"}', expectedDraftVersion: 0 }),
-    call('propose_scenarios', { revisionId: 'revision1', cases: ['{"id":"independent-expectation"}'], expectedDraftVersion: 1 }),
-    call('simulate_draft', { revisionId: 'revision2', expectedDraftVersion: 2 }),
-    call('offer_review', { summary: 'Review the exact tested cases and untested limits.' }),
-  ]);
-  const result = await f.run();
-  assert.equal(result.status, 'REVIEW_AVAILABLE');
-  assert.deepEqual(result.review, { revisionId: 'revision2', draftVersion: 2, suiteDigest: suite,
-    evidenceId: 'evidence', eligible: true, summary: { statuses: ['PASS'] } });
-  assert.deepEqual(f.events, ['discover', ['compile', 'bad', 0], ['compile', '{"program":"independent"}', 0],
-    ['scenarios', 'revision1', ['{"id":"independent-expectation"}'], 1], ['simulate', 'revision2', 2], 'readEvidence']);
-  assert.equal(f.state.handles.draftVersion, 2, 'simulation/review never advance version');
-  assert.equal(f.context.budget.remainingMicros, 940);
-  assert.deepEqual(JSON.parse(f.requests[2].toolResult.output).result.diagnostics, [{ code: 'SOURCE_INVALID', path: '/source' }]);
-  assert.deepEqual(AUTHORING_TOOLS.map(tool => tool.name), ['discover_catalog', 'discover_projects', 'discover_customizations', 'inspect_customization', 'search_tasks', 'offer_customization', 'ask_clarification', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+test('normal loop exposes only reads, an exact inert offer, clarification and saved review', () => {
+  assert.deepEqual(AUTHORING_TOOLS.map(tool => tool.name), ['discover_catalog', 'discover_projects', 'discover_customizations',
+    'inspect_customization', 'search_tasks', 'offer_customization', 'ask_clarification', 'offer_review', 'offer_proposal']);
 });
 
 test('discussion discovers other work and task evidence, then offers only explicit navigation', async () => {
@@ -250,7 +238,7 @@ test('discussion discovers other work and task evidence, then offers only explic
   assert.deepEqual(result.openCustomization, { extensionId: 'existing-rule', name: 'Follow up' });
   assert.match(result.message, /opening it does not change what runs/);
   assert.equal(JSON.parse(f.requests[0].input).hostContext.otherCustomizationCount, 2);
-  assert.equal(JSON.parse(f.requests[0].input).hostContext.intent, 'discuss');
+  assert.equal(Object.hasOwn(JSON.parse(f.requests[0].input).hostContext, 'intent'), false);
   assert.equal(JSON.parse(f.requests[0].input).currentUserMessage, 'What would complement my existing rules?');
   assert.equal(reads.length, 3);
   assert.deepEqual(f.events, []);
@@ -271,7 +259,7 @@ test('discussion dispatch rejects unsolicited draft mutation calls, not just the
     assert.equal((await f.run({ input: { id: 'ask-only', text: 'Suggest something useful.', expectedVersion: 0, intent: 'discuss' } })).status, 'IDLE');
     assert.deepEqual(f.events, []);
     assert.deepEqual(f.state.handles, { revisionId: 'saved', draftVersion: 1, suiteDigest: suite });
-    assert.deepEqual(JSON.parse(f.requests[1].toolResult.output), { ok: false, code: 'DISCUSSION_ONLY' });
+    assert.deepEqual(JSON.parse(f.requests[1].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
   }
 });
 
@@ -334,13 +322,15 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} repeated bound
   assert.ok(f.events.every(event => event === 'discover'), 'Renewal reads fresh metadata, never writes.');
 });
 
-test('clarification pauses until real user input and retains counters and pending tool result', async () => {
+test('clarification pauses until real user input, retaining counters but not the provider chain', async () => {
   const f = fixture([call('ask_clarification', { question: 'What should an open task display?' })]);
   assert.equal((await f.run()).status, 'AWAITING_USER');
   assert.equal(f.requests.length, 1); assert.equal(f.state.counts.clarifications, 1);
-  assert.equal((await f.run({ input: { id: 'answer', text: 'PENDING.', expectedVersion: 1 } })).status, 'IDLE');
-  assert.equal(f.requests[1].input, 'PENDING.');
-  assert.equal(JSON.parse(f.requests[1].toolResult.output).status, 'AWAITING_USER');
+  const transcript = { messages: [{ role: 'assistant', text: 'What should an open task display?' }], truncated: false };
+  assert.equal((await f.run({ transcript, input: { id: 'answer', text: 'PENDING.', expectedVersion: 1 } })).status, 'IDLE');
+  assert.deepEqual(JSON.parse(f.requests[1].input), { transcript, currentUserMessage: 'PENDING.' });
+  assert.equal(f.requests[1].toolResult, undefined);
+  assert.equal(f.requests[1].continuation, undefined);
   assert.equal(f.state.counts.calls, 2);
   const spent = f.context.budget.remainingMicros;
   assert.equal((await f.run({ input: { id: 'answer', text: 'Replay.', expectedVersion: 2 } })).code, 'DUPLICATE_INPUT');
@@ -358,67 +348,25 @@ test('forbidden tools, extra authority and fake evidence arguments never reach h
     assert.deepEqual(f.events, []);
     const rejected = JSON.parse(f.requests[1].toolResult.output);
     assert.equal(rejected.ok, false); assert.equal(rejected.code, 'INVALID_TOOL_ARGUMENTS');
-    if (item.name === 'propose_scenarios') {
-      assert.deepEqual(rejected.currentDraft, { revisionId: null, draftVersion: 0, suiteDigest: null });
-      assert.equal(rejected.remainingAttempts, 2);
-      assert.deepEqual(rejected.diagnostics, [{ code: 'SCENARIO_COUNT_INVALID', path: '/cases' }]);
-    } else assert.deepEqual(rejected, { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
+    assert.deepEqual(rejected, { ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
   }
 });
 
-test('scenario handle feedback permits exact correction without silently rebasing the rejected request', async () => {
-  const cases = ['{"id":"client-without-due","expect":"DENY"}', '{"id":"client-with-due","expect":"ALLOW"}'];
-  const f = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 }),
-    call('propose_scenarios', { revisionId: 'older', cases, expectedDraftVersion: 2 }),
-    call('propose_scenarios', { revisionId: 'revision1', cases, expectedDraftVersion: 2 }),
-    call('propose_scenarios', { revisionId: 'revision1', cases, expectedDraftVersion: 1 }),
-    call('simulate_draft', { revisionId: 'revision2', expectedDraftVersion: 2 }),
-    call('offer_review', { summary: 'The independently requested examples passed.' })]);
-  assert.equal((await f.run()).status, 'REVIEW_AVAILABLE');
-  for (const [index, path, remaining] of [[2, '/revisionId', 2], [3, '/expectedDraftVersion', 1]]) {
-    assert.deepEqual(JSON.parse(f.requests[index].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
-      diagnostics: [{ code: 'DRAFT_HANDLE_MISMATCH', path }],
-      currentDraft: { revisionId: 'revision1', draftVersion: 1, suiteDigest: null }, remainingAttempts: remaining });
-  }
-  assert.deepEqual(f.events.filter(x => Array.isArray(x) && x[0] === 'scenarios'), [['scenarios', 'revision1', cases, 1]]);
-  assert.equal(f.events.some(x => /approve|activate/.test(String(x))), false);
-});
-
-for (const hostDiagnostics of [false, true]) test(`scenario repair stops after three ${hostDiagnostics ? 'host diagnostics' : 'argument errors'} despite interleaved discovery`, async () => {
-  const scenarios = () => call('propose_scenarios', { revisionId: 'revision1', cases: hostDiagnostics ? ['{}'] : [], expectedDraftVersion: 1 });
-  const f = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 }),
-    scenarios(), call('discover_catalog'), scenarios(), call('discover_catalog'), scenarios(),
-    call('offer_review', { summary: 'Must never be reached.' })]);
-  if (hostDiagnostics) f.host.proposeScenarios = () => ({ diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }] });
-  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'INVALID_TOOL_ARGUMENTS' });
-  assert.equal(f.requests.length, 6);
-  assert.equal(f.state.pending && JSON.parse(f.state.pending.output).remainingAttempts, 0);
-  assert.deepEqual(f.state.handles, { revisionId: 'revision1', draftVersion: 1, suiteDigest: null });
-  assert.equal(f.events.includes('readEvidence'), false);
-  assert.equal(f.events.some(x => Array.isArray(x) && x[0] === 'simulate'), false);
-  assert.equal(f.state.usage.reservedMicros, 60, 'every dispatched provider request stays charged');
-});
-
-test('successful scenario acceptance resets its repair streak for later explicit scenario work', async () => {
-  const f = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 }),
-    call('propose_scenarios', { revisionId: 'old', cases: ['{}'], expectedDraftVersion: 1 }),
-    call('propose_scenarios', { revisionId: 'revision1', cases: ['{}'], expectedDraftVersion: 1 }),
-    call('propose_scenarios', { revisionId: 'old', cases: ['{}'], expectedDraftVersion: 1 }),
-    call('propose_scenarios', { revisionId: 'revision2', cases: ['{}'], expectedDraftVersion: 2 })]);
-  assert.equal((await f.run()).status, 'IDLE');
-  assert.equal(JSON.parse(f.requests[4].toolResult.output).remainingAttempts, 2);
-  assert.equal(f.state.handles.draftVersion, 3);
-});
-
-for (const [cases, diagnostic] of [[[], 'SCENARIO_COUNT_INVALID'], [[{}], 'SCENARIO_TEXT_INVALID'],
-  [['x'.repeat(49153)], 'SCENARIO_BYTES_LIMIT']]) test(`scenario ${diagnostic} feedback never dispatches malformed examples`, async () => {
-  const f = fixture([call('propose_scenarios', { revisionId: 'compiled', cases, expectedDraftVersion: 1 })],
-    { revisionId: 'compiled', draftVersion: 1 });
-  assert.equal((await f.run()).status, 'IDLE');
-  assert.deepEqual(f.events, []);
-  const result = JSON.parse(f.requests[1].toolResult.output);
-  assert.equal(result.diagnostics[0].code, diagnostic);
-  assert.equal(result.remainingAttempts, 2);
+for (const [name, invalid] of [
+  ['stale version', { expectedDraftVersion: 1 }], ['empty suite', { cases: [] }],
+  ['non-text case', { cases: [{}] }], ['oversized suite', { cases: ['x'.repeat(49153)] }],
+  ['invalid UTF-8', { sourceJson: '\ud800' }], ['oversized source', { sourceJson: 'x'.repeat(16385) }],
+]) test(`inert offer rejects ${name} and has a one-repair ceiling`, async () => {
+  const offer = call('offer_proposal', { hookId: 'TaskCompleted', sourceJson: '{}', cases: ['{}'],
+    expectedDraftVersion: 0, summary: 'Proposed behavior.', ...invalid });
+  const f = fixture([offer, offer]);
+  f.host.offerPins = () => assert.fail('Invalid offer cannot acquire host pins.');
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'PERSONAL_OFFER_INVALID' });
+  assert.equal(f.requests.length, 2);
+  assert.deepEqual(f.requests[1].tools.map(tool => tool.name), ['offer_proposal']);
+  assert.equal(JSON.parse(f.requests[1].toolResult.output).remainingAttempts, 1);
+  assert.equal(f.state.handles.draftVersion, 0);
+  assert.equal(f.state.usage.reservedMicros, 20);
 });
 
 test('old source ID after suite replacement is rejected; absent suite cannot simulate', async () => {
@@ -453,29 +401,23 @@ test('external draft change during provider generation is not silently adopted',
   assert.equal(text.state.continuation, undefined, 'stale text and native continuation are not adopted');
 });
 
-test('unknown host failure is a safe blocker; duplicate IDs and false returned handles stop', async () => {
-  const f = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 })]);
-  f.host.compile = () => { throw new Error('SECRET raw compiler path'); };
+test('unknown host read failure is a safe blocker; duplicate IDs and false returned handles stop', async () => {
+  const f = fixture([call('discover_catalog')]);
+  f.host.discover = () => { throw new Error('SECRET raw host path'); };
   assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'TOOL_FAILED' });
   const duplicate = fixture([call('discover_catalog', {}, 'same'), call('discover_catalog', {}, 'same')]);
   assert.equal((await duplicate.run()).code, 'PROVIDER_RESPONSE_INVALID'); assert.equal(duplicate.events.length, 1);
-  const bad = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 })]);
-  bad.host.compile = () => ({ revisionId: 'forged', draftVersion: 0, suiteDigest: suite });
+  const bad = fixture();
+  bad.host.readDraft = () => ({ revisionId: 'forged', draftVersion: -1, suiteDigest: suite });
   assert.equal((await bad.run()).code, 'HOST_RESULT_INVALID');
 });
 
-test('productive compilation, scenario replacement and simulation continue beyond eight calls and tools', async () => {
-  const steps = [];
-  for (let index = 0; index < 9; index++) {
-    steps.push(call('compile_draft', { sourceJson: `source ${index}`, expectedDraftVersion: index * 2 }),
-      call('propose_scenarios', { revisionId: `revision${index * 2 + 1}`, cases: [`{"id":"case-${index}"}`], expectedDraftVersion: index * 2 + 1 }),
-      call('simulate_draft', { revisionId: `revision${index * 2 + 2}`, expectedDraftVersion: index * 2 + 2 }));
-  }
-  const f = fixture(steps);
+test('productive reads continue beyond eight calls and tools', async () => {
+  const f = fixture(Array.from({ length: 27 }, () => call('discover_catalog')));
   assert.equal((await f.run()).status, 'IDLE');
-  assert.deepEqual(f.state.counts, { calls: 28, tools: 27, compiles: 9, simulations: 9, clarifications: 0, inputs: 1 });
-  assert.deepEqual(f.state.handles, { revisionId: 'revision18', draftVersion: 18, suiteDigest: suite });
-  assert.equal(f.events.filter(event => event[0] === 'scenarios').length, 9);
+  assert.deepEqual(f.state.counts, { calls: 28, tools: 27, compiles: 0, simulations: 0, clarifications: 0, inputs: 1 });
+  assert.deepEqual(f.state.handles, { revisionId: null, draftVersion: 0, suiteDigest: null });
+  assert.equal(f.events.length, 27);
   assert.equal(f.context.budget.remainingMicros, 720);
   assert.equal(f.state.usage.reservedMicros, 280);
 });
@@ -491,7 +433,7 @@ test('more than eight user inputs and clarifications remain usable after the old
   assert.equal(f.state.inputIds.length, 13);
   assert.equal(f.context.budget.remainingMicros, 870);
   assert.equal(f.requests[12].input, 'Create a read-only rule.');
-  assert.equal(JSON.parse(f.requests[12].toolResult.output).status, 'AWAITING_USER');
+  assert.equal(f.requests[12].toolResult, undefined);
 });
 
 test('configured spending still stops before a paid request', async () => {
@@ -511,9 +453,9 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} native preflig
   f.state.continuation = { provider, items: provider === 'openai'
     ? [{ type: 'reasoning', encrypted_content: 'x'.repeat(131072), summary: [] }]
     : [{ role: 'assistant', content: [{ type: 'thinking', thinking: 'x'.repeat(131072), signature: 'native-signature' }] }] };
-  const continuation = structuredClone(f.state.continuation);
   f.context.checkpoint = state => checkpoints.push({ ...state.checkpoint });
-  assert.deepEqual(await f.run({ provider: f.provider }), { status: 'BLOCKED', code: 'CONTEXT_LIMIT' });
+  const transcript = { messages: [{ role: 'assistant', text: 'x'.repeat(131072) }], truncated: false };
+  assert.deepEqual(await f.run({ provider: f.provider, transcript }), { status: 'BLOCKED', code: 'CONTEXT_LIMIT' });
   assert.equal(fetches, 0);
   assert.equal(f.requests.length, 0);
   assert.equal(f.state.counts.calls, 0);
@@ -522,7 +464,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} native preflig
   assert.equal(f.state.inFlight, null);
   assert.equal(f.context.budget.remainingMicros, 1000);
   assert.equal(f.state.usage.reservedMicros, 0);
-  assert.deepEqual(f.state.continuation, continuation);
+  assert.equal(f.state.continuation, undefined);
   assert.deepEqual(checkpoints.map(record => record.phase), ['ADMIT', 'TERMINAL']);
   assert.deepEqual(f.events, []);
 });
@@ -553,40 +495,36 @@ test('preflight after a successful tool renews from settled facts and reserves t
   assert.deepEqual(checkpoints.filter(record => record.phase === 'RESULT').map(record => record.outcome), ['SUCCESS', 'SUCCESS', 'SUCCESS']);
 });
 
-test('renewal retains rejected scenario diagnostics and the three-attempt repair ceiling', async () => {
-  const wrong = () => call('propose_scenarios', { revisionId: 'wrong', expectedDraftVersion: 0, cases: ['independent'] });
-  const f = fixture([wrong(), call('discover_catalog'), wrong(), call('discover_catalog'), wrong()]);
+test('renewal retains safe diagnostics without replaying a rejected offer or expanding its repair ceiling', async () => {
+  const wrong = call('offer_proposal', { hookId: 'TaskCompleted', expectedDraftVersion: 9, cases: ['private-example'],
+    sourceJson: '{}', summary: 'A stale proposal.' });
+  const f = fixture([wrong, wrong]);
   f.provider.preflight = request => { if (request.toolResult) throw new AuthoringError('CONTEXT_LIMIT'); };
-  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'INVALID_TOOL_ARGUMENTS' });
-  const rejections = f.requests.slice(1).map(request => JSON.parse(request.input).renewedContext.lastTool).filter(tool => tool.outcome === 'REJECTED');
-  assert.deepEqual(rejections.map(tool => tool.result.remainingAttempts), [2, 1]);
-  assert.ok(rejections.every(tool => tool.result.diagnostics[0].code === 'DRAFT_HANDLE_MISMATCH'));
-  const afterDiscovery = JSON.parse(f.requests[2].input).renewedContext;
-  assert.equal(afterDiscovery.lastTool.name, 'discover_catalog');
-  assert.deepEqual(afterDiscovery.settledFacts[0].arguments.cases, ['independent']);
-  assert.equal(afterDiscovery.settledFacts[0].outcome, 'REJECTED', 'Discovery cannot erase rejected independent expectations.');
-  assert.equal(f.requests.length, 5); assert.equal(f.state.usage.reservedMicros, 50);
+  assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'PERSONAL_OFFER_INVALID' });
+  const packed = JSON.parse(f.requests[1].input).renewedContext;
+  assert.equal(packed.lastTool.outcome, 'REJECTED');
+  assert.equal(packed.lastTool.result.remainingAttempts, 1);
+  assert.doesNotMatch(JSON.stringify(packed), /private-example/);
+  assert.equal(f.requests.length, 2); assert.equal(f.state.usage.reservedMicros, 20);
   assert.ok(f.events.every(event => event === 'discover'));
 });
 
 test('renewed discussion never gains preparation authority from provider calls or read text', async () => {
   const f = fixture([call('discover_catalog'), call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0 })]);
-  const history = ['Keep the exact independent example: λ😀\nDo not change its expected denial.'];
-  f.host.awareness = () => ({ intent: 'prepare' });
+  const transcript = { messages: [{ role: 'assistant', text: 'Keep the exact independent example: λ😀' }], truncated: false };
   f.provider.preflight = request => { if (request.toolResult) throw new AuthoringError('CONTEXT_LIMIT'); };
   assert.equal((await f.run({ input: { id: 'discussion-renewal', text: 'Explain only.', expectedVersion: 0, intent: 'discuss' },
-    priorUserMessages: { texts: history, truncated: false } })).status, 'IDLE');
+    transcript })).status, 'IDLE');
   for (const request of f.requests) {
-    assert.equal(JSON.parse(request.input).hostContext.intent, 'discuss');
-    assert.deepEqual(JSON.parse(request.input).previousUserMessages, history);
+    assert.deepEqual(JSON.parse(request.input).transcript, transcript);
     assert.equal(JSON.parse(request.input).currentUserMessage, 'Explain only.');
     assert.equal(request.tools.some(tool => tool.name === 'compile_draft'), false);
   }
-  assert.equal(f.state.resolvedIntent, 'discuss');
+  assert.equal(f.state.handles.revisionId, null);
   assert.ok(f.events.every(event => event === 'discover'));
 });
 
-for (const mode of ['unknown', 'checkpoint', 'cancel', 'owner', 'draft', 'truncated', 'missing-cases', 'irreducible', 'budget'])
+for (const mode of ['unknown', 'checkpoint', 'cancel', 'owner', 'draft', 'irreducible', 'budget'])
 test(`renewal stops safely for ${mode} without another provider request or host mutation`, async () => {
   const f = fixture([call('discover_catalog')]), controller = new AbortController();
   const checkpoints = [];
@@ -602,19 +540,15 @@ test(`renewal stops safely for ${mode} without another provider request or host 
       if (mode === 'owner') f.context.current = () => false;
       if (mode === 'draft') f.setDraft({ revisionId: 'external', draftVersion: 1, suiteDigest: null });
     }
-    return { currentProposal: mode === 'truncated' ? { truncated: true, source: '{}', cases: null } : null };
+    return { currentProposal: null };
   };
-  if (mode === 'missing-cases') {
-    f.setDraft({ revisionId: 'saved', draftVersion: 1, suiteDigest: suite });
-    f.host.discover = () => { discoveries++; return { currentProposal: { source: '{}', cases: null, truncated: false } }; };
-  }
   f.context.checkpoint = state => {
     checkpoints.push({ ...state.checkpoint });
     if (mode === 'checkpoint' && state.checkpoint.phase === 'RESULT' && state.checkpoint.kind === 'tool') throw Error('Lost result checkpoint');
     if (mode === 'budget' && state.checkpoint.phase === 'RESULT' && state.checkpoint.kind === 'tool') f.context.budget.remainingMicros = 0;
   };
   const expected = { unknown: 'TOOL_FAILED', checkpoint: 'TOOL_FAILED', cancel: 'CANCELLED', owner: 'STALE_CONTEXT', draft: 'STALE_DRAFT',
-    truncated: 'CONTEXT_LIMIT', 'missing-cases': 'CONTEXT_LIMIT', irreducible: 'CONTEXT_LIMIT', budget: 'SPEND_LIMIT' }[mode];
+    irreducible: 'CONTEXT_LIMIT', budget: 'SPEND_LIMIT' }[mode];
   assert.equal((await f.run({ signal: controller.signal })).code, expected);
   assert.equal(f.requests.length, 1); assert.equal(f.state.usage.reservedMicros, 10);
   assert.ok(f.events.every(event => event === 'discover'));
@@ -633,15 +567,14 @@ for (const progressing of [false, true]) test(`renewal has a finite ${progressin
   assert.equal(f.state.inFlight, null);
 });
 
-test('renewal keeps failed compilation input with its diagnostics instead of claiming a saved change', async () => {
-  const f = fixture([call('compile_draft', { sourceJson: 'bad', expectedDraftVersion: 0 })]);
+test('renewal preserves unavailable saved context explicitly instead of inventing evidence', async () => {
+  const f = fixture([call('discover_catalog')], { revisionId: 'saved', draftVersion: 1, suiteDigest: suite });
+  f.host.discover = () => ({ currentProposal: { source: '{}', cases: null, truncated: true } });
   f.provider.preflight = request => { if (request.toolResult) throw new AuthoringError('CONTEXT_LIMIT'); };
   assert.equal((await f.run()).status, 'IDLE');
   const packed = JSON.parse(f.requests[1].input).renewedContext;
-  assert.deepEqual(packed.completedChanges, []);
-  assert.equal(packed.lastTool.arguments.sourceJson, 'bad');
-  assert.equal(packed.lastTool.result.result.diagnostics[0].code, 'SOURCE_INVALID');
-  assert.equal(f.state.handles.revisionId, null);
+  assert.deepEqual(packed.currentContext.currentProposal, { source: '{}', cases: null, truncated: true });
+  assert.equal(f.state.handles.revisionId, 'saved');
 });
 
 test('concurrent runs share atomic budget and same conversation has no overlapping request', async () => {
@@ -671,9 +604,8 @@ test('live context is revalidated after every kind of host await', async () => {
   const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
   for (const [method, item] of [
     ['readDraft', call('discover_catalog')], ['discover', call('discover_catalog')],
-    ['compile', call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 1 })],
-    ['proposeScenarios', call('propose_scenarios', { revisionId: 'ready', cases: ['{}'], expectedDraftVersion: 1 })],
-    ['simulate', call('simulate_draft', { revisionId: 'ready', expectedDraftVersion: 1 })],
+    ['projects', call('discover_projects', { before: '' })],
+    ['customizations', call('discover_customizations', { before: '' })],
     ['readEvidence', call('offer_review', { summary: 'Review.' })],
   ]) {
     const f = fixture([item], ready);
@@ -729,42 +661,37 @@ test('source/case byte limits and malformed Unicode reject before host mutation'
   }
 });
 
-test('case schema is closed and original malformed JSON strings reach native admission unchanged', async () => {
-  const schema = AUTHORING_TOOLS.find(tool => tool.name === 'propose_scenarios').parameters;
-  assert.deepEqual(schema.required, ['revisionId', 'cases', 'expectedDraftVersion']);
+test('offer schema is closed and preserves exact case text for native admission only after Confirm', async () => {
+  const schema = AUTHORING_TOOLS.find(tool => tool.name === 'offer_proposal').parameters;
+  assert.deepEqual(schema.required, ['hookId', 'sourceJson', 'cases', 'expectedDraftVersion', 'summary']);
   assert.equal(schema.additionalProperties, false);
   assert.deepEqual(schema.properties.cases, { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 8 });
   const cases = [' {"id":"first","id":"second"} ', '{"id":"\\ud800"}', 'not JSON'];
-  const f = fixture([call('propose_scenarios', { revisionId: 'compiled', cases, expectedDraftVersion: 1 })],
+  const f = fixture([call('offer_proposal', { hookId: 'TaskCompleted', sourceJson: '{}', cases, expectedDraftVersion: 1, summary: 'Inert proposal.' })],
     { revisionId: 'compiled', draftVersion: 1 });
-  f.host.proposeScenarios = (revision, originals, expected) => {
-    assert.equal(revision, 'compiled'); assert.equal(expected, 1);
-    assert.deepEqual(originals, cases); assert.notEqual(originals, cases);
-    originals.pop();
-    throw new AuthoringError('INVALID_TOOL_ARGUMENTS');
-  };
-  assert.equal((await f.run()).status, 'IDLE');
-  assert.equal(cases.length, 3, 'host receives an independent array of the exact original strings');
-  assert.deepEqual(JSON.parse(f.requests[1].toolResult.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
-    diagnostics: [{ code: 'INVALID_TOOL_ARGUMENTS', path: '/arguments' }],
-    currentDraft: { revisionId: 'compiled', draftVersion: 1, suiteDigest: null }, remainingAttempts: 2 });
+  f.host.offerPins = () => ({ modelDigest: suite });
+  const offered = await f.run();
+  assert.equal(offered.status, 'AWAITING_USER');
+  assert.deepEqual(offered.proposal.cases, cases);
+  assert.deepEqual(f.events, []);
 });
 
-test('scenario diagnostics preserve current handles, enforce the draft fence and consume the existing budget', async () => {
+test('offer processing enforces the draft fence and consumes the existing budget', async () => {
   const ready = { revisionId: 'compiled', draftVersion: 1, suiteDigest: null };
   for (const stale of [false, true]) {
-    const f = fixture([call('propose_scenarios', { revisionId: 'compiled', cases: ['{}'], expectedDraftVersion: 1 })], ready);
-    f.host.proposeScenarios = () => {
+    const f = fixture([call('offer_proposal', { hookId: 'TaskCompleted', sourceJson: '{}', cases: ['{}'],
+      expectedDraftVersion: 1, summary: 'Inert proposal.' })], ready);
+    f.host.offerPins = () => {
       if (stale) f.setDraft({ revisionId: 'external', draftVersion: 2, suiteDigest: null });
-      return { diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }] };
+      else throw new AuthoringError('INVALID_TOOL_ARGUMENTS');
+      return { modelDigest: suite };
     };
     f.context.budget.remainingMicros = 10;
     const result = await f.run();
     assert.equal(result.code, stale ? 'STALE_DRAFT' : 'SPEND_LIMIT');
     assert.deepEqual(f.state.handles, ready); assert.equal(f.state.counts.tools, 1); assert.equal(f.state.counts.calls, stale ? 1 : 2);
     assert.equal(f.context.budget.remainingMicros, 0); assert.equal(f.requests.length, 1); assert.deepEqual(f.events, []);
-    if (!stale) assert.deepEqual(JSON.parse(f.state.pending.output), { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
-      diagnostics: [{ code: 'INVALID_SCENARIO', path: '/cases/0' }], currentDraft: ready, remainingAttempts: 2 });
+    assert.equal(f.state.pending, undefined);
   }
 });
 
@@ -873,21 +800,14 @@ test('result checkpoint failure prevents tool dispatch and subsequent provider w
 
 test('tool-specific lifetime counters are durable before the callback and include invalid attempts', async () => {
   const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
-  for (const [item, quota] of [
-    [call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 1 }), 'compiles'],
-    [call('simulate_draft', { revisionId: 'ready', expectedDraftVersion: 1 }), 'simulations'],
-    [call('ask_clarification', { question: 'Question?' }), 'clarifications'],
-  ]) {
+  for (const item of [call('ask_clarification', { question: 'Question?' }), call('ask_clarification', { question: '' })]) {
     const f = fixture([item], ready); let counted;
     f.context.checkpoint = state => {
-      if (state.checkpoint.phase === 'DISPATCH' && state.checkpoint.kind === 'tool') counted = state.counts[quota];
+      if (state.checkpoint.phase === 'DISPATCH' && state.checkpoint.kind === 'tool') counted = state.counts.clarifications;
     };
     assert.notEqual((await f.run()).status, 'BLOCKED');
-    assert.equal(counted, 1, quota);
+    assert.equal(counted, 1);
   }
-  const invalid = fixture([call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 0, forbidden: true })]);
-  assert.equal((await invalid.run()).status, 'IDLE'); assert.equal(invalid.state.counts.compiles, 1);
-  assert.deepEqual(invalid.events, []);
 });
 
 test('tool argument rejection is checkpointed before another provider and dispatch errors stay unknown', async () => {
@@ -931,24 +851,6 @@ test('cancellation between checkpoint and execution prevents callbacks and outwa
     assert.deepEqual(await f.run({ signal: controller.signal }), { status: 'CANCELLED', code: 'CANCELLED' });
     assert.equal(f.requests.length, kind === 'provider' ? 0 : 1);
     assert.deepEqual(f.state.lastResult, { status: 'CANCELLED', code: 'CANCELLED' });
-  }
-});
-
-test('review uses the simulation result proof and rejects a later pointer or changed derived identity', async () => {
-  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
-  for (const changed of [{ evidenceId: 'later' }, { simulationSuiteIdentity: suite }, { suiteDigest: simulationSuiteIdentity }]) {
-    const f = fixture([call('simulate_draft', { revisionId: 'ready', expectedDraftVersion: 1 }), call('offer_review', { summary: 'Review.' })], ready);
-    const saved = { ...ready, evidenceId: 'first', simulationSuiteIdentity };
-    f.host.simulate = () => ({ ...saved, summary: { statuses: ['PASS'] } });
-    f.host.readEvidence = () => ({ ...saved, eligible: true, ...changed });
-    let persisted;
-    f.context.checkpoint = state => {
-      if (state.checkpoint.phase === 'RESULT' && state.checkpoint.ordinal === 2) persisted = structuredClone(state.evidenceHandle);
-    };
-    const result = await f.run();
-    assert.deepEqual(result, { status: 'BLOCKED', code: 'HOST_RESULT_INVALID' });
-    assert.deepEqual(persisted, saved); assert.deepEqual(f.state.evidenceHandle, saved);
-    assert.equal(JSON.parse(f.requests[1].toolResult.output).result.evidenceId, 'first');
   }
 });
 
@@ -1002,23 +904,6 @@ test('resumed review rejects a draft replaced during the saved evidence read', a
   };
   assert.deepEqual(await f.run(), { status: 'BLOCKED', code: 'STALE_DRAFT' });
   assert.notEqual(JSON.parse(f.state.pending?.output ?? '{}').status, 'REVIEW_AVAILABLE');
-});
-
-test('source and suite replacement clear prior exact proof and review before their result checkpoint', async () => {
-  const ready = { revisionId: 'ready', draftVersion: 1, suiteDigest: suite };
-  for (const item of [call('compile_draft', { sourceJson: '{}', expectedDraftVersion: 1 }),
-    call('propose_scenarios', { revisionId: 'ready', cases: ['{}'], expectedDraftVersion: 1 })]) {
-    const f = fixture([item], ready);
-    f.state.evidenceHandle = { ...ready, evidenceId: 'old' };
-    f.state.lastResult = { status: 'REVIEW_AVAILABLE', review: { ...ready, evidenceId: 'old', eligible: true } };
-    let resultState;
-    f.context.checkpoint = state => {
-      if (state.checkpoint.phase === 'RESULT' && state.checkpoint.kind === 'tool') resultState = structuredClone(state);
-    };
-    assert.equal((await f.run()).status, 'IDLE');
-    assert.equal(resultState.evidenceHandle, null); assert.equal(resultState.lastResult, null);
-    assert.equal(resultState.handles.draftVersion, 2);
-  }
 });
 
 test('a changed run identity is never overwritten by an old loop terminal or time update', async () => {

@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 
 const studio = page => page.getByRole('region', { name: 'Customization Studio', exact: true });
 
@@ -16,9 +18,14 @@ async function api(page, path, body) {
   return JSON.parse(response.text);
 }
 
-async function createRequest(page, text) {
+async function discussSaved(page, fixture, text) {
+  const original = crypto.randomUUID();
+  const saved = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name: 'Untitled customization', operationId: original });
+  fixture.db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run(saved.conversationId, 'maya', 1, original,
+    JSON.stringify({ id: original, role: 'user', kind: 'text', text }));
   const result = await api(page, 'authoring/turn', {
-    target: { kind: 'create' }, conversationId: null, operationId: crypto.randomUUID(), text,
+    target: { kind: 'resume', extensionId: saved.extensionId }, conversationId: saved.conversationId, operationId: crypto.randomUUID(),
+    text: 'Can you explain that earlier request?',
     expectedVersion: 0, expectedDraftVersion: 0,
   });
   expect(result.conversation.extensionId).toBeTruthy();
@@ -43,7 +50,7 @@ test('untitled items show their request and returning from sample history resets
 
     const firstRequest = 'Keep track of the materials I still need.';
     const secondRequest = 'Show which orders are waiting for a reply.';
-    const firstId = await createRequest(page, firstRequest);
+    const firstId = await discussSaved(page, fixture, firstRequest);
     await navigate(page, 'Customizations');
     const cards = page.locator('.customization-card').filter({ hasText: 'Untitled customization' });
     await expect(cards).toHaveCount(1);
@@ -52,7 +59,7 @@ test('untitled items show their request and returning from sample history resets
     await discussion.getByText('Discussion started with', { exact: true }).click();
     await expect(discussion.locator('p')).toHaveText(firstRequest);
     await navigate(page, 'Tasks');
-    const secondId = await createRequest(page, secondRequest);
+    const secondId = await discussSaved(page, fixture, secondRequest);
     let saved = await api(page, `extensions/${secondId}/compile`, {
       hookId: 'TaskCompleted', source: fixture.metadata.source, label: 'Saved sample history', draftVersion: 0,
     });

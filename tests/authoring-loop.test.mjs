@@ -16,22 +16,23 @@ const cases = [matchingCase];
 function scenario(providerName, { clarify = true, wrong = false } = {}) {
   const requests = [], events = [];
   const selection = { revisionId: 'approvedA', generation: 7, evidenceId: 'EA' };
-  let current = { revisionId: 'approvedA', draftVersion: 0, suiteDigest: hash('0') };
-  let compiled = false;
+  const current = { revisionId: 'approvedA', draftVersion: 0, suiteDigest: hash('0') };
   const steps = [
     ['discover_catalog', {}], ...(clarify ? [['ask_clarification', { question: 'Which title should the follow-up task have?' }]] : []),
-    ['compile_draft', { hookId: 'TaskCompleted', sourceJson: 'invalid candidate', expectedDraftVersion: 0 }],
-    ['compile_draft', { hookId: 'TaskCompleted', sourceJson: source, expectedDraftVersion: 0 }],
-    ['propose_scenarios', { revisionId: 'compiledB', cases, expectedDraftVersion: 1 }],
-    ['simulate_draft', { revisionId: 'reviewB', expectedDraftVersion: 2 }],
-    ['offer_review', { summary: 'Review the independent synthetic case; other inputs are untested.' }],
+    ...(clarify ? [['offer_proposal', { hookId: 'TaskCompleted', sourceJson: source, cases, expectedDraftVersion: 0,
+      summary: 'Proposed follow-up behavior.' }]]
+      : [['offer_review', { summary: 'Review the independent synthetic case; other inputs are untested.' }]]),
   ];
   const fetchImpl = async (url, init) => {
     const body = JSON.parse(init.body); const index = requests.length;
     requests.push({ url, body });
     const [name, args] = steps[index];
     assert.equal(body.tools.some(tool => ['approve', 'activate'].includes(tool.name)), false);
-    if (index > 0) {
+    if (clarify && index === 2) {
+      const items = providerName === 'openai' ? body.input : body.messages;
+      assert.equal(items.length, 1);
+      assert.match(JSON.stringify(items), /Which title should the follow-up task have/);
+    } else if (index > 0) {
       const last = providerName === 'openai'
         ? body.input.filter(item => item.type === 'function_call_output').at(-1)
         : body.messages.filter(item => item.role === 'user').at(-1).content[0];
@@ -48,21 +49,9 @@ function scenario(providerName, { clarify = true, wrong = false } = {}) {
   const host = {
     readDraft: () => ({ ...current, selection }),
     discover: () => ({ supportedHooks: ['TaskCompleted'], capabilities: ['tasks.get', 'tasks.create'], draftVersion: current.draftVersion }),
-    compile: (bytes, expected) => {
-      assert.equal(expected, current.draftVersion); events.push(['compile', bytes.toString()]);
-      if (bytes.toString() !== source) return { diagnostics: [{ code: 'SOURCE_INVALID', path: '/source' }] };
-      compiled = true; current = { revisionId: 'compiledB', draftVersion: 1, suiteDigest: null }; return { ...current };
-    },
-    proposeScenarios: (id, originals, expected) => {
-      assert.equal(compiled, true); assert.equal(id, 'compiledB'); assert.equal(expected, 1);
-      assert.deepEqual(originals, cases); assert.notEqual(originals, cases); events.push(['scenarios', id]);
-      current = { revisionId: 'reviewB', draftVersion: 2, suiteDigest: hash('1') }; return { ...current };
-    },
-    simulate: (id, expected) => {
-      assert.equal(id, 'reviewB'); assert.equal(expected, 2); events.push(['simulate', id]);
-      return { ...current, evidenceId: 'EB', simulationSuiteIdentity: hash('2'), summary: { statuses: [wrong ? 'MISMATCH' : 'PASS'] } };
-    },
-    readEvidence: () => ({ ...current, evidenceId: 'EB', simulationSuiteIdentity: hash('2'), eligible: !wrong, summary: { statuses: [wrong ? 'MISMATCH' : 'PASS'] } }),
+    offerPins: hook => { assert.equal(hook, 'TaskCompleted'); events.push('offer'); return { modelDigest: hash('1') }; },
+    readEvidence: () => { events.push('read'); return { ...current, evidenceId: 'EB', simulationSuiteIdentity: hash('2'),
+      eligible: !wrong, summary: { statuses: [wrong ? 'MISMATCH' : 'PASS'] } }; },
   };
   const config = readAuthoringConfig(env(providerName));
   const context = { ownerId: 'synthetic-owner', sessionId: 'synthetic-session', conversationId: 'synthetic-conversation', runId: 'synthetic-run',
@@ -70,19 +59,21 @@ function scenario(providerName, { clarify = true, wrong = false } = {}) {
   return { provider: createAuthoringProvider(config, { fetchImpl }), host, context, requests, selection, events, fetchImpl };
 }
 
-for (const name of ['openai', 'anthropic']) test(`${name} native protocol drives the actual loop through pause/reload/repair/exact review`, async () => {
+for (const name of ['openai', 'anthropic']) test(`${name} native protocol uses a fresh turn after clarification and offers exact inert bytes`, async () => {
   const f = scenario(name); let state = createAuthoringState(f.context);
   const first = await runAuthoringTurn({ ...f, state, input: { id: 'request', text: 'Create a follow-up after completion.', expectedVersion: 0 } });
   assert.equal(first.status, 'AWAITING_USER'); assert.equal(f.requests.length, 2);
-  state = JSON.parse(JSON.stringify(state)); // owner persistence can restore private native continuation.
-  const result = await runAuthoringTurn({ ...f, state, input: { id: 'answer', text: 'Use the title Example follow-up task.', expectedVersion: 1 } });
-  assert.equal(result.status, 'REVIEW_AVAILABLE'); assert.equal(result.review.revisionId, 'reviewB');
-  assert.equal(result.review.evidenceId, 'EB'); assert.equal(result.review.eligible, true);
+  state = JSON.parse(JSON.stringify(state));
+  const result = await runAuthoringTurn({ ...f, state, transcript: { messages: [{ role: 'assistant', text: first.message }], truncated: false },
+    input: { id: 'answer', text: 'Use the title Example follow-up task.', expectedVersion: 1 } });
+  assert.equal(result.status, 'AWAITING_USER');
+  assert.equal(result.proposal.sourceJson, source);
+  assert.deepEqual(result.proposal.cases, cases);
   assert.deepEqual(f.selection, { revisionId: 'approvedA', generation: 7, evidenceId: 'EA' });
-  assert.deepEqual(f.events, [['compile', 'invalid candidate'], ['compile', source], ['scenarios', 'compiledB'], ['simulate', 'reviewB']]);
-  assert.equal(state.counts.calls, 7); assert.equal(state.counts.compiles, 2); assert.equal(state.handles.draftVersion, 2);
-  assert.equal(state.usage.inputTokens, 700); assert.equal(state.usage.outputTokens, 700);
-  assert.equal(state.usage.reservedMicros, 7 * f.provider.reserveMicros);
+  assert.deepEqual(f.events, ['offer']);
+  assert.equal(state.counts.calls, 3); assert.equal(state.counts.compiles, 0); assert.equal(state.handles.draftVersion, 0);
+  assert.equal(state.usage.inputTokens, 300); assert.equal(state.usage.outputTokens, 300);
+  assert.equal(state.usage.reservedMicros, 3 * f.provider.reserveMicros);
   assert.equal(JSON.stringify(result).includes('opaque'), false, 'private reasoning is never a UI event');
 });
 
@@ -92,7 +83,7 @@ test('wrong independently supplied expectation stays ineligible and active appro
   assert.equal(result.status, 'REVIEW_AVAILABLE'); assert.equal(result.review.eligible, false);
   assert.deepEqual(result.review.summary, { statuses: ['MISMATCH'] });
   assert.deepEqual(f.selection, { revisionId: 'approvedA', generation: 7, evidenceId: 'EA' });
-  assert.equal(f.events.filter(item => item[0] === 'scenarios').length, 1, 'no automatic expectation rewrite');
+  assert.deepEqual(f.events, ['read'], 'No automatic expectation rewrite.');
 });
 
 test('qualification is explicitly opt-in and requires the operator host fixture; default CLI cannot call a provider', async () => {
@@ -108,7 +99,7 @@ test('opt-in harness returns only bounded identity/counters and requires configu
   const result = await checkAuthoringProvider({ live: true, env: env('anthropic'), ...f,
     inputs: [{ id: 'request', text: 'Use the synthetic case.' }] });
   assert.equal(result.status, 'REVIEW_AVAILABLE'); assert.equal(result.review.evidenceId, 'EB');
-  assert.equal(result.model, 'claude-haiku-5-5'); assert.equal(result.counts.calls, 6);
+  assert.equal(result.model, 'claude-haiku-5-5'); assert.equal(result.counts.calls, 2);
   assert.equal(JSON.stringify(result).includes('synthetic-anthropic-key'), false);
   assert.equal(JSON.stringify(result).includes('opaque'), false);
   const unavailable = await checkAuthoringProvider({ live: true, env: {}, ...scenario('openai'), inputs: [{ id: 'request', text: 'No config.' }] });

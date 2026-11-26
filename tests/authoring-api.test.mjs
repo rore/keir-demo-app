@@ -72,7 +72,7 @@ function removeFixture(directory) {
   rmSync(directory, { recursive: true, force: true });
 }
 function assertDto(value) {
-  keys(value, ['id', 'extensionId', 'purpose', 'retired', 'version', 'status', 'runId', 'operation', 'messages', 'messagesBefore', 'code', 'review', 'draft', 'selection']);
+  keys(value, ['id', 'extensionId', 'purpose', 'retired', 'version', 'status', 'runId', 'operation', 'messages', 'messagesBefore', 'code', 'review', 'draft', 'selection', 'offer', ...(value.confirmation ? ['confirmation'] : [])]);
   assert.ok(value.messagesBefore === null || typeof value.messagesBefore === 'string');
   keys(value.operation, ['id', 'runId', 'version']);
   keys(value.draft, ['revisionId', 'draftVersion', 'suiteDigest']);
@@ -82,6 +82,7 @@ function assertDto(value) {
     if (message.receipt) keys(message.receipt, ['revisionId', 'draftVersion', 'suiteDigest', 'evidenceId']);
   }
   if (value.review) keys(value.review, ['revisionId', 'draftVersion', 'suiteDigest', 'evidenceId', 'eligible']);
+  if (value.offer) keys(value.offer, ['digest', 'summary']);
   const text = JSON.stringify(value);
   for (const privateValue of ['synthetic-secret-key', 'private-reasoning', 'opaque-signature', 'authorization', 'continuation', 'sourceJson'])
     assert.equal(text.includes(privateValue), false, privateValue + ' must remain private');
@@ -196,11 +197,12 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} continues a sa
   const inputText = provider === 'openai' ? body.input.at(-1).content : body.messages.at(-1).content.at(-1).text;
   const envelope = JSON.parse(inputText);
   assert.equal(envelope.currentUserMessage, request.text);
-  assert.equal(envelope.previousUserMessagesTruncated, true);
-  assert.ok(Buffer.byteLength(JSON.stringify(envelope.previousUserMessages)) <= 8192);
-  assert.ok(!envelope.previousUserMessages.includes(request.text));
+  assert.equal(envelope.transcript.truncated, false);
+  assert.ok(Buffer.byteLength(JSON.stringify(envelope.transcript.messages)) <= 16384);
+  assert.ok(!envelope.transcript.messages.some(message => message.text === request.text));
   assert.match(inputText, /Keep the exact title and require the selected project/);
-  assert.doesNotMatch(inputText, /Saved assistant message|Unrelated private intent|Prior user requirement 22/);
+  assert.match(inputText, /Saved assistant message|Prior user requirement 22/);
+  assert.doesNotMatch(inputText, /Unrelated private intent/);
   const recovery = await call('authoring/recover', request);
   assert.equal(recovery.statusCode, 200);
   assert.deepEqual(recovery.json().operation, accepted.json().operation);
@@ -335,95 +337,77 @@ test('a missing companion at app startup leaves native tasks available and rejec
   const listing = (await call('authoring')).json();
   assert.equal(listing.availability.available, false);
   assert.equal(listing.availability.code, 'AUTHORING_GUIDE_UNAVAILABLE');
-  const request = { conversationId: null, operationId: 'missing-guide', text: 'Prepare a change.',
-    expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'create' } };
+  const request = input(db, 'missing-guide', { text: 'Prepare a change.' });
   const rejected = await call('authoring/turn', request);
   assert.equal(rejected.statusCode, 503);
   assert.equal(rejected.json().code, listing.availability.code);
   assert.equal(providers, 0);
-  for (const table of ['authoring_conversations', 'authoring_operations', 'authoring_dispatches']) {
+  assert.equal(db.prepare('SELECT count(*) n FROM authoring_conversations').get().n, 1);
+  for (const table of ['authoring_operations', 'authoring_dispatches']) {
     assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get().n, 0);
   }
   assert.equal(reserved(db), 0);
 });
 
-for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs real pinned-JAR diagnostics, saves original cases and offers exact simulator evidence without approval`,
+for (const provider of ['openai', 'anthropic']) test(`${provider} API confirmation runs the pinned JAR, saves original cases and retains exact evidence without approval`,
   { skip: !qualifiedJava && !process.env.CI }, async t => {
     assert.ok(qualifiedJava, 'Qualified Java 21 is required in CI. Probe: ' + JSON.stringify({
       status: checkedJava.status, signal: checkedJava.signal, error: checkedJava.error?.code,
       stdout: checkedJava.stdout?.slice(0, 2048), stderr: checkedJava.stderr?.slice(0, 2048),
     }));
     const cases = taskCases().map(item => '\n ' + item.bytes.toString() + '\n');
-    let compiledId, scenarioId, exactEvidenceId, latestEvidenceId, callApi, providers = 0;
-    const fake = wire(provider, async (body, index) => {
-      const prior = lastTool(provider, body);
-      if (index === 6) return { text: 'The saved change is still here.' };
+    let providers = 0;
+    const fake = wire(provider, (body, index) => {
       if (index === 0) return { name: 'discover_catalog', arguments: {} };
-      if (index === 1) return { name: 'compile_draft', arguments: { sourceJson: '{', expectedDraftVersion: prior.result.currentDraft.draftVersion } };
-      if (index === 2) {
-        assert.ok(prior.result.diagnostics.length > 0);
-        for (const item of prior.result.diagnostics) keys(item, ['code', 'path']);
-        assert.equal(prior.result.diagnostics[0].code, 'SYNTAX_INVALID');
-        const unchanged = (await callApi(extensionPath(db))).json();
-        assert.equal(unchanged.draftVersion, 0); assert.equal(unchanged.draft, null);
-        return { name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 0 } };
-      }
-      if (index === 3) {
-        compiledId = prior.result.revisionId;
-        assert.equal(prior.result.draftVersion, 1); assert.equal(prior.result.suiteDigest, null);
-        return { name: 'propose_scenarios', arguments: { revisionId: compiledId, cases, expectedDraftVersion: 1 } };
-      }
-      if (index === 4) {
-        scenarioId = prior.result.revisionId;
-        assert.notEqual(scenarioId, compiledId);
-        return { name: 'simulate_draft', arguments: { revisionId: scenarioId, expectedDraftVersion: 2 } };
-      }
-      assert.equal(index, 5); assert.equal(prior.result.revisionId, scenarioId);
-      exactEvidenceId = prior.result.evidenceId;
-      const repeated = await callApi(extensionPath(db, 'simulate'), { revisionId: scenarioId, draftVersion: 2 });
-      assert.equal(repeated.statusCode, 200);
-      latestEvidenceId = repeated.json().evidence.id;
-      assert.notEqual(latestEvidenceId, exactEvidenceId);
-      return { name: 'offer_review', arguments: { summary: 'Review these five independent cases. Other inputs are untested.' } };
+      if (index === 1) return { name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: source, cases,
+        expectedDraftVersion: lastTool(provider, body).result.currentDraft.draftVersion, summary: 'Check the independent examples.' } };
+      return { text: 'The saved change is still here.' };
     });
     const realCompiler = createCompiler({ javaExecutable: java });
     const { db, call, login } = await api(t, { config: configFor(provider), providerFactory(config) {
       providers++;
       return createAuthoringProvider(config, { fetchImpl: fake.fetchImpl });
     } }, { compiler: realCompiler });
-    callApi = call;
     await login(); const selection = (await call(extensionPath(db))).json().selection;
     const submitted = input(db, 'real-compile');
     const response = await call('authoring/turn', submitted);
     assert.equal(response.statusCode, 202);
-    const current = await settled(call, response.json().conversation.id);
+    const offered = await settled(call, response.json().conversation.id);
+    assert.equal(offered.status, 'AWAITING_USER');
+    assert.equal((await call(extensionPath(db))).json().draft, null);
+    const decision = { runId: offered.runId, expectedVersion: offered.version, offerDigest: offered.offer.digest };
+    assert.equal((await call(`authoring/conversations/${offered.id}/confirm`, decision)).statusCode, 202);
+    const current = await settled(call, offered.id);
     assert.equal(current.status, 'REVIEW_AVAILABLE', JSON.stringify(current)); assertDto(current);
     assert.equal(current.review.eligible, true);
     const state = (await call(extensionPath(db))).json(), review = current.review;
     assert.equal(review.revisionId, state.draft.id); assert.equal(review.draftVersion, state.draftVersion);
-    assert.equal(review.suiteDigest, state.suiteDigest); assert.equal(review.evidenceId, exactEvidenceId);
+    assert.equal(review.suiteDigest, state.suiteDigest); assert.equal(review.evidenceId, state.evidence.id);
+    assert.equal(review.draftVersion, 1);
+    const { evidenceId: exactEvidenceId, revisionId: scenarioId } = review;
     const receipt = { revisionId: review.revisionId, draftVersion: review.draftVersion,
       suiteDigest: review.suiteDigest, evidenceId: exactEvidenceId };
     assert.deepEqual(current.messages.at(-1).receipt, receipt);
     const savedView = JSON.parse(db.prepare('SELECT view FROM authoring_conversations WHERE id=?').get(current.id).view);
-    assert.deepEqual(savedView.messages, [], 'The current header does not accumulate transcript history.');
+    assert.equal(savedView.messages?.length ?? 0, 0, 'The current header does not accumulate transcript history.');
     const savedMessage = JSON.parse(db.prepare('SELECT payload FROM authoring_messages WHERE conversation_id=? AND message_id=?').get(current.id, current.messages.at(-1).id).payload);
     assert.deepEqual(savedMessage.receipt, receipt, 'The exact turn receipt is durable, not inferred from latest evidence.');
     assert.equal(current.messages[0].receipt, undefined);
-    assert.equal(state.evidence.id, latestEvidenceId);
+    const repeated = await call(extensionPath(db, 'simulate'), { revisionId: scenarioId, draftVersion: 1 });
+    assert.equal(repeated.statusCode, 200);
+    assert.notEqual(repeated.json().evidence.id, exactEvidenceId);
+    assert.deepEqual((await call(`authoring/conversations/${offered.id}`)).json().review, review);
     const proof = (await call(extensionPath(db, 'evidence/' + review.evidenceId))).json();
     assert.equal(proof.revisionId, scenarioId); assert.equal(proof.passed, true);
     assert.deepEqual(proof.reports.map(item => item.report.status), Array(cases.length).fill('PASS'));
     assert.deepEqual((await call(extensionPath(db, 'revisions/' + scenarioId))).json().cases, cases);
-    assert.deepEqual((await call(extensionPath(db, 'revisions/' + compiledId))).json().cases, []);
     const bytes = db.prepare('SELECT source,artifact,suite FROM extension_authored WHERE revision_id=?').get(scenarioId);
     assert.equal(Buffer.from(bytes.source).toString(), source); assert.deepEqual(Buffer.from(bytes.artifact), artifact);
     assert.equal(bytes.suite, JSON.stringify(cases));
     assert.deepEqual(state.selection, selection); assert.equal(state.approved, false);
     assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
-    assert.equal(reserved(db), fixtureEstimate(provider) * 6);
-    assert.equal(rowState(db).counts.compiles, 2);
-    assert.equal(dispatches(db, current.id).length, 12); assert.ok(dispatches(db, current.id).every(item => item.outcome === 'SUCCESS'));
+    assert.equal(reserved(db), fixtureEstimate(provider) * 2);
+    assert.equal(dispatches(db, current.id).length, 4); assert.ok(dispatches(db, current.id).every(item => item.outcome === 'SUCCESS'));
     const index = 'authoring?extensionId=' + current.extensionId;
     assert.equal((await call(index)).json().availability.available, true);
     const directory = mkdtempSync(join(tmpdir(), 'daymark-guide-'));
@@ -451,16 +435,17 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} API repairs re
     assert.deepEqual(replay.json().operation, response.json().operation);
     assert.deepEqual(snapshot(), savedBefore);
     assert.equal(providers, 1);
-    assert.equal(fake.requests.length, 6);
+    assert.equal(fake.requests.length, 2);
     open.mock.restore();
     assert.equal((await call(index)).json().availability.available, true);
-    const restored = await call('authoring/turn', { ...next, conversationId: null, target: { kind: 'create' },
-      expectedVersion: 0, expectedDraftVersion: 0 });
+     const earlier = admitTaskDraft(db, createLifecycle(db));
+     const restored = await call('authoring/turn', { ...next, conversationId: earlier.conversationId,
+       target: { kind: 'resume', extensionId: earlier.extensionId }, expectedVersion: 0, expectedDraftVersion: 0 });
     assert.equal(restored.statusCode, 202);
     assert.equal((await settled(call, restored.json().conversation.id)).status, 'IDLE');
     assert.equal(providers, 2);
-    assert.equal(fake.requests.length, 7);
-    const changed = await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source, draftVersion: 2 });
+    assert.equal(fake.requests.length, 3);
+    const changed = await call(extensionPath(db, 'compile'), { hookId: TASK_HOOK, source, draftVersion: 1 });
     assert.equal(changed.statusCode, 200);
     const historical = (await call('authoring/conversations/' + current.id)).json();
     assert.equal(historical.review.eligible, false);
@@ -547,13 +532,15 @@ test('cancel remains CANCELLING and blocks replacement until an ignoring compile
   const entered = deferred(), release = deferred();
   const db = openData(':memory:');
   const lifecycle = createLifecycle(db, { compiler: { compile: async () => { entered.resolve(); await release.promise; return { artifact, diagnostics: [] }; } } });
-  const fake = wire('openai', () => ({ name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 0 } }));
+  const fake = wire('openai', () => ({ name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: source,
+    cases: [taskCases()[0].bytes.toString()], expectedDraftVersion: 0, summary: 'Check one independent example.' } }));
   const service = createAuthoringService({ db, lifecycle, config: configFor(), fetchImpl: fake.fetchImpl });
   t.after(async () => { release.resolve(); await service.close(); db.close(); });
   const initial = lifecycle.state('maya', itemId(lifecycle, 'maya'));
   const started = await service.turn('maya', input(db, 'cancel-compile'), lease('session'));
+  const current = await service.wait('maya', started.conversation.id);
+  service.confirm('maya', current.id, { runId: current.runId, expectedVersion: current.version, offerDigest: current.offer.digest }, lease('session'));
   await entered.promise;
-  const current = started.conversation;
   assert.equal(service.cancel('maya', current.id, { runId: current.runId, expectedVersion: current.version }, lease('session')).status, 'CANCELLING');
   await tick(); await tick();
   assert.equal(service.read('maya', current.id).status, 'CANCELLING');
@@ -602,24 +589,20 @@ test('independent wrong expectation remains byte-exact and review-ineligible wit
   value.expect.outcome.result.status = 'NO_OP';
   value.expect.consumption.result.status = 'NO_OP';
   const original = '\n' + JSON.stringify(value, null, 2) + '\n';
-  const fake = wire('openai', (body, index) => {
-    const prior = lastTool('openai', body);
-    if (index === 0) return { name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 0 } };
-    if (index === 1) return { name: 'propose_scenarios', arguments: { revisionId: prior.result.revisionId, cases: [original], expectedDraftVersion: 1 } };
-    if (index === 2) return { name: 'simulate_draft', arguments: { revisionId: prior.result.revisionId, expectedDraftVersion: 2 } };
-    assert.equal(index, 3);
-    return { name: 'offer_review', arguments: { summary: 'The independent expected result did not pass. Review the mismatch.' } };
-  });
+  const fake = wire('openai', () => ({ name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: source,
+    cases: [original], expectedDraftVersion: 0, summary: 'Check the independent example.' } }));
   const { db, service, lifecycle } = direct(t, { fetchImpl: fake.fetchImpl });
   const selection = lifecycle.state('maya', itemId(lifecycle, 'maya')).selection;
   const started = await service.turn('maya', input(db, 'wrong-expectation'), lease('session'));
+  const offered = await service.wait('maya', started.conversation.id);
+  service.confirm('maya', offered.id, { runId: offered.runId, expectedVersion: offered.version, offerDigest: offered.offer.digest }, lease('session'));
   const result = await service.wait('maya', started.conversation.id);
   assert.equal(result.status, 'REVIEW_AVAILABLE'); assert.equal(result.review.eligible, false);
   const proof = lifecycle.evidence('maya', result.review.evidenceId, itemId(lifecycle, 'maya'));
   assert.equal(proof.passed, false); assert.equal(proof.reports[0].report.status, 'FAIL');
   assert.deepEqual(lifecycle.source('maya', result.review.revisionId, itemId(lifecycle, 'maya')).cases, [original]);
-  assert.equal(fake.requests.length, 4); assert.equal(rowState(db).counts.compiles, 1);
-  assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 2);
+  assert.equal(fake.requests.length, 1);
+  assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 1);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   assert.deepEqual(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection, selection);
 });
@@ -679,7 +662,7 @@ test('an individually oversized terminal reply fails BYTE_LIMIT without releasin
   assert.equal(calls, 2); assert.equal(reserved(db), config.reserveMicros * 2);
 });
 
-for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lost tool-result checkpoint; old chat retains A and a new revision conversation uses B`, async t => {
+for (const mutation of ['source', 'cases']) test(`a ${mutation} change fences an earlier offer across restart; fresh conversation uses B`, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'keir-authoring-result-')), path = join(directory, 'app.sqlite');
   let db = openData(path), lifecycle = createLifecycle(db, { compiler }), service;
   t.after(async () => { await service?.close(); db.close(); removeFixture(directory); });
@@ -687,30 +670,29 @@ for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lo
   const initial = await lifecycle.compile('maya', { extensionId: itemId(lifecycle, 'maya'), hookId: TASK_HOOK, source, draftVersion: 0 }, () => {});
   const initialSource = lifecycle.source('maya', initial.revisionId, initial.extension.id);
   const fake = wire('openai', (body, index) => {
-    if (index === 0) return mutation === 'source'
-      ? { name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 1 } }
-      : { name: 'propose_scenarios', arguments: { revisionId: initial.revisionId, cases: [taskCases()[0].bytes.toString()], expectedDraftVersion: 1 } };
+    if (index === 0) return { name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: source,
+      cases: [taskCases()[0].bytes.toString()], expectedDraftVersion: 1, summary: 'Check a proposed draft.' } };
     assert.equal(body.input.length, 1, 'Explicit recovery starts a fresh native chain using current host handles.');
     return { name: 'ask_clarification', arguments: { question: 'Confirm the saved current draft.' } };
   });
-  let faulted = false;
-  service = createAuthoringService({ db, lifecycle, config: configFor(), fetchImpl: fake.fetchImpl, checkpointFault: point => {
-    if (point.stage === 'beforeCommit' && (point.phase === 'RESULT' && point.ordinal === 2 || faulted && point.phase === 'TERMINAL')) {
-      faulted = true; throw Error('synthetic lost tool result');
-    }
-  } });
+  service = createAuthoringService({ db, lifecycle, config: configFor(), fetchImpl: fake.fetchImpl });
   const started = await service.turn('maya', input(db, 'mutate', { expectedDraftVersion: 1 }), lease('old-session'));
   const stopped = await service.wait('maya', started.conversation.id);
-  assert.equal(stopped.code, 'CHECKPOINT_UNCERTAIN');
+  assert.equal(stopped.status, 'AWAITING_USER');
+  const confirm = { runId: stopped.runId, expectedVersion: stopped.version, offerDigest: stopped.offer.digest };
+  if (mutation === 'source') await lifecycle.compile('maya', { extensionId: initial.extension.id, hookId: TASK_HOOK, source, draftVersion: 1 }, () => {});
+  else await lifecycle.proposeScenarios('maya', { extensionId: initial.extension.id, revisionId: initial.revisionId,
+    cases: [taskCases()[0].bytes.toString()], draftVersion: 1 }, () => {});
+  assert.throws(() => service.confirm('maya', stopped.id, confirm, lease('old-session')), { code: 'STALE_DRAFT' });
   const currentB = lifecycle.state('maya', itemId(lifecycle, 'maya')), beforeRestart = rowState(db), held = reserved(db);
   assert.equal(currentB.draftVersion, 2); assert.notEqual(currentB.revisionId, initial.revisionId);
-  assert.equal(beforeRestart.handles.revisionId, initial.revisionId, 'Lost result preserves the prior durable A handle.');
-  assert.equal(dispatches(db, stopped.id).at(-1).outcome, 'UNKNOWN');
+  assert.equal(beforeRestart.handles.revisionId, initial.revisionId);
   await service.close(); db.close();
   db = openData(path); lifecycle = createLifecycle(db, { compiler });
   service = createAuthoringService({ db, lifecycle, config: configFor(), fetchImpl: fake.fetchImpl });
   const recovered = service.read('maya', stopped.id);
   assert.equal(recovered.draft.revisionId, initial.revisionId); assert.equal(recovered.draft.draftVersion, 1);
+  assert.equal(recovered.offer, null);
   assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).revisionId, currentB.revisionId);
   assert.equal(fake.requests.length, 1); assert.equal(reserved(db), held);
   await assert.rejects(service.turn('maya', input(db, 'stale', { conversationId: stopped.id, expectedVersion: 1, expectedDraftVersion: 1 }), lease('new-session')), { code: 'STALE_DRAFT' });
@@ -731,76 +713,56 @@ for (const mutation of ['source', 'cases']) test(`${mutation} commit survives lo
 });
 
 for (const provider of ['openai', 'anthropic']) for (const defect of ['duplicate-key', 'missing-error-path', 'duplicate-id'])
-test(`${provider} repairs ${defect} native scenario rejection without changing original expectations or limits`, async t => {
+test(`${provider} rejects ${defect} before saving and accepts a separately confirmed corrected suite`, async t => {
   const cases = taskCases().map(item => '\n ' + item.bytes.toString() + '\n');
   const malformed = cases.map(text => JSON.parse(text)).find(row => row.id === 'missing-task'); delete malformed.expect.outcome.error.path;
   const invalid = defect === 'duplicate-key' ? ['{"id":"private-hostile-instruction",' + cases[0].trim().slice(1)]
     : defect === 'missing-error-path' ? [cases[0], JSON.stringify(malformed)] : [cases[0], cases[0]];
-  let compiled, saved, db, service, lifecycle;
-  const fake = wire(provider, (body, index) => {
-    if (index === 0) return { name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 0 } };
-    const prior = lastTool(provider, body);
-    if (index === 1) {
-      compiled = prior.result;
-      return { name: 'propose_scenarios', arguments: { revisionId: compiled.revisionId, cases: invalid, expectedDraftVersion: 1 } };
-    }
-    if (index === 2) {
-      assert.deepEqual(prior, { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
-        diagnostics: [{ code: defect === 'duplicate-id' ? 'DUPLICATE_SCENARIO_ID' : 'INVALID_SCENARIO',
-          path: defect === 'duplicate-key' ? '/cases/0' : '/cases/1' }], currentDraft: compiled, remainingAttempts: 2 });
-      assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draft.id, compiled.revisionId);
-      assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draftVersion, 1); assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).suiteDigest, null);
-      assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 1);
-      assert.equal(db.prepare('SELECT suite FROM extension_authored').get().suite, null);
-      assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
-      assert.equal(reserved(db), configFor(provider).reserveMicros + fixtureEstimate(provider) * 2);
-      return { name: 'propose_scenarios', arguments: { revisionId: compiled.revisionId, cases, expectedDraftVersion: 1 } };
-    }
-    if (index === 3) {
-      saved = prior.result; assert.equal(saved.draftVersion, 2); assert.notEqual(saved.revisionId, compiled.revisionId);
-      return { name: 'simulate_draft', arguments: { revisionId: saved.revisionId, expectedDraftVersion: 2 } };
-    }
-    assert.equal(index, 4); assert.ok(prior.result.summary.cases.every(row => row.status === 'PASS'));
-    return { name: 'offer_review', arguments: { summary: 'Review the independently expected examples.' } };
-  });
-  ({ db, service, lifecycle } = direct(t, { config: configFor(provider), fetchImpl: fake.fetchImpl }));
+  const fake = wire(provider, (_body, index) => ({ name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: source,
+    cases: index ? cases : invalid, expectedDraftVersion: 0, summary: 'Check the independent examples.' } }));
+  const { db, service, lifecycle } = direct(t, { config: configFor(provider), fetchImpl: fake.fetchImpl });
   const selection = lifecycle.state('maya', itemId(lifecycle, 'maya')).selection;
   const started = await service.turn('maya', input(db, 'scenario-repair'), lease('session'));
-  const finished = await service.wait('maya', started.conversation.id);
+  const confirm = async ({ id, runId, version, offer }) => {
+    service.confirm('maya', id, { runId, expectedVersion: version, offerDigest: offer.digest }, lease('session'));
+    return service.wait('maya', id);
+  };
+  const rejected = await confirm(await service.wait('maya', started.conversation.id));
+  assert.equal(rejected.code, 'PERSONAL_OFFER_INVALID');
+  assert.equal(rejected.confirmation, 'unsaved');
+  assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 0);
+  assert.equal(db.prepare('SELECT count(*) n FROM extension_evidence').get().n, 0);
+  assert.doesNotMatch(JSON.stringify(rejected), /private-hostile-instruction/);
+  const revised = await service.turn('maya', input(db, 'scenario-corrected', { conversationId: rejected.id, expectedVersion: rejected.version }), lease('session'));
+  const finished = await confirm(await service.wait('maya', revised.conversation.id));
   assert.equal(finished.status, 'REVIEW_AVAILABLE'); assert.equal(finished.review.eligible, true); assertDto(finished);
-  assert.deepEqual(lifecycle.source('maya', saved.revisionId, itemId(lifecycle, 'maya')).cases, cases);
-  assert.equal(lifecycle.source('maya', saved.revisionId, itemId(lifecycle, 'maya')).source, source);
-  assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draftVersion, 2);
-  assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 2);
+  assert.deepEqual(lifecycle.source('maya', finished.review.revisionId, itemId(lifecycle, 'maya')).cases, cases);
+  assert.equal(lifecycle.source('maya', finished.review.revisionId, itemId(lifecycle, 'maya')).source, source);
+  assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draftVersion, 1);
+  assert.equal(db.prepare('SELECT count(*) n FROM extension_authored').get().n, 1);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_approvals').get().n, 0);
   assert.deepEqual(lifecycle.state('maya', itemId(lifecycle, 'maya')).selection, selection);
-  assert.deepEqual(rowState(db).counts, { calls: 5, tools: 5, compiles: 1, simulations: 1, clarifications: 0, inputs: 1 });
-  assert.equal(fake.requests.length, 5); assert.equal(reserved(db), fixtureEstimate(provider) * 5);
+  assert.equal(fake.requests.length, 2); assert.equal(reserved(db), fixtureEstimate(provider) * 2);
 });
 
-test('only allowlisted scenario admission diagnostics are repairable; other host failures stay terminal', async t => {
-  const valid = { code: 'INVALID_SCENARIO', path: '/cases/0' };
-  for (const [status, diagnostics, expected] of [
-    [400, undefined, 'TOOL_FAILED'], [400, [{ ...valid, code: 'SETUP_ERROR' }], 'TOOL_FAILED'],
-    [400, [{ ...valid, code: 'CONSUMER_ERROR' }], 'TOOL_FAILED'], [400, [{ ...valid, path: '/cases/8' }], 'TOOL_FAILED'],
-    [400, [{ ...valid, path: '/private-hostile-instruction' }], 'TOOL_FAILED'], [400, [{ ...valid, message: 'private-hostile-instruction' }], 'TOOL_FAILED'],
-    [400, [], 'TOOL_FAILED'], [400, [valid, valid], 'TOOL_FAILED'], [500, [valid], 'TOOL_FAILED'],
-    [401, [valid], 'TOOL_FAILED'], [422, [valid], 'TOOL_FAILED'], [409, [valid], 'STALE_DRAFT'], [499, [valid], 'CANCELLED'], [429, [valid], 'AI_BUSY'],
-  ]) {
-    const fake = wire('openai', (body, index) => {
-      if (index === 0) return { name: 'compile_draft', arguments: { sourceJson: source, expectedDraftVersion: 0 } };
-      assert.equal(index, 1);
-      return { name: 'propose_scenarios', arguments: { revisionId: lastTool('openai', body).result.revisionId, cases: ['{}'], expectedDraftVersion: 1 } };
-    });
+test('host preparation failures do not expose raw diagnostics or automatically retry', async t => {
+  for (const [status, expected] of [[400, 'PERSONAL_OFFER_INVALID'], [422, 'PERSONAL_OFFER_INVALID'], [500, 'CHECKPOINT_UNCERTAIN']]) {
+    const fake = wire('openai', () => ({ name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: source,
+      cases: ['{}'], expectedDraftVersion: 0, summary: 'Inert proposal.' } }));
     const { db, service, lifecycle } = direct(t, { fetchImpl: fake.fetchImpl });
-    lifecycle.proposeScenarios = () => { throw Object.assign(new AppError(status, 'private-hostile-instruction'), { diagnostics }); };
+    lifecycle.compile = () => { throw Object.assign(new AppError(status, 'private-hostile-instruction'), {
+      diagnostics: [{ code: 'INVALID_SCENARIO', path: '/private-hostile-instruction' }],
+    }); };
     const started = await service.turn('maya', input(db, 'terminal-scenario'), lease('session'));
+    const offered = await service.wait('maya', started.conversation.id);
+    const decision = { runId: offered.runId, expectedVersion: offered.version, offerDigest: offered.offer.digest };
+    service.confirm('maya', offered.id, decision, lease('session'));
     const finished = await service.wait('maya', started.conversation.id);
-    assert.equal(finished.code, expected); assert.equal(finished.status, expected === 'CANCELLED' ? 'CANCELLED' : 'BLOCKED');
+    assert.equal(finished.code, expected); assert.equal(finished.status, 'BLOCKED');
     assert.equal(JSON.stringify(finished).includes('private-hostile-instruction'), false);
-    assert.equal(fake.requests.length, 2); assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draftVersion, 1);
-    assert.equal(db.prepare('SELECT suite FROM extension_authored').get().suite, null);
-    assert.equal(reserved(db), fixtureEstimate('openai') * 2);
+    assert.equal(service.confirm('maya', offered.id, decision, lease('session')).confirmation, 'unsaved');
+    assert.equal(fake.requests.length, 1); assert.equal(lifecycle.state('maya', itemId(lifecycle, 'maya')).draftVersion, 0);
+    assert.equal(reserved(db), fixtureEstimate('openai'));
   }
 });
 

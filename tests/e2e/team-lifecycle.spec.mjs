@@ -6,9 +6,10 @@ import { createTeamRuntime, installTeamRevision } from '../../src/team-runtime.m
 import { createTeamCapability } from '../../src/team-capability.mjs';
 import { taskService } from '../../src/data.mjs';
 import { randomUUID } from 'node:crypto';
+import { seedEarlierTeamDiscussion } from '../fixtures/task-authoring.mjs';
 const scope = page => page.getByLabel('Personal or Team project', { exact: true });
 
-async function setup(page, origin) {
+async function setup(page, { origin, db }) {
   await page.goto(origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await navigate(page, 'Customizations');
@@ -30,13 +31,14 @@ async function setup(page, origin) {
   await dialog.getByRole('button', { name: 'Add member', exact: true }).click();
   await expect(dialog.getByText('Leo · Member', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
+  seedEarlierTeamDiscussion(db, project.id);
   await studio(page);
   return { project, personalId };
 }
 async function studio(page) {
   await navigate(page, 'Customizations');
-  await page.getByRole('button', { name: /^(Open Studio|New customization)$/ }).click();
-  await expect(page.getByRole('heading', { name: 'Customization Studio', exact: true })).toBeVisible();
+  await earlierTeamWork(page);
+  await expect(page.getByRole('heading', { name: 'Saved Team history and controls', exact: true })).toBeVisible();
 }
 async function check(page, fixture, project, version) {
   // Exercise existing saved revisions in Studio without reviving the scripted authoring form.
@@ -70,7 +72,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const fixture = await startAuthoringFixture({ unconfigured: true });
     try {
       await page.setViewportSize(viewport);
-      const { project, personalId } = await setup(page, fixture.origin);
+      const { project, personalId } = await setup(page, fixture);
       await check(page, fixture, project, 1);
       const currentUse = page.getByRole('region', { name: 'Review and current use', exact: true });
       await expect(currentUse).toContainText('Nothing is on for new tasks.');
@@ -140,7 +142,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const fixture = await startAuthoringFixture({ unconfigured: true });
     try {
       await page.setViewportSize(viewport);
-      const { project } = await setup(page, fixture.origin);
+      const { project } = await setup(page, fixture);
       let entered, release;
       const started = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
       await page.route(`**/api/projects/${project.id}/capability/evidence/*`, async route => {
@@ -161,7 +163,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(first.generation).toBe(1);
       teamProjectService(fixture.db).setSelection('maya', project.id, null);
       await page.reload();
-      await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+      await earlierTeamWork(page);
       await page.getByRole('button', { name: 'Check saved action', exact: true }).click();
       const saved = page.getByRole('region', { name: 'Saved Team action', exact: true });
       await expect(saved).toContainText('That activation is historical. Current use has changed');
@@ -206,7 +208,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const fixture = await startAuthoringFixture({ unconfigured: true });
     try {
       await page.setViewportSize(viewport);
-      const { project, personalId } = await setup(page, fixture.origin);
+      const { project, personalId } = await setup(page, fixture);
       const currentUse = page.getByRole('region', { name: 'Review and current use', exact: true });
       await check(page, fixture, project, 1);
       await expect(page.getByRole('button', { name: 'Turn off for new tasks', exact: true })).toHaveCount(0);
@@ -298,7 +300,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     let runtime;
     try {
       await page.setViewportSize(viewport);
-      const { project } = await setup(page, fixture.origin);
+      const { project } = await setup(page, fixture);
       await check(page, fixture, project, 1);
       const source = fixture.db.prepare('SELECT * FROM team_revisions WHERE project_id=?').get(project.id);
       const manifest = JSON.parse(source.manifest), artifacts = JSON.parse(source.artifacts);
@@ -323,7 +325,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await selectTeam();
       await page.getByRole('button', { name: 'Earlier work 1', exact: true }).click();
       const detail = page.getByRole('dialog', { name: 'Task details' });
-      const versionDisclosure = detail.getByText('Advanced: rule version for this task', { exact: true });
+      const versionDisclosure = detail.getByText('Rule version for this task', { exact: true });
       const reference = detail.getByText('Version reference: legacy-A', { exact: true });
       await expect(reference).toBeHidden();
       await versionDisclosure.click();
@@ -339,6 +341,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await check(page, fixture, project, 2);
       await choice(page, 'Approve this draft', 'approvals');
       const active = await choice(page, 'Turn on for new tasks', 'activations');
+      await page.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
+      await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+      await page.getByText('More', { exact: true }).click();
       await advanced.click();
       const label = 'Version reference: legacy-A · Earlier version · 0 open, 1 unfinished';
       await expect(control.getByRole('option', { name: 'Version reference: legacy-B · Earlier version · 0 open, 1 unfinished', exact: true })).toHaveCount(1);
@@ -372,7 +377,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       teamProjectService(fixture.db).setSelection('maya', project.id, null);
       teamProjectService(fixture.db).setSelection('maya', project.id, active.current.revisionId);
       await page.reload();
-      await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+      await page.getByText('More', { exact: true }).click();
       await page.getByRole('button', { name: 'Check saved action', exact: true }).click();
       const saved = page.getByRole('region', { name: 'Saved Team action', exact: true });
       await expect(saved).toContainText('The chosen version was permanently revoked. Saved work was not undone.');
@@ -381,7 +386,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(saved).not.toContainText(savedControl.operation_id);
       await saved.screenshot({ path: info.outputPath('historical-revocation-current-target.png') });
       await expect(page.getByText('Support diagnostics', { exact: true })).toHaveCount(0);
-      await expect(page.getByRole('region', { name: 'Review and current use' })).toContainText('On for new tasks');
+      await expect(page.getByRole('region', { name: 'Stop current use' })).toBeVisible();
       expect(fixture.db.prepare('SELECT generation FROM team_selections WHERE project_id=?').get(project.id).generation).toBe(nativeSelection.generation + 2);
       expect(posts).toBe(1);
       await switchPerson(page, 'leo');
@@ -396,4 +401,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(fixture.requests).toEqual([]);
     } finally { await runtime?.close(); await page.close(); await fixture.close(); }
   });
+}
+async function earlierTeamWork(page) {
+  await page.getByRole('button', { name: 'Open Studio', exact: true }).click();
+  await page.getByText('More', { exact: true }).click();
+  await page.getByRole('button', { name: 'Open earlier Team work' }).click();
 }

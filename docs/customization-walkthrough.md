@@ -24,6 +24,8 @@ After the proposal is ready, choose **Rename**, enter **Create “Follow up” t
 
 ## 2. Read the proposed behavior
 
+Read the assistant’s offer in chat, then choose **Confirm this behavior** to save and check it. Nothing is saved as a draft or checked before you confirm. Confirmation does not approve the draft or turn it on.
+
 Choose **Proposed behavior** in the subject toolbar or **See proposed change** in the conversation to open full Summary. The heading above the conversation is its saved name. Read **When**, **Only when** and **Then** in Summary: a completed task in **The spring collection** should create **Follow up** in that project. Other projects should create nothing. The original completion stays unchanged.
 
 ![Summary of the proposed follow-up rule, marked Proposed change · Not on, with View simulation.](images/walkthrough/02-summary.png)
@@ -34,7 +36,7 @@ Choose **Proposed behavior** in the subject toolbar or **See proposed change** i
 
 Choose **View simulation** in Summary, or the toolbar's **Simulation** when available. Compare the intended action with what actually happened in each simulated situation. The matching example shows the task that started the rule alongside the separate **Created example task**. Only the recorded values are checked; the preview does not verify every task detail.
 
-Open an individual example to see **Expected** and **Observed** together. **Exact scenario and results** provides its full supporting data. A task completed in **Other project** creates nothing. The remaining examples check an open task and missing, denied or temporarily unavailable task details.
+Open an individual example to see what was expected and what happened. **Advanced: saved evidence** contains the exact supporting data. A task completed in **Other project** creates nothing. The remaining examples check an open task and missing, denied or temporarily unavailable task details.
 
 These are example tasks and simulated service responses: **your real saved tasks are unchanged**. A passing example means its observed result matched its expectation; an unavailable-task example can pass by correctly making no change.
 
@@ -79,7 +81,7 @@ For saved evidence and native execution guarantees, see the [host integration re
 
 ## More examples
 
-Use the same describe → check examples → approve → turn on sequence for these rules. Each has its own checked revision and trigger selection; approving a rule never turns it on.
+Use the same describe → confirm → review examples → approve → turn on sequence for these rules. Each has its own checked revision and trigger selection; approving a rule never turns it on.
 
 ### Avoid another follow-up
 

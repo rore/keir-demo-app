@@ -41,22 +41,13 @@ function wireReply(provider, name, args, text, id) {
       { type: 'tool_use', id, name, input: args }] : [{ type: 'text', text }], usage: { input_tokens: 10, output_tokens: 5 } };
   return new Response(JSON.stringify(raw), { headers: { 'content-type': 'application/json' } });
 }
-function scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest, intentResolutions) {
+function scriptedTransport(provider, metadata, requests, semanticMismatch, resumeRequest, turnPlan) {
   const { question, offerText } = metadata;
   return async (url, init) => {
     assert.equal(url, provider === 'openai' ? 'https://api.openai.com/v1/responses' : 'https://api.anthropic.com/v1/messages');
     assert.equal(init.redirect, 'error');
     const body = JSON.parse(init.body), history = nativeHistory(provider, body);
-    if (body.tools.length === 1 && body.tools[0].name === 'resolve_intent') {
-      const next = intentResolutions.shift();
-      assert.ok(next, 'Supply the explicit scripted intent sequence; the fixture never classifies natural text.');
-      const args = typeof next === 'string' ? { intent: next, question: '' } : next;
-      assert.ok(['discuss', 'prepare', 'clarify'].includes(args.intent));
-      assert.equal(history.calls.length, 0, 'Resolution starts without native continuation.');
-      requests.push(Object.freeze({ callId: 'synthetic-intent', name: 'resolve_intent', intent: args.intent }));
-      return wireReply(provider, 'resolve_intent', args, '', 'synthetic-intent');
-    }
-    assert.equal(body.tools.some(tool => /approve|activate|select/.test(tool.name)), false);
+    assert.equal(body.tools.some(tool => /resolve_intent|compile_draft|simulate_draft|approve|activate|select/.test(tool.name)), false);
     assert.equal(history.reasoning.length, history.calls.length, 'Native reasoning must survive continuation.');
     for (const output of history.outputs) assert.ok(history.calls.some(call => call.id === output.id), 'Tool results retain their native call IDs.');
     const previous = history.calls.at(-1);
@@ -65,72 +56,53 @@ function scriptedTransport(provider, metadata, requests, semanticMismatch, resum
     const projects = discovery?.projects?.projects;
     const project = projects?.find(project => project.id === metadata.projectId);
     if (projects) assert.ok(project, 'The requested customer project must be discovered; never substitute the first project.');
-    const editing = metadata.missingDue && discovery?.conversationContext.messages.at(-1)?.text === metadata.editRequest;
+    const input = history.users[0]?.content;
+    const envelope = input && JSON.parse(provider === 'openai' ? input : input.find(part => part.type === 'text').text);
+    const transcript = envelope?.transcript?.messages ?? [], currentText = envelope?.currentUserMessage;
+    const editing = metadata.missingDue && currentText === metadata.editRequest;
     const journey = metadata.missingDue ? { ...metadata, ...(editing && { source: metadata.editedSource, cases: metadata.editedCases }) }
       : project ? (metadata.tagNotes ? taskTagNotesFixture : metadata.conditionalFollowUp ? conditionalFollowUpFixture : taskCustomizationFixture)({ projectId: project.id, title: metadata.title,
       otherProjectId: metadata.otherProjectId }) : metadata;
     const { source, cases, wrongSource, projectId } = journey.metadata ?? journey;
     let name, args, text;
-    if (!previous) { name = 'discover_catalog'; args = {}; }
+    const proposal = (sourceJson, summary) => ({
+      hookId: metadata.hookId ?? TASK_HOOK, sourceJson, cases, summary, expectedDraftVersion: discovery.currentDraft.draftVersion,
+    });
+    if (!previous) {
+      const next = turnPlan.shift();
+      if (next?.intent === 'clarify') {
+        name = 'ask_clarification'; args = { question: next.question };
+      } else { name = 'discover_catalog'; args = {}; }
+    }
     else if (previous.name === 'discover_catalog' && semanticMismatch) {
       const discovered = output.result;
       assert.ok(discovered.projects.projects.some(project => project.id === projectId), 'The test source uses an actually discovered owner-scoped project.');
       const repairing = discovered.currentProposal?.source === wrongSource;
       if (repairing) {
         assert.deepEqual(discovered.currentProposal.cases, cases, 'Repair keeps the original independent scenarios.');
-        assert.ok(discovered.conversationContext.messages.some(message => message.role === 'assistant' && message.text === mismatchText),
+        assert.ok(transcript.some(message => message.role === 'host' && /some examples did not pass/.test(message.text)),
           'The same discussion retains the failed review before an explicit correction.');
-        assert.equal(discovered.conversationContext.messages.at(-1).role, 'user');
-        assert.match(discovered.conversationContext.messages.at(-1).text, /correct/i);
-        assert.match(JSON.stringify(history.users.at(-1).content), /correct/i, 'Only an explicit correction starts the repair.');
+        assert.match(currentText, /correct/i, 'Only an explicit correction starts the repair.');
       }
-      name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: repairing ? source : wrongSource, expectedDraftVersion: discovered.currentDraft.draftVersion };
+      name = 'offer_proposal'; args = proposal(repairing ? source : wrongSource, `After completion in ${metadata.projectName}, create ${metadata.title}; other projects create nothing.`);
     }
     else if (previous.name === 'discover_catalog') {
-      const discovered = output.result, messages = discovered.conversationContext.messages;
+      const discovered = output.result;
       assert.ok(discovered.projects.projects.some(project => project.id === projectId));
-      const asked = messages.findLastIndex(message => message.role === 'assistant' && message.text === question);
+      const asked = transcript.findLastIndex(message => message.role === 'assistant' && message.text === question);
       if (asked < 0) { name = 'ask_clarification'; args = { question }; }
       else {
         assert.equal(history.users.length, 1, 'An explicit turn uses a fresh native chain.');
-        assert.ok(asked < messages.length - 1, 'The saved question precedes the explicit answer.');
-        assert.equal(messages.at(-1).role, 'user');
-        const input = history.users[0].content;
-        const providerText = provider === 'openai' ? input : input.find(part => part.type === 'text').text;
-        const currentText = messages.at(-1).text;
-        assert.equal(providerText === currentText ? providerText : JSON.parse(providerText).currentUserMessage, currentText);
-        if (/^(?:confirmed|yes)\b/i.test(messages.at(-1).text)) {
-          name = 'compile_draft'; args = { hookId: metadata.hookId ?? TASK_HOOK, sourceJson: metadata.missingDue || metadata.conditionalFollowUp || metadata.tagNotes ? source : '{', expectedDraftVersion: discovered.currentDraft.draftVersion };
+        if (/^(?:confirmed|yes)\b/i.test(currentText)) {
+          name = 'offer_proposal'; args = proposal(source, editing ? metadata.editedOfferText : offerText);
         } else if (resumeRequest && currentText === resumeRequest) {
           assert.equal(discovered.currentProposal.source, source);
           assert.deepEqual(discovered.currentProposal.cases, cases);
-          assert.ok(messages.some(message => message.role === 'assistant' && message.text === offerText));
-          assert.equal(messages.at(-2).text, metadata.explanation);
+          assert.ok(transcript.some(message => message.role === 'assistant' && message.text === offerText));
+          assert.equal(transcript.at(-1).text, metadata.explanation);
           name = 'offer_review'; args = { summary: metadata.resumedOffer };
         } else text = metadata.explanation;
       }
-    } else if (previous.name === 'compile_draft' && output.result.diagnostics) {
-      assert.equal(output.result.diagnostics[0].code, 'SYNTAX_INVALID', 'The real compiler must reject the malformed candidate.');
-      name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: source, expectedDraftVersion: previous.arguments.expectedDraftVersion };
-    } else if (previous.name === 'compile_draft') {
-      assert.equal(output.result.suiteDigest, null);
-      name = 'propose_scenarios'; args = { revisionId: output.result.revisionId, cases, expectedDraftVersion: output.result.draftVersion };
-    } else if (previous.name === 'propose_scenarios') {
-      assert.notEqual(output.result.revisionId, previous.arguments.revisionId, 'Scenarios must create a new revision.');
-      name = 'simulate_draft'; args = { revisionId: output.result.revisionId, expectedDraftVersion: output.result.draftVersion };
-    } else if (previous.name === 'simulate_draft') {
-      assert.equal(output.result.revisionId, previous.arguments.revisionId);
-      assert.equal(output.result.draftVersion, previous.arguments.expectedDraftVersion);
-      assert.ok(output.result.evidenceId);
-      if (semanticMismatch) {
-        const nonmatch = output.result.summary.cases.find(item => item.id === 'other-project');
-        assert.deepEqual(nonmatch.expected.createdTasks, []);
-        const wrong = history.calls.findLast(item => item.name === 'compile_draft').arguments.sourceJson !== source;
-        assert.equal(nonmatch.actual.observed.effect, wrong ? 'NOT_OBSERVED' : 'NONE');
-        assert.equal(nonmatch.status, wrong ? 'FAIL' : 'PASS');
-        assert.equal(nonmatch.mismatches.length > 0, wrong);
-        name = 'offer_review'; args = { summary: wrong ? mismatchText : offerText };
-      } else { name = 'offer_review'; args = { summary: editing ? metadata.editedOfferText : offerText }; }
     } else throw new Error('The synthetic fixture supports one review journey per explicit turn.');
     const id = 'synthetic-call-' + (history.calls.length + 1);
     requests.push(Object.freeze({ callId: id, name: name ?? 'text' }));
@@ -151,7 +123,6 @@ export async function startAuthoringFixture({ provider = 'openai', port, unconfi
   assert.ok(['openai', 'anthropic'].includes(provider), 'Choose a supported synthetic protocol.');
   port ??= await unusedLoopbackPort();
   assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, 'Choose a loopback port between 1 and 65535.');
-  // Finite offline allowance includes the separately accounted intent-resolution calls.
   const maxUsd = provider === 'openai' ? missingDue ? '10' : '5'
     : missingDue ? '6' : semanticMismatch ? '3.2' : '3';
   const config = readAuthoringConfig(unconfigured ? {} : { KEIR_AI_PROVIDER: provider, KEIR_AI_MODEL: provider === 'openai' ? 'gpt-5.6-terra' : 'claude-haiku-5-5',

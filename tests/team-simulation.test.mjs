@@ -119,7 +119,7 @@ test('empty initialization rejects file paths before open and never seeds ordina
   try {
     assert.equal(db.prepare('SELECT count(*) AS n FROM users').get().n, 0);
     assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get().n, 0);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 19);
+     assert.equal(db.prepare('PRAGMA user_version').get().user_version, 24);
   } finally { db.close(); }
 });
 

@@ -28,17 +28,22 @@ test('authoring discovers and recompiles an authentic older model without migrat
       const output = JSON.parse(request.toolResult.output); assert.equal(output.ok, true);
       if (!discovery) {
         discovery = output.result;
-        return { calls: [{ id: 'compile', name: 'compile_draft', arguments: { hookId: 'TaskBeforeCreate', sourceJson: fixture.source,
-          expectedDraftVersion: discovery.currentDraft.draftVersion } }], text: '', usage };
+         return { calls: [{ id: 'offer', name: 'offer_proposal', arguments: { hookId: 'TaskBeforeCreate', sourceJson: fixture.source,
+           cases: fixture.cases, expectedDraftVersion: discovery.currentDraft.draftVersion, summary: 'Require notes for high-priority new tasks.' } }], text: '', usage };
       }
       return { calls: [], text: 'The edited draft needs its own checked examples and approval.', usage };
     },
   }) });
   t.after(async () => { await service.close(); db.close(); });
-  const { conversation } = await service.turn('maya', { conversationId: null, operationId: 'retained-model-authoring',
+   const lease = { sessionId: 'retained-authoring', current: () => true };
+   const { conversation } = await service.turn('maya', { conversationId: null, operationId: 'retained-model-authoring',
     text: 'Require notes for high-priority new tasks instead.', expectedVersion: 0, expectedDraftVersion: before.draftVersion,
-    target: { kind: 'revise', extensionId, baseRevisionId: before.draft.id, selectionGeneration: before.selection.generation } }, { sessionId: 'retained-authoring', current: () => true });
-  assert.equal((await service.wait('maya', conversation.id)).status, 'IDLE');
+     target: { kind: 'revise', extensionId, baseRevisionId: before.draft.id, selectionGeneration: before.selection.generation } }, lease);
+   const offered = await service.wait('maya', conversation.id);
+   assert.equal(offered.status, 'AWAITING_USER');
+   assert.equal(lifecycle.state('maya', extensionId).draft.id, before.draft.id);
+   service.confirm('maya', offered.id, { runId: offered.runId, expectedVersion: offered.version, offerDigest: offered.offer.digest }, lease);
+   assert.equal((await service.wait('maya', conversation.id)).status, 'REVIEW_AVAILABLE');
   assert.deepEqual([discovery.dcm.format, discovery.source, discovery.scenario, discovery.compiler],
     ['keir-dcm/3', 'keir/2', 'keir-scenario/4', 'keir-compiler-java/0.5.0']);
   assert.equal(discovery.currentProposal.source, oldSource.source);

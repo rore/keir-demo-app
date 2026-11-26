@@ -13,14 +13,14 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
   mkdirSync('build/core-040/screens',{recursive:true});
   try {
     await page.goto(f.origin);await page.getByRole('button',{name:/^Continue as Maya/}).click();
-    await navigate('Customizations');await button('New customization').click();
-    await button('Avoid another follow-up',ui).click();
-    await expect(ui.getByLabel('Message to Daymark assistant',{exact:true})).toHaveValue(/high-priority/);
+    await navigate('Customizations'); await openEarlierPersonalEditor(page, f);
     const nativeBefore=f.db.prepare('SELECT * FROM tasks ORDER BY id').all();
     await send(`When a high-priority task in ${f.metadata.projectName} is completed, create Follow up in the same project only if no task with that exact title is already open there.`);
     await expect(ui.getByText(f.metadata.question,{exact:true})).toBeVisible();
     await send('Confirmed: only high-priority completions in that project. Other priorities and projects should do nothing. An unavailable lookup must not create anything.');
     await expect(ui.getByText(f.metadata.offerText,{exact:true})).toBeVisible({timeout:20_000});
+    await ui.getByRole('button', { name: 'Confirm this behavior', exact: true }).click();
+    await expect(ui.getByText(/^The draft was saved and its examples passed/)).toBeVisible();
     const id=new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     const session=await(await page.request.get(f.origin+'/api/session')).json();
     const read=async path=>{const r=await page.request.get(f.origin+'/api/'+path,{headers:{'x-session-context':session.contextToken}});expect(r.ok(),await r.text()).toBe(true);return r.json();};
@@ -87,3 +87,4 @@ test('conditional follow-up is authored, checked, approved, activated and saved 
     expect((await state()).selection.revision.id).toBe(current.review.revisionId);expect(f.requests.length).toBe(callCount);expect(errors).toEqual([]);
   } finally {await f.close();}
 });
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

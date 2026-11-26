@@ -8,6 +8,7 @@ export class AuthoringError extends Error {
 export const PROVIDER_REPLY_CODES = Object.freeze([
   'PROVIDER_RESPONSE_INVALID', 'PROVIDER_REPLY_FORMAT', 'PROVIDER_REPLY_INCOMPLETE',
   'PROVIDER_REPLY_PART_UNSUPPORTED', 'PROVIDER_REPLY_TOOL_INVALID', 'PROVIDER_REPLY_USAGE_INVALID',
+  'PROVIDER_REPLY_DECLARED_LIMIT', 'PROVIDER_REPLY_BODY_LIMIT', 'PROVIDER_REPLY_OUTPUT_LIMIT', 'PROVIDER_REPLY_NORMALIZED_LIMIT',
 ]);
 const fail = code => { throw new AuthoringError(code); };
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -33,6 +34,8 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
       || timeoutMs > 30000 || maxBytes > 131072 || maxOutputTokens > 4096
       || !integer(config.maxMicros) || !integer(config.reserveMicros) || !config.reserveMicros) fail('CONFIG_INVALID');
   const provider = config.provider;
+  // Responses can echo large instructions and tool schemas outside model output.
+  const envelopeLimit = provider === 'openai' && maxBytes === 131072 ? 262144 : maxBytes;
   function prepare(request) {
     try {
       const { input, continuation, toolResult, tools, instructions, signal } = request;
@@ -97,7 +100,7 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
         if (response.status !== 200) fail('PROVIDER_UNAVAILABLE');
         if (response.headers?.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') fail('PROVIDER_REPLY_FORMAT');
         const length = response.headers.get('content-length');
-        if (length !== null && Number(length) > maxBytes) fail('BYTE_LIMIT');
+        if (length !== null && Number(length) > envelopeLimit) fail('PROVIDER_REPLY_DECLARED_LIMIT');
         reader = response.body?.getReader();
         if (!reader) fail('PROVIDER_REPLY_FORMAT');
         const chunks = []; let size = 0;
@@ -106,7 +109,7 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
           if (done) break;
           if (!(value instanceof Uint8Array)) fail('PROVIDER_REPLY_FORMAT');
           size += value.byteLength;
-          if (size > maxBytes) fail('BYTE_LIMIT');
+          if (size > envelopeLimit) fail('PROVIDER_REPLY_BODY_LIMIT');
           chunks.push(value);
         }
         let raw;
@@ -118,6 +121,7 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
           if (raw?.status === 'incomplete') fail('PROVIDER_REPLY_INCOMPLETE');
           if (raw?.status !== 'completed' || !Array.isArray(raw.output)) fail('PROVIDER_REPLY_FORMAT');
           native = raw.output;
+          if (bytes(native) > maxBytes) fail('PROVIDER_REPLY_OUTPUT_LIMIT');
           for (const item of native) {
             if (item?.type === 'function_call') {
               let args;
@@ -155,7 +159,7 @@ export function createAuthoringProvider(config, { fetchImpl = globalThis.fetch, 
         const estimate = estimateAuthoringMicros(provider, usage);
         const result = { continuation: { provider, items }, calls, text: text.join('\n'), usage: { inputTokens, outputTokens: usage.output_tokens },
           ...(integer(estimate) && estimate <= config.reserveMicros && { estimatedMicros: estimate }) };
-        if (bytes(result) > 262144) fail('BYTE_LIMIT');
+        if (bytes(result) > 262144) fail('PROVIDER_REPLY_NORMALIZED_LIMIT');
         return result;
       } catch (error) {
         if (combined.aborted) fail(abortCode());

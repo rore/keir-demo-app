@@ -16,7 +16,7 @@ const test = base.extend({
     const port = reservation.address().port;
     await new Promise(resolve => reservation.close(resolve));
     let server;
-    try { server = await start({ directory, port }); await use({ origin: server.origin }); }
+    try { server = await start({ directory, port }); await use(server); }
     finally { await server?.close(); rmSync(directory, { recursive: true, force: true }); }
   },
 });
@@ -83,12 +83,12 @@ async function scriptSetup(page, options = {}) {
   return { calls, state };
 }
 
-async function enterStudio(page, origin, user = 'Maya', beforeNew = () => {}) {
-  await page.goto(origin);
+async function enterStudio(page, demo, user = 'Maya', beforeNew = () => {}) {
+  await page.goto(demo.origin);
   await page.getByRole('button', { name: `Continue as ${user}` }).click();
   await navigate(page, 'Customizations');
   beforeNew();
-  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await openEarlierPersonalEditor(page, demo, { owner: user.toLowerCase() });
   await expect(studio(page)).toBeVisible();
   await expect(authoring(page)).toBeVisible();
 }
@@ -135,7 +135,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     let releaseRead;
     const readGate = new Promise(resolve => { releaseRead = resolve; });
     const { calls } = await scriptSetup(page, { onSetupRead: async calls => { if (calls.setupReads === 1) await readGate; return null; } });
-    await enterStudio(page, demo.origin);
+    await enterStudio(page, demo);
     const ui = studio(page), composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     await composer.fill('Keep this unsent authoring message');
     await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(1);
@@ -258,7 +258,7 @@ test('failed authoring and setup reads expose safe retries without inferring con
       ? { status: 503, body: { message: 'Synthetic setup read outage' } }
       : null,
   });
-  await enterStudio(page, demo.origin, 'Maya', () => { failNextRead = true; });
+  await enterStudio(page, demo, 'Maya', () => { failNextRead = true; });
   const panel = authoring(page), ui = studio(page);
   await expect(panel.getByRole('button', { name: 'Retry status', exact: true })).toBeVisible();
   await expect(ui.getByRole('button', { name: 'Configure', exact: true })).toHaveCount(0);
@@ -287,7 +287,7 @@ test('held setup save disables duplicates and a conflict keeps the previous safe
       return json(route, { message: 'Settings were not saved.' }, 409);
     },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const dialog = await openConfigure(page);
   await dialog.getByLabel('API key', { exact: true }).fill('synthetic-ui-conflict-key');
   await dialog.getByLabel('Shared allowance (USD)', { exact: true }).fill('0.5');
@@ -315,7 +315,7 @@ test('a lost successful setup response is read back but preserves uncertainty wi
       return route.abort('failed');
     },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const dialog = await openConfigure(page), secret = 'synthetic-ui-lost-response-key';
   await dialog.getByLabel('API key', { exact: true }).fill(secret);
   await dialog.getByLabel('Shared allowance (USD)', { exact: true }).fill('0.25');
@@ -340,7 +340,7 @@ test('an owner switch fences a pending setup response and clears the old key fro
       try { await json(route, state.projection); } catch { /* Owner switch may abort the old component request. */ }
     },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const ui = studio(page), dialog = await openConfigure(page), secret = 'synthetic-ui-owner-switch-key';
   await dialog.getByLabel('API key', { exact: true }).fill(secret);
   await dialog.getByLabel('Shared allowance (USD)', { exact: true }).fill('0.75');
@@ -355,15 +355,14 @@ test('an owner switch fences a pending setup response and clears the old key fro
     await expect(dialog).toHaveCount(0);
     release();
     await navigate(other, 'Customizations');
-    await other.getByRole('button', { name: 'New customization', exact: true }).click();
+    await openEarlierPersonalEditor(other, demo, { owner: 'leo' });
     await expect(studio(other)).toBeVisible();
     await page.getByRole('button', { name: /^Continue as Leo/ }).click();
     await navigate(page, 'Customizations');
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await openEarlierPersonalEditor(page, demo, { owner: 'leo' });
     await expect(authoring(page)).toBeVisible();
     await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'leo');
     const conversation = ui.getByRole('log', { name: 'Studio conversation', exact: true });
-    await expect(conversation).toContainText('What would you like Daymark to do for you?');
     await expect(conversation).not.toContainText('Keep this unsaved task title');
     await expect(ui.getByLabel('API key', { exact: true })).toHaveCount(0);
     await noSecretInBrowser(page, secret);
@@ -398,7 +397,7 @@ test('a held old setup recovery read cannot overwrite a reopened successful save
       return null;
     },
   });
-  await enterStudio(page, demo.origin);
+  await enterStudio(page, demo);
   const ui = studio(page), first = await openConfigure(page);
   try {
     await first.getByLabel('API key', { exact: true }).fill('synthetic-first-held-key');
@@ -422,3 +421,4 @@ test('a held old setup recovery read cannot overwrite a reopened successful save
     expect(calls.setupPosts).toHaveLength(2); expect(calls.turns).toHaveLength(0);
   } finally { releaseSave?.(); releaseRead?.(); }
 });
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

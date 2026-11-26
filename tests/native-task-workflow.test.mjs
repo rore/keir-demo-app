@@ -151,7 +151,7 @@ for (const eventCount of [1, 2]) {
       };
       // Start both invocations before awaiting either, allowing their async native reads to precede writes.
       await Promise.all(dispatchers.map(dispatcher => dispatcher.wake()));
-      assert.deepEqual(snapshots, sources.map(() => ({ args: ['Follow-up', owner, destinationProjectId], matches: 0, created: 0 })));
+      assert.deepEqual(snapshots, sources.map(() => ({ args: ['Follow-up', owner, destinationProjectId, 'PERSONAL'], matches: 0, created: 0 })));
       const saved = events.map(event => effects.status(owner, event.event_id));
       const receiptRows = () => db.prepare('SELECT * FROM task_effect_receipts ORDER BY original_key').all();
       const receipts = receiptRows();

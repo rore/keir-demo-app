@@ -20,13 +20,16 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
     try {
       await page.goto(fixture.origin); await page.getByRole('button', { name: /^Continue as Maya/ }).click();
       await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
-      await page.getByRole('button', { name: 'New customization', exact: true }).click();
+      await openEarlierPersonalEditor(page, fixture);
       await expect(studio.getByRole('button', { name: 'Send', exact: true })).toHaveCount(1);
       await expect(studio.getByRole('button', { name: 'Prepare changes', exact: true })).toHaveCount(0);
       await send('Prepare a rule to give new tasks a due date when they do not have one.');
       await expect(studio.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
       await send('Confirmed: every project, only when the new task has no due date. Use exactly 168 hours after addition.');
       await expect(studio.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 30_000 });
+      const confirm = studio.getByRole('button', { name: 'Confirm this behavior', exact: true });
+      await confirm.click();
+      await expect(studio.getByText(/^The draft was saved and its examples passed/)).toBeVisible();
       const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization'); expect(id).toBeTruthy();
       const checked = lifecycle.state('maya', id), originalSelection = checked.selection;
       await openSummary(page);
@@ -51,8 +54,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
       await page.screenshot({ path: info.outputPath('new-messages-before-explicit-return.png') });
       await newMessages.press('Enter');
       await expect(studio.getByText(fixture.metadata.editedOfferText, { exact: true })).toBeVisible({ timeout: 30_000 });
-      await expect(composer).toHaveValue('Keep my next unsent question.');
       await expect(studio.locator('#studio-view-saved')).toBeFocused();
+      await confirm.click();
+      await expect(studio.getByText(/^The draft was saved and its examples passed/)).toHaveCount(2);
+      await expect(composer).toHaveValue('Keep my next unsent question.');
       expect(lifecycle.state('maya', id).selection).toEqual(active);
       await expect(studio.locator('#studio-customization-status')).toHaveText('Earlier version in use');
       await expect(studio.getByLabel('Customization status')).toContainText('Proposed change · Not on');
@@ -84,9 +89,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
       const unsent = 'Keep this unsent question\nabout weekends.'; await composer.fill(unsent);
       const beforeActive = domain(); await studio.locator('#studio-view-active').click();
       const current = studio.getByRole('article', { name: 'Version in use', exact: true });
-      await expect(current.getByLabel('Checked behavior in use', { exact: true })).toContainText('2027-01-07');
-      await expect(current.getByLabel('Checked behavior in use', { exact: true })).toContainText('2027-01-07');
-      await expect(current.getByLabel('Checked behavior in use', { exact: true })).not.toContainText('2027-01-05');
+       await expect(current.getByLabel('Checked behavior in use', { exact: true })).toContainText('Jan 7, 2027');
+       await expect(current.getByLabel('Checked behavior in use', { exact: true })).not.toContainText('Jan 5, 2027');
       await expect(current.getByRole('button', { name: /Approve|Turn on/ })).toHaveCount(0);
       await expect(composer).toHaveValue(unsent); expect(domain()).toEqual(beforeActive);
       await page.screenshot({ path: info.outputPath('restored-active.png') });
@@ -98,8 +102,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 600
       await newMessages.focus(); await newMessages.press('Enter');
       await expect(studio.getByText('Do you want a draft change, or only to discuss it?', { exact: true })).toBeVisible();
       expect(domain()).toEqual(beforeActive);
-      expect(fixture.requests.filter(request => request.name === 'resolve_intent').map(request => request.intent)).toEqual(['prepare', 'prepare', 'prepare', 'discuss', 'clarify']);
+      expect(fixture.requests.map(request => request.name)).toEqual(['discover_catalog', 'ask_clarification',
+        'discover_catalog', 'offer_proposal', 'discover_catalog', 'offer_proposal', 'discover_catalog', 'text', 'ask_clarification']);
       expect(errors).toEqual([]);
     } finally { await page.close(); await fixture.close(); }
   });
 }
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';
