@@ -290,6 +290,7 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
   const posts = [];
   let releaseAccepted;
   const holdAccepted = new Promise(resolve => { releaseAccepted = resolve; });
+  let releaseStatus;
   let acceptedResolve;
   const acceptedSeen = new Promise(resolve => { acceptedResolve = resolve; });
   let acceptedResponse;
@@ -336,14 +337,13 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
 
     // Hold an authenticated Maya status response, change to Sam, and release the stale response afterward.
     await switchPerson(page, 'maya');
-    let releaseStatus;
+    await expect(personSelect(page)).toHaveAttribute('value', 'maya');
+    await page.goto('about:blank'); // Force a fresh document rather than a same-document hash navigation.
     let statusResolve;
     const heldStatus = new Promise(resolve => { releaseStatus = resolve; });
     const statusSeen = new Promise(resolve => { statusResolve = resolve; });
     let heldStatusData;
-    await page.route('**/api/authoring*', async route => {
-      const request = route.request(), url = new URL(request.url());
-      if (request.method() !== 'GET' || url.pathname !== '/api/authoring') return route.continue();
+    await page.route(`${fixture.origin}/api/authoring?extensionId=${encodeURIComponent(extensionId)}`, async route => {
       const response = await route.fetch();
       heldStatusData = { status: response.status(), body: await response.json() };
       statusResolve();
@@ -351,11 +351,11 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
       try { await route.fulfill({ response }); } catch { /* The owner-scoped request may be cancelled on account change. */ }
     }, { times: 1 });
     await page.goto(exactLink);
-    expect(page.url()).toBe(exactLink);
-    await page.reload();
     await statusSeen;
+    await expect(page).toHaveURL(exactLink);
+    await expect(personSelect(page)).toHaveAttribute('value', 'maya');
     expect(heldStatusData.status).toBe(200);
-    expect(heldStatusData.body.conversations.some(item => item.id === conversationId && item.extensionId === extensionId)).toBe(true);
+    expect(heldStatusData.body.current).toMatchObject({ id: conversationId, extensionId });
     await switchPerson(page, 'sam');
     releaseStatus();
     await expect(page.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(0);
@@ -367,6 +367,7 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
     const resumed = studio(page), log = resumed.getByRole('log', { name: 'Studio conversation', exact: true });
     await expect(log.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(1, { timeout: 20_000 });
     await expect(log.getByText(fixture.metadata.question, { exact: true })).toHaveCount(1, { timeout: 20_000 });
+    await expect(page).toHaveURL(`${fixture.origin}/#customization=${encodeURIComponent(extensionId)}`);
     expect(posts).toHaveLength(1);
     expect(posts[0].operationId).toBe(turn.operationId);
     expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
@@ -381,6 +382,6 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
       mayaResumedOriginalConversation: true, postCount: posts.length,
       syntheticProviderTools: fixture.requests.map(item => item.name),
     }, null, 2));
-  } finally { releaseAccepted(); await fixture.close(); }
+  } finally { releaseAccepted(); releaseStatus?.(); await fixture.close(); }
 });
 import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';
