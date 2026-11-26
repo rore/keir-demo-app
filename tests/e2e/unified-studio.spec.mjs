@@ -219,7 +219,19 @@ for (const width of [1440, 390]) test(`one Team conversation to linked task at $
       await expect(latest).toContainText('Yes, leave out Slack.');
       await expect(latest).toBeInViewport({ ratio: 1 });
       const confirm = proposed.getByRole('button', { name: 'Confirm this behavior' });
-      await expect(confirm).toBeInViewport({ ratio: 1 });
+      await expect(confirm).toBeEnabled();
+      // Scroll-to-nearest can round the scroll offset; the visible tap target must still work without scrolling.
+      await expect.poll(() => confirm.evaluate(async button => {
+        const { boundingClientRect: bounds, intersectionRect: visible } = await new Promise(resolve => {
+          const observer = new IntersectionObserver(([entry]) => { observer.disconnect(); resolve(entry); });
+          observer.observe(button);
+        });
+        return {
+          withinOnePixel: visible.left - bounds.left <= 1 && bounds.right - visible.right <= 1 &&
+            visible.top - bounds.top <= 1 && bounds.bottom - visible.bottom <= 1,
+          receivesTap: button.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        };
+      })).toEqual({ withinOnePixel: true, receivesTap: true });
       const composer = page.getByLabel('Message to Daymark assistant');
       expect(await proposed.evaluate(node => Boolean(node.compareDocumentPosition(document.querySelector('#studio-message')) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
       await composer.scrollIntoViewIfNeeded();

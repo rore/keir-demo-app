@@ -1,10 +1,12 @@
 import { test, expect } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
+import { seedEarlierTeamDiscussion } from '../fixtures/task-authoring.mjs';
 import { navigate, switchPerson, openWorkspaceTool } from '../fixtures/workspace-ui.mjs';
 import { teamProjectService } from '../../src/team-native.mjs';
 import { taskService } from '../../src/data.mjs';
 const scope = page => page.getByLabel('Personal or Team project', { exact: true });
+const currentRule = page => page.getByRole('region', { name: 'What’s in use', exact: true });
 
 async function createTeam(page, name) {
   await navigate(page, 'Tasks');
@@ -209,7 +211,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await navigate(page, 'Customizations');
       await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeEnabled();
-      await expect(page.getByRole('region', { name: 'Team customization access', exact: true })).toContainText('everyone’s new tasks');
+      await expect(scope(page)).toHaveValue(team.id);
+      await expect(currentRule(page)).toContainText('No rule is on for new tasks.');
       await expect(page.getByText('Leo · Member', { exact: true })).toHaveCount(0);
       await page.screenshot({ path: info.outputPath('team-scoped-entry.png') });
       await page.getByRole('button', { name: 'New customization', exact: true }).click();
@@ -264,13 +267,16 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const personal = { id: fixture.metadata.projectId, name: fixture.metadata.projectName };
       const a = await createTeam(page, 'Team A'), b = await createTeam(page, 'Team B');
       await tasksProject(page, a); await addLeo(page, a.name);
+      seedEarlierTeamDiscussion(fixture.db, a.id);
       await tasksProject(page, personal);
       const collection = await hold(page, '**/api/extensions');
       await navigate(page, 'Customizations'); await collection.started;
       await scope(page).selectOption(a.id);
       collection.release();
       await expect(page.getByRole('heading', { name: 'Customizations', exact: true })).toBeVisible();
-      await expect(page.getByRole('region', { name: 'Team customization access' })).toContainText('Team A');
+      await expect(scope(page)).toHaveValue(a.id);
+      await expect(currentRule(page)).toContainText('No rule is on for new tasks.');
+      await expect(page.getByRole('button', { name: 'Open Studio', exact: true })).toBeEnabled();
       await navigate(page, 'Tasks');
       const tasks = await hold(page, `**/api/projects/${personal.id}/tasks`);
       await tasksProject(page, personal); await tasks.started;
@@ -283,7 +289,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await scope(page).selectOption(b.id);
       members.release();
       const access = page.getByRole('region', { name: 'Team customization access', exact: true });
-      await expect(access.getByRole('status')).toContainText('Team B');
+      await expect(scope(page)).toHaveValue(b.id);
+      await expect(currentRule(page)).toContainText('No rule is on for new tasks.');
+      await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeEnabled();
       await expect(access.getByText('Leo · Member', { exact: true })).toHaveCount(0);
       await scope(page).selectOption(a.id);
       const person = await hold(page, `**/api/projects/${a.id}/members`);

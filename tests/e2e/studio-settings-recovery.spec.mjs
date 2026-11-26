@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { switchPerson } from '../fixtures/workspace-ui.mjs';
+import { openEarlierPersonalEditor, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
@@ -193,10 +193,14 @@ test('one item shows its saved discussions and owner switching does not leak rec
     await switchPerson(page, 'sam');
     await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
     await navigate(page, 'Customizations');
-    await openEarlierPersonalEditor(page, fixture);
+    const samItem = await openEarlierPersonalEditor(page, fixture, { owner: 'sam' });
     await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('');
-    await expect(studio(page).getByRole('article', { name: 'Assistant settings changed', exact: true })).toHaveCount(0);
+    await expect(page).toHaveURL(new RegExp(`#customization=${samItem.extensionId}$`));
+    await expect(page.locator('body')).not.toContainText(changedCopy);
     await expect(page.locator('body')).not.toContainText(rejectedMessage);
+    await expect(page.locator('body')).not.toContainText('Earlier discussion for this saved customization.');
+    await expect(page.locator('body')).not.toContainText('Current saved discussion for this customization.');
+    expect(calls.turns).toHaveLength(1);
     expect(calls.setupPosts).toEqual([]);
     expect(fixture.requests).toEqual(providerCalls);
 
@@ -293,4 +297,3 @@ test('a revised customization opens its earlier discussion and continues in one 
     expect(fixture.requests).toHaveLength(providerCalls + 2);
   } finally { await fixture.close(); }
 });
-import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';
