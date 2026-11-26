@@ -26,7 +26,7 @@ function fixture(t) {
   db.prepare('INSERT INTO extension_conversation_links VALUES (?,?,?,?,?,?)').run('conversation', 'maya', extension, 'REVISE', revision, 1);
   db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)').run('conversation', 'maya', 1, 'message', '{ "receipt": { "revisionId": "original" } }');
   db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)').run('conversation', 'maya', 'operation', 'body-hash', 'run', 1);
-  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run('conversation', 'maya', 'run', 1, 'provider', null, 321, 'UNKNOWN');
+  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?,NULL)').run('conversation', 'maya', 'run', 1, 'provider', null, 321, 'UNKNOWN');
   db.exec('UPDATE authoring_budget SET reserved_micros=321;');
   db.prepare('UPDATE tasks SET notes=? WHERE id=(SELECT id FROM tasks LIMIT 1)').run('original\u0000λ');
   return { directory, path, db, extension };
@@ -40,7 +40,7 @@ function integrity(db) {
 
 test('fresh schema validates deletion timestamps and retains tombstones through reopen', t => {
   const { db, path, extension } = fixture(t);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 24);
   assert.equal(db.prepare('SELECT deleted_at FROM extensions WHERE id=?').get(extension).deleted_at, null);
   for (const timestamp of [-1, 1.5, 'invalid']) assert.throws(() => db.prepare('UPDATE extensions SET deleted_at=? WHERE id=?').run(timestamp, extension));
   for (const timestamp of [0, 123, null, 9007199254740991]) db.prepare('UPDATE extensions SET deleted_at=? WHERE id=?').run(timestamp, extension);

@@ -12,11 +12,11 @@ const personSelect = page => page.locator('.user-tools button[aria-pressed="true
 const turnRequest = request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/authoring/turn';
 const evidenceDir = resolve('build/studio-extension-creation');
 
-async function enterNewStudio(page, origin) {
-  await page.goto(origin);
+async function enterSavedStudio(page, fixture) {
+  await page.goto(fixture.origin);
   await page.getByRole('button', { name: 'Continue as Maya', exact: false }).click();
   await nav(page).getByRole('button', { name: 'Customizations', exact: true }).click();
-  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await openEarlierPersonalEditor(page, fixture);
   return studio(page);
 }
 
@@ -75,7 +75,7 @@ async function switchPerson(page, id) {
   await expect(personSelect(page)).toHaveAttribute('value', id, { timeout: 15_000 });
 }
 
-test('top-level New starts a distinct customization after a real prior chat and saved item', async ({ page }) => {
+test('opening a distinct earlier discussion keeps the original chat and saved item separate', async ({ page }) => {
   test.setTimeout(60_000);
   const fixture = await startAuthoringFixture({ provider: 'anthropic', intentResolutions: ['prepare', 'prepare', 'prepare'] });
   mkdirSync(evidenceDir, { recursive: true });
@@ -106,7 +106,7 @@ test('top-level New starts a distinct customization after a real prior chat and 
     const sourceAndCasesBefore = await api(page, `extensions/${prior.extensionId}/revisions/${prior.revisionId}`);
 
     await nav(page).getByRole('button', { name: 'Customizations', exact: true }).click();
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    const earlier = await openEarlierPersonalEditor(page, fixture);
     const newStudio = studio(page);
     const log = newStudio.getByRole('log', { name: 'Studio conversation', exact: true });
     await expect(log).toBeVisible();
@@ -122,7 +122,7 @@ test('top-level New starts a distinct customization after a real prior chat and 
     expect(acceptedResponse.status()).toBe(202);
     const accepted = await acceptedResponse.json();
     const createTurn = turns[1];
-    expect(createTurn).toMatchObject({ target: { kind: 'create' }, conversationId: null,
+    expect(createTurn).toMatchObject({ target: { kind: 'resume', extensionId: earlier.extensionId }, conversationId: earlier.conversationId,
       text: 'A distinct new customization request.', expectedVersion: 0 });
     expect(accepted.conversation.extensionId).toBeTruthy();
     expect(accepted.conversation.extensionId).toMatch(/^[0-9a-f-]{36}$/i);
@@ -150,6 +150,8 @@ test('top-level New starts a distinct customization after a real prior chat and 
     await reopenA.getByLabel('Message to Daymark assistant', { exact: true }).fill('Yes, keep the independent examples and show me Done for completed tasks.');
     await reopenA.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(reopenA.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 25_000 });
+    await reopenA.getByRole('button', { name: 'Confirm this behavior', exact: true }).click();
+    await expect(reopenA.getByText(/^The draft was saved and its examples passed/)).toBeVisible();
     const bStateAfterEdit = await api(page, `extensions/${accepted.conversation.extensionId}`);
     const bSourceAfterEdit = await api(page, `extensions/${accepted.conversation.extensionId}/revisions/${savedB.draft.id}`);
     expect(bStateAfterEdit).toEqual(bStateBeforeEdit);
@@ -179,7 +181,7 @@ test('Enter sends once; Shift+Enter, IME, repeat, empty and running guards do no
   let releaseRequest;
   page.on('request', request => { if (turnRequest(request)) posts.push(request.postDataJSON()); });
   try {
-    const ui = await enterNewStudio(page, fixture.origin);
+    const ui = await enterSavedStudio(page, fixture);
     const composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     await composer.focus();
     await page.keyboard.press('Enter');
@@ -211,7 +213,7 @@ test('Enter sends once; Shift+Enter, IME, repeat, empty and running guards do no
     const entered = page.waitForRequest(turnRequest);
     await page.keyboard.press('Enter');
     const request = await entered;
-    expect(request.postDataJSON()).toMatchObject({ target: { kind: 'create' }, conversationId: null,
+    expect(request.postDataJSON()).toMatchObject({ target: { kind: 'resume' },
       text: 'Send this synthetic request with Enter.' });
 
     await composer.fill('Do not send while the first request is running.');
@@ -225,7 +227,7 @@ test('Enter sends once; Shift+Enter, IME, repeat, empty and running guards do no
   } finally { releaseRequest?.(); await fixture.close(); }
 });
 
-test('a lost create receipt recovers by operation identity and reload does not replay it', async ({ page }) => {
+test('a lost earlier discussion receipt recovers by operation identity and reload does not replay it', async ({ page }) => {
   test.setTimeout(60_000);
   const fixture = await startAuthoringFixture({ provider: 'anthropic' });
   mkdirSync(evidenceDir, { recursive: true });
@@ -233,7 +235,7 @@ test('a lost create receipt recovers by operation identity and reload does not r
   let dropped;
   page.on('request', request => { if (turnRequest(request)) posts.push(request.postDataJSON()); });
   try {
-    const ui = await enterNewStudio(page, fixture.origin);
+    const ui = await enterSavedStudio(page, fixture);
     const composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
     await composer.fill('Keep this request if its first response is lost.');
     await page.route('**/api/authoring/turn', async route => {
@@ -246,7 +248,7 @@ test('a lost create receipt recovers by operation identity and reload does not r
     const firstRequest = await requestSeen;
     await expect.poll(() => dropped?.status).toBe(202);
     const turn = firstRequest.postDataJSON();
-    expect(turn).toMatchObject({ target: { kind: 'create' }, conversationId: null,
+    expect(turn).toMatchObject({ target: { kind: 'resume' },
       text: 'Keep this request if its first response is lost.', expectedVersion: 0, expectedDraftVersion: 0 });
     expect(dropped.body.operation.id).toBe(turn.operationId);
     expect(dropped.body.conversation.extensionId).toBeTruthy();
@@ -254,23 +256,23 @@ test('a lost create receipt recovers by operation identity and reload does not r
     expect(posts).toHaveLength(1);
 
     const extension = fixture.db.prepare('SELECT id,owner_id,creation_operation_id FROM extensions WHERE owner_id=? AND creation_operation_id=?')
-      .get('maya', turn.operationId);
-    expect(extension).toEqual({ id: dropped.body.conversation.extensionId, owner_id: 'maya', creation_operation_id: turn.operationId });
+      .get('maya', fixture.db.prepare('SELECT creation_operation_id FROM extensions WHERE id=?').get(turn.target.extensionId).creation_operation_id);
+    expect(extension).toMatchObject({ id: dropped.body.conversation.extensionId, owner_id: 'maya' });
     const conversations = fixture.db.prepare('SELECT id,owner_id,creation_operation_id,status FROM authoring_conversations WHERE owner_id=?').all('maya');
     expect(conversations).toHaveLength(1);
-    expect(conversations[0]).toMatchObject({ id: dropped.body.conversation.id, owner_id: 'maya', creation_operation_id: turn.operationId, status: 'AWAITING_USER' });
+    expect(conversations[0]).toMatchObject({ id: dropped.body.conversation.id, owner_id: 'maya', status: 'AWAITING_USER' });
     expect(fixture.db.prepare('SELECT owner_id,extension_id,purpose FROM extension_conversation_links WHERE conversation_id=?')
       .get(dropped.body.conversation.id)).toEqual({ owner_id: 'maya', extension_id: extension.id, purpose: 'CREATE' });
-    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
 
     await page.reload();
     const reopened = studio(page), reopenedLog = reopened.getByRole('log', { name: 'Studio conversation', exact: true });
     await expect(reopenedLog.getByText('Keep this request if its first response is lost.', { exact: true })).toHaveCount(1);
     await expect(reopenedLog.getByText(fixture.metadata.question, { exact: true })).toHaveCount(1);
     expect(posts).toHaveLength(1);
-    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM extensions WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
-    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
-    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM extensions WHERE owner_id=?').get('maya').n).toBe(1);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_operations WHERE owner_id=? AND operation_id=?').get('maya', turn.operationId).n).toBe(1);
+    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
 
     writeFileSync(resolve(evidenceDir, 'creation-recovery.json'), JSON.stringify({
       operationId: turn.operationId, extensionId: extension.id, conversationId: dropped.body.conversation.id,
@@ -288,12 +290,13 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
   const posts = [];
   let releaseAccepted;
   const holdAccepted = new Promise(resolve => { releaseAccepted = resolve; });
+  let releaseStatus;
   let acceptedResolve;
   const acceptedSeen = new Promise(resolve => { acceptedResolve = resolve; });
   let acceptedResponse;
   page.on('request', request => { if (turnRequest(request)) posts.push(request.postDataJSON()); });
   try {
-    const ui = await enterNewStudio(page, fixture.origin);
+    const ui = await enterSavedStudio(page, fixture);
     await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill('Maya private request for the delayed-link regression.');
     await page.route('**/api/authoring/turn', async route => {
       const response = await route.fetch();
@@ -306,13 +309,13 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
     await acceptedSeen;
     expect(acceptedResponse.status).toBe(202);
     const turn = posts[0];
-    expect(turn).toMatchObject({ target: { kind: 'create' }, conversationId: null,
+    expect(turn).toMatchObject({ target: { kind: 'resume' },
       text: 'Maya private request for the delayed-link regression.', expectedVersion: 0 });
     expect(acceptedResponse.body.operation.id).toBe(turn.operationId);
     const extensionId = acceptedResponse.body.conversation.extensionId;
     const conversationId = acceptedResponse.body.conversation.id;
-    expect(fixture.db.prepare('SELECT owner_id,creation_operation_id FROM extensions WHERE id=?').get(extensionId))
-      .toEqual({ owner_id: 'maya', creation_operation_id: turn.operationId });
+    expect(fixture.db.prepare('SELECT owner_id FROM extensions WHERE id=?').get(extensionId))
+       .toEqual({ owner_id: 'maya' });
     expect(fixture.db.prepare('SELECT owner_id,extension_id,purpose FROM extension_conversation_links WHERE conversation_id=?').get(conversationId))
       .toEqual({ owner_id: 'maya', extension_id: extensionId, purpose: 'CREATE' });
     const exactLink = `${fixture.origin}/#customization=${encodeURIComponent(extensionId)}&conversation=${encodeURIComponent(conversationId)}`;
@@ -334,14 +337,13 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
 
     // Hold an authenticated Maya status response, change to Sam, and release the stale response afterward.
     await switchPerson(page, 'maya');
-    let releaseStatus;
+    await expect(personSelect(page)).toHaveAttribute('value', 'maya');
+    await page.goto('about:blank'); // Force a fresh document rather than a same-document hash navigation.
     let statusResolve;
     const heldStatus = new Promise(resolve => { releaseStatus = resolve; });
     const statusSeen = new Promise(resolve => { statusResolve = resolve; });
     let heldStatusData;
-    await page.route('**/api/authoring*', async route => {
-      const request = route.request(), url = new URL(request.url());
-      if (request.method() !== 'GET' || url.pathname !== '/api/authoring') return route.continue();
+    await page.route(`${fixture.origin}/api/authoring?extensionId=${encodeURIComponent(extensionId)}`, async route => {
       const response = await route.fetch();
       heldStatusData = { status: response.status(), body: await response.json() };
       statusResolve();
@@ -349,11 +351,11 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
       try { await route.fulfill({ response }); } catch { /* The owner-scoped request may be cancelled on account change. */ }
     }, { times: 1 });
     await page.goto(exactLink);
-    expect(page.url()).toBe(exactLink);
-    await page.reload();
     await statusSeen;
+    await expect(page).toHaveURL(exactLink);
+    await expect(personSelect(page)).toHaveAttribute('value', 'maya');
     expect(heldStatusData.status).toBe(200);
-    expect(heldStatusData.body.conversations.some(item => item.id === conversationId && item.extensionId === extensionId)).toBe(true);
+    expect(heldStatusData.body.current).toMatchObject({ id: conversationId, extensionId });
     await switchPerson(page, 'sam');
     releaseStatus();
     await expect(page.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(0);
@@ -365,11 +367,12 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
     const resumed = studio(page), log = resumed.getByRole('log', { name: 'Studio conversation', exact: true });
     await expect(log.getByText('Maya private request for the delayed-link regression.', { exact: true })).toHaveCount(1, { timeout: 20_000 });
     await expect(log.getByText(fixture.metadata.question, { exact: true })).toHaveCount(1, { timeout: 20_000 });
+    await expect(page).toHaveURL(`${fixture.origin}/#customization=${encodeURIComponent(extensionId)}`);
     expect(posts).toHaveLength(1);
     expect(posts[0].operationId).toBe(turn.operationId);
-    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
-    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM extensions WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
-    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=? AND creation_operation_id=?').get('maya', turn.operationId).n).toBe(1);
+    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM extensions WHERE owner_id=?').get('maya').n).toBe(1);
+    expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_operations WHERE owner_id=? AND operation_id=?').get('maya', turn.operationId).n).toBe(1);
     expect(fixture.db.prepare('SELECT COUNT(*) AS n FROM authoring_conversations WHERE owner_id=?').get('sam').n).toBe(0);
 
     writeFileSync(resolve(evidenceDir, 'creation-owner-switch.json'), JSON.stringify({
@@ -379,5 +382,6 @@ test('an exact Maya conversation link and delayed Maya responses stay isolated f
       mayaResumedOriginalConversation: true, postCount: posts.length,
       syntheticProviderTools: fixture.requests.map(item => item.name),
     }, null, 2));
-  } finally { releaseAccepted(); await fixture.close(); }
+  } finally { releaseAccepted(); releaseStatus?.(); await fixture.close(); }
 });
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

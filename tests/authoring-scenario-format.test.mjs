@@ -131,7 +131,7 @@ test('real task scenario admission rejects malformed read-error formats without 
   assert.deepEqual(rows(db, nativeTables), Object.fromEntries(nativeTables.map(table => [table, before[table]])));
 });
 
-for (const extra of ['', ' Please show the checked results before asking for my approval.']) test('offline authoring checks an exact suffix and repairs scenario syntax without dropping requested examples' + (extra ? ' with extra wording' : ''), async t => {
+for (const extra of ['', ' Please show the checked results before asking for my approval.']) test('offline confirmation checks custom Unicode and overflow without dropping requested examples' + (extra ? ' with extra wording' : ''), async t => {
   const { db, lifecycle, project, other } = setup(t);
   let largestRequest = 0;
   const config = readAuthoringConfig({ KEIR_AI_PROVIDER: 'openai', KEIR_AI_MODEL: 'gpt-5.6-terra', KEIR_AI_MAX_USD: '3', OPENAI_API_KEY: 'synthetic-format-key' });
@@ -143,7 +143,7 @@ for (const extra of ['', ' Please show the checked results before asking for my 
   assert.ok(Buffer.byteLength(overflowTitle + suffix) > 256);
   assert.ok((overflowTitle + suffix).length <= 120);
   assert.notEqual(expectedTitle, expectedTitle.normalize());
-  let desired, independent, compiled, extensionId;
+  let desired, independent;
   const service = createAuthoringService({ db, lifecycle, config, fetchImpl: async (url, init) => {
     assert.equal(url, 'https://api.openai.com/v1/responses');
     assert.equal(init.redirect, 'error');
@@ -151,15 +151,7 @@ for (const extra of ['', ' Please show the checked results before asking for my 
     largestRequest = Math.max(largestRequest, Buffer.byteLength(init.body));
     assert.equal(body.tools.some(value => /approve|activate|select/.test(value.name)), false);
     const output = body.input.filter(value => value.type === 'function_call_output').at(-1);
-    const data = body.input.findLast(value => value.role === 'user')?.content;
-    const renewed = data && JSON.parse(data).renewedContext;
-    const result = output ? JSON.parse(output.output) : renewed?.lastTool.result;
-    if (renewed && !output) {
-      assert.equal(body.input.length, 1);
-      assert.deepEqual(renewed.currentContext.currentProposal.cases, independent);
-      assert.equal(renewed.lastTool.name, 'simulate_draft');
-      assert.deepEqual(renewed.settledFacts.filter(tool => tool.name === 'propose_scenarios').map(tool => tool.result.remainingAttempts), [2, 1]);
-    }
+    const result = output && JSON.parse(output.output);
     let name, args;
     if (index === 0) {
       assert.match(body.instructions, /exceeds 256 UTF-8 bytes after concatenation/);
@@ -169,8 +161,8 @@ for (const extra of ['', ' Please show the checked results before asking for my 
       const discovery = result.result;
       assert.equal(discovery.dcm.capabilities['tasks.get'].version, '3');
       assert.equal(discovery.dcm.types.Task.fields.title, 'String');
-      assert.match(discovery.businessContext.supported, /append a fixed suffix/);
-      assert.match(discovery.businessContext.supported, /source\.title \+ " – follow-up"/);
+      assert.match(discovery.businessContext.supported, /concatenate a user-chosen literal prefix or suffix with source\.title/);
+      assert.doesNotMatch(discovery.businessContext.supported, / – follow-up| follow up/);
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));
       const { sourceExample, scenarioExamples } = discovery.examplesByHook[TASK_HOOK];
@@ -195,38 +187,8 @@ for (const extra of ['', ' Please show the checked results before asking for my 
       overflow.expect.consumption = { status: 'REPORTED', classification: 'LIMIT_EXCEEDED', error, effects: [] };
       desired.cases.push(overflow);
       independent = serialize(desired.cases);
-      name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: desired.source, expectedDraftVersion: discovery.currentDraft.draftVersion };
-    } else if (index === 2) {
-      assert.equal(result.ok, true); compiled = result.result;
-      extensionId = db.prepare('SELECT extension_id FROM extension_conversation_links WHERE conversation_id=(SELECT id FROM authoring_conversations WHERE creation_operation_id=?)').get('scenario-format-recovery').extension_id;
-      const cases = structuredClone(desired.cases); delete cases[0].expect.outcome.trace;
-      name = 'propose_scenarios'; args = { revisionId: compiled.revisionId, cases: serialize(cases), expectedDraftVersion: compiled.draftVersion };
-    } else if (index === 3 || index === 4) {
-      assert.deepEqual(result, { ok: false, code: 'INVALID_TOOL_ARGUMENTS',
-        diagnostics: [{ code: 'INVALID_SCENARIO', path: index === 3 ? '/cases/0' : '/cases/3' }],
-        currentDraft: compiled, remainingAttempts: index === 3 ? 2 : 1 });
-      const state = lifecycle.state('maya', extensionId);
-      assert.equal(state.draft.id, compiled.revisionId); assert.equal(state.draftVersion, compiled.draftVersion);
-      assert.equal(state.draft.suiteDigest, null); assert.equal(state.approved, false);
-      assert.deepEqual(rows(db, nativeTables), before);
-      const cases = structuredClone(desired.cases);
-      if (index === 3) cases[3].stubs[0].response = { kind: 'ERROR', error: 'TASK_NOT_FOUND' };
-      else assert.deepEqual(serialize(cases), independent, 'Format repair must retain every original independent expectation.');
-      name = 'propose_scenarios'; args = { revisionId: compiled.revisionId, cases: serialize(cases), expectedDraftVersion: compiled.draftVersion };
-    } else if (index === 5) {
-      assert.equal(result.ok, true);
-      assert.notEqual(result.result.revisionId, compiled.revisionId);
-      assert.equal(result.result.draftVersion, compiled.draftVersion + 1);
-      name = 'simulate_draft'; args = { revisionId: result.result.revisionId, expectedDraftVersion: result.result.draftVersion };
-    } else if (index === 6) {
-      assert.equal(result.ok, true);
-      const { cases } = result.result.summary;
-      assert.deepEqual(cases.map(value => value.id), suffixCaseIds);
-      assert.ok(cases.every(value => value.status === 'PASS'));
-      assert.equal(cases[0].actual.observed.createdTasks[0].title, expectedTitle);
-      assert.equal(cases.at(-1).actual.native.classification, 'LIMIT_EXCEEDED');
-      assert.deepEqual(cases.at(-1).actual.observed, { effect: 'NONE', createdTasks: [], updatedTasks: [] });
-      name = 'offer_review'; args = { summary: 'The examples confirmed the exact follow-up title and no creation when a title exceeds the size limit. Your tasks have not changed.' };
+      name = 'offer_proposal'; args = { hookId: TASK_HOOK, sourceJson: desired.source, cases: independent,
+        expectedDraftVersion: discovery.currentDraft.draftVersion, summary: 'Add the exact suffix for matching tasks and check title overflow.' };
     } else assert.fail('The local protocol script must not add a paid request or discard a case.');
     calls.push(name);
     return new Response(JSON.stringify({ status: 'completed', output: [
@@ -235,27 +197,37 @@ for (const extra of ['', ' Please show the checked results before asking for my 
     ], usage: { input_tokens: 10, output_tokens: 5 } }), { headers: { 'content-type': 'application/json' } });
   } });
   t.after(() => service.close());
+  const lease = { sessionId: 'format-regression-session', current: () => true };
   const started = await service.turn('maya', { conversationId: null, operationId: 'scenario-format-recovery', expectedVersion: 0, expectedDraftVersion: 0,
     target: { kind: 'create' }, text: 'In Format regression project, create a follow-up after completion using the completed task title plus " – 🧪". Check matching, other-project, unfinished, missing, denied, transient-read and oversized result cases. Keep every requested example.' + extra },
-  { sessionId: 'format-regression-session', current: () => true });
+  lease);
+  const offered = await service.wait('maya', started.conversation.id);
+  const { extensionId } = offered;
+  assert.equal(offered.status, 'AWAITING_USER');
+  service.confirm('maya', offered.id, { runId: offered.runId, expectedVersion: offered.version, offerDigest: offered.offer.digest }, lease);
   const settled = await service.wait('maya', started.conversation.id);
   t.diagnostic('Maximum serialized request bytes ' + largestRequest);
   t.diagnostic('Scripted calls ' + calls.join(',') + '; settled ' + settled.status + '/' + (settled.code ?? 'none'));
   assert.ok(largestRequest <= 131072, 'Every provider request must remain within the unchanged context limit.');
   assert.equal(settled.status, 'REVIEW_AVAILABLE', JSON.stringify(settled));
   assert.equal(settled.review.eligible, true);
-  assert.deepEqual(calls, ['discover_catalog', 'compile_draft', 'propose_scenarios', 'propose_scenarios', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+  assert.deepEqual(calls, ['discover_catalog', 'offer_proposal']);
   const state = lifecycle.state('maya', extensionId);
   assert.equal(state.approved, false);
   assert.equal(state.evidence.id, settled.review.evidenceId);
   assert.equal(state.evidence.passed, true);
-  const overflow = lifecycle.evidence('maya', state.evidence.id, extensionId).reports.at(-1).report;
+  const { reports } = lifecycle.evidence('maya', state.evidence.id, extensionId);
+  assert.deepEqual(reports.map(value => value.id), suffixCaseIds);
+  assert.equal(reports[0].report.observed.createdTasks[0].title, expectedTitle);
+  const overflow = reports.at(-1).report;
+  assert.equal(overflow.native.classification, 'LIMIT_EXCEEDED');
+  assert.deepEqual(overflow.observed, { effect: 'NONE', createdTasks: [], updatedTasks: [] });
   assert.deepEqual(overflow.native.error, { code: 'BUDGET_EXCEEDED', path: '/steps/3' });
   assert.deepEqual(overflow.calls.map(call => call.capability), ['tasks.get']);
   assert.deepEqual(overflow.native.effects, []);
   assert.deepEqual(lifecycle.source('maya', state.draft.id, extensionId).cases, independent);
   assert.deepEqual(rows(db, nativeTables), before);
-  assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, config.reserveMicros * calls.length);
+  assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, 85 * calls.length);
 
   const selection = { extensionId, ...input(state) };
   const approved = lifecycle.approve('maya', { ...selection, evidenceId: settled.review.evidenceId }, () => {});
@@ -276,8 +248,8 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const { db, lifecycle, project, other } = setup(t);
   const native = taskService(db);
   const foreign = native.createProject('leo', { name: 'Private project' });
-  const suffix = ' – client follow-up';
-  const request = `When I finish a task, create a new task in the same project as the completed task. Use its title and append "${suffix}".`;
+  const suffix = provider === 'openai' ? ' follow up' : ' – client follow-up';
+  const request = `When I finish a task tagged exactly "for customer", create a new task in the same project. Append "${suffix}" to its title and make it due 168 hours later.`;
   const explanation = 'Each follow-up stays in the project where you completed its task.';
   const examples = [
     { id: 'first-source-project', taskId: 'task1', createdId: 'task2', projectId: project.id, title: 'Prepare review' },
@@ -296,27 +268,44 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       : { stop_reason: stopReason, content: [anthropicContent], usage });
   }
   const operationId = 'same-project-followup';
-  let source, independent, compiled, extensionId;
+  let source, independent, extensionId;
   const service = createAuthoringService({ db, lifecycle, config, fetchImpl: async (url, init) => {
     assert.equal(url, openai ? 'https://api.openai.com/v1/responses' : 'https://api.anthropic.com/v1/messages');
     requestBytes.push(Buffer.byteLength(init.body));
     assert.ok(requestBytes.at(-1) <= 131072);
-    const body = JSON.parse(init.body), index = calls.length;
+    const body = JSON.parse(init.body), index = calls.length - 2;
     const instructions = openai ? body.instructions : body.system;
     assert.ok(instructions.endsWith(guide));
     assert.equal(instructions.split(guide).length, 2);
     const output = openai ? body.input.filter(value => value.type === 'function_call_output').at(-1)?.output
       : body.messages.at(-1)?.content.find(value => value.type === 'tool_result')?.content;
     const result = output ? JSON.parse(output).result : null;
+    const envelope = JSON.parse(openai ? body.input[0].content : body.messages[0].content[0].text);
     let name, args;
-    if (index === 0) {
+    if (index === -2) {
+      name = 'offer_proposal';
+      args = { hookId: TASK_HOOK, sourceJson: '{', cases: ['{}'], expectedDraftVersion: 0, summary: 'An invalid candidate for the requested follow-up.' };
+    } else if (index === -1) {
+      assert.equal(output, undefined);
+      assert.equal(envelope.currentUserMessage, 'Why did that stop?');
+      assert.deepEqual(envelope.transcript.messages.map(message => message.role), ['user', 'assistant', 'host']);
+      assert.match(envelope.transcript.messages.at(-1).text, /could not compile.*No draft was saved/);
+      const text = 'The proposed rule did not compile. No draft was saved. The requested title is supported.';
+      calls.push('text');
+      return respond({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+        { type: 'text', text }, 'end_turn');
+    } else if (index === 0) {
+      assert.match(envelope.transcript.messages.at(-1).text, /requested title is supported/);
       assert.match(instructions, /supportedHooks from discover_catalog for availability/);
       assert.match(instructions, /host-approved model, entrypoint, package\/producer tuple/);
       assert.match(instructions, /compiler configuration and scoped authoring tools/);
       assert.match(instructions, /capability results\/errors, protected parameters, lifecycle and limits/);
       assert.match(instructions, /two positives with different source projects and titles/);
-      assert.match(instructions, /clarify only genuinely unclear behavior/);
+      assert.match(instructions, /clarify only genuinely unclear behavior/i);
+      assert.match(instructions, /Preserve explicitly supplied title text, including spaces, case and punctuation, without asking again or substituting sample wording/);
+      assert.match(instructions, /source and scenario examples are format only; sample titles, wording and destinations are not required values or defaults/);
       assert.equal(body.tools.some(tool => /approve|activate|create_task/.test(tool.name)), false);
+      assert.equal(body.tools.some(tool => /resolve_intent|compile_draft|propose_scenarios|simulate_draft/.test(tool.name)), false);
       name = 'discover_catalog'; args = {};
     } else if (index === 1) {
       const discovery = result;
@@ -325,7 +314,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       const { sourceExample, scenarioExample, scenarioExamples } = discovery.examplesByHook[TASK_HOOK];
       assert.equal(JSON.parse(sourceExample).language, 'keir/3');
       assert.equal(JSON.parse(scenarioExample).format, 'keir-scenario/4');
-      assert.equal(discovery.conversationContext.messages.at(-1).text, request);
+      assert.equal(Object.hasOwn(discovery, 'conversationContext'), false);
       assert.ok(discovery.projects.projects.some(value => value.id === project.id));
       assert.ok(discovery.projects.projects.some(value => value.id === other.id));
       assert.ok(!discovery.projects.projects.some(value => value.id === foreign.id));
@@ -338,11 +327,13 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       assert.deepEqual(create.parameters.actorId, { type: 'UserId', binding: 'host' });
       assert.match(discovery.businessContext.supported, /same.project/i);
       assert.match(discovery.businessContext.supported, /source\.projectId/);
+      assert.match(discovery.businessContext.supported, /No preset wording is required/);
 
       const program = JSON.parse(sourceExample);
       program.steps.shift();
-      program.steps[1].let.cel = 'source.status == "COMPLETED"';
-      program.steps[2].args = { projectId: { cel: 'source.projectId' }, title: { cel: 'source.title + ' + JSON.stringify(suffix) } };
+      program.steps[1].let.cel = 'source.status == "COMPLETED" && "for customer" in source.tags';
+      program.steps[2].args = { projectId: { cel: 'source.projectId' }, title: { cel: 'source.title + ' + JSON.stringify(suffix) },
+        dueAt: { cel: 'input.occurredAt + duration("604800s")' } };
       source = JSON.stringify(program);
       const [matching, , unfinished, , , unavailable] = scenarioExamples.map(JSON.parse);
       const positives = examples.map(({ id, taskId, createdId, projectId, title }) => {
@@ -350,14 +341,15 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
         row.id = id;
         row.given.input.taskId = taskId;
         row.stubs[0].args.taskId = taskId;
-        Object.assign(row.stubs[0].response.value, { id: taskId, projectId, title, status: 'COMPLETED' });
-        row.stubs[1].args = { projectId, title: title + suffix };
+         Object.assign(row.stubs[0].response.value, { id: taskId, projectId, title, status: 'COMPLETED', tags: ['for customer'] });
+         const dueAt = new Date(Date.parse(row.given.input.occurredAt) + 604800000).toISOString().replace('.000Z', 'Z');
+         row.stubs[1].args = { projectId, title: title + suffix, dueAt };
         row.stubs[1].response.value.id = createdId;
         row.expect.calls[0].args.taskId = taskId;
-        row.expect.calls[1].args = { projectId, title: title + suffix };
+         row.expect.calls[1].args = { ...row.stubs[1].args };
         return row;
       });
-      unfinished.stubs[0].response.value.projectId = project.id;
+      Object.assign(unfinished.stubs[0].response.value, { projectId: project.id, status: 'COMPLETED', tags: ['for customers'] });
       const cases = [...positives, unfinished, unavailable];
       for (const row of cases) {
         row.expect.outcome.trace = row.expect.outcome.trace.filter(event => event.step !== 'eligibleProject')
@@ -366,44 +358,66 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
       unavailable.expect.outcome.error.path = '/steps/0';
       unavailable.expect.consumption.error.path = '/steps/0';
       independent = serialize(cases);
-      name = 'compile_draft'; args = { hookId: TASK_HOOK, sourceJson: source, expectedDraftVersion: discovery.currentDraft.draftVersion };
+      name = 'offer_proposal'; args = { hookId: TASK_HOOK, sourceJson: source, expectedDraftVersion: discovery.currentDraft.draftVersion,
+        cases: independent, summary: 'Completed tasks tagged exactly “for customer” get a follow-up in their own project, due 168 hours later.' };
     } else if (index === 2) {
-      compiled = result;
-      extensionId = db.prepare('SELECT extension_id FROM extension_conversation_links WHERE conversation_id=(SELECT id FROM authoring_conversations WHERE creation_operation_id=?)').get(operationId).extension_id;
-      name = 'propose_scenarios'; args = { revisionId: compiled.revisionId, cases: independent, expectedDraftVersion: compiled.draftVersion };
-    } else if (index === 3) {
-      name = 'simulate_draft'; args = { revisionId: result.revisionId, expectedDraftVersion: result.draftVersion };
-    } else if (index === 4) {
-      assert.ok(result.summary.cases.every(row => row.status === 'PASS'));
-      name = 'offer_review'; args = { summary: 'Both completed examples created one follow-up in their own project. The unfinished and unavailable examples created nothing. Your tasks have not changed.' };
-    } else if (index === 5) {
+      assert.equal(envelope.currentUserMessage, 'Which project gets the follow-up?');
+      assert.ok(envelope.transcript.messages.some(message => message.role === 'host' && /saved and its examples passed/.test(message.text)));
       calls.push('text');
       return respond({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: explanation }] },
         { type: 'text', text: explanation }, 'end_turn');
-    } else if (index === 6) {
+    } else if (index === 3) {
       assert.equal(output, undefined, 'An explicit turn starts with fresh provider context.');
       name = 'discover_catalog'; args = {};
-    } else if (index === 7) {
+    } else if (index === 4) {
       assert.equal(result.currentProposal.source, source);
       assert.deepEqual(result.currentProposal.cases, independent);
-      assert.equal(result.conversationContext.messages.at(-2).text, explanation);
       name = 'offer_review'; args = { summary: 'The same checked draft is ready to review.' };
     } else assert.fail('Unexpected provider request');
     calls.push(name);
-    const callId = `same-project-${index}`;
+    const callId = `same-project-${calls.length}`;
     return respond({ type: 'function_call', call_id: callId, name, arguments: JSON.stringify(args) },
       { type: 'tool_use', id: callId, name, input: args }, 'tool_use');
   } });
   t.after(() => service.close());
+  const lease = { sessionId: 'same-project-session', current: () => true };
   const started = await service.turn('maya', { conversationId: null, operationId, expectedVersion: 0, expectedDraftVersion: 0,
-    target: { kind: 'create' }, text: request }, { sessionId: 'same-project-session', current: () => true });
+    target: { kind: 'create' }, text: request }, lease);
+  const invalid = await service.wait('maya', started.conversation.id);
+  extensionId = invalid.extensionId;
+  function confirmInput(value) { return { runId: value.runId, expectedVersion: value.version, offerDigest: value.offer.digest }; }
+  service.confirm('maya', invalid.id, confirmInput(invalid), lease);
+  const failed = await service.wait('maya', invalid.id);
+  assert.equal(failed.confirmation, 'unsaved');
+  const resume = async (current, operationId, text) => {
+    const accepted = await service.turn('maya', { conversationId: current.id, operationId, expectedVersion: current.version,
+      expectedDraftVersion: current.draft.draftVersion, target: { kind: 'resume', extensionId }, text }, lease);
+    return service.wait('maya', accepted.conversation.id);
+  };
+  const revisions = () => rows(db, ['extension_revisions', 'extension_evidence', ...nativeTables]);
+  const unchanged = revisions();
+  const why = await resume(failed, 'explain-first-failure', 'Why did that stop?');
+  assert.equal(why.status, 'IDLE');
+  assert.match(why.messages.at(-1).text, /did not compile.*title is supported/);
+  assert.deepEqual(revisions(), unchanged);
+  const offered = await resume(why, 'correct-first-offer', `Please correct the proposed rule. ${request}`);
+  assert.equal(offered.status, 'AWAITING_USER');
+  assert.equal(lifecycle.state('maya', extensionId).draft, null);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM extension_evidence').get().n, 0);
+  const confirmation = confirmInput(offered);
+  assert.throws(() => service.confirm('maya', offered.id, { ...confirmation, offerDigest: invalid.offer.digest }, lease), { status: 409 });
+  assert.throws(() => service.confirm('maya', offered.id, confirmation, { ...lease, sessionId: 'other-session' }), { status: 409 });
+  assert.throws(() => service.confirm('maya', offered.id, { ...confirmation, expectedVersion: 0 }, lease), { status: 409 });
+  assert.equal(service.confirm('maya', offered.id, confirmation, lease).status, 'RUNNING');
+  assert.equal(service.confirm('maya', offered.id, confirmation, lease).status, 'RUNNING');
   const settled = await service.wait('maya', started.conversation.id);
   assert.equal(settled.status, 'REVIEW_AVAILABLE', JSON.stringify(settled));
-  assert.deepEqual(calls, ['discover_catalog', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+  assert.deepEqual(calls, ['offer_proposal', 'text', 'discover_catalog', 'offer_proposal']);
+  assert.equal(service.confirm('maya', offered.id, confirmation, lease).review.evidenceId, settled.review.evidenceId);
   const state = lifecycle.state('maya', extensionId);
   const saved = lifecycle.source('maya', state.draft.id, extensionId);
   assert.equal(saved.source, source);
-  assert.equal(saved.artifact, lifecycle.source('maya', compiled.revisionId, extensionId).artifact);
+  assert.equal(state.draftVersion, 1);
   assert.deepEqual(saved.cases, independent);
   assert.equal(state.approved, false);
   assert.equal(settled.review.eligible, true);
@@ -418,12 +432,6 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
     { effect: 'NONE', createdTasks: [] }, { effect: 'NONE', createdTasks: [] },
   ]);
 
-  const resume = async (current, operationId, text) => {
-    const accepted = await service.turn('maya', { conversationId: current.id, operationId, expectedVersion: current.version,
-      expectedDraftVersion: state.draftVersion, target: { kind: 'resume', extensionId }, text },
-    { sessionId: 'same-project-session', current: () => true });
-    return service.wait('maya', accepted.conversation.id);
-  };
   const evidenceBefore = rows(db, ['extension_evidence', 'extension_revisions', 'extension_approvals', 'extension_selections']);
   const discussed = await resume(settled, 'same-project-discuss', 'Which project gets the follow-up?');
   assert.equal(discussed.status, 'IDLE');
@@ -431,7 +439,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   assert.equal(reopened.status, 'REVIEW_AVAILABLE', reopened.code);
   assert.equal(reopened.id, settled.id);
   assert.deepEqual(reopened.review, settled.review);
-  assert.deepEqual(calls.slice(5), ['text', 'discover_catalog', 'offer_review']);
+  assert.deepEqual(calls.slice(4), ['text', 'discover_catalog', 'offer_review']);
   t.diagnostic(`${provider} serialized bytes after discovery ${requestBytes[1]}, maximum ${Math.max(...requestBytes)}`);
   assert.deepEqual(rows(db, Object.keys(evidenceBefore)), evidenceBefore);
 
@@ -456,7 +464,9 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
   const dispatcher = createTaskDispatcher({ db, lifecycle });
   t.after(() => dispatcher.close());
   const sources = [];
-  for (const { projectId, title } of examples) sources.push(await native.createTask('maya', { projectId, title }, { operationId: randomUUID() }));
+  for (const { projectId, title } of examples) sources.push(await native.createTask('maya', { projectId, title, tags: ['for customer'] }, { operationId: randomUUID() }));
+  const nearMiss = await native.createTask('maya', { projectId: project.id, title: 'Near miss', tags: ['for customers'] }, { operationId: randomUUID() });
+  native.completeTask('maya', nearMiss.id);
   for (const task of sources) native.completeTask('maya', task.id);
   await dispatcher.wake();
   for (const task of sources) {
@@ -466,10 +476,11 @@ for (const provider of ['openai', 'anthropic']) test(`${provider} offline author
     const created = native.getTask('maya', reaction.receipt.value.id);
     assert.equal(created.projectId, task.projectId);
     assert.equal(created.title, task.title + suffix);
+    assert.equal(Date.parse(created.dueAt) - Date.parse(native.getTask('maya', task.id).completedAt), 604800000);
   }
   const effects = rows(db, ['tasks', 'task_events', 'task_effect_receipts']);
-  assert.equal(effects.tasks.length - before.tasks.length, 4);
-  assert.equal(effects.task_events.filter(event => event.hook_id === 'TaskCompleted').length, 2);
+  assert.equal(effects.tasks.length - before.tasks.length, 5);
+  assert.equal(effects.task_events.filter(event => event.hook_id === 'TaskCompleted').length, 3);
   assert.equal(effects.task_effect_receipts.length, 2);
   for (const task of sources) native.completeTask('maya', task.id);
   await dispatcher.dependenciesChanged();

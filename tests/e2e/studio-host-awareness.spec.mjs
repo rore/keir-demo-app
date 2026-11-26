@@ -18,16 +18,12 @@ const snapshot = db => Object.fromEntries(['tasks', 'projects', 'extension_revis
   'extension_approvals', 'extension_selections', 'extension_history', 'task_events', 'task_effect_receipts']
   .map(name => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
 
-async function fixture({ empty = false, unsolicitedMutation = false, blockedOnce = false, intents = ['discuss', 'discuss', 'prepare'] } = {}) {
+async function fixture({ empty = false, unsolicitedMutation = false, blockedOnce = false } = {}) {
   let f, first, second;
   const calls = [], turns = [];
   f = await startAuthoringFixture({ authoringOverride: { config, providerFactory: () => {
     let step = 0, text, context;
     return { reserveMicros: config.reserveMicros, maxMicros: config.maxMicros, async complete(request) {
-      if (request.tools.length === 1 && request.tools[0].name === 'resolve_intent') {
-        const intent = intents.shift(); expect(['discuss', 'prepare']).toContain(intent);
-        return { calls: [{ id: 'intent', name: 'resolve_intent', arguments: { intent, question: '' } }], text: '', usage: { inputTokens: 2, outputTokens: 1 } };
-      }
       if (request.input !== undefined) {
         const input = JSON.parse(request.input); text = input.currentUserMessage; context = input.hostContext;
         turns.push({ text, context, tools: request.tools.map(tool => tool.name) });
@@ -38,13 +34,13 @@ async function fixture({ empty = false, unsolicitedMutation = false, blockedOnce
       if (unsolicitedMutation && step === 0) {
         name = 'compile_draft'; args = { hookId: 'TaskCompleted', sourceJson: '{}', expectedDraftVersion: 0 };
       } else if (unsolicitedMutation) {
-        expect(output).toEqual({ ok: false, code: 'DISCUSSION_ONLY' });
+        expect(output).toEqual({ ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
         reply = 'I can discuss your work without changing a rule. Describe the draft change you want to prepare.';
       } else if (/Open the after-completion rule/.test(text)) {
         if (step === 0) { name = 'inspect_customization'; args = { extensionId: first.extension.id }; }
         else { name = 'offer_customization'; args = { extensionId: first.extension.id }; }
       } else if (/Prepare a change/.test(text)) {
-        expect(request.tools.some(tool => tool.name === 'compile_draft')).toBe(true);
+        expect(request.tools.some(tool => tool.name === 'offer_proposal')).toBe(true);
         reply = 'Preparation is scoped to this opened customization. Approval and turning it on remain separate.';
       } else if (step === 0) { name = 'discover_customizations'; args = { before: '' }; }
       else if (!empty && step === 1) { name = 'inspect_customization'; args = { extensionId: first.extension.id }; }
@@ -82,7 +78,8 @@ async function fixture({ empty = false, unsolicitedMutation = false, blockedOnce
 }
 
 async function enter(page, f) {
-  await page.goto(f.origin + '/#new=1');
+  const target = admitTaskDraft(f.db, f.lifecycle, { name: 'Untitled customization' });
+  await page.goto(f.origin + '/#customization=' + target.extensionId);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await expect(composer(page)).toBeVisible();
 }
@@ -99,7 +96,7 @@ test('a new discussion uses two existing rules and task evidence, then opens an 
     await send(page, 'What would you suggest based on my existing work?');
     await expect(ui(page).getByText(/You have two other saved customizations/)).toBeVisible();
     expect(f.turns[0].context.otherCustomizationCount).toBe(2);
-    expect(f.turns[0].context.intent).toBe('discuss');
+    expect(f.turns[0].context).not.toHaveProperty('intent');
     expect(f.turns[0].tools).not.toContain('compile_draft');
     expect(f.calls).toEqual(['discover_customizations', 'inspect_customization', 'inspect_customization', 'search_tasks']);
     expect(snapshot(f.db)).toEqual(before);
@@ -126,7 +123,7 @@ test('a new discussion uses two existing rules and task evidence, then opens an 
     expect(snapshot(f.db)).toEqual(before);
     await send(page, 'Prepare a change to this opened draft.');
     await expect(ui(page).getByText(/Preparation is scoped to this opened customization/)).toBeVisible();
-    expect(f.turns.at(-1).context.intent).toBe('prepare');
+    expect(f.turns.at(-1).tools).toContain('offer_proposal');
     expect(f.turns.at(-1).context.editingTarget.extensionId).toBe(f.first.extension.id);
     await page.goto(f.origin + '/#customization=' + discussion);
     await expect(composer(page)).toHaveValue('Keep this unsent idea for later.');
@@ -142,7 +139,7 @@ test('empty collection and insufficient query evidence remain an honest discussi
     await composer(page).press('Enter');
     await expect(ui(page).getByText(/No tasks matched that project search/)).toBeVisible();
     expect(f.turns[0].context.otherCustomizationCount).toBe(0);
-    expect(f.turns[0].context.intent).toBe('discuss');
+    expect(f.turns[0].context).not.toHaveProperty('intent');
     expect(snapshot(f.db)).toEqual(before);
   } finally { await f.close(); }
 });
@@ -159,16 +156,16 @@ test('even an unsolicited provider compile during Send cannot alter tasks, rules
 });
 
 test('generic Try again resumes discussion, even after an interrupted preparation request', async ({ page }) => {
-  const f = await fixture({ blockedOnce: true, intents: ['prepare'] });
+  const f = await fixture({ blockedOnce: true });
   try {
     await enter(page, f); const before = snapshot(f.db);
     await send(page, 'Prepare a change to this draft.');
     const retry = ui(page).getByRole('button', { name: 'Try again from saved work', exact: true });
     await expect(retry).toBeVisible();
-    expect(f.turns[0].context.intent).toBe('prepare');
+    expect(f.turns[0].tools).toContain('offer_proposal');
     await retry.click();
     await expect(ui(page).getByText(/You have two other saved customizations/)).toBeVisible();
-    expect(f.turns.at(-1).context.intent).toBe('discuss');
+    expect(f.turns.at(-1).context).not.toHaveProperty('intent');
     expect(f.turns.at(-1).tools).not.toContain('compile_draft');
     expect(snapshot(f.db)).toEqual(before);
   } finally { await f.close(); }

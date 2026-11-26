@@ -17,7 +17,7 @@ test('offline due-date conversation explains checked behavior and keeps approval
     await studio.getByRole('button', { name: 'Send', exact: true }).click();
   };
   const seeChange = async () => {
-    await studio.locator('#studio-view-saved').click();
+    if (!await studio.getByRole('heading', { name: 'Summary', exact: true }).isVisible()) await studio.locator('#studio-view-saved').click();
     await expect(studio.getByRole('heading', { name: 'Summary', exact: true })).toBeFocused();
     await studio.getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(decision.locator('.rs-review-status')).not.toHaveText('Checking saved results…');
@@ -28,13 +28,15 @@ test('offline due-date conversation explains checked behavior and keeps approval
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await openEarlierPersonalEditor(page, fixture);
     const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
     await send('Could you help me give new tasks a due date automatically?');
     await expect(studio.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
-    expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification']);
     await send('Confirmed: every project, only when the new task has no due date. Use exactly 168 hours after addition.');
     await expect(studio.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
+    await studio.getByRole('button', { name: 'Confirm this behavior', exact: true }).click();
+    await expect(studio.getByText(/^The draft was saved and its examples passed/)).toBeVisible();
 
     const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     expect(id).toBeTruthy();
@@ -184,6 +186,8 @@ test('offline due-date conversation explains checked behavior and keeps approval
     expect(reopened.current.id).toBe(checked.current.id);
     await send(fixture.metadata.editRequest);
     await expect(studio.getByText(fixture.metadata.editedOfferText, { exact: true })).toBeVisible({ timeout: 20_000 });
+    await studio.getByRole('button', { name: 'Confirm this behavior', exact: true }).click();
+    await expect(studio.getByText(/^The draft was saved and its examples passed/)).toHaveCount(2);
     const edited = await discussion(), current = await state();
     expect(edited.current.id).toBe(checked.current.id);
     expect(edited.current.review.revisionId).not.toBe(revisionId);
@@ -299,13 +303,15 @@ test('proposal links settle on an unobscured Summary while View simulation remai
     await page.goto(fixture.origin);
     await page.getByRole('button', { name: /^Continue as Maya/ }).click();
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Customizations', exact: true }).click();
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await openEarlierPersonalEditor(page, fixture);
     await composer.fill('Could you help me give new tasks a due date automatically?');
     await studio.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(studio.getByText(fixture.metadata.question, { exact: true })).toBeVisible();
     await composer.fill('Confirmed: every project, only when the new task has no due date. Use exactly 168 hours after addition.');
     await studio.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(studio.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
+    await studio.getByRole('button', { name: 'Confirm this behavior', exact: true }).click();
+    await expect(studio.getByText(/^The draft was saved and its examples passed/)).toBeVisible();
     const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     const { contextToken } = await (await page.request.get(fixture.origin + '/api/session')).json();
     const state = async () => {
@@ -464,3 +470,4 @@ test('proposal links settle on an unobscured Summary while View simulation remai
     expect(writes).toEqual([]);
   } finally { release?.(); await page.close(); await fixture.close(); }
 });
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

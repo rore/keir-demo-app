@@ -42,7 +42,7 @@ for (const viewport of [{ width: 2000, height: 1040 }, { width: 1440, height: 90
       await expect(card).toBeVisible();
       expect(await frame()).toEqual(original);
       await page.getByRole('button', { name: 'New customization', exact: true }).click();
-      await expect(studio.getByRole('heading', { name: 'New customization', exact: true })).toBeVisible();
+      await expect(studio.getByText('Personal · Untitled customization', { exact: true })).toBeVisible();
       expect(await frame()).toEqual(original);
       expect((await studio.boundingBox()).width).toBeLessThanOrEqual(960);
       await studio.getByRole('button', { name: 'Back to Customizations', exact: true }).click();

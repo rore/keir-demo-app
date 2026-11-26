@@ -286,7 +286,7 @@ test('discussion cannot compile, replace scenarios or simulate; exact offers per
     { name: 'simulate_draft', arguments: { revisionId: 'untrusted-revision', expectedDraftVersion: 0 } },
   ]) {
     const run = await discussion(t, f, [call]);
-    assert.deepEqual(run.results[0], { ok: false, code: 'DISCUSSION_ONLY' }); assert.deepEqual(domain(f.db), before);
+    assert.deepEqual(run.results[0], { ok: false, code: 'INVALID_TOOL_ARGUMENTS' }); assert.deepEqual(domain(f.db), before);
   }
   const run = await discussion(t, f, [{ name: 'offer_customization', arguments: { extensionId: other } }]);
   assert.equal(run.settled.extensionId, f.bound);
@@ -297,20 +297,14 @@ test('discussion cannot compile, replace scenarios or simulate; exact offers per
   assert.deepEqual(domain(f.db), before);
 });
 
-test('backend mutation bindings independently fence discussion even after the agent admitted a preparation turn', async t => {
+test('an inert offer cannot mutate a saved and checked draft', async t => {
   const f = fixture(t);
   const state = await checked(f, f.bound, activeProgram);
   const before = domain(f.db);
-  for (const call of [
-    { name: 'compile_draft', arguments: { hookId: TASK_HOOK, sourceJson: draftProgram.source, expectedDraftVersion: state.draftVersion } },
-    { name: 'propose_scenarios', arguments: { revisionId: state.revisionId, cases: activeProgram.cases, expectedDraftVersion: state.draftVersion } },
-    { name: 'simulate_draft', arguments: { revisionId: state.revisionId, expectedDraftVersion: state.draftVersion } },
-  ]) {
-    // Hold the agent's already resolved prepare intent constant while exercising the service's own fence.
-    const run = await discussion(t, f, [call], { input: { intent: 'prepare' }, onRequest(_request, input) { input.intent = 'discuss'; } });
-    assert.deepEqual(run.results[0], { ok: false, code: 'DISCUSSION_ONLY' });
-    assert.deepEqual(domain(f.db), before);
-  }
+  const run = await discussion(t, f, [{ name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: draftProgram.source,
+    cases: activeProgram.cases, expectedDraftVersion: state.draftVersion, summary: 'A proposed revision.' } }], { input: { intent: 'prepare' } });
+  assert.ok(run.settled.offer);
+  assert.deepEqual(domain(f.db), before);
 });
 
 test('legacy omitted intent keeps its raw replay hash; intent is validated and each explicit turn refreshes awareness', async t => {
@@ -325,7 +319,7 @@ test('legacy omitted intent keeps its raw replay hash; intent is validated and e
   const state = f.lifecycle.state('maya', f.bound), input = { conversationId: null, operationId: randomUUID(), text: 'Legacy request.', expectedVersion: 0,
     expectedDraftVersion: 0, target: { kind: 'revise', extensionId: f.bound, baseRevisionId: null, selectionGeneration: state.selection.generation } };
   const start = await service.turn('maya', input, lease), settled = await service.wait('maya', start.conversation.id);
-  assert.equal(JSON.parse(requests[0].input).hostContext.intent, 'prepare');
+  assert.equal(Object.hasOwn(JSON.parse(requests[0].input).hostContext, 'intent'), false);
   assert.equal(Object.hasOwn(input, 'intent'), false);
   assert.equal((await service.turn('maya', input, lease)).operation.id, input.operationId); assert.equal(requests.length, 1);
   assert.equal(service.recover('maya', input).operation.id, input.operationId);
@@ -336,5 +330,5 @@ test('legacy omitted intent keeps its raw replay hash; intent is validated and e
     target: { kind: 'resume', extensionId: f.bound } }, lease);
   await service.wait('maya', next.conversation.id);
   assert.equal(JSON.parse(requests[1].input).hostContext.otherCustomizationCount, 1);
-  assert.equal(JSON.parse(requests[1].input).hostContext.intent, 'discuss');
+  assert.equal(Object.hasOwn(JSON.parse(requests[1].input).hostContext, 'intent'), false);
 });

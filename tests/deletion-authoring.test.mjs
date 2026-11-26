@@ -97,24 +97,27 @@ test('deletion wins admission without dispatch; only a new explicit creation can
   assert.equal(fake.calls, 0);
   assert.equal(db.prepare('SELECT count(*) n FROM authoring_operations').get().n, 0);
   assert.equal(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros, 0);
-  const created = await call('authoring/turn', createRequest('explicit-new-item'));
-  assert.equal(created.statusCode, 202);
-  assert.notEqual(created.json().conversation.extensionId, extensionId);
-  await settled(call, created.json().conversation.id);
-  assert.equal(fake.calls, 1);
+  assert.equal((await call('authoring/turn', createRequest('explicit-new-item'))).statusCode, 409);
+  const created = await call('shared-studio/new-personal', { operationId: 'explicit-new-item' });
+  assert.equal(created.statusCode, 200);
+  assert.notEqual(created.json().extensionId, extensionId);
+  assert.equal(fake.calls, 0);
 });
 
 test('admitted authoring blocks deletion through Stop and terminal-but-tracked compiler settlement', { timeout: 10000 }, async t => {
   const entered = deferred(), release = deferred();
   const heldCompiler = { compile: async () => { entered.resolve(); await release.promise; return { diagnostics: [] }; } };
   const { db, call, fake } = await api(t, { compiler: heldCompiler, release: release.resolve,
-    complete: async () => ({ calls: [{ id: 'compile', name: 'compile_draft', arguments: { hookId: TASK_HOOK, sourceJson: source, expectedDraftVersion: 0 } }],
+    complete: async () => ({ calls: [{ id: 'offer', name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: source,
+      cases: taskCustomizationFixture().cases, expectedDraftVersion: 0, summary: 'Check one follow-up rule.' } }],
       text: '', usage: { inputTokens: 1, outputTokens: 1 } }) });
   const lifecycle = createLifecycle(db, { compiler }), extensionId = firstItem(lifecycle);
   const before = lifecycle.state('maya', extensionId), body = bodyFor(before);
   const started = await call('authoring/turn', request(lifecycle, extensionId, 'held-compile'));
-  assert.equal(started.statusCode, 202); await entered.promise;
-  const { id, runId, version } = started.json().conversation;
+  assert.equal(started.statusCode, 202);
+  const { id, runId, version, offer } = await settled(call, started.json().conversation.id);
+  assert.equal((await call(`authoring/conversations/${id}/confirm`, { runId, expectedVersion: version, offerDigest: offer.digest })).statusCode, 202);
+  await entered.promise;
   for (const status of ['RUNNING', 'CANCELLING', 'CANCELLED']) {
     if (status === 'CANCELLING') {
       assert.equal((await call(`authoring/conversations/${id}/cancel`, { runId, expectedVersion: version })).statusCode, 200);
@@ -160,9 +163,14 @@ test('live work for another item and another owner does not block deletion', { t
 test('HTTP creation and resumed-turn recovery are terminal after deletion, with mismatch conflicts checked first', async t => {
   const { db, call, fake } = await api(t);
   const creation = createRequest('http-create');
-  const started = await call('authoring/turn', creation);
-  assert.equal(started.statusCode, 202);
-  const id = started.json().conversation.id, extensionId = started.json().conversation.extensionId;
+  const service = createAuthoringService({ db, lifecycle: createLifecycle(db, { compiler }), config, providerFactory: fake.providerFactory });
+  let started;
+  try {
+    started = await service.turn('maya', creation, lease);
+    await service.wait('maya', started.conversation.id);
+  } finally { await service.close(); }
+  assert.equal((await call('authoring/turn', creation)).statusCode, 202);
+  const id = started.conversation.id, extensionId = started.conversation.extensionId;
   const first = await settled(call, id);
   const resume = { ...creation, conversationId: id, operationId: 'http-resume', expectedVersion: first.version,
     target: { kind: 'resume', extensionId } };

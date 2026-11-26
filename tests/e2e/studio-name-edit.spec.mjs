@@ -203,7 +203,7 @@ test('saved behavior illustrates task creation and checked examples keep authore
     await expect(example.getByText('Task created as intended', { exact: true })).toBeVisible();
     const exact = decision.getByLabel('Exact checked examples', { exact: true });
     await expect(exact).toBeHidden();
-    await decision.getByText('Technical details for this version', { exact: true }).click();
+    await decision.getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(exact).toContainText(saved.evidence.id);
     await decision.getByRole('button', { name: 'Hide simulation', exact: true }).click();
     await expect(ui.getByRole('button', { name: 'View simulation', exact: true })).toBeFocused();

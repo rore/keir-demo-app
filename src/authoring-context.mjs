@@ -11,7 +11,7 @@ const syntheticScope = 'Saved synthetic example checks, not live task observatio
 const clip = (text, max) => Array.from(text).slice(0, max).join('');
 
 // These are read projections only. Identity and the editing target always come from the host.
-export function createAuthoringContext({ db, lifecycle, owner, extensionId, intent, authorize, currentUse }) {
+export function createAuthoringContext({ db, lifecycle, owner, extensionId, authorize, currentUse, inspectRevision, requireNotesOptIn = false }) {
   const native = taskService(db);
   const read = work => {
     authorize();
@@ -25,18 +25,22 @@ export function createAuthoringContext({ db, lifecycle, owner, extensionId, inte
       ...(oversized && { nameOmittedReason: 'NAME_TOO_LARGE' }), hookId: item.hookId,
       retired: state.retired, hasDraft: !!state.draft, revisionId: state.draft?.id ?? null, approved: state.approved === true };
   };
-  const checked = (id, revisionId, evidenceId) => {
+  const checked = (id, revisionId, evidenceId, revision) => {
     if (!evidenceId) return unavailable('NO_SAVED_CHECK');
     try {
       const proof = lifecycle.evidence(owner, evidenceId, id);
+      if (proof.id === evidenceId && proof.revisionId === revisionId && !proof.historical) {
+        const summary = inspectRevision?.(id, revision, proof)?.summary;
+        if (summary) return { available: true, evidenceId, scope: syntheticScope, passed: proof.passed === true, summary };
+      }
       if (proof.id !== evidenceId || proof.revisionId !== revisionId || proof.historical || !proof.summary)
         return { evidenceId, ...unavailable('CHECK_UNAVAILABLE') };
       const result = { available: true, evidenceId, passed: proof.passed === true, scope: syntheticScope, summary: proof.summary };
       return bytes(result) <= 12288 ? result : { evidenceId, ...unavailable('CHECK_TOO_LARGE') };
     } catch { return { evidenceId, ...unavailable('CHECK_UNAVAILABLE') }; }
   };
-  const behavior = revision => {
-    const description = revision?.ruleDescription;
+  const behavior = (id, revision) => {
+    const description = inspectRevision?.(id, revision)?.behavior ?? revision?.ruleDescription;
     return description && bytes(description) <= 8192 ? description : { coverage: 'unavailable', reason: 'BEHAVIOR_UNAVAILABLE' };
   };
   return {
@@ -44,7 +48,7 @@ export function createAuthoringContext({ db, lifecycle, owner, extensionId, inte
       if (args.length) invalid();
       const state = lifecycle.state(owner, extensionId), item = metadata(state);
       const { count } = db.prepare('SELECT COUNT(*) AS count FROM extensions WHERE owner_id=? AND deleted_at IS NULL AND id<>?').get(owner, extensionId);
-      return { intent, editingTarget: { extensionId, name: item.name, hasDraft: item.hasDraft,
+      return { editingTarget: { extensionId, name: item.name, hasDraft: item.hasDraft,
         ...(item.nameOmittedReason && { nameOmittedReason: item.nameOmittedReason }) }, otherCustomizationCount: count, scope };
     }),
     customizations: (...args) => read(() => {
@@ -66,20 +70,31 @@ export function createAuthoringContext({ db, lifecycle, owner, extensionId, inte
       try {
         const state = lifecycle.state(owner, id), item = metadata(state);
         if (state.retired) return { ...item, ...unavailable('CUSTOMIZATION_UNAVAILABLE') };
+        const { selection } = state, selected = selection.revision;
+        const active = selected?.extensionId === id && selection.eligible;
+        const usage = currentUse ? currentUse(state, id) : {
+          generation: selection.generation, relation: !selected ? 'none' : selected.extensionId === id ? 'thisitem' : 'anotheritem',
+          selected: selected ? { extensionId: selected.extensionId, revisionId: selected.id, eligible: selection.eligible === true,
+            approvedEvidenceId: selection.approvedEvidenceId } : null,
+          ...(active && { check: checked(id, selected.id, selection.approvedEvidenceId, selected) }),
+        };
         const result = { available: true, ...item, scope,
-          draft: state.draft ? { revisionId: state.draft.id, behavior: behavior(state.draft),
-            check: checked(id, state.draft.id, state.evidence?.id),
+          draft: state.draft ? { revisionId: state.draft.id, behavior: behavior(id, state.draft),
+            check: checked(id, state.draft.id, state.evidence?.id, state.draft),
             approval: { approved: state.approved === true, evidenceId: state.approvedEvidenceId,
-              check: state.approved ? checked(id, state.draft.id, state.approvedEvidenceId) : unavailable('NOT_APPROVED') } } : null,
-          currentUse: { ...currentUse(state, id),
-            behavior: state.selection.revision?.extensionId === id && state.selection.eligible
-              ? behavior(state.selection.revision) : { coverage: 'unavailable', reason: 'SELECTED_BEHAVIOR_UNAVAILABLE' } } };
+              check: state.approved ? checked(id, state.draft.id, state.approvedEvidenceId, state.draft) : unavailable('NOT_APPROVED') } } : null,
+          currentUse: { ...usage,
+            behavior: active ? behavior(id, selected) : { coverage: 'unavailable', reason: 'SELECTED_BEHAVIOR_UNAVAILABLE' } } };
         // Keep identities/approval facts even when the combined example summaries cannot fit.
         if (bytes(result) > 32768 && result.draft) {
           result.draft.check = { evidenceId: state.evidence?.id ?? null, ...unavailable('DETAIL_TOO_LARGE') };
           result.draft.approval.check = { evidenceId: state.approvedEvidenceId, ...unavailable('DETAIL_TOO_LARGE') };
         }
         if (bytes(result) > 32768 && result.draft) result.draft.behavior = { coverage: 'unavailable', reason: 'DETAIL_TOO_LARGE' };
+        if (bytes(result) > 32768 && !currentUse && active) {
+          result.currentUse.check = unavailable('DETAIL_TOO_LARGE');
+          result.currentUse.behavior = { coverage: 'unavailable', reason: 'DETAIL_TOO_LARGE' };
+        }
         return bytes(result) <= 32768 ? result : unavailable('DETAIL_TOO_LARGE');
       } catch { return unavailable('CUSTOMIZATION_UNAVAILABLE'); }
     }),
@@ -92,7 +107,12 @@ export function createAuthoringContext({ db, lifecycle, owner, extensionId, inte
       const filters = { query: input.query.trim(), tag: input.tag.trim().normalize('NFC').toLowerCase(), includeNotes: input.includeNotes };
       const query = { ...(filters.query && { q: filters.query }), ...(filters.tag && { tag: filters.tag }), ...(input.after && { after: input.after }) };
       let page;
-      try { page = native.searchTasks(owner, input.projectId, query, { allowAll: true }); }
+      try {
+        if (!db.prepare("SELECT 1 FROM projects WHERE id=? AND owner_id=? AND mode='PERSONAL'").get(input.projectId, owner)) return unavailable('TASKS_UNAVAILABLE');
+        page = native.searchTasks(owner, input.projectId, query, {
+          allowAll: true, searchNotes: !requireNotesOptIn || input.includeNotes === 'yes',
+        });
+      }
       catch (cause) {
         if (cause instanceof AppError && cause.status === 400) invalid();
         return unavailable('TASKS_UNAVAILABLE');

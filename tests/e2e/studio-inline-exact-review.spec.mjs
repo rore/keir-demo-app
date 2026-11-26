@@ -55,7 +55,7 @@ async function openItem(page, id) {
 
 async function expectProof(page, id) {
   const proofId = review(page).getByText('Evidence: ' + id, { exact: true });
-  if (!await proofId.isVisible()) await review(page).getByText('Technical details for this version', { exact: true }).click();
+  if (!await proofId.isVisible()) await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
   await expect(proofId).toBeVisible();
 }
 

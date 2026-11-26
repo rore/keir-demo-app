@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { switchPerson } from '../fixtures/workspace-ui.mjs';
+import { openEarlierPersonalEditor, switchPerson } from '../fixtures/workspace-ui.mjs';
 import { openDeveloperTools } from '../fixtures/studio-review.mjs';
 import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
@@ -52,14 +52,14 @@ async function seedApprovedItem(page, fixture) {
   return { extensionId, state: await api(page, `extensions/${extensionId}`), proof: await api(page, `extensions/${extensionId}/evidence/${state.approvedEvidenceId}`) };
 }
 
-async function createDiscussion(page, extensionId, saved, text) {
+async function createDiscussion(page, extensionId, saved, text, status = 'AWAITING_USER') {
   const result = await api(page, 'authoring/turn', {
     target: { kind: 'revise', extensionId, baseRevisionId: saved.draft.id, selectionGeneration: saved.selection.generation },
     conversationId: null, operationId: crypto.randomUUID(), text, expectedVersion: 0, expectedDraftVersion: saved.draftVersion,
   });
   const id = result.conversation.id;
   await expect.poll(async () => (await api(page, `authoring?extensionId=${encodeURIComponent(extensionId)}`)).conversations.find(item => item.id === id)?.status)
-    .toBe('AWAITING_USER');
+    .toBe(status);
   return id;
 }
 
@@ -149,12 +149,12 @@ test('CONFIG_CHANGED preserves the sample, saved work and rejected text until an
     await studio(page).getByRole('button', { name: 'Send', exact: true }).click();
     await acceptedResponse;
     await expect(studio(page).getByText(rejectedMessage, { exact: true })).toBeVisible();
-    await expect.poll(() => fixture.requests.length).toBe(providerCalls.length + 3);
+    await expect.poll(() => fixture.requests.length).toBe(providerCalls.length + 2);
     expect(calls.turns).toHaveLength(3);
-    expect(calls.turns[2]).toEqual({ conversationId: null, intent: 'auto', operationId: expect.any(String), text: rejectedMessage,
+    expect(calls.turns[2]).toEqual({ conversationId: null, operationId: expect.any(String), text: rejectedMessage,
       expectedVersion: 0, expectedDraftVersion: savedItem.state.draftVersion,
       target: { kind: 'revise', extensionId: savedItem.extensionId, baseRevisionId: savedItem.state.draft.id, selectionGeneration: savedItem.state.selection.generation } });
-    expect(fixture.requests).toHaveLength(providerCalls.length + 3);
+    expect(fixture.requests).toHaveLength(providerCalls.length + 2);
     await expect(recovery).toHaveCount(0);
 
     const newIndex = await api(page, `authoring?extensionId=${encodeURIComponent(savedItem.extensionId)}`);
@@ -177,7 +177,7 @@ test('one item shows its saved discussions and owner switching does not leak rec
     await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
     const savedItem = await seedApprovedItem(page, fixture);
     const oldConversationId = await createDiscussion(page, savedItem.extensionId, savedItem.state, 'Earlier discussion for this saved customization.');
-    const currentConversationId = await createDiscussion(page, savedItem.extensionId, savedItem.state, 'Current saved discussion for this customization.');
+    const currentConversationId = await createDiscussion(page, savedItem.extensionId, savedItem.state, 'Current saved discussion for this customization.', 'IDLE');
     const calls = recordRequests(page);
     const providerCalls = [...fixture.requests];
     await openStudio(page, savedItem.extensionId, currentConversationId);
@@ -193,10 +193,14 @@ test('one item shows its saved discussions and owner switching does not leak rec
     await switchPerson(page, 'sam');
     await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'sam');
     await navigate(page, 'Customizations');
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    const samItem = await openEarlierPersonalEditor(page, fixture, { owner: 'sam' });
     await expect(studio(page).getByLabel('Message to Daymark assistant', { exact: true })).toHaveValue('');
-    await expect(studio(page).getByRole('article', { name: 'Assistant settings changed', exact: true })).toHaveCount(0);
+    await expect(page).toHaveURL(new RegExp(`#customization=${samItem.extensionId}$`));
+    await expect(page.locator('body')).not.toContainText(changedCopy);
     await expect(page.locator('body')).not.toContainText(rejectedMessage);
+    await expect(page.locator('body')).not.toContainText('Earlier discussion for this saved customization.');
+    await expect(page.locator('body')).not.toContainText('Current saved discussion for this customization.');
+    expect(calls.turns).toHaveLength(1);
     expect(calls.setupPosts).toEqual([]);
     expect(fixture.requests).toEqual(providerCalls);
 
@@ -276,8 +280,8 @@ test('a revised customization opens its earlier discussion and continues in one 
     const followUp = 'Keep the original behavior and discuss the current task customization.';
     await composer.fill(followUp);
     await ui.getByRole('button', { name: 'Send', exact: true }).click();
-    await expect.poll(async () => (await api(page, `authoring?extensionId=${extensionId}`)).current?.status).toBe('AWAITING_USER');
-    expect(calls.turns).toEqual([{ conversationId: null, intent: 'auto', operationId: expect.any(String), text: followUp,
+    await expect.poll(async () => (await api(page, `authoring?extensionId=${extensionId}`)).current?.status).toBe('IDLE');
+    expect(calls.turns).toEqual([{ conversationId: null, operationId: expect.any(String), text: followUp,
       expectedVersion: 0, expectedDraftVersion: fresh.draftVersion,
       target: { kind: 'revise', extensionId, baseRevisionId: fresh.draft.id, selectionGeneration: fresh.selection.generation } }]);
     await expect(ui.getByText(text, { exact: true })).toHaveCount(1);
@@ -290,6 +294,6 @@ test('a revised customization opens its earlier discussion and continues in one 
     await expect(page).toHaveURL(new RegExp('#customization=' + extensionId + '$'));
     expect(await api(page, 'extensions/' + extensionId)).toEqual(fresh);
     expect(await api(page, `extensions/${extensionId}/evidence/${proof.id}`)).toEqual(proof);
-    expect(fixture.requests).toHaveLength(providerCalls + 3);
+    expect(fixture.requests).toHaveLength(providerCalls + 2);
   } finally { await fixture.close(); }
 });

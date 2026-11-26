@@ -23,11 +23,6 @@ async function seed(page, fixture, { approved = false, native = false, selection
   await page.goto(fixture.origin);
   await page.getByRole('button', { name: /^Continue as Maya/ }).click();
   await expect(page.locator('.user-tools button[aria-pressed="true"]')).toHaveAttribute('value', 'maya');
-  if (native) {
-    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
-    await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');
-    await page.locator('#open-customizations').click();
-  }
   async function checkedDraft(source, cases, name) {
     const { extensionId } = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { name });
     const path = 'extensions/' + extensionId;
@@ -35,7 +30,7 @@ async function seed(page, fixture, { approved = false, native = false, selection
     state = await api(page, path + '/scenarios', { ...input(state), cases });
     return api(page, path + '/simulate', input(state));
   }
-  if (selectionBaseline) {
+  if (selectionBaseline || native) {
     const existing = taskCustomizationFixture({ projectId: fixture.metadata.projectId, otherProjectId: fixture.metadata.otherProjectId, title: 'Existing customer follow-up' });
     let active = await checkedDraft(existing.source, existing.cases, 'Existing customer change');
     const path = 'extensions/' + active.extension.id;
@@ -45,6 +40,11 @@ async function seed(page, fixture, { approved = false, native = false, selection
   let state = await checkedDraft(fixture.metadata.source, fixture.metadata.cases, 'Continuity proposal');
   const path = 'extensions/' + state.extension.id;
   if (approved) state = await api(page, path + '/approve', { ...input(state), evidenceId: state.evidence.id });
+  if (native) {
+    await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
+    await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved task title');
+    await page.locator('#open-customizations').click();
+  }
   return { path, state };
 }
 async function openItem(page, id) {
@@ -192,7 +192,7 @@ for (const resource of ['proof', 'source']) test(`closing and reopening explicit
     hold.release(); await hold.finished;
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     await expect(review(page)).not.toContainText('could not be confirmed');
-    await review(page).getByText('Technical details for this version', { exact: true }).click();
+    await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(review(page).getByLabel('Saved source for approval', { exact: true })).toHaveText(fixture.metadata.source);
     await closeReview(page);
     await expect(composer(page)).toHaveValue('Keep my unsent discussion');
@@ -299,7 +299,7 @@ for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preser
     await openReview(page);
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     if (!await review(page).getByLabel('Saved source for approval', { exact: true }).isVisible())
-      await review(page).getByText('Technical details for this version', { exact: true }).click();
+      await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(review(page)).toContainText('Evidence: ' + state.evidence.id);
     await composer(page).fill('Please continue checking my request');
     await composer(page).press('Enter');
@@ -324,7 +324,7 @@ for (const change of ['draft', 'run', 'selection']) test(`a new ${change} preser
     await studio(page).getByRole('button', { name: 'View simulation', exact: true }).click();
     await expect(review(page).getByRole('button', { name: 'Approve this change', exact: true })).toBeEnabled();
     if (!await review(page).getByLabel('Saved source for approval', { exact: true }).isVisible())
-      await review(page).getByText('Technical details for this version', { exact: true }).click();
+      await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(review(page)).toContainText('Evidence: ' + latest.evidence.id);
     expect(decisions).toEqual([]);
     expect((await api(page, path)).approved).toBe(false);
@@ -365,7 +365,7 @@ test('an earlier run stays read-only when it becomes the approved decision until
     await expect(results.getByRole('button', { name: /^(Turn on for tasks completed)$/ })).toHaveCount(0);
     await openReview(page);
     await expect(activate(page)).toBeEnabled();
-    await review(page).getByText('Technical details for this version', { exact: true }).click();
+    await review(page).getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(review(page)).toContainText('Evidence: ' + first.evidence.id);
     expect(decisions).toEqual([]);
     expect(await api(page, path)).toEqual(approved);

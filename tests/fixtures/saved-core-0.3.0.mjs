@@ -6,7 +6,7 @@ export const savedCore030 = JSON.parse(readFileSync(new URL('./saved-core-0.3.0.
 export function restoreSavedCore030(db) { return restoreSavedCore(db, savedCore030); }
 export function restoreSavedCore(db, fixture) {
   db.exec('BEGIN IMMEDIATE; PRAGMA defer_foreign_keys=ON');
-  db.prepare('INSERT INTO projects VALUES (?,?,?,?,?)').run(fixture.projectId, 'maya', 'Retained fictional project', '2026-02-02T02:40:00.000Z', '2026-02-02T02:40:00.000Z');
+  db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at) VALUES (?,?,?,?,?)').run(fixture.projectId, 'maya', 'Retained fictional project', '2026-02-02T02:40:00.000Z', '2026-02-02T02:40:00.000Z');
   try {
     for (const [table, rows] of Object.entries(fixture.tables)) for (const row of rows) {
       const keys = Object.keys(row);

@@ -14,12 +14,14 @@ test('natural-language tag/notes rule reaches real compilation, saved review and
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   try {
     await page.goto(f.origin); await page.getByRole('button', { name: /^Continue as Maya/ }).click();
-    await navigate('Customizations'); await button('New customization').click();
+    await navigate('Customizations'); await openEarlierPersonalEditor(page, f);
     const before = counts(), originalSelections = selections();
     await send('Before saving a new task with more than three tags, require notes.');
     await expect(ui.getByText(f.metadata.question, { exact: true })).toBeVisible();
     await send('Confirmed: count normalized distinct tags. Four through eight tags are allowed with notes. Whitespace-only notes do not count. Do not change existing tasks or later edits.');
     await expect(ui.getByText(f.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
+    await ui.getByRole('button', { name: 'Confirm this behavior', exact: true }).click();
+    await expect(ui.getByText(/^The draft was saved and its examples passed/)).toBeVisible();
     expect(counts()).toEqual(before); expect(selections()).toEqual(originalSelections);
     const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
     const session = await (await page.request.get(f.origin + '/api/session')).json();
@@ -105,3 +107,4 @@ test('natural-language tag/notes rule reaches real compilation, saved review and
     expect(f.requests.length).toBe(providerCalls); expect(errors).toEqual([]);
   } finally { await f.close(); }
 });
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

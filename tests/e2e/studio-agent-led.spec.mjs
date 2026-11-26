@@ -61,6 +61,8 @@ async function authorCandidate(page, fixture) {
   await expect(studio(page).getByText(fixture.metadata.question, { exact: true })).toBeVisible();
   await send(page, `Confirmed: use ${fixture.metadata.title} in ${fixture.metadata.projectName}, with the independent examples.`);
   await expect(studio(page).getByText(fixture.metadata.offerText, { exact: true })).toBeVisible({ timeout: 20_000 });
+  await studio(page).getByRole('button', { name: 'Confirm this behavior', exact: true }).click();
+  await expect(studio(page).getByText('The draft was saved and its examples passed. It is not approved or turned on.', { exact: true })).toBeVisible();
   return new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
 }
 
@@ -80,7 +82,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByLabel('Task title', { exact: true }).fill('Keep this unsaved native title');
       await page.locator('#open-customizations').click();
       await navigate(page, 'Customizations');
-      await page.getByRole('button', { name: 'New customization', exact: true }).click();
+      await openEarlierPersonalEditor(page, fixture);
       const ui = studio(page), before = await collection(page);
       const nativeBefore = fixture.db.prepare('SELECT * FROM tasks ORDER BY id').all();
       const composer = ui.getByLabel('Message to Daymark assistant', { exact: true });
@@ -89,7 +91,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(ui.getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
       await ui.getByRole('button', { name: 'Back to Customizations', exact: true }).click();
       expect(await collection(page)).toEqual(before);
-      await page.getByRole('button', { name: 'New customization', exact: true }).click();
+      await openEarlierPersonalEditor(page, fixture);
       const newId = await authorCandidate(page, fixture);
       expect(newId).not.toBe(activeId);
       await composer.fill('Keep this unsent personal request');
@@ -111,7 +113,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(prepared.selection).toEqual(before.selection);
       expect(documents.source).toBe(fixture.metadata.source); expect(documents.cases).toEqual(fixture.metadata.cases);
       expect(await saved(page, activeId)).toEqual(activeBefore);
-      expect(fixture.requests.map(item => item.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification', 'resolve_intent', 'discover_catalog', 'compile_draft', 'compile_draft', 'propose_scenarios', 'simulate_draft', 'offer_review']);
+      expect(fixture.requests.map(item => item.name)).toEqual(['discover_catalog', 'ask_clarification', 'discover_catalog', 'offer_proposal']);
       const proposed = decision.getByRole('region', { name: 'Checked proposed behavior', exact: true });
       await expect(proposed.getByRole('article', { name: /^Example:/ })).toHaveCount(documents.cases.length);
       await expect(proposed).toContainText(fixture.metadata.title);
@@ -121,7 +123,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await ui.getByRole('button', { name: 'Back to conversation', exact: true }).click();
       await expect(decision.getByRole('article', { name: /^Example:/ }).first()).toBeVisible();
       await expect(proposed.getByRole('article', { name: /^Example:/ }).nth(1)).toContainText('No change.');
-      await ui.getByText('Technical details for this version', { exact: true }).click();
+      await ui.getByText('Advanced: saved evidence', { exact: true }).click();
       await expect(decision.getByLabel('Saved source for approval', { exact: true })).toHaveText(documents.source);
       for (let index = 0; index < documents.cases.length; index++)
         await expect(decision.getByLabel(`Saved example ${index + 1} for approval`, { exact: true })).toHaveText(documents.cases[index]);
@@ -149,7 +151,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(ui.getByLabel('Customization status', { exact: true })).toContainText('On for my tasks');
       await expect(ui.locator('.rs-chat')).toContainText(fixture.metadata.offerText);
       await expect(composer).toBeVisible();
-      expect(fixture.requests).toHaveLength(10);
+      expect(fixture.requests).toHaveLength(4);
     } finally { await fixture.close(); }
   });
 }
@@ -198,7 +200,7 @@ test('a new assistant proposal does not replace an unrelated saved proposal on r
     await expect(studio(page).getByRole('button', { name: 'Try a guided example · no AI', exact: true })).toHaveCount(0);
     expect(await saved(page, id)).toEqual(before); expect(await source(page, id, before.draft.id)).toEqual(beforeSource);
     await navigate(page, 'Customizations');
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await openEarlierPersonalEditor(page, fixture);
     const newId = await authorCandidate(page, fixture);
     await openSavedChanges(page);
     expect(newId).not.toBe(id);
@@ -207,7 +209,7 @@ test('a new assistant proposal does not replace an unrelated saved proposal on r
     expect(created.selection).toEqual(before.selection);
     expect(documents.source).toBe(fixture.metadata.source); expect(documents.cases).toEqual(fixture.metadata.cases);
     expect(await saved(page, id)).toEqual(before); expect(await source(page, id, before.draft.id)).toEqual(beforeSource);
-    expect(fixture.requests).toHaveLength(10);
+    expect(fixture.requests).toHaveLength(4);
   } finally { await fixture.close(); }
 });
 
@@ -263,3 +265,4 @@ test('ordinary examples retain independent task expectations and observed mismat
     expect((await saved(page, id)).approved).toBe(false); expect(fixture.requests).toHaveLength(0);
   } finally { await fixture.close(); }
 });
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

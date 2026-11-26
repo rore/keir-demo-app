@@ -4,6 +4,8 @@ import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { createLifecycle } from '../../src/extension-lifecycle.mjs';
 import { seedTaskEffectBinding } from '../fixtures/task-effect-schema.mjs';
 import { switchPerson } from '../fixtures/workspace-ui.mjs';
+import { admitTaskDraft } from '../fixtures/task-authoring.mjs';
+import { digest, json } from '../../src/extension-catalog.mjs';
 
 const navigation = page => page.getByRole('navigation', { name: 'Main navigation' });
 const card = (page, id) => page.locator('.customization-card').filter({ has: page.locator('#edit-' + id) });
@@ -70,7 +72,7 @@ test('a task customization is authored, checked, approved, used and deleted thro
   const fixture = await startAuthoringFixture();
   try {
     await enter(page, fixture); await collection(page);
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await openEarlierPersonalEditor(page, fixture);
     const ui = page.getByRole('region', { name: 'Customization Studio', exact: true });
     await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(`When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`);
     await ui.getByRole('button', { name: 'Send', exact: true }).click();
@@ -78,6 +80,8 @@ test('a task customization is authored, checked, approved, used and deleted thro
     await ui.getByLabel('Message to Daymark assistant', { exact: true }).fill(`Confirmed: completing a task in ${fixture.metadata.projectName} should create ${fixture.metadata.title}; other projects should create nothing.`);
     await ui.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(ui.getByText(fixture.metadata.offerText, { exact: true })).toBeVisible();
+    await ui.getByRole('button', { name: 'Confirm this behavior', exact: true }).click();
+    await expect(ui.getByText(/^The draft was saved and its examples passed/)).toBeVisible();
     await openSavedChanges(page);
     await ui.getByRole('button', { name: 'Approve this change', exact: true }).click();
     const id = new URLSearchParams(new URL(page.url()).hash.slice(1)).get('customization');
@@ -168,14 +172,17 @@ for (const kind of ['turn', 'resume']) test(`terminal ${kind} recovery reaches t
     await enter(page, fixture);
     let submitted = { target: { kind: 'create' }, conversationId: null, operationId,
       text: `When I complete a task in ${fixture.metadata.projectName}, create ${fixture.metadata.title}. Other projects should create nothing.`, expectedVersion: 0, expectedDraftVersion: 0 };
-    let accepted = await api(page, 'authoring/turn', submitted, 202);
-    await expect.poll(() => fixture.db.prepare('SELECT status FROM authoring_conversations WHERE id=?').get(accepted.conversation.id).status).not.toBe('RUNNING');
-    let state = await api(page, 'extensions/' + accepted.conversation.extensionId);
+    const earlier = admitTaskDraft(fixture.db, createLifecycle(fixture.db), { operationId });
+    fixture.db.prepare("UPDATE authoring_conversations SET version=1,state=json_set(state,'$.version',1) WHERE id=?").run(earlier.conversationId);
+    fixture.db.prepare('INSERT INTO authoring_operations VALUES (?,?,?,?,?,?)')
+      .run(earlier.conversationId, 'maya', operationId, digest(json(submitted)), earlier.conversationState.runId, 1);
+    expect((await api(page, 'authoring/turn', submitted, 202)).conversation.id).toBe(earlier.conversationId);
+    let state = await api(page, 'extensions/' + earlier.extensionId);
     if (kind === 'resume') {
-      const conversation = await api(page, 'authoring/conversations/' + accepted.conversation.id);
+      const conversation = await api(page, 'authoring/conversations/' + earlier.conversationId);
       submitted = { target: { kind: 'resume', extensionId: state.extension.id }, conversationId: conversation.id,
         operationId: crypto.randomUUID(), text: `Confirmed: completing a task in ${fixture.metadata.projectName} should create ${fixture.metadata.title}; other projects should create nothing.`, expectedVersion: conversation.version, expectedDraftVersion: state.draftVersion };
-      accepted = await api(page, 'authoring/turn', submitted, 202);
+      const accepted = await api(page, 'authoring/turn', submitted, 202);
       await expect.poll(() => fixture.db.prepare('SELECT status FROM authoring_conversations WHERE id=?').get(accepted.conversation.id).status).not.toBe('RUNNING');
       state = await api(page, 'extensions/' + state.extension.id);
     }
@@ -264,3 +271,4 @@ test('an owner switch fences a late deletion response and its confirmation', asy
     await expect(page.getByText(`“${item.name}” was deleted.`, { exact: true })).toHaveCount(0); expect(fixture.requests).toHaveLength(0);
   } finally { release(); await fixture.close(); }
 });
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

@@ -1,8 +1,16 @@
 import { expect } from '@playwright/test';
+import { createLifecycle } from '../../src/extension-lifecycle.mjs';
+import { admitTaskDraft } from './task-authoring.mjs';
 
 export async function navigate(page, name) {
   await page.getByRole('navigation', { name: 'Main navigation', exact: true })
     .getByRole('button', { name, exact: true }).click();
+}
+
+export async function openEarlierPersonalEditor(page, { db }, options) {
+  const saved = admitTaskDraft(db, createLifecycle(db), { name: 'Untitled customization', ...options });
+  await page.goto(new URL('/#customization=' + encodeURIComponent(saved.extensionId), page.url()).href);
+  return saved;
 }
 
 export async function openWorkspaceTool(page, selector) {

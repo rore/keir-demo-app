@@ -273,7 +273,7 @@ test('a lost completion response is read back without completing or writing agai
   await page.route('**/api/tasks/' + source.id + '/reaction', route => route.fulfill({ json: { state: 'NO_BINDING', outcome: null, receipt: null } }));
   await page.getByRole('button', { name: 'Complete ' + source.title, exact: true }).click();
   await expect(page.getByRole('button', { name: source.title + ', completed', exact: true })).toBeDisabled();
-  await expect(page.getByRole('region', { name: 'Customization outcome', exact: true })).toContainText('No customization was recorded');
+  await expect(page.getByRole('region', { name: 'Customization outcome', exact: true })).toHaveCount(0);
   expect(completions).toBe(1); expect(demo.db.prepare('SELECT status FROM tasks WHERE id=?').get(source.id).status).toBe('completed');
 });
 

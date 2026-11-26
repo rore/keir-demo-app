@@ -2,8 +2,11 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Temporal } from "temporal-polyfill";
 import "./styles.css";
-import Studio, { sha256, type Collection, type StudioTarget } from "./Studio";
-import Customizations from "./Customizations";
+import Studio, { pendingRequests, sha256, type Collection, type State, type StudioTarget } from "./Studio";
+import SharedCompletionStudio, { offerTime, TeamActiveRule } from "./SharedCompletionStudio";
+import type { ActiveTeam } from "./SharedCompletionStudio";
+import Customizations, { CustomizationsPage } from "./Customizations";
+import TeamCapability from "./TeamCapability";
 import { normalizeTaskTags } from "../task-workflow-values.mjs";
 
 type User = { id: string; name: string; description?: string };
@@ -17,18 +20,28 @@ function studioLink() {
   const params = new URLSearchParams(location.hash.slice(1));
   const keys = Array.from(params.keys());
   const id = (value: string | null) => value !== null && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value);
+  if (keys.length === 1 && id(params.get("teamProject"))) return { valid: true, target: null, teamProject: params.get("teamProject")! };
+  const teamStudio = params.get("studio");
+  if (keys.length === 2 && id(params.get("teamProject")) && (teamStudio === "shared" || teamStudio === "legacy"))
+    return { valid: true, target: null, teamProject: params.get("teamProject")!, teamStudio };
+  if (keys.length === 1 && params.get("personal") === "1") return { valid: true, target: null, personal: true };
   if (keys.length === 1 && params.get("new") === "1") return { valid: true, target: { extensionId: null } as StudioTarget };
   if (keys.length < 1 || keys.length > 2 || new Set(keys).size !== keys.length || keys.some(key => !["customization", "conversation"].includes(key))
     || !id(params.get("customization")) || params.has("conversation") && !id(params.get("conversation"))) return { valid: false, target: null };
   return { valid: true, target: { extensionId: params.get("customization"), conversationId: params.get("conversation") } as StudioTarget };
 }
-type Project = { id: string; name: string };
+type Project = { id: string; name: string; mode?: "PERSONAL" | "TEAM"; role?: "ADMIN" | "MEMBER" };
+type Members = { project: Project; members: { id: string; name: string; role: "ADMIN" | "MEMBER" }[] };
 type NativeReceipt = { kind: string; effect?: "CONFIRMED" | "NONE" | "UNKNOWN"; value?: { id: string }; code?: string };
 type NativeChange = Pick<Task, "tags" | "priority" | "dueAt">;
-type ReactionObservation = { capability?: "tasks.create" | "tasks.update"; observation?: { updated?: { id: string; before: NativeChange; after: NativeChange } } };
+type ReactionObservation = { capability?: "tasks.create" | "tasks.update"; destinationProjectId?: string;
+  observation?: { updated?: { id: string; before: NativeChange; after: NativeChange } } };
 type Reaction = {
   state: "NO_BINDING" | "PENDING" | "STARTED" | "FINISHED";
   workflow?: boolean;
+  team?: boolean;
+  linked?: boolean;
+  revisionId?: string | null;
   revoked?: boolean;
   outcome?: { classification?: string; effects?: { state?: string; effect?: string }[]; error?: { code?: string }; [key: string]: unknown } | null;
   receipt?: NativeReceipt | null;
@@ -45,6 +58,11 @@ type Task = {
   dueAt: string | null;
   status: "open" | "completed";
   completedAt: string | null;
+  creatorId?: string;
+  assigneeId?: string | null;
+  assigneeName?: string | null;
+  parentTaskId?: string | null;
+  originEventId?: string | null;
 };
 type TaskDraft = Pick<Task, "title" | "notes" | "priority"> & { tags: string; dueTime: string; dueZone: string; dueTimeEdited: boolean };
 type CreateBody = Pick<Task, "projectId" | "title" | "notes" | "tags" | "priority" | "dueAt">;
@@ -109,7 +127,7 @@ function taskDraft(task: Task, dueZone = Temporal.Now.timeZoneId()): TaskDraft {
 
 function formatDueTime(dueAt: string, timeZone = Temporal.Now.timeZoneId()) {
   return new Date(dueAt).toLocaleString(undefined, { timeZone, year: "numeric", month: "short", day: "numeric",
-    hour: "numeric", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, timeZoneName: "shortOffset",
+    hour: "numeric", minute: "2-digit", timeZoneName: "shortOffset",
     era: dueAt.startsWith("0001-01-01") ? "short" : undefined });
 }
 
@@ -160,13 +178,12 @@ async function api<T>(
 
 function Brand() {
   return (
-    <span className="brand" aria-label="Daymark, A KEIR Demo">
+    <span className="brand">
       <span className="brand-mark" aria-hidden="true">
         ✓
       </span>
       <span className="brand-copy">
         <span className="brand-name">Daymark</span>
-        <span className="brand-subline">A KEIR Demo</span>
       </span>
     </span>
   );
@@ -187,6 +204,7 @@ function closeTaskFilter(form: HTMLFormElement | null) {
 
 function App() {
   const createRecovery = useRef(new Map<string, CreateRecovery>());
+  const projectIntent = useRef("");
   const [session, setSession] = useState<Session | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -285,7 +303,6 @@ function App() {
       <div className="welcome">
         <header className="welcome-header">
           <Brand />
-          <span className="eyebrow">THE LOCAL DEMO</span>
         </header>
         <main className="welcome-main">
           <div className="welcome-copy">
@@ -308,13 +325,7 @@ function App() {
             </div>
           </div>
           <section className="people-card" aria-labelledby="welcome-title">
-            <span className="section-number">START HERE</span>
             <h2 id="welcome-title">Choose a demo person.</h2>
-            <p>
-              Choose a fictional demo person.
-              <br />
-              Each has a space of their own.
-            </p>
             {error && (
               <div className="error" role="alert">
                 {error}
@@ -335,9 +346,6 @@ function App() {
                     <strong>Continue as {user.name}</strong>
                     <small>{user.description}</small>
                   </span>
-                  <span className="arrow" aria-hidden="true">
-                    ↗
-                  </span>
                 </button>
               ))}
             </div>
@@ -353,9 +361,6 @@ function App() {
             </p>
           </section>
         </main>
-        <footer className="welcome-footer">
-          <span>Made for the work in front of you.</span>
-        </footer>
       </div>
     );
   return (
@@ -367,6 +372,7 @@ function App() {
       switchUser={authenticate}
       expired={expired}
       createRecovery={createRecovery.current}
+      projectIntent={projectIntent}
     />
   );
 }
@@ -378,6 +384,7 @@ function Workspace({
   switchUser,
   expired,
   createRecovery,
+  projectIntent,
 }: {
   session: Session & { user: User };
   users: User[];
@@ -385,6 +392,7 @@ function Workspace({
   switchUser: (id: string) => void;
   expired: () => void;
   createRecovery: Map<string, CreateRecovery>;
+  projectIntent: { current: string };
 }) {
   const retainedCreate = useRef(createRecovery.get(session.user.id));
   const studioDrafts = useRef(new Map<string, string | null>());
@@ -419,7 +427,13 @@ function Workspace({
   const createInstance = useRef(0);
   const createPending = useRef(false);
   const [projectName, setProjectName] = useState("");
+  const [projectMode, setProjectMode] = useState<"PERSONAL" | "TEAM">("PERSONAL");
+  const [membersOpen, setMembersOpen] = useState(false);
   const [newProject, setNewProject] = useState(false);
+  const [projectCreateError, setProjectCreateError] = useState("");
+  const [projectCreateUncertain, setProjectCreateUncertain] = useState(false);
+  const projectCreatePending = useRef(false);
+  const restoreProjectLauncher = useRef(false);
   const [rename, setRename] = useState(false);
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<Task | null>(null);
@@ -430,7 +444,7 @@ function Workspace({
   const routeKey = "daymark-studio-route:" + session.user.id;
   const [entryLink] = useState(studioLink);
   const [savedRoute] = useState<(StudioTarget & { entryId: string }) | null>(() => {
-    if (!entryLink.valid) return null;
+    if (!entryLink.valid || entryLink.teamProject || entryLink.personal) return null;
     let stored: (StudioTarget & { entryId: string }) | null = null;
     try {
       const value = JSON.parse(sessionStorage.getItem(routeKey) ?? "null");
@@ -443,12 +457,42 @@ function Workspace({
     }
     return stored;
   });
-  const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">(savedRoute ? "studio" : !entryLink.valid ? "customizations" : "tasks");
+  const [destination, setDestination] = useState<"tasks" | "customizations" | "studio">(savedRoute || entryLink.teamStudio ? "studio" : !entryLink.valid || entryLink.teamProject || entryLink.personal ? "customizations" : "tasks");
   const [studioOrigin, setStudioOrigin] = useState<"detail" | "overview">("overview");
   const [studioTarget, setStudioTarget] = useState(savedRoute ?? { extensionId: null, entryId: crypto.randomUUID() });
+  const [teamLegacy, setTeamLegacy] = useState(entryLink.teamStudio === "legacy");
+  const [personalEditor, setPersonalEditor] = useState<{ entryId: string; shared: boolean | null } | null>(null);
+  const [studioReadRetry, setStudioReadRetry] = useState(0);
   const [customizationNotice, setCustomizationNotice] = useState(entryLink.valid ? "" : "That customization link is invalid. Choose a saved item or start a new one.");
   const studioEntrySerial = useRef(0);
   const currentStudioEntry = useRef<string | null>(studioTarget.entryId);
+  const startingShared = useRef<{ operationId: string; running: boolean } | null>(null);
+  const personalReturn = useRef<(StudioTarget & { entryId: string }) | null>(null);
+  const projectsRef = useRef(projects); projectsRef.current = projects;
+  const scope = useRef("PERSONAL");
+  const scopeLifetime = useRef(new AbortController());
+  const [unavailableTeam, setUnavailableTeam] = useState(false);
+  const [completionHold, setCompletionHold] = useState<{ taskId: string; message: string } | null>(null);
+  function selectProject(id: string) {
+    const selected = projectsRef.current.find(item => item.id === id);
+    if (!selected) return;
+    const nextScope = selected.mode === "TEAM" ? "TEAM:" + id : "PERSONAL";
+    if (id === projectIntent.current && nextScope === scope.current) {
+      setMembersOpen(false); setUnavailableTeam(false); return;
+    }
+    generation.current++;
+    studioEntrySerial.current++;
+    if (nextScope !== scope.current) {
+      if (scope.current === "PERSONAL" && destination === "studio") personalReturn.current = studioTarget;
+      scopeLifetime.current.abort(); scopeLifetime.current = new AbortController();
+      scope.current = nextScope;
+    }
+    setMembersOpen(false); setUnavailableTeam(false);
+    setRename(false);
+    setTasks([]); setDetail(null); setCompletionHold(null); resetSearch(); setBusy(false);
+    projectIntent.current = id;
+    setProjectId(id);
+  }
   function rememberStudio(next: StudioTarget & { entryId: string }) {
     currentStudioEntry.current = next.entryId;
     try { sessionStorage.setItem(routeKey, JSON.stringify(next)); } catch { /* Recovery still uses the submitted operation when storage permits. */ }
@@ -463,16 +507,28 @@ function Workspace({
   }
   useEffect(() => {
     try {
-      if (destination === "studio") sessionStorage.setItem(routeKey, JSON.stringify(studioTarget));
-      else sessionStorage.removeItem(routeKey);
+      if (destination === "studio" && scope.current === "PERSONAL") sessionStorage.setItem(routeKey, JSON.stringify(studioTarget));
+      else if (scope.current === "PERSONAL") sessionStorage.removeItem(routeKey);
     } catch { /* Tab recovery is unavailable when browser storage is disabled. */ }
-    if (destination !== "studio" && location.hash) history.replaceState(null, "", location.pathname + location.search);
+    if (destination !== "studio" && destination !== "customizations" && location.hash) history.replaceState(null, "", location.pathname + location.search);
   }, [destination, studioTarget, routeKey]);
   useEffect(() => {
     const changed = () => {
       studioEntrySerial.current++;
       const link = studioLink();
-      if (link.valid && link.target) {
+      if (link.teamProject) {
+        const selected = projectsRef.current.find(item => item.id === link.teamProject && item.mode === "TEAM");
+        if (selected) selectProject(selected.id);
+        else setUnavailableTeam(true);
+        currentStudioEntry.current = null; setTeamLegacy(link.teamStudio === "legacy");
+        setDestination(link.teamStudio && selected ? "studio" : "customizations");
+      } else if (link.personal) {
+        const selected = projectsRef.current.find(item => item.mode !== "TEAM");
+        if (selected) selectProject(selected.id);
+        currentStudioEntry.current = null; setDestination("customizations");
+      } else if (link.valid && link.target) {
+        const selected = projectsRef.current.find(item => item.mode !== "TEAM");
+        if (selected) selectProject(selected.id);
         setStudioOrigin("overview"); setCustomizationNotice("");
         rememberStudio({ ...link.target, entryId: crypto.randomUUID() }); setDestination("studio");
       } else {
@@ -484,13 +540,14 @@ function Workspace({
     window.addEventListener("hashchange", changed);
     return () => window.removeEventListener("hashchange", changed);
   }, [routeKey]);
+  const tasksVisible = destination === "tasks" && !newProject;
   const detailVisible = useRef(false);
-  detailVisible.current = destination === "tasks" && !!detail;
+  detailVisible.current = tasksVisible && !!detail;
   const createVisible = useRef(false);
-  createVisible.current = destination === "tasks" && createOpen;
+  createVisible.current = tasksVisible && createOpen;
   const resumeDetail = useRef(false);
   const destinationFocus = useRef<string | null>(null);
-  const taskScroller = useRef<HTMLDivElement>(null);
+  const taskScroller = useRef<HTMLElement>(null);
   const taskScroll = useRef(0);
   const [notice, setNotice] = useState("");
   const lifetime = useRef(new AbortController());
@@ -511,6 +568,7 @@ function Workspace({
   useEffect(
     () => () => {
       lifetime.current.abort();
+      scopeLifetime.current.abort();
       generation.current++;
     },
     [],
@@ -537,8 +595,16 @@ function Workspace({
     createId?: string,
   ) => api<T>(path, session.contextToken, method, body, signal, createId);
   async function studioRequest<T>(path: string, method?: string, body?: object, signal?: AbortSignal) {
-    const scopedSignal = signal ? AbortSignal.any([lifetime.current.signal, signal]) : lifetime.current.signal;
-    try { return await request<T>(path, method, body, scopedSignal); }
+    const capturedScope = scope.current;
+    // Setup is shared; Personal drafts and authoring remain outside Team scope.
+    if (capturedScope.startsWith("TEAM:") && path !== "authoring/setup" && /^(extensions|authoring)(\/|\?|$)/.test(path))
+      throw new Error("Personal customization routes are not available in Team scope.");
+    const scopedSignal = AbortSignal.any([lifetime.current.signal, scopeLifetime.current.signal, ...(signal ? [signal] : [])]);
+    try {
+      const result = await request<T>(path, method, body, scopedSignal);
+      if (capturedScope !== scope.current || scopedSignal.aborted) throw new DOMException("Scope changed", "AbortError");
+      return result;
+    }
     catch (error) { if (error instanceof ApiError && error.status === 401) handleError(error); throw error; }
   }
   function resetSearch() {
@@ -601,24 +667,73 @@ function Workspace({
     searchFocus.current = null;
   }, [search, destination]);
   function navigate(next: "tasks" | "customizations") {
+    if (destination === "studio" && scope.current === "PERSONAL") personalReturn.current = studioTarget;
     studioEntrySerial.current++;
     currentStudioEntry.current = null;
     destinationFocus.current = next === "tasks" ? "tasks-heading" : "customizations-heading";
     setDestination(next);
+    if (next === "tasks") setUnavailableTeam(false);
+    const hash = next === "customizations" && project?.mode === "TEAM" ? "#teamProject=" + encodeURIComponent(project.id) : "";
+    if (hash !== location.hash) history.pushState(null, "", location.pathname + location.search + hash);
   }
+  useEffect(() => {
+    if (destination !== "studio" || !projectsReady || scope.current !== "PERSONAL" || !studioTarget.extensionId || studioTarget.conversationId) return;
+    if (personalEditor?.entryId === studioTarget.entryId && personalEditor.shared !== null) return;
+    const { extensionId, entryId } = studioTarget;
+    const abort = new AbortController();
+    void studioRequest<State>("extensions/" + encodeURIComponent(extensionId), "GET", undefined, abort.signal).then(saved => {
+      if (!abort.signal.aborted) setPersonalEditor({ entryId, shared: saved.sharedStudio === true });
+    }).catch(failure => {
+      if (!abort.signal.aborted && currentStudioEntry.current === entryId)
+        setPersonalEditor({ entryId, shared: failure instanceof ApiError && [404, 410].includes(failure.status) ? false : null });
+    });
+    return () => abort.abort();
+  }, [destination, projectsReady, projectId, studioTarget, studioReadRetry]);
+  const hasPendingCreation = (entryId: string | undefined) => !!entryId && pendingRequests(session.user.id)
+    .some(item => item.entryId === entryId && item.turn.target.kind === "create");
+  const openingNewStudio = !studioTarget.extensionId && !studioTarget.conversationId && !hasPendingCreation(studioTarget.entryId);
   async function openStudio(origin: "detail" | "overview", target: StudioTarget = { extensionId: null }) {
+    if (scope.current !== "PERSONAL") { setDestination("customizations"); return; }
+    if (startingShared.current?.running) return;
     const entry = ++studioEntrySerial.current;
     if (origin === "detail") {
       try {
         const collection = await studioRequest<Collection>("extensions");
         if (lifetime.current.signal.aborted || studioEntrySerial.current !== entry || !detailVisible.current) return;
-        target = { extensionId: collection.selection.revision?.extensionId ?? null };
+        target = { extensionId: collection.selection.revision?.extensionId ?? collection.selections?.TaskCreated?.revision?.extensionId ?? null };
       } catch (failure) { handleError(failure); return; }
+    }
+    if (!target.extensionId && !target.conversationId && !hasPendingCreation(target.recoveryId)) {
+      const attempt = startingShared.current ??= { operationId: crypto.randomUUID(), running: false };
+      attempt.running = true;
+      try {
+        const result = await studioRequest<{ extensionId: string }>("shared-studio/new-personal", "POST", { operationId: attempt.operationId });
+        startingShared.current = null;
+        if (studioEntrySerial.current !== entry || (origin === "detail" && !detailVisible.current)) return;
+        target = { extensionId: result.extensionId };
+      } catch (failure) {
+        if (studioEntrySerial.current === entry && !lifetime.current.signal.aborted) {
+          handleError(failure);
+          setCustomizationNotice("Could not open Studio. Try New customization again to check the same attempt.");
+        }
+        return;
+      } finally { attempt.running = false; }
     }
     setCustomizationNotice("");
     setStudioOrigin(origin);
     rememberStudio({ ...target, entryId: target.recoveryId ?? crypto.randomUUID() });
     setDestination("studio");
+  }
+  useEffect(() => {
+    if (destination === "studio" && projectsReady && scope.current === "PERSONAL" && openingNewStudio)
+      void openStudio("overview");
+  }, [destination, projectsReady, studioTarget]);
+  function openTeamStudio(legacy: boolean) {
+    if (project?.mode !== "TEAM") return;
+    studioEntrySerial.current++;
+    setTeamLegacy(legacy);
+    setDestination("studio");
+    history.pushState(null, "", location.pathname + location.search + "#teamProject=" + encodeURIComponent(project.id) + "&studio=" + (legacy ? "legacy" : "shared"));
   }
   function returnFromStudio() {
     studioEntrySerial.current++;
@@ -637,12 +752,12 @@ function Workspace({
     currentStudioEntry.current = null;
     setDestination("tasks");
   }
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (destinationFocus.current) {
       document.getElementById(destinationFocus.current)?.focus({ preventScroll: true });
       destinationFocus.current = null;
     }
-  }, [destination]);
+  }, [destination, newProject]);
   useEffect(() => {
     request<Project[]>("projects")
       .then((data) => {
@@ -655,7 +770,14 @@ function Workspace({
             retainedCreate.current = undefined;
             invalidCreateProject.current = true;
           }
-          setProjectId(original?.id ?? data[0]?.id ?? "");
+          const linkedTeam = entryLink.teamProject && data.find(item => item.id === entryLink.teamProject && item.mode === "TEAM");
+          if (entryLink.teamProject && !linkedTeam) setUnavailableTeam(true);
+          const selected = linkedTeam || (savedRoute || entryLink.target || entryLink.personal
+            ? data.find(item => item.mode !== "TEAM")
+            : original ?? data.find(item => item.id === projectIntent.current) ?? data[0]);
+          scope.current = selected?.mode === "TEAM" ? "TEAM:" + selected.id : "PERSONAL";
+          projectIntent.current = selected?.id ?? "";
+          setProjectId(selected?.id ?? "");
           setProjectsReady(true);
         }
       })
@@ -730,8 +852,8 @@ function Workspace({
     }
   }, [destination]);
   useLayoutEffect(() => {
-    if (destination === "tasks" && taskScroller.current) taskScroller.current.scrollTop = taskScroll.current;
-    if ((detail || createOpen) && destination === "tasks") {
+    if (tasksVisible && taskScroller.current) taskScroller.current.scrollTop = taskScroll.current;
+    if ((detail || createOpen) && tasksVisible) {
       detailRef.current?.showModal();
       if (createOpen) document.getElementById("edit-title")?.focus();
       if (resumeDetail.current) {
@@ -741,7 +863,7 @@ function Workspace({
     }
     else {
       detailRef.current?.close();
-      if (destination === "tasks" && returnFocus.current) {
+      if (tasksVisible && returnFocus.current) {
         const opening = returnFocus.current;
         const row = opening.id ? document.getElementById(opening.id) : null;
         const fallback = returnToSearch.current ? searchHeading.current : null;
@@ -749,7 +871,11 @@ function Workspace({
         returnFocus.current = null;
       }
     }
-  }, [detail?.id, createOpen, destination]);
+    if (tasksVisible && restoreProjectLauncher.current) {
+      restoreProjectLauncher.current = false;
+      document.getElementById("new-project")?.focus({ preventScroll: true });
+    }
+  }, [detail?.id, createOpen, tasksVisible]);
   useLayoutEffect(() => {
     const previous = removedRecoveryFocus.current;
     removedRecoveryFocus.current = null;
@@ -772,31 +898,54 @@ function Workspace({
     } catch (error) {
       if (current === generation.current) handleError(error);
     } finally {
-      if (!lifetime.current.signal.aborted) setBusy(false);
+      if (!lifetime.current.signal.aborted && current === generation.current) setBusy(false);
     }
   }
   function saveProject(event: FormEvent) {
     event.preventDefault();
     action(
-      () =>
-        request<Project>(
-          rename ? `projects/${projectId}` : "projects",
-          rename ? "PATCH" : "POST",
-          { name: projectName },
-        ),
+      () => request<Project>(`projects/${projectId}`, "PATCH", { name: projectName }),
       (saved) => {
-        setProjects((old) =>
-          rename
-            ? old.map((item) => (item.id === saved.id ? saved : item))
-            : [...old, saved],
-        );
-        setProjectId(saved.id);
+        projectsRef.current = projectsRef.current.map(item => item.id === saved.id ? saved : item);
+        setProjects(projectsRef.current);
+        selectProject(saved.id);
         setProjectName("");
-        setNewProject(false);
         setRename(false);
         setNotice("Project saved.");
+        requestAnimationFrame(() => document.getElementById("tasks-heading")?.focus());
       },
     );
+  }
+  async function createProject(event: FormEvent) {
+    event.preventDefault();
+    if (busy || projectCreatePending.current || projectCreateUncertain) return;
+    projectCreatePending.current = true;
+    const current = generation.current;
+    setBusy(true);
+    setProjectCreateError("");
+    try {
+      const saved = await request<Project>("projects", "POST", { name: projectName, mode: projectMode });
+      if (lifetime.current.signal.aborted) return;
+      projectsRef.current = [...projectsRef.current, saved];
+      setProjects(projectsRef.current);
+      setNewProject(false);
+      if (generation.current !== current) return;
+      taskScroll.current = 0;
+      selectProject(saved.id);
+      destinationFocus.current = "tasks-heading";
+      setDestination("tasks");
+    } catch (failure) {
+      if (lifetime.current.signal.aborted) return;
+      if (failure instanceof ApiError && failure.status === 401) handleError(failure);
+      else if (failure instanceof ApiError && failure.status === 400) setProjectCreateError(failure.message);
+      else {
+        setProjectCreateUncertain(true);
+        setProjectCreateError("Could not confirm the save. Reload Tasks to check your projects before trying again.");
+      }
+    } finally {
+      projectCreatePending.current = false;
+      if (!lifetime.current.signal.aborted && generation.current === current) setBusy(false);
+    }
   }
   function addTask(event: FormEvent) {
     event.preventDefault();
@@ -942,20 +1091,35 @@ function Workspace({
       if (!lifetime.current.signal.aborted) { setBusy(false); setCreateActivity(null); }
     }
   }
+  function canComplete(task: Task) {
+    return !task.creatorId || project?.role === "ADMIN" || (task.assigneeId ?? task.creatorId) === session.user.id;
+  }
   function complete(task: Task) {
+    if (busy) return;
+    const instance = detailInstance.current;
+    setCreateNotice(previous => previous === "Task added." ? "" : previous);
+    setCompletionHold(previous => previous?.taskId === task.id ? null : previous);
     action(
       async () => {
-        try { return await request<Task>(`tasks/${task.id}/complete`, "POST", {}); }
+        try { return { saved: await request<Task>(`tasks/${task.id}/complete`, "POST", {}) }; }
         catch (failure) {
           if (lifetime.current.signal.aborted) throw failure;
+          // This endpoint's 422 is the native Team gate's rule denial, not an unavailable check.
+          if (failure instanceof ApiError && failure.status === 422) return { hold: failure.message };
           const saved = await request<Task>(`tasks/${task.id}`);
-          if (saved.status === "completed") return saved;
+          if (saved.status === "completed") return { saved };
           throw failure;
         }
       },
-      (saved) => {
-        updateTask(saved);
-        setNotice("A little more done.");
+      ({ saved, hold }) => {
+        if (!saved) {
+          setCompletionHold({ taskId: task.id, message: hold });
+          setNotice(`${task.title} stayed open on the last attempt. ${hold}`);
+          return;
+        }
+         updateTask(saved);
+         if (detail?.id === saved.id && detailInstance.current === instance) setDetail(saved);
+         setNotice(`${saved.title} completed.`);
         setRecentCompletion(saved.id);
       },
     );
@@ -965,12 +1129,12 @@ function Workspace({
     setDetail(null);
   }
   function openCreatedTask(task: Task) {
-    const navigation = ++studioEntrySerial.current;
+    studioEntrySerial.current++;
     currentStudioEntry.current = null;
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     returnToSearch.current = !!search;
     detailInstance.current++; setDestination("tasks");
-    if (task.projectId !== projectId) { pendingTaskOpen.current = { task, navigation }; setProjectId(task.projectId); }
+    if (task.projectId !== projectId) { selectProject(task.projectId); pendingTaskOpen.current = { task, navigation: studioEntrySerial.current }; }
     else { setDraft(taskDraft(task)); setDetail(task); }
   }
   async function refreshCreatedTasks(created: Task) {
@@ -994,10 +1158,10 @@ function Workspace({
               ? `${task.title}, completed`
               : `Complete ${task.title}`
           }
-          disabled={busy || task.status === "completed"}
+          disabled={busy || task.status === "completed" || !canComplete(task)}
           onClick={() => complete(task)}
         >
-          {task.status === "completed" ? "✓" : ""}
+          <span aria-hidden="true">✓</span>
         </button>
         <div className="task-row-content"><button
           id={"task-open-" + task.id}
@@ -1012,28 +1176,63 @@ function Workspace({
         >
           <span>{task.title}</span>
           {task.notes && <small>{task.notes}</small>}
+          <span className="task-chevron" aria-hidden="true">›</span>
         </button>
+        {task.assigneeName && <small className="task-assignee">Assigned to {task.assigneeName}{task.assigneeId === session.user.id && " (you)"}</small>}
+        {task.status === "open" && completionHold?.taskId === task.id && <p className="task-completion-hold">
+          <strong>This task stayed open.</strong> The rule said: “{completionHold.message}”
+        </p>}
         {(task.priority === "high" || task.priority === "low" || task.dueAt) && <small className="muted">
           {task.priority === "high" ? "High priority" : task.priority === "low" ? "Low priority" : ""}
           {(task.priority === "high" || task.priority === "low") && task.dueAt && " · "}
           {task.dueAt && <time dateTime={task.dueAt}>Due {formatDueTime(task.dueAt)}</time>}
         </small>}
-        {recentCompletion === task.id && detail?.id !== task.id && <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} />}
+        {recentCompletion === task.id && detail?.id !== task.id && <>
+          <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} creation={!!task.creatorId} quietNonmatch={project?.mode !== "TEAM"} />
+           {task.creatorId && <TaskReaction source={task} request={studioRequest} confirmed={refreshCreatedTasks} openCreated={openCreatedTask} />}
+        </>}
         </div>
-        <span className="task-chevron" aria-hidden="true">
-          ↗
-        </span>
       </li>
     );
   }
+  const projectOptions = (showType = false) => (["PERSONAL", "TEAM"] as const).map(mode => {
+    const group = projects.filter(item => (item.mode === "TEAM" ? "TEAM" : "PERSONAL") === mode);
+    const label = mode === "TEAM" ? "Team" : "Personal";
+    return group.length > 0 && <optgroup key={mode} label={`${label} projects`}>
+      {group.map(item => <option key={item.id} value={item.id}>{item.name}{showType ? ` · ${label}` : ""}</option>)}
+    </optgroup>;
+  });
+  function startProject() {
+    taskScroll.current = taskScroller.current?.scrollTop ?? 0;
+    if (!projectCreateUncertain) setProjectCreateError("");
+    setNewProject(true); setRename(false); setProjectName(""); setProjectMode("PERSONAL");
+  }
+  const scopeControl = <div className="customization-scope">
+    <label htmlFor="customization-project">Personal or Team project</label>
+    <div className="form-line">
+      <select id="customization-project" value={projectId} onChange={event => {
+        const selected = projects.find(item => item.id === event.target.value);
+        if (!selected) return;
+        selectProject(selected.id); setDestination("customizations"); currentStudioEntry.current = null;
+        history.pushState(null, "", location.pathname + location.search + (selected.mode === "TEAM"
+          ? "#teamProject=" + encodeURIComponent(selected.id) : "#personal=1"));
+      }}>
+        {projectOptions(true)}
+      </select>
+      {project?.mode !== "TEAM" && personalReturn.current && <button className="quiet-button" onClick={() => {
+        rememberStudio(personalReturn.current!); setDestination("studio");
+      }}>Return to Personal Studio</button>}
+    </div>
+    {project?.mode !== "TEAM" && <p className="muted">Personal customizations belong to you across your Personal projects.</p>}
+  </div>;
   return (
     <div className="workspace">
       <div className="workspace-body">
         <header className="workspace-top">
           <Brand />
           <nav className="destinations" aria-label="Main navigation">
-            <button aria-current={destination === "tasks" ? "page" : undefined} onClick={() => navigate("tasks")}>Tasks</button>
-            <button aria-current={destination !== "tasks" ? "page" : undefined} onClick={() => navigate("customizations")}>Customizations</button>
+             <button aria-current={destination === "tasks" ? "page" : undefined} disabled={newProject && busy} onClick={() => navigate("tasks")}>Tasks</button>
+             <button aria-current={destination !== "tasks" ? "page" : undefined} disabled={newProject && busy} onClick={() => navigate("customizations")}>Customizations</button>
           </nav>
           <details className="user-tools tool-menu" onKeyDown={dismissTool}>
             <summary>{session.user.name}<span aria-hidden="true">⌄</span></summary>
@@ -1058,45 +1257,49 @@ function Workspace({
             </div>
           </details>
         </header>
-        <main className="task-main" hidden={destination !== "tasks"} aria-labelledby="tasks-heading" tabIndex={-1}>
+        {newProject && destination === "tasks" && (
+          <main className="task-main" aria-labelledby="new-project-heading">
+            <form className="project-form project-editor new-project-form" onSubmit={createProject}>
+              <h1 id="new-project-heading">New project</h1>
+              {projectCreateError && <p className="error" role="alert">{projectCreateError}</p>}
+              <label htmlFor="new-project-name">New project name</label>
+              <input autoFocus id="new-project-name" value={projectName} required maxLength={80}
+                onChange={event => setProjectName(event.target.value)} placeholder="Name this project" readOnly={busy} />
+              <label htmlFor="project-mode">Who is this for?</label>
+              <select id="project-mode" value={projectMode} disabled={busy}
+                onChange={event => setProjectMode(event.target.value as "PERSONAL" | "TEAM")}>
+                <option value="PERSONAL">Personal · only you</option>
+                <option value="TEAM">Team · shared tasks</option>
+              </select>
+              {projectMode === "TEAM" && <p className="muted">You can invite teammates after creating the project.</p>}
+              <div className="form-line">
+                <button className="primary" disabled={busy || projectCreateUncertain}>{busy ? "Saving project…" : "Save project"}</button>
+                <button type="button" className="quiet-button" disabled={busy} onClick={() => {
+                  if (projectCreatePending.current) return;
+                  restoreProjectLauncher.current = true;
+                  setNewProject(false);
+                }}>Cancel</button>
+              </div>
+            </form>
+          </main>
+        )}
+          <main ref={taskScroller} className="task-main" hidden={!tasksVisible} aria-labelledby="tasks-heading" tabIndex={0}
+            onScroll={event => { if (tasksVisible && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
           <div className="task-page-heading">
-          <p className="eyebrow">{session.user.name}’s workspace</p>
           <div className="project-title">
-            <h1 id="tasks-heading" tabIndex={-1}>{project?.name ?? "Tasks"}</h1>
-            {project && <button className="primary" onClick={openCreate} disabled={loading}>+ New task</button>}
-          </div>
-          <p className="project-subtitle">
-            {project ? loading ? "Loading tasks…" : `${open.length} open ${open.length === 1 ? "task" : "tasks"}` : "Start a project. Give your next idea a place to land."}
-          </p>
-          </div>
-          <div className="task-layout">
-          <aside className="task-projects" aria-label="Project context">
-          <nav className="project-list" aria-label="Projects">
-            {projects.map(item => <button key={item.id} className={`project-link${destination === "tasks" && item.id === projectId ? " selected" : ""}`}
-              onClick={() => { setProjectId(item.id); navigate("tasks"); }}>{item.name}</button>)}
-          </nav>
-          <div className="mobile-projects">
-            <label htmlFor="project-select">Project</label>
-            <select
-              id="project-select"
-              value={projectId}
-              onChange={(event) => { setProjectId(event.target.value); navigate("tasks"); }}
-            >
-              {projects.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <details className="tool-menu project-tools" onKeyDown={dismissTool}>
-            <summary>Project tools <span aria-hidden="true">⌄</span></summary>
+            <div className="project-name">
+              {project && <span className="project-type">{project.mode === "TEAM" ? "Team project" : "Personal project"}</span>}
+              <h1 id="tasks-heading" tabIndex={-1}>{project?.name ?? "Tasks"}</h1>
+            </div>
+          {project?.mode === "TEAM" && project.role !== "ADMIN" ? <button className="quiet-button" onClick={() => setMembersOpen(true)}>View members</button>
+            : project && <details className="tool-menu project-tools" onKeyDown={dismissTool}>
+            <summary>Project settings <span aria-hidden="true">⌄</span></summary>
             <div className="tool-menu-content">
-              <button className="quiet-button" disabled={!projectsReady} onClick={event => {
-                event.currentTarget.closest("details")?.removeAttribute("open");
-                setNewProject(true); setRename(false); setProjectName("");
-              }}>New project</button>
-            {project && (
+            {project?.mode === "TEAM" && <button className="quiet-button" onClick={event => {
+              const menu = event.currentTarget.closest("details");
+              menu?.removeAttribute("open"); menu?.querySelector("summary")?.focus(); setMembersOpen(true);
+             }}>Manage members</button>}
+            {project && (project.mode !== "TEAM" || project.role === "ADMIN") && (
               <button
                 className="quiet-button"
                 onClick={event => {
@@ -1110,15 +1313,36 @@ function Workspace({
               </button>
             )}
             </div>
-          </details>
+          </details>}
+          </div>
+          </div>
+          <div className="task-layout">
+          <aside className="task-projects" aria-label="Project context">
+          <nav className="project-list" aria-label="Projects">
+            {(["PERSONAL", "TEAM"] as const).map(mode => {
+              const group = projects.filter(item => (item.mode === "TEAM" ? "TEAM" : "PERSONAL") === mode);
+              const label = mode === "TEAM" ? "Team projects" : "Personal projects";
+              return group.length > 0 && <div key={mode} role="group" aria-label={label}>
+                <p className="project-group-label" aria-hidden="true">{label}</p>
+                {group.map(item => <button key={item.id} aria-current={destination === "tasks" && item.id === projectId ? "true" : undefined}
+                  className={`project-link${destination === "tasks" && item.id === projectId ? " selected" : ""}`}
+                  onClick={() => { selectProject(item.id); navigate("tasks"); }}>{item.name}</button>)}
+              </div>;
+            })}
+          </nav>
+          {project && <div className="mobile-projects">
+            <label className="sr-only" htmlFor="project-select">Project</label>
+            <select id="project-select" value={projectId} onChange={(event) => { selectProject(event.target.value); navigate("tasks"); }}>
+              {projectOptions()}
+            </select>
+          </div>}
+          <button id="new-project" className="quiet-button project-create" disabled={!projectsReady} onClick={startProject}>New project</button>
           </aside>
-          <section className="task-surface" aria-label="Project tasks">
-          {(newProject || rename) && (
-            <form className="project-form" onSubmit={saveProject}>
-              <label htmlFor="project-name">
-                {rename ? "Project name" : "New project name"}
-              </label>
-              <div className="form-line">
+          <div className="project-work">
+           {rename && (
+             <form className="project-form project-editor" onSubmit={saveProject}>
+               <h2>Rename project</h2>
+               <label htmlFor="project-name">Project name</label>
                 <input
                   autoFocus
                   id="project-name"
@@ -1126,16 +1350,17 @@ function Workspace({
                   onChange={(event) => setProjectName(event.target.value)}
                   required
                   maxLength={80}
-                  placeholder="Something worth making"
+                  placeholder="Name this project"
                 />
+              <div className="form-line">
                 <button className="primary" disabled={busy}>
                   Save project
                 </button>
                 <button
                   type="button"
                   className="quiet-button"
-                  onClick={() => {
-                    setNewProject(false);
+                   onClick={() => {
+                     document.querySelector<HTMLElement>(".project-tools > summary")?.focus();
                     setRename(false);
                   }}
                 >
@@ -1144,6 +1369,7 @@ function Workspace({
               </div>
             </form>
           )}
+          <section className="task-surface" aria-label="Project tasks">
           {error && (
             <div className="error" role="alert">
               {error}
@@ -1160,7 +1386,6 @@ function Workspace({
           </div>
           {project && (
             <form className="quick-add" onSubmit={addTask}>
-              <span aria-hidden="true">+</span>
               <label className="sr-only" htmlFor="new-task">
                 New task title
               </label>
@@ -1170,7 +1395,7 @@ function Workspace({
                 onChange={(event) => changeCreateDraft({ ...createDraft, title: event.target.value })}
                 required
                 maxLength={120}
-                placeholder="What would you like to get done?"
+                 placeholder="New task title"
               />
               <button type="button" className="quiet-button" onClick={openCreate} disabled={loading}>Details</button>
               <button className="primary" disabled={busy || loading || !!createAttempt}>
@@ -1182,38 +1407,42 @@ function Workspace({
           {project && (
             <form className="task-search-form" onSubmit={event => {
               event.preventDefault();
+              setCreateNotice(previous => previous === "Task added." ? "" : previous);
               closeTaskFilter(event.currentTarget);
               const next = { q: filters.q.trim(), tag: filters.tag.trim() };
               if (next.q || next.tag) void fetchSearch(next, "submit");
             }}>
               <label>
-                Search tasks
+                 <span className="sr-only">Search tasks</span>
                 <input id="task-search-text" type="search" value={filters.q} maxLength={120} placeholder="Find a task…"
-                  onChange={event => setFilters({ ...filters, q: event.target.value })} />
+                  onChange={event => {
+                    setCreateNotice(previous => previous === "Task added." ? "" : previous);
+                    const q = event.target.value;
+                    if (!q && !filters.tag && search) resetSearch();
+                    else setFilters({ ...filters, q });
+                  }} />
               </label>
               <details className="tool-menu task-filter" onKeyDown={dismissTool}>
-              <summary>Filter <span aria-hidden="true">⌄</span>{filters.tag && <span className="sr-only">Tag filter entered</span>}</summary>
+              <summary onClick={() => setCreateNotice(previous => previous === "Task added." ? "" : previous)}>Filter <span aria-hidden="true">⌄</span>{filters.tag && <span className="sr-only">Tag filter entered</span>}</summary>
               <div className="tool-menu-content">
               <label>
                 Filter by tag
                 <input type="text" value={filters.tag}
-                  onChange={event => setFilters({ ...filters, tag: event.target.value })} />
+                  placeholder="Enter an exact tag" onChange={event => setFilters({ ...filters, tag: event.target.value })} />
               </label>
               </div>
               </details>
               <div className="task-search-actions">
-                <button className="primary" disabled={!filters.q.trim() && !filters.tag.trim()}>Search</button>
-                <button type="button" className="quiet-button" disabled={!search && !filters.q && !filters.tag}
+                <button className="quiet-button" aria-label="Search" disabled={!filters.q.trim() && !filters.tag.trim()}><span aria-hidden="true">⌕</span></button>
+                {search && <button type="button" className="quiet-button" aria-label="Clear"
                   onClick={event => { closeTaskFilter(event.currentTarget.form); resetSearch(); document.getElementById("task-search-text")?.focus(); }}>
-                  Clear
-                </button>
+                  <span aria-hidden="true">×</span>
+                </button>}
               </div>
-              {search && appliedFilters.current && <p className="task-applied-filters">Applied filters: {[appliedFilters.current.q && `Text “${appliedFilters.current.q}”`,
-                appliedFilters.current.tag && `Tag “${appliedFilters.current.tag}”`].filter(Boolean).join(" · ")}</p>}
+              {search && appliedFilters.current?.tag && <p className="task-applied-filters">Tagged “{appliedFilters.current.tag}”</p>}
             </form>
           )}
-          <div ref={taskScroller} className="task-content" tabIndex={0} role="region" aria-label="Task list"
-            onScroll={event => { if (destination === "tasks" && event.currentTarget.clientHeight) taskScroll.current = event.currentTarget.scrollTop; }}>
+           <div className="task-content" role="region" aria-label="Task list">
           {search && project ? (
             <section className="task-search-results" aria-labelledby="task-search-heading">
               <div className="list-heading">
@@ -1241,30 +1470,20 @@ function Workspace({
             <>
               <div className="list-heading">
                 <h2>
-                  Up next <span>{open.length}</span>
+                   Open tasks <span>{open.length}</span>
                 </h2>
               </div>
               {open.length ? (
                 <ul className="task-list">{open.map(taskRow)}</ul>
               ) : (
                 <div className="empty">
-                  <span aria-hidden="true">✳</span>
-                  <h2>
-                    {completed.length
-                      ? "A little breathing room."
-                      : "Room for something good."}
-                  </h2>
-                  <p>
-                    {completed.length
-                      ? "Everything here is done. Enjoy the pause, or add your next step."
-                      : "Your first task starts just above. Keep it small."}
-                  </p>
+                   <p>{completed.length ? "All tasks in this project are complete." : "No tasks yet. Add the first one above."}</p>
                 </div>
               )}
               {completed.length > 0 && (
                 <section className="completed-section">
                   <h2>
-                    Done & dusted <span>{completed.length}</span>
+                     Completed <span>{completed.length}</span>
                   </h2>
                   <ul className="task-list">{completed.map(taskRow)}</ul>
                 </section>
@@ -1272,34 +1491,50 @@ function Workspace({
             </>
           ) : (
             <div className="empty">
-              <span aria-hidden="true">✳</span>
-              <h2>Make a little room.</h2>
-              <button
-                className="primary"
-                disabled={!projectsReady}
-                onClick={() => setNewProject(true)}
-              >
-                Create your first project
-              </button>
+               <p>{projectsReady ? "Create a project to start adding tasks." : "Loading projects…"}</p>
             </div>
           )}
-          <footer className="task-footer">
-            <span>
-              <span className="local-dot" aria-hidden="true" />
-              Local demo
-            </span>
-          </footer>
           </div>
           </section>
           </div>
+          </div>
         </main>
-        {destination === "customizations" && <Customizations request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange} open={target => void openStudio("overview", target)} projects={projects} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} />}
-        {destination === "studio" && <main className="studio-main"><Studio key={studioTarget.entryId} request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
-          target={studioTarget} ownerId={session.user.id} draftScope={session.draftScope ?? null} drafts={studioDrafts.current} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId} projects={projects}
+        {destination === "customizations" && (!projectsReady ? <CustomizationsPage><p role="status">Checking project access…</p></CustomizationsPage>
+          : unavailableTeam ? <CustomizationsPage scopeControl={scopeControl}><p role="alert">That Team project is not available. Choose an accessible scope.</p></CustomizationsPage>
+          : project?.mode === "TEAM" ? <TeamCustomizations key={session.contextToken + project.id} project={project}
+             request={studioRequest} scopeControl={scopeControl} open={openTeamStudio} />
+            : <Customizations key="personal" request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange} open={target => void openStudio("overview", target)} projects={projects.filter(item => item.mode !== "TEAM")} focusAction={destinationFocus.current ?? ""} notice={customizationNotice} scopeControl={scopeControl} />)}
+         {destination === "studio" && projectsReady && !unavailableTeam && (project?.mode === "TEAM" ? !teamLegacy : personalEditor?.entryId === studioTarget.entryId && personalEditor.shared) &&
+          <main className="studio-main"><SharedCompletionStudio
+            key={project?.mode === "TEAM" ? project.id : studioTarget.extensionId}
+            target={project?.mode === "TEAM" ? `TEAM:${project.id}` : `PERSONAL:${studioTarget.extensionId}`}
+             request={studioRequest} drafts={studioDrafts.current} draftScope={session.draftScope ?? null} back={project?.mode === "TEAM" ? () => navigate("customizations") : returnFromStudio}
+              backToTasks={project?.mode === "TEAM" ? () => navigate("tasks") : returnToTasks}
+              teamControls={project?.mode === "TEAM" ? { project, openEarlier: () => openTeamStudio(true),
+                operationScope: session.draftScope ? session.user.id + ":" + session.draftScope : null } : undefined} /></main>}
+         {destination === "studio" && projectsReady && project?.mode === "TEAM" && !unavailableTeam && teamLegacy &&
+          <main className="studio-main"><TeamCapability key={session.contextToken + project.id}
+             project={project} request={studioRequest} scopeControl={scopeControl} back={() => navigate("customizations")} backToTasks={() => navigate("tasks")}
+             openShared={() => openTeamStudio(false)} operationScope={session.draftScope ? session.user.id + ":" + session.draftScope : null} /></main>}
+          {destination === "studio" && projectsReady && project?.mode !== "TEAM" && !unavailableTeam && openingNewStudio &&
+            <main className="studio-main">
+              {customizationNotice ? <p role="alert">{customizationNotice} <button onClick={() => void openStudio("overview")}>Try again</button></p>
+                : <p role="status">Opening Studio…</p>}
+              <button className="quiet-button" onClick={returnFromStudio}>Back to Customizations</button>
+            </main>}
+         {destination === "studio" && projectsReady && project?.mode !== "TEAM" && !unavailableTeam && studioTarget.extensionId && !studioTarget.conversationId
+           && (personalEditor?.entryId !== studioTarget.entryId || personalEditor.shared === null) && <main className="studio-main">
+             {personalEditor?.entryId === studioTarget.entryId
+               ? <p role="alert">Saved customization could not be read. <button onClick={() => setStudioReadRetry(value => value + 1)}>Try again</button></p>
+               : <p role="status">Opening customization…</p>}
+             <button className="quiet-button" onClick={returnFromStudio}>Back to Customizations</button>
+           </main>}
+          {destination === "studio" && projectsReady && project?.mode !== "TEAM" && !unavailableTeam && !openingNewStudio && (!studioTarget.extensionId || studioTarget.conversationId || personalEditor?.entryId === studioTarget.entryId && personalEditor.shared === false) && <main className="studio-main"><Studio key={studioTarget.entryId} request={studioRequest} changed={reconcileSelection} beforeSelectionChange={beforeSelectionChange}
+          target={studioTarget} ownerId={session.user.id} draftScope={session.draftScope ?? null} drafts={studioDrafts.current} recoveryKey={"daymark-studio-work:" + session.user.id + ":" + studioTarget.entryId} projects={projects.filter(item => item.mode !== "TEAM")}
           targeted={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) rememberStudio({ ...next, entryId: studioTarget.entryId }); }}
           openCustomization={next => { if (currentStudioEntry.current === studioTarget.entryId && !lifetime.current.signal.aborted) void openStudio("overview", next); }}
           unavailable={() => { if (currentStudioEntry.current !== studioTarget.entryId || lifetime.current.signal.aborted) return; currentStudioEntry.current = null; setCustomizationNotice("That customization or conversation is unavailable. Choose a saved item or start a new one."); setDestination("customizations"); }} task={studioOrigin === "detail" && detail ? { title: detail.title, status: detail.status } : undefined}
-          back={returnFromStudio} backToTasks={returnToTasks} createNew={() => void openStudio("overview", { extensionId: null })} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
+           back={returnFromStudio} backToTasks={returnToTasks} createNew={() => void openStudio("overview")} backLabel={studioOrigin === "detail" ? "Back to my task" : "Back to Customizations"} /></main>}
       </div>
       <dialog
         ref={detailRef}
@@ -1323,7 +1558,7 @@ function Workspace({
             {createAttempt.body.projectId !== projectId
               ? <><p>A task addition in another project still needs checking.</p>
                 <button type="button" className="quiet-button" disabled={busy || !projects.some(project => project.id === createAttempt.body.projectId)}
-                  onClick={() => setProjectId(createAttempt.body.projectId)}>Return to that project</button></>
+                  onClick={() => selectProject(createAttempt.body.projectId)}>Return to that project</button></>
               : <><p>Original task title: {createAttempt.body.title}</p>
                 <p>{createAttempt.suspended ? "Checking is suspended until access is available." : "Checking or retrying uses the original submitted details. Your current edits stay here."}</p>
                 <div><button type="button" className="quiet-button" aria-disabled={busy} onClick={() => void checkCreate()}>Check result</button>
@@ -1334,14 +1569,18 @@ function Workspace({
         {detail && (
           <TaskDetail
             key={detail.id}
-            task={detail}
+             task={detail}
+             showTeamVersion={projects.some(item => item.id === detail.projectId && item.mode === "TEAM" && item.role === "ADMIN")}
             draft={draft}
             setDraft={next => { draftVersion.current++; setDraft(next); }}
             manage={() => void openStudio("detail")}
-            busy={busy}
-            error={error}
+             busy={busy}
+             complete={canComplete(detail) ? () => complete(detail) : undefined}
+             error={error}
+             hold={detail.status === "open" && completionHold?.taskId === detail.id ? completionHold.message : undefined}
             close={closeDetail}
             reactionRequest={studioRequest}
+             visible={tasksVisible}
             reactionConfirmed={refreshCreatedTasks}
             openCreated={openCreatedTask}
             save={(dueAt) => {
@@ -1389,16 +1628,133 @@ function Workspace({
           />
         )}
       </dialog>
+      {membersOpen && project?.mode === "TEAM" && <TeamMembers key={session.contextToken + project.id}
+        project={project} users={users} request={studioRequest} close={() => setMembersOpen(false)} />}
     </div>
   );
 }
 
-function TaskReaction({ source, request, confirmed, openCreated, creation = false }: {
+function TeamCustomizations({ project, request, scopeControl, open }: {
+  project: Project; request: Parameters<typeof TeamMembers>[0]["request"]; scopeControl: ReactNode; open: (legacy: boolean) => void;
+}) {
+  const [access, setAccess] = useState<"ADMIN" | "MEMBER" | "unavailable" | null>(null);
+  const [saved, setSaved] = useState<{ draft: boolean; discussion: boolean; active: ActiveTeam | null; controls: boolean } | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let controller: AbortController;
+    const refresh = () => {
+      controller?.abort();
+      controller = new AbortController();
+      const { signal } = controller;
+      setAccess(null); setSaved(null);
+      void request<Members>(`projects/${project.id}/members`, "GET", undefined, signal).then(async ({ project: current }) => {
+        if (signal.aborted) return;
+        if (current.id !== project.id || current.mode !== "TEAM" || !["ADMIN", "MEMBER"].includes(current.role ?? "")) return setAccess("unavailable");
+        if (current.role === "MEMBER") return setAccess("MEMBER");
+         const state = await request<{ conversation: unknown; savedControls: boolean; review: { draftVersion: number; activeTeam: ActiveTeam | null } }>(
+          `shared-studio/${encodeURIComponent("TEAM:" + project.id)}`, "GET", undefined, signal);
+        if (signal.aborted) return;
+         setSaved({ draft: state.review.draftVersion > 0, discussion: !!state.conversation, active: state.review.activeTeam, controls: state.savedControls });
+        setAccess("ADMIN");
+      }).catch(() => { if (!signal.aborted) setAccess("unavailable"); });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => { controller.abort(); window.removeEventListener("focus", refresh); };
+  }, [project.id, retry]);
+  const empty = saved?.active?.status === "off" && !saved.draft && !saved.discussion && !saved.controls;
+  return <CustomizationsPage scopeControl={scopeControl}
+    action={access === "ADMIN" && <button className="primary customization-start" onClick={() => open(false)}>{empty ? "New customization" : "Open Studio"}</button>}>
+    <section className="customization-list" aria-label="Team customization access">
+      {access === "unavailable" ? <p className="customization-empty" role="alert">This Team project could not be accessed.{" "}
+        <button className="quiet-button" onClick={() => setRetry(value => value + 1)}>Check access again</button></p>
+         : access === "ADMIN" ? <TeamActiveRule active={saved?.active ?? null} />
+         : <div className="customization-empty" role="status">{access === "MEMBER" ? <><h2>Team customizations</h2><p>Only project admins can open Studio and see or change this project’s customization. You can still work on Team tasks.</p></>
+            : <p>Checking project access…</p>}</div>}
+    </section>
+  </CustomizationsPage>;
+}
+
+function TeamMembers({ project, users, request, close }: {
+  project: Project; users: User[]; close: () => void;
+  request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
+}) {
+  const [state, setState] = useState<Members | null>(null);
+  const [error, setError] = useState("");
+  const [userId, setUserId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const lifetime = useRef(new AbortController());
+  const dialog = useRef<HTMLDialogElement>(null);
+  const serial = useRef(0);
+  async function refresh() {
+    const turn = ++serial.current;
+    setState(null); setError("");
+    try {
+      const next = await request<Members>(`projects/${project.id}/members`, "GET", undefined, lifetime.current.signal);
+      if (lifetime.current.signal.aborted || turn !== serial.current) return;
+      if (next.project.id !== project.id || next.project.mode !== "TEAM" || !["ADMIN", "MEMBER"].includes(next.project.role ?? ""))
+        throw new Error("Unconfirmed Team scope");
+      setState(next);
+    } catch {
+      if (!lifetime.current.signal.aborted && turn === serial.current) setError("This Team project could not be accessed. No Personal content is shown here.");
+    }
+  }
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    dialog.current?.showModal();
+    void refresh();
+    const focus = () => { if (!dialog.current || dialog.current.open) void refresh(); };
+    window.addEventListener("focus", focus);
+    return () => {
+      lifetime.current.abort(); serial.current++;
+      window.removeEventListener("focus", focus);
+      dialog.current?.close();
+      if (trigger?.isConnected) trigger.focus();
+    };
+  }, [project.id]);
+  async function add(event: FormEvent) {
+    event.preventDefault();
+    if (busy || !userId) return;
+    const turn = ++serial.current;
+    setBusy(true); setError("");
+    try {
+      const next = await request<Members>(`projects/${project.id}/members`, "POST", { userId }, lifetime.current.signal);
+      if (lifetime.current.signal.aborted || turn !== serial.current) return;
+      if (next.project.id !== project.id || next.project.role !== "ADMIN") throw new Error("Team authority changed");
+      setState(next); setUserId("");
+    } catch {
+      if (!lifetime.current.signal.aborted && turn === serial.current) { setState(null); setError("The member was not confirmed. Refresh current access before trying again."); }
+    } finally { if (!lifetime.current.signal.aborted) setBusy(false); }
+  }
+  return <dialog ref={dialog} className="detail team-members" aria-labelledby="team-members-title"
+    onCancel={event => { event.preventDefault(); close(); }} onClose={close}>
+    <div className="detail-heading"><h2 id="team-members-title">{project.name} · Team</h2>
+      <button type="button" className="icon-button" aria-label="Close members" onClick={close}>×</button></div>
+    <div className="member-content">{error ? <p className="error" role="alert">{error}</p> : !state ? <p role="status">Checking current membership…</p> : <>
+      <ul>{state.members.map(member => <li key={member.id}>{member.name} · {member.role === "ADMIN" ? "Admin" : "Member"}</li>)}</ul>
+      {state.project.role === "ADMIN" && <form onSubmit={add}>
+        <label htmlFor="existing-member">Teammate</label>
+        <select id="existing-member" value={userId} onChange={event => setUserId(event.target.value)} required>
+          <option value="">Choose a person</option>
+          {users.filter(user => !state.members.some(member => member.id === user.id)).map(user => <option key={user.id} value={user.id}>{user.name}</option>)}
+        </select><button className="primary" disabled={busy || !userId}>Add member</button>
+      </form>}
+      {state.project.role === "MEMBER" && <p className="muted">Only a project admin can add members or manage Team capabilities.</p>}
+    </>}</div>
+    <div className="detail-actions">{error && <button type="button" className="quiet-button" disabled={busy} onClick={() => void refresh()}>Check access again</button>}
+      <button type="button" className="quiet-button" onClick={close}>Done</button></div>
+  </dialog>;
+}
+
+function TaskReaction({ source, request, confirmed, openCreated, creation = false, bound, version, quietNonmatch = false }: {
   source: Task;
   request: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
   confirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
   creation?: boolean;
+  bound?: (bound: boolean) => void;
+  version?: (revisionId: string | null) => void;
+  quietNonmatch?: boolean;
 }) {
   const [reaction, setReaction] = useState<Reaction | null>(null);
   const [created, setCreated] = useState<Task | null>(null);
@@ -1407,7 +1763,7 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const mounted = useRef(false), locked = useRef(false), serial = useRef(0), reads = useRef(0);
   const lifetime = useRef(new AbortController()), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const announced = useRef<string | null>(null);
-  const callbacks = useRef({ request, confirmed }); callbacks.current = { request, confirmed };
+  const callbacks = useRef({ request, confirmed, bound, version }); callbacks.current = { request, confirmed, bound, version };
   async function read(reconcile = false, automatic = false) {
     if (!mounted.current || locked.current) return;
     if (!automatic) reads.current = 0;
@@ -1420,13 +1776,19 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
       if (!mounted.current || serial.current !== turn) return;
       if (!["NO_BINDING", "PENDING", "STARTED", "FINISHED"].includes(next.state)) throw new Error("Unconfirmed reaction response");
       setError(""); setReaction(next);
+      callbacks.current.bound?.(next.state !== "NO_BINDING");
+      callbacks.current.version?.(next.team ? next.revisionId ?? null : null);
       const observation = next.reconciliation?.receipt;
       const receipt = observation?.kind === "SUCCESS" && observation.effect === "CONFIRMED" ? observation : next.receipt;
       const isUpdate = (next.reconciliation?.capability ?? next.capability) === "tasks.update";
       if (receipt?.kind === "SUCCESS" && receipt.effect === "CONFIRMED" && typeof receipt.value?.id === "string" && receipt.value.id) {
         const actual = await callbacks.current.request<Task>("tasks/" + encodeURIComponent(receipt.value.id), "GET", undefined, lifetime.current.signal);
         if (!mounted.current || serial.current !== turn) return;
-        if (actual.id !== receipt.value.id || typeof actual.title !== "string" || typeof actual.projectId !== "string") throw new Error("Affected task could not be resolved");
+        if (actual.id !== receipt.value.id || typeof actual.title !== "string" || typeof actual.projectId !== "string"
+            || next.destinationProjectId !== undefined && actual.projectId !== next.destinationProjectId
+            || isUpdate && (actual.id !== source.id || actual.projectId !== source.projectId)
+            || next.team && !isUpdate && (actual.projectId !== source.projectId || next.linked !== false && actual.parentTaskId !== source.id))
+          throw new Error("Affected task could not be resolved");
         if (!isUpdate) setCreated(actual);
         if (announced.current !== actual.id) {
           try { await callbacks.current.confirmed(actual); announced.current = actual.id; }
@@ -1449,6 +1811,8 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const observedReceipt = reaction?.reconciliation?.receipt;
   const receipt = observedReceipt?.kind === "SUCCESS" && observedReceipt.effect === "CONFIRMED" ? observedReceipt : reaction?.receipt;
   const confirmedReceipt = receipt?.kind === "SUCCESS" && receipt.effect === "CONFIRMED" && typeof receipt.value?.id === "string" && !!receipt.value.id;
+  const linkedNextAction = reaction?.team && created?.parentTaskId === source.id
+    ? `“${created.title}”${created.assigneeName ? ` · Assigned to ${created.assigneeName}` : ""} · ${created.status === "completed" ? "Completed" : "Open"}` : null;
   const update = (reaction?.reconciliation?.observation ?? reaction?.observation)?.updated;
   const unchanged = update && JSON.stringify(update.before) === JSON.stringify(update.after);
   const unreadable = !uncertain && !reaction?.outcome?.effects?.length
@@ -1456,29 +1820,37 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
   const noEffect = !uncertain && (receipt?.effect === "NONE" || !!reaction?.outcome
     && ["COMPLETED", "BUSINESS_REJECTION", "FAILED", "LIMIT_EXCEEDED"].includes(reaction.outcome.classification ?? "")
     && Array.isArray(reaction.outcome.effects) && reaction.outcome.effects.every(effect => effect.state === "NONE" || effect.effect === "NONE"));
-  if (creation && (reaction?.state === "NO_BINDING" || !reaction && !error)) return null;
+  if (!error && (reaction?.state === "NO_BINDING" || !reaction)) return null;
+  // Only an ordinary list row can omit a settled, effect-free nonmatch. Details still show its receipt.
+  const result = reaction?.outcome?.result as { status?: string } | undefined;
+  if (quietNonmatch && !error && !creation && !checking && !reaction?.team && !reaction?.revoked
+      && reaction?.state === "FINISHED" && !receipt && !reaction.reconciliation && !reaction.message
+      && reaction.outcome?.classification === "COMPLETED" && !reaction.outcome.error
+      && reaction.outcome.effects?.length === 0 && result?.status === "NO_OP") return null;
   return <section className="task-reaction" aria-label={creation ? "Task creation customization outcome" : "Customization outcome"}>
+    {linkedNextAction && <p><strong>Linked task</strong></p>}
     <p role="status">{confirmedReceipt ? update ? unchanged ? "The update made no change." : "This task was updated."
-      : created ? `Created “${created.title}”` : checking ? "A task was added. Checking its details…" : "A task was added, but it is unavailable here."
+      : created ? linkedNextAction ?? `Created “${created.title}”` : checking ? "A task was added. Checking its details…" : "A task was added, but it is unavailable here."
       : unreadable ? "Could not check the rule’s conditions."
       : noEffect ? reaction?.workflow ? "This customization made no change." : "No task was added by this customization."
-      : uncertain ? reaction?.workflow || creation ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."
+       : uncertain ? reaction?.team && reaction.capability !== "tasks.update" ? "We haven’t confirmed a linked task. It may already exist." : reaction?.workflow || creation ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."
       : reaction?.revoked ? "This customization is no longer allowed to run."
-      : reaction?.state === "NO_BINDING" ? "No customization was recorded for this completion."
-        : reaction?.state === "PENDING" ? "This customization has not started yet."
-          : !reaction && checking ? "Checking the customization result…" : reaction?.workflow || creation
+      : reaction?.state === "PENDING" ? "This customization has not started yet."
+        : !reaction ? null : reaction?.workflow || creation
             ? "Could not confirm whether the customization changed a task." : "Could not confirm whether a task was added."}</p>
     {reaction?.outcome?.classification && !["COMPLETED", "UNCERTAIN"].includes(reaction.outcome.classification) && <p>{creation ? "The customization did not finish successfully. Your task is kept." : "The customization did not finish successfully. Your completed task is kept."}</p>}
-    {created && <button type="button" className="quiet-button" aria-label={`Open task: ${created.title}`} onClick={() => openCreated(created)}>Open task</button>}
+    {created && <button type="button" className="quiet-button" aria-label={`Open task: ${created.title}`} onClick={() => openCreated(created)}>{linkedNextAction ? "Open linked task" : "Open task"}</button>}
     {error && <p role="alert">{error}</p>}
-    <div className="task-reaction-actions"><button type="button" className="quiet-button" aria-disabled={checking} onClick={() => void read()}>Check result</button>
-      {(uncertain || reaction?.state === "STARTED") && <button type="button" className="quiet-button" disabled={checking} onClick={() => void read(true)}>Reconcile saved observation</button>}</div>
-    {reaction && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
+    <div className="task-reaction-actions">{(!reaction?.team || !confirmedReceipt || !!error) &&
+      <button type="button" className="quiet-button" aria-disabled={checking} onClick={() => void read(reaction?.team === true && !!uncertain && !confirmedReceipt)}>{reaction?.team ? "Check again" : "Check result"}</button>}
+      {(!reaction?.team || reaction.linked !== undefined) && (uncertain || reaction?.state === "STARTED") && <button type="button" className="quiet-button" disabled={checking} onClick={() => void read(true)}>Reconcile saved observation</button>}</div>
+    {reaction && (!reaction.team || reaction.capability === "tasks.update") && (reaction.outcome || receipt || reaction.reconciliation || reaction.message) && <details><summary>Result details</summary>
       {confirmedReceipt && <p>{update ? "A saved native receipt confirms the update." : "A saved native receipt confirms that a task was created."}</p>}
       {update && !unchanged && <dl>
         {update.before.priority !== update.after.priority && <><dt>Priority</dt><dd>{update.before.priority} → {update.after.priority}</dd></>}
         {update.before.tags.join(", ") !== update.after.tags.join(", ") && <><dt>Tags</dt><dd>{update.after.tags.join(", ")}</dd></>}
-        {update.before.dueAt !== update.after.dueAt && <><dt>Due time</dt><dd>{update.after.dueAt ?? "None"}{update.after.dueAt && " (UTC)"}</dd></>}
+         {update.before.dueAt !== update.after.dueAt && <><dt>Due time</dt><dd>{update.after.dueAt
+           ? reaction.linked !== undefined ? offerTime(update.after.dueAt) : formatDueTime(update.after.dueAt) : "None"}</dd></>}
       </dl>}
       {confirmedReceipt && uncertain && <p>The original runtime outcome remains uncertain. The saved native receipt is a separate confirmation.</p>}
       {reaction.message && <p>{reaction.message}</p>}
@@ -1491,37 +1863,86 @@ function TaskReaction({ source, request, confirmed, openCreated, creation = fals
 
 function TaskDetail({
   task,
+  showTeamVersion,
   draft,
   setDraft,
   manage,
   busy,
   error,
+  hold,
   close,
   reactionRequest,
+  visible,
   reactionConfirmed,
   openCreated,
+  complete,
   save,
 }: {
   task: Task;
+  showTeamVersion: boolean;
   draft: TaskDraft;
   setDraft: (draft: TaskDraft) => void;
   manage: () => void;
   busy: boolean;
   error: string;
+  hold?: string;
   close: () => void;
   reactionRequest: <T>(path: string, method?: string, body?: object, signal?: AbortSignal) => Promise<T>;
+  visible: boolean;
   reactionConfirmed: (created: Task) => Promise<void>;
   openCreated: (created: Task) => void;
+  complete?: () => void;
   save: (dueAt?: string | null) => void;
 }) {
-  return <TaskForm task={task} draft={draft} setDraft={setDraft} busy={busy} error={error} close={close} save={save}>
-    {task.status === "completed" && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} />}
-    <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation />
-    <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>
+  const [parent, setParent] = useState<Task | null>(null);
+  const [teamRevision, setTeamRevision] = useState<string | null>(null);
+  const [creationBound, setCreationBound] = useState(false), [completionBound, setCompletionBound] = useState(false);
+  const [selectedCompletion, setSelectedCompletion] = useState<"selected" | "none" | "unavailable" | null>(null);
+  const request = useRef(reactionRequest); request.current = reactionRequest;
+  useEffect(() => {
+    if (!visible || task.creatorId || task.status !== "open") return;
+    const controller = new AbortController();
+    void request.current<Collection>("extensions", "GET", undefined, controller.signal).then(collection => {
+      if (!controller.signal.aborted) setSelectedCompletion(!collection.selection ? "unavailable" : collection.selection.revision ? "selected" : "none");
+    }).catch(() => { if (!controller.signal.aborted) setSelectedCompletion("unavailable"); });
+    return () => controller.abort();
+  }, [task.id, task.creatorId, task.status, visible]);
+  useEffect(() => {
+    if (!task.parentTaskId || !task.originEventId) return;
+    const controller = new AbortController();
+    void request.current<Task>(`tasks/${encodeURIComponent(task.parentTaskId)}`, "GET", undefined, controller.signal).then(result => {
+      if (!controller.signal.aborted && isTask(result) && result.id === task.parentTaskId
+          && result.projectId === task.projectId && !result.parentTaskId) setParent(result);
+    }).catch(() => { /* A parent outside the viewer's access has no link. */ });
+    return () => controller.abort();
+  }, [task.parentTaskId, task.originEventId, task.projectId]);
+  const atTop = !!task.creatorId && !task.parentTaskId;
+  const created = <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} creation bound={setCreationBound} version={showTeamVersion ? setTeamRevision : undefined} />;
+  return <TaskForm task={task} draft={draft} setDraft={setDraft} busy={busy} error={error} close={close} save={save} complete={complete}
+    recovery={<>
+      {hold && <section aria-label="Last completion attempt" className="task-completion-hold">
+        <p role="status"><strong>Not completed on the last attempt</strong><br />The rule said: “{hold}”</p>
+        <p>Try completing this task again when ready.</p>
+      </section>}
+      {atTop && created}
+      {parent && <section aria-label="Original task" className="task-reaction">
+        <p><strong>Original task</strong></p>
+        <button type="button" className="quiet-button" onClick={() => openCreated(parent)}>Open “{parent.title}”</button>
+      </section>}
+    </>}>
+     {task.status === "completed" && <TaskReaction source={task} request={reactionRequest} confirmed={reactionConfirmed} openCreated={openCreated} bound={setCompletionBound} />}
+    {!atTop && created}
+    {showTeamVersion && teamRevision && <details className="task-reaction">
+      <summary>Rule version for this task</summary>
+      <p>Version reference: {teamRevision}</p>
+      <p>To identify this exact version for emergency revocation, use this reference in Saved Team history and controls.</p>
+    </details>}
+    {!task.creatorId && (creationBound || completionBound || task.status === "open" && (selectedCompletion === "selected" || selectedCompletion === "unavailable")) &&
+      <button id="open-customizations" type="button" className="quiet-button" disabled={busy} onClick={manage}>Customization Studio</button>}
   </TaskForm>;
 }
 
-function TaskForm({ task, draft, setDraft, busy, error, close, save, children, recovery, submitBlocked = false, closeLabel = "Cancel", closeNotice }: {
+function TaskForm({ task, draft, setDraft, busy, error, close, save, complete, children, recovery, submitBlocked = false, closeLabel = "Cancel", closeNotice }: {
   task?: Task;
   draft: TaskDraft;
   setDraft: (draft: TaskDraft) => void;
@@ -1529,6 +1950,7 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
   error: string;
   close: () => void;
   save: (dueAt?: string | null) => void;
+  complete?: () => void;
   children?: ReactNode;
   recovery?: ReactNode;
   submitBlocked?: boolean;
@@ -1595,18 +2017,19 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
         value={notes}
         onChange={(event) => setDraft({ ...draft, notes: event.target.value })}
         maxLength={4000}
-        placeholder="A thought, a reference, a place to begin…"
+        placeholder="Add a note"
         rows={7}
       />
       <label htmlFor="edit-tags">Tags</label>
       <input id="edit-tags" value={draft.tags} aria-describedby="edit-tags-hint"
         onChange={event => setDraft({ ...draft, tags: event.target.value })} />
-      <p id="edit-tags-hint" className="muted tag-hint">Separate tags with commas. Use up to 8 tags, each up to 32 characters.</p>
+      <p id="edit-tags-hint" className="muted tag-hint">Separate tags with commas.</p>
       </div>
       <aside className="task-form-meta" aria-label="Task metadata">
       {task && <p className={`status-label ${task.status}`}>
-        {task.status === "completed" ? "✓ Completed" : "○ Up next"}
+        {task.status === "completed" ? "✓ Completed" : "○ Open"}
       </p>}
+      {task?.creatorId && <p className="tag-hint">{task.assigneeName ? `Assigned to ${task.assigneeName}` : "Unassigned"}</p>}
       <label htmlFor="edit-priority">Priority</label>
       <select id="edit-priority" value={draft.priority}
         onChange={event => setDraft({ ...draft, priority: event.target.value as Task["priority"] })}>
@@ -1615,11 +2038,11 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
         <option value="high">High</option>
       </select>
       <label htmlFor="edit-due-time">Due time <span className="muted">(optional)</span></label>
-      <input id="edit-due-time" ref={dueTimeInput} type="datetime-local" min="0001-01-01T00:00" max="9999-12-31T23:59:59.999" step="0.001"
-        value={draft.dueTime} aria-invalid={dueTimeError ? true : undefined}
+      <input id="edit-due-time" ref={dueTimeInput} type="datetime-local" min="0001-01-01T00:00" max="9999-12-31T23:59:59.999" step="any"
+        value={draft.dueTimeEdited ? draft.dueTime : draft.dueTime.slice(0, 16)} aria-invalid={dueTimeError ? true : undefined}
         aria-describedby={dueTimeError ? "edit-due-zone edit-due-error" : "edit-due-zone"}
         onChange={event => editDueTime(event.target.value)} />
-      <p id="edit-due-zone" className="muted tag-hint">Time zone: {draft.dueZone}.
+      <p id="edit-due-zone" className="muted tag-hint">Enter a local time.
         {task?.dueAt && !draft.dueTimeEdited && <> Saved time: {formatDueTime(task.dueAt, draft.dueZone)}.</>}
       </p>
       {task?.dueAt && !draft.dueTime && !draft.dueTimeEdited &&
@@ -1647,6 +2070,7 @@ function TaskForm({ task, draft, setDraft, busy, error, close, save, children, r
         <button type="button" className="quiet-button" onClick={close}>
           {closeLabel}
         </button>
+        {task?.status === "open" && complete && <button type="button" className="quiet-button" disabled={busy} onClick={complete}>Complete task</button>}
         <button className="primary" disabled={busy || submitBlocked}>
           {task ? "Save changes" : "Add task"}
         </button>

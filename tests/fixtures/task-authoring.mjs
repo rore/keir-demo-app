@@ -19,3 +19,12 @@ export function admitTaskDraft(db, lifecycle, { owner = 'maya', name = 'Task cus
   });
   return { extensionId, conversationId, state: lifecycle.state(owner, extensionId), conversationState };
 }
+
+export function seedEarlierTeamDiscussion(db, projectId, owner = 'maya', text = 'Earlier Team discussion') {
+  const id = randomUUID(), runId = randomUUID(), now = Date.now();
+  db.prepare('INSERT INTO authoring_conversations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(id, owner, randomUUID(), 0, runId, 'IDLE', 0,
+    now, JSON.stringify({ definitionId: 'daymark.team-authoring/1', projectId }), '[]', '{}', now);
+  db.prepare('INSERT INTO authoring_messages VALUES (?,?,?,?,?)')
+    .run(id, owner, 1, id, JSON.stringify({ id, role: 'assistant', kind: 'text', text }));
+  return id;
+}

@@ -1,24 +1,30 @@
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import staticFiles from '@fastify/static';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve, join, relative, isAbsolute, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
-import { AppError, USERS, taskService } from './data.mjs';
+import { AppError, USERS, taskService, transaction } from './data.mjs';
 import { createTaskDispatcher } from './task-effects.mjs';
 import { createTaskCreateGuard } from './task-create-guard.mjs';
+import { createTeamRuntime } from './team-runtime.mjs';
+import { taskAccess, teamProjectService } from './team-native.mjs';
+import { createTeamCapability } from './team-capability.mjs';
 import { TASK_HOOK, TASK_EVENT_HOOKS } from './extension-catalog.mjs';
-import { createLifecycle } from './extension-lifecycle.mjs';
+import { createLifecycle, sharedStudioCreationHash } from './extension-lifecycle.mjs';
 import { createAuthoringService, AUTHORING_CODES } from './authoring-service.mjs';
 import { authoringChoices } from './authoring-config.mjs';
 import { assertAuthoringSettingsLocation, createAuthoringSettings } from './authoring-settings.mjs';
+import { createSharedCompletion } from './shared-completion.mjs';
+import { BUNDLE_MANIFEST, COMPOSED_MANIFEST } from './shared-task-bundle.mjs';
 
 const nonce = () => randomBytes(32).toString('hex');
 const COOKIE = 'keir_demo_session';
 // Encoded URL aliases must share the matched route's security and privacy checks.
 const routePath = request => request.routeOptions.url ?? request.url.split('?')[0];
 
-export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler, guard, authoring = {}, authoringSettingsFile }) {
+export async function createApp({ db, origin, staticRoot = resolve('dist'), compiler, guard, authoring = {}, authoringSettingsFile,
+  sharedCompletionWriteReply }) {
   assertAuthoringSettingsLocation(authoringSettingsFile, staticRoot);
   const url = new URL(origin);
   const app = Fastify({ logger: false, bodyLimit: 24 * 1024, requestTimeout: 10_000, connectionTimeout: 10_000, ajv: { customOptions: { removeAdditional: false } } });
@@ -29,13 +35,46 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     catch { /* Missing compiler assets never prevent native or stored advice startup. */ }
   }
   const lifecycle = createLifecycle(db, { compiler });
-  guard ??= createTaskCreateGuard({ db, lifecycle, commitReserveMs: 100 });
-  const service = taskService(db, { guard });
+  const capability = createTeamCapability(db, { sharedCompiler: compiler });
+  guard ??= createTaskCreateGuard({ db, lifecycle, commitReserveMs: 100,
+    teamCapability: capability, sharedPersonalBinding: lifecycle.sharedBeforeCreateBinding });
+  const shared = createSharedCompletion({ db, lifecycle, teamCapability: capability, guard, writeReply: sharedCompletionWriteReply });
+  const team = createTeamRuntime({ db, sharedCompletion: shared });
+  const service = taskService(db, { guard, team, sharedCompletion: shared });
+  const teamProjects = teamProjectService(db);
   const effects = createTaskDispatcher({ db, lifecycle, guard });
   const settings = createAuthoringSettings({ file: authoringSettingsFile, config: authoring.config });
-  const ai = createAuthoringService({ db, lifecycle, ...authoring, config: settings.config });
-  app.addHook('onClose', async () => { await Promise.all([ai.close(), effects.close(), guard.close?.()]); });
-  const wakeEffects = () => setImmediate(() => { void effects.wake().catch(() => {}); });
+  const ai = createAuthoringService({ db, lifecycle, ...authoring, config: settings.config, teamCapability: capability, teamProjects,
+    sharedCompletionCompiler: compiler ?? null });
+  let sharedDrain, sharedAfter = 0, createdAfter = 0, sharedRequested = false, closing = false;
+  function wakeShared() {
+    if (closing) return;
+    sharedRequested = true;
+    if (sharedDrain) return;
+    sharedDrain = (async () => {
+      sharedRequested = false;
+      while (!closing) {
+        const created = db.prepare(`SELECT rowid AS sequence,event_id FROM task_events WHERE hook_id='TaskCreated'
+          AND state='PENDING' AND json_extract(pins,'$.format') IN (?,?) AND rowid>? ORDER BY rowid LIMIT 1`)
+          .get(BUNDLE_MANIFEST, COMPOSED_MANIFEST, createdAfter);
+        if (created) {
+          createdAfter = created.sequence;
+          try { await shared.run(created.event_id); } catch { /* Unavailable exact attempts never fall back. */ }
+          continue;
+        }
+        const row = db.prepare("SELECT rowid AS sequence,id FROM shared_completion_events WHERE state='PENDING' AND rowid>? ORDER BY rowid LIMIT 1").get(sharedAfter);
+        if (!row) break;
+        sharedAfter = row.sequence;
+        try { await shared.run(row.id); } catch { /* Exact unavailable/revoked attempts are not replayed. */ }
+      }
+    })().catch(() => { /* The saved attempt remains authoritative. */ }).finally(() => {
+      sharedDrain = undefined;
+      if (sharedRequested) wakeShared();
+    });
+  }
+  app.addHook('preClose', async () => { await capability.close(); });
+  app.addHook('onClose', async () => { closing = true; await Promise.all([ai.close(), effects.close(), team.close(), guard.close?.(), sharedDrain]); });
+  const wakeEffects = () => setImmediate(() => { void effects.wake().catch(() => {}); void team.wake().catch(() => {}); wakeShared(); });
   app.addHook('onReady', async () => { wakeEffects(); });
   await app.register(cookie);
   app.decorateRequest('scope', null);
@@ -122,7 +161,8 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     const session = authorize(request);
     return { sessionId: session.authoringEpoch, current: () => { try { return authorize(request) === session; } catch { return false; } } };
   }
-  const setupResponse = () => ({ configuration: settings.publicConfiguration(), choices: authoringChoices, availability: ai.availability() });
+  const setupResponse = () => ({ configuration: settings.publicConfiguration(), choices: authoringChoices, availability: ai.availability(),
+    allowance: ai.allowance() });
   function setupAuthority(request) {
     authorize(request); noQuery(request);
     if (request.headers.origin !== undefined && request.headers.origin !== origin) throw new AppError(403, 'Use the same local app origin.');
@@ -150,7 +190,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   });
   app.post('/api/authoring/turn', { bodyLimit: 65536 }, async (request, reply) => {
     noQuery(request); const session = authorize(request), lease = authoringLease(request);
-    const result = await ai.turn(session.userId, request.body, lease); authorize(request);
+    const result = await ai.turn(session.userId, request.body, lease, { continueOnly: true }); authorize(request);
     reply.code(202); return lifecycleResponse(result);
   });
   app.post('/api/authoring/conversations/:id/cancel', (request, reply) => {
@@ -217,7 +257,7 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
   for (const operation of ['compile', 'scenarios']) app.post(`/api/extensions/:extensionId/${operation}`, { bodyLimit: 1048576 }, async (request, reply) => {
     const session = authorize(request), input = request.body;
     noQuery(request);
-    lifecycle.assertWritable(session.userId, request.params.extensionId);
+    lifecycle.assertWritable(session.userId, request.params.extensionId, { earlierOnly: true });
     const fields = operation === 'compile' ? ['hookId', 'source', 'draftVersion'] : ['revisionId', 'cases', 'draftVersion'];
     const allowed = operation === 'compile' ? [...fields, 'label', 'modelDigest'] : fields;
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(field => !allowed.includes(field))
@@ -228,7 +268,125 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
       session.userId, { ...input, extensionId: request.params.extensionId }, () => authorize(request), { signal }));
     authorize(request); return lifecycleResponse(result);
   });
-  app.post('/api/projects', (request, reply) => { const result = service.createProject(authorize(request).userId, request.body); reply.code(201); return result; });
+  app.post('/api/projects', (request, reply) => {
+    const result = service.createProject(authorize(request).userId, request.body, { authorize: () => authorize(request).userId });
+    reply.code(201); return result;
+  });
+  app.post('/api/authoring/conversations/:id/confirm', { bodyLimit: 2048 }, (request, reply) => {
+    noQuery(request); const session = authorize(request);
+    const result = ai.confirm(session.userId, request.params.id, request.body, authoringLease(request));
+    reply.code(202);
+    return lifecycleResponse(result);
+  });
+  app.get('/api/projects/:id/members', request => {
+    noQuery(request); return teamProjects.members(authorize(request).userId, request.params.id);
+  });
+  app.post('/api/projects/:id/members', request => {
+    noQuery(request);
+    return teamProjects.addMember(authorize(request).userId, request.params.id, request.body, () => authorize(request).userId);
+  });
+  app.get('/api/projects/:id/capability', request => {
+    noQuery(request); const actor = authorize(request).userId;
+    return capability.state(actor, request.params.id, () => authorize(request).userId);
+  });
+  app.get('/api/projects/:id/authoring', request => {
+    noQuery(request);
+    return lifecycleResponse(ai.team.read(authorize(request).userId, request.params.id, authoringLease(request)));
+  });
+  app.post('/api/projects/:id/authoring/turn', { bodyLimit: 49152 }, async (request, reply) => {
+    noQuery(request);
+    const result = await ai.team.turn(authorize(request).userId, request.params.id, request.body, authoringLease(request), { continueOnly: true });
+    reply.code(202);
+    return lifecycleResponse(result);
+  });
+  app.post('/api/projects/:id/authoring/cancel', { bodyLimit: 2048 }, request => {
+    noQuery(request);
+    return lifecycleResponse(ai.team.cancel(authorize(request).userId, request.params.id, request.body, authoringLease(request)));
+  });
+  app.post('/api/projects/:id/authoring/confirm', { bodyLimit: 2048 }, async (request, reply) => {
+    noQuery(request);
+    const actor = authorize(request).userId, lease = authoringLease(request);
+    const result = await withSignal(request, reply, signal => ai.team.confirm(actor, request.params.id, request.body, lease, signal));
+    return lifecycleResponse(result);
+  });
+  app.get('/api/projects/:id/capability/revisions', request => {
+    const actor = authorize(request).userId;
+    return capability.revisions(actor, request.params.id, request.query, () => authorize(request).userId);
+  });
+  for (const [path, method] of [['revisions', 'source'], ['evidence', 'evidence']]) {
+    app.get(`/api/projects/:id/capability/${path}/:recordId`, request => {
+      noQuery(request); const actor = authorize(request).userId;
+      return capability[method](actor, request.params.id, request.params.recordId, () => authorize(request).userId);
+    });
+  }
+  if (ai.sharedCompletion) {
+    const studio = ai.sharedCompletion;
+    const context = request => [authorize(request).userId, request.params.target, authoringLease(request)];
+    const studioResponse = ([actor, key, lease], snapshot) => {
+      const result = { ...snapshot, review: studio.review(actor, key, lease) };
+      return lifecycleResponse(key.startsWith('TEAM:')
+        ? { ...result, ...ai.team.savedWork(actor, key.slice('TEAM:'.length), lease) } : result);
+    };
+    const readStudio = request => {
+      const args = context(request);
+      return studioResponse(args, studio.read(...args));
+    };
+    app.post('/api/shared-studio/new-personal', request => {
+      noQuery(request);
+      const { operationId } = request.body ?? {};
+      if (typeof operationId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(operationId) || Object.keys(request.body).length !== 1)
+        throw new AppError(400, 'Use an exact creation operation.');
+      const actor = authorize(request).userId;
+      const state = transaction(db, () => lifecycle.admit(actor, { extensionId: randomUUID(), operationId,
+        hash: sharedStudioCreationHash(operationId), name: 'Untitled customization' }, () => authorize(request)));
+      return { extensionId: state.extension.id };
+    });
+    app.get('/api/shared-studio/:target', request => { noQuery(request); return readStudio(request); });
+    app.get('/api/shared-studio/:target/history', request => {
+      const [actor, key, lease] = context(request), before = Number(pageQuery(request));
+      if (!Number.isSafeInteger(before) || before < 1) throw new AppError(400, 'Use an exact history cursor.');
+      return lifecycleResponse(studio.older(actor, key, before, lease));
+    });
+    for (const command of ['turn', 'confirm', 'cancel', 'approve', 'activate', 'disable']) app.post(`/api/shared-studio/:target/${command}`, async (request, reply) => {
+      noQuery(request);
+      const [actor, key, lease] = context(request);
+      if (['approve', 'activate', 'disable'].includes(command)) {
+        if (!request.body || Object.keys(request.body).length !== 1 || typeof request.body.token !== 'string')
+          throw new AppError(400, 'Use the exact reviewed draft.');
+        await withSignal(request, reply, signal => studio.decide(actor, key, lease, command, request.body.token, signal));
+      } else if (command === 'confirm') {
+        const result = await withSignal(request, reply, signal => studio.confirm(actor, key, request.body, lease, signal));
+        try { return studioResponse([actor, key, lease], result); }
+        catch (cause) {
+          if (cause?.status !== 409) throw cause;
+          throw new AppError(503, 'Read the saved confirmation before continuing.');
+        }
+      } else await withSignal(request, reply, signal => studio[command](actor, key, request.body, lease, signal));
+      return readStudio(request);
+    });
+  }
+  for (const [path, method, bodyLimit] of [['proposals', 'propose', 16384], ['simulations', 'simulate', 32768]]) {
+    app.post(`/api/projects/:id/capability/${path}`, { bodyLimit }, async (request, reply) => {
+      noQuery(request); const actor = authorize(request).userId;
+      if (method === 'propose' && !ai.team.savedWork(actor, request.params.id, authoringLease(request)).canContinue)
+        throw new AppError(409, 'Start a new customization in Shared Studio.');
+      const result = await withSignal(request, reply, signal => capability[method](
+        actor, request.params.id, request.body, () => authorize(request).userId, { signal }));
+      authorize(request); return result;
+    });
+  }
+  app.get('/api/projects/:id/capability/operations/:operationId', request => {
+    noQuery(request); const actor = authorize(request).userId;
+    return capability.readOperation(actor, request.params.id, request.params.operationId, () => authorize(request).userId);
+  });
+  for (const [path, method] of [['approvals', 'approve'], ['activations', 'activate'], ['deactivations', 'deactivate'], ['revocations', 'revoke']]) {
+    app.post(`/api/projects/:id/capability/${path}`, { bodyLimit: ['deactivations', 'revocations'].includes(path) ? 2048 : 40960 }, async (request, reply) => {
+      noQuery(request); const actor = authorize(request).userId;
+      const result = await withSignal(request, reply, signal => capability[method](
+        actor, request.params.id, request.body, () => authorize(request).userId, { signal }));
+      authorize(request); return result;
+    });
+  }
   app.patch('/api/projects/:id', request => service.renameProject(authorize(request).userId, request.params.id, request.body));
   app.get('/api/projects/:id/tasks', request => service.listTasks(authorize(request).userId, request.params.id));
   app.get('/api/projects/:id/tasks/search', request => service.searchTasks(authorize(request).userId, request.params.id, request.query));
@@ -238,11 +396,16 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
     if (Object.keys(request.query).some(key => key !== 'trigger') || !TASK_EVENT_HOOKS.includes(hook)) throw new AppError(400, 'Choose a task trigger.');
     return hook;
   };
-  app.get('/api/tasks/:id/reaction', request => effects.status(authorize(request).userId, request.params.id, reactionHook(request)));
+  const reaction = (actor, id, hook, method) => {
+    const { project } = taskAccess(db, actor, id);
+    return shared.reaction(actor, id, method === 'reconcile', hook)
+      ?? (project.mode === 'TEAM' ? team : effects)[method](actor, id, hook);
+  };
+  app.get('/api/tasks/:id/reaction', request => reaction(authorize(request).userId, request.params.id, reactionHook(request), 'status'));
   app.post('/api/tasks/:id/reaction/reconcile', request => {
     const session = authorize(request), hook = reactionHook(request);
     if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new AppError(400, 'Checking a saved outcome takes no fields.');
-    return effects.reconcile(session.userId, request.params.id, hook);
+    return reaction(session.userId, request.params.id, hook, 'reconcile');
   });
   app.post('/api/tasks', async (request, reply) => {
     const owner = authorize(request).userId;
@@ -257,10 +420,11 @@ export async function createApp({ db, origin, staticRoot = resolve('dist'), comp
       { authorize: () => authorize(request).userId });
   });
   app.patch('/api/tasks/:id', request => service.editTask(authorize(request).userId, request.params.id, request.body));
-  app.post('/api/tasks/:id/complete', request => {
+  app.post('/api/tasks/:id/complete', async (request, reply) => {
     const session = authorize(request);
     if (!request.body || Object.keys(request.body).length) throw new AppError(400, 'Completion takes no fields.');
-    const result = service.completeTask(session.userId, request.params.id);
+    const result = await withSignal(request, reply, signal => service.completeTask(session.userId, request.params.id,
+      { signal, authorize: () => authorize(request).userId }));
     wakeEffects();
     return result;
   });

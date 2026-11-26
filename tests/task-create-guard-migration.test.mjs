@@ -108,7 +108,7 @@ test('v13 upgrade retains selected /2 rules, pending events and exact saved byte
   for (let attempt = 0; attempt < 2; attempt++) {
     const db = openData(path);
     try {
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
+         assert.equal(db.prepare('PRAGMA user_version').get().user_version, 24);
       assert.deepEqual(queries.map(query => query(db)), before);
       assert.deepEqual(db.prepare("SELECT owner_id,revision_id,generation,binding_pins FROM extension_selections WHERE hook_id='TaskBeforeCreate' ORDER BY owner_id").all().map(Object.values),
         ['leo', 'maya', 'sam'].map(owner => [owner, null, 0, null]));
@@ -118,7 +118,7 @@ test('v13 upgrade retains selected /2 rules, pending events and exact saved byte
       assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
     } finally { db.close(); }
     if (attempt === 0) upgradedBytes = readFileSync(path);
-    else assert.deepEqual(readFileSync(path), upgradedBytes, 'Opening v14 again must not migrate, reseed or rewrite saved data');
+    else assert.deepEqual(readFileSync(path), upgradedBytes, 'Opening the current schema again must not migrate, reseed or rewrite saved data');
   }
 });
 
@@ -142,7 +142,7 @@ test('every v13 guard-migration statement and final version write rolls back ato
         throw new Error('Guard migration interrupted');
       }
       const result = exec.call(this, sql);
-      if (boundary === statements.length && sql === 'PRAGMA user_version=14') {
+       if (boundary === statements.length && sql === 'PRAGMA user_version=24') {
         interrupted = true;
         throw new Error('Guard migration interrupted');
       }

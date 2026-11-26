@@ -74,17 +74,7 @@ async function appLockup(page) {
   const brand = page.locator('.brand').filter({ visible: true });
   await expect(brand).toHaveCount(1);
   await expect(brand.locator('.brand-name')).toHaveText('Daymark');
-  await expect(brand.locator('.brand-subline')).toHaveText('A KEIR Demo');
-  if (await brand.locator('..').evaluate(node => node.classList.contains('welcome-header'))) {
-    const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
-    expect(subline.y).toBeGreaterThanOrEqual(name.y + name.height);
-    expect(Math.abs(subline.x - name.x)).toBeLessThanOrEqual(1);
-  } else if (page.viewportSize().width > 900) {
-    const name = await brand.locator('.brand-name').boundingBox(), subline = await brand.locator('.brand-subline').boundingBox();
-    expect(subline.x).toBeGreaterThanOrEqual(name.x + name.width);
-    expect(subline.x - name.x - name.width).toBeLessThan(24);
-    expect(Math.abs(subline.y + subline.height / 2 - name.y - name.height / 2)).toBeLessThanOrEqual(4);
-  } else await expect(brand.locator('.brand-subline')).toBeHidden();
+  await expect(brand.locator('.brand-subline')).toHaveCount(0);
   await expect(page.getByText('Powered by Keir', { exact: true })).toHaveCount(0);
 }
 async function openDetails(page) {
@@ -245,7 +235,6 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await enter(page, demo);
   await expect(page).toHaveTitle('Daymark — tasks and customizations');
   await page.getByLabel('New task title').fill('Keep my quick-add');
-  await openWorkspaceTool(page, '.project-tools');
   await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('New project name', { exact: true }).fill('Keep this project draft');
   await openStudio(page);
@@ -255,9 +244,12 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click();
   await expect(await editSaved(page)).toBeFocused();
   await destination(page, 'Tasks');
-  await expect(page.locator('.project-link.selected')).toHaveCount(1);
-  await expect(page.getByLabel('New task title')).toHaveValue('Keep my quick-add');
+  await expect(page.locator('.project-link.selected')).toBeHidden();
+  await expect(page.getByLabel('New task title')).toBeHidden();
   await expect(page.getByLabel('New project name', { exact: true })).toHaveValue('Keep this project draft');
+  await page.getByRole('main', { name: 'New project' }).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.locator('.project-link.selected')).toBeVisible();
+  await expect(page.getByLabel('New task title')).toHaveValue('Keep my quick-add');
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByLabel('Task title', { exact: true }).fill('Keep native detail title');
   await page.getByLabel('Notes (optional)').fill('Keep native detail notes');
@@ -272,13 +264,13 @@ test('normal navigation preserves native forms and returns to the actual overvie
   await expect(page.getByRole('button', { name: 'Gather material references', exact: true })).toBeFocused();
 });
 
-test('overflowing native projects and tasks scroll independently with stable navigation and retained task position', async ({ page, demo }) => {
+test('long Tasks page scrolls with stable navigation and an independent project list', async ({ page, demo }) => {
   const now = new Date().toISOString();
-  for (let i = 0; i < 60; i++) demo.db.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?)').run(`overflow-project-${i}`, 'maya', `Overflow project ${i}`, now, now);
+  for (let i = 0; i < 60; i++) demo.db.prepare('INSERT INTO projects(id,owner_id,name,created_at,updated_at) VALUES (?, ?, ?, ?, ?)').run(`overflow-project-${i}`, 'maya', `Overflow project ${i}`, now, now);
   const project = demo.db.prepare("SELECT id FROM projects WHERE owner_id='maya' ORDER BY created_at LIMIT 1").get().id;
   for (let i = 0; i < 80; i++) demo.db.prepare('INSERT INTO tasks (id, owner_id, project_id, title, notes, status, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(`overflow-task-${i}`, 'maya', project, `Overflow task ${i}`, '', 'open', now, now, null);
   await enter(page, demo);
-  const rail = page.locator('.task-projects'), header = page.locator('.workspace-top'), main = page.locator('.task-content'), projects = page.getByRole('navigation', { name: 'Projects' });
+  const rail = page.locator('.task-projects'), header = page.locator('.workspace-top'), main = page.locator('.task-main'), projects = page.getByRole('navigation', { name: 'Projects' });
   const geometry = { rail: await rail.boundingBox(), header: await header.boundingBox() };
   await wheel(page, main, 600); await expect.poll(() => scrollTop(main)).toBeGreaterThan(200);
   await expect.poll(() => scrollTop(projects)).toBe(0);
@@ -300,21 +292,19 @@ test('overflowing native projects and tasks scroll independently with stable nav
 test('general start offers editable requests and distinguishes untouched from off setups with history', async ({ page, demo }) => {
   await page.goto(demo.origin); await page.getByRole('button', { name: 'Continue as Sam' }).click();
   await destination(page, 'Customizations');
-  await expect(page.getByText('Your customizations will appear here.', { exact: true })).toBeVisible();
+  await expect(page.getByText('No Personal customizations yet.', { exact: false })).toBeVisible();
   await expect(page.locator('.customization-card')).toHaveCount(0);
   const before = await collection(page); let mutations = 0;
   page.on('request', request => { if (request.method() === 'POST' && /\/api\/(extensions|authoring)/.test(request.url())) mutations++; });
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(ui(page).getByRole('heading', { name: 'What would you like Daymark to do for you?' })).toBeVisible();
-  await expect(ui(page).getByRole('button', { name: 'Prioritize new requests', exact: true })).toBeVisible();
+  await expect(ui(page).getByText('Personal · Untitled customization', { exact: true })).toBeVisible();
   await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible();
   await expect(ui(page).getByRole('button', { name: /See available starting points|Pending for open tasks|Needs attention for open tasks|Change choice/ })).toHaveCount(0);
   await expect(ui(page).getByLabel('Keir source (developer)', { exact: true })).toHaveCount(0);
-  await expect(ui(page).getByText('Set up the assistant to create or change a customization.', { exact: true })).toBeVisible();
   await expect(ui(page).getByRole('button', { name: 'Configure', exact: true })).toBeVisible();
-  await picture(page, 'general-start'); expect(await collection(page)).toEqual(before); expect(mutations).toBe(0);
+  await picture(page, 'general-start'); expect((await collection(page)).selection).toEqual(before.selection); expect(mutations).toBe(0);
   await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
-  await expect(page.getByRole('button', { name: 'New customization', exact: true })).toBeFocused();
+  await expect(page.getByRole('article', { name: 'Untitled customization' })).toBeVisible();
   await switchPerson(page, 'maya');
   await openStudio(page);
   const beforeOff = await savedState(page);
@@ -332,19 +322,20 @@ test('general start offers editable requests and distinguishes untouched from of
   await expect(await card(page)).toContainText('Approved · Not on yet'); await picture(page, 'general-off');
   const beforeNew = await collection(page);
   await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect(await collection(page)).toEqual(beforeNew);
+  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect((await collection(page)).selection).toEqual(beforeNew.selection);
 });
 
 test('saved draft resumes in chat and failed saved-state reads offer Retry', async ({ page, demo }) => {
-  await enter(page, demo); await overview(page); const initial = await collection(page);
-  await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect(await collection(page)).toEqual(initial);
+  await enter(page, demo); await overview(page);
+  const earlier = await openEarlierPersonalEditor(page, demo);
+  targets.set(page, earlier.extensionId);
+  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible();
   await prepareChoice(page, proposedLabel); const draft = await savedState(page);
   await ui(page).getByRole('button', { name: 'Back to Customizations' }).click();
   await expect(await editSaved(page)).toContainText('Continue changes'); await destination(page, 'Tasks');
   await page.route('**/api/extensions', route => route.abort('failed'));
   await destination(page, 'Customizations'); await expect(page.getByRole('alert')).toContainText('Customizations could not be checked');
-  await expect(page.getByText('Your customizations will appear here.', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('No Personal customizations yet.', { exact: false })).toHaveCount(0);
   await page.unroute('**/api/extensions'); await page.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(await editSaved(page)).toBeEnabled(); await picture(page, 'discovery-continue');
   await (await editSaved(page)).click(); await openDetails(page);
@@ -487,7 +478,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(action).toBeEnabled();
     await expect(rows.nth(1)).toBeVisible();
     await expect(composer).toHaveValue('Keep this unsent thought');
-    await results.getByText('Technical details for this version', { exact: true }).click();
+    await results.getByText('Advanced: saved evidence', { exact: true }).click();
     await expect(results).toContainText(`Evidence: ${id}`);
     await expect(results.getByLabel('Exact checked examples', { exact: true })).toContainText(id);
     await expect(results).toContainText('Example tasks; your tasks are unchanged.');
@@ -536,9 +527,11 @@ test('overview reflects real draft, approved, selected, off and unavailable stat
   await destination(page, 'Tasks'); await overview(page); await expect(await card(page)).toContainText('Couldn’t check what’s in use');
   await expect(await card(page)).not.toContainText('completed tasks: Done'); await picture(page, 'overview-unavailable');
   await switchPerson(page, 'sam'); await destination(page, 'Customizations');
-  await expect(page.locator('.customization-card')).toHaveCount(0); await page.getByRole('button', { name: 'New customization', exact: true }).click();
-  await expect(ui(page).getByLabel('Message to Daymark assistant')).toBeVisible(); expect((await savedState(page)).selection.revision).toBeNull(); expect((await savedState(page)).draft).toBeNull();
-  await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click(); await expect(page.locator('.customization-card')).toHaveCount(0); await picture(page, 'overview-off');
+  await expect(page.locator('.customization-card')).toHaveCount(0);
+  await page.getByRole('button', { name: 'New customization', exact: true }).click();
+  await expect(ui(page).getByText('Personal · Untitled customization', { exact: true })).toBeVisible();
+  await expect(ui(page).getByRole('region', { name: 'Saved draft' })).toHaveCount(0);
+  await ui(page).getByRole('button', { name: 'Back to Customizations', exact: true }).click(); await picture(page, 'overview-off');
 });
 test('transcript and canvas own wheel and PageDown; arrivals preserve earlier reading and splitter keeps usable widths', async ({ page, demo }) => {
   await enter(page, demo); const fixture = await scriptLayoutAuthoring(page); await openStudio(page);
@@ -723,7 +716,7 @@ for (const operation of ['simulate', 'approve', 'activate']) {
       } else {
         results = studio.getByRole('article', { name: 'Current decision', exact: true });
         await expect(results.getByRole('article', { name: /^Example:/ }).first()).toBeVisible();
-        await results.getByText('Technical details for this version', { exact: true }).click();
+        await results.getByText('Advanced: saved evidence', { exact: true }).click();
         proof = await results.getByLabel('Exact checked examples', { exact: true }).textContent();
       }
       const anchor = operation === 'simulate'
@@ -756,3 +749,4 @@ for (const operation of ['simulate', 'approve', 'activate']) {
     } finally { release?.(); }
   });
 }
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

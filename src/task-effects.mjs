@@ -4,6 +4,8 @@ import { bindModel, prepareProgram, invokeProgram } from '@keir/runtime-node';
 import { AppError, taskService, taskEffectService } from './data.mjs';
 import { hostBindings, json, loadHost, definitionForPins, digest, TASK_HOOK, TASK_EVENT_HOOKS } from './extension-catalog.mjs';
 import { consumeTaskEffect } from './task-effect-simulation.mjs';
+import { SHARED_MANIFEST } from './shared-completion-contract.mjs';
+import { isTaskBundle } from './shared-task-bundle.mjs';
 
 const denied = effect => ({ kind: 'BUSINESS_REJECTION', code: 'ACCESS_DENIED', ...(effect ? { effect: 'NONE' } : {}) });
 
@@ -95,6 +97,7 @@ export function createTaskDispatcher({ db, lifecycle, guard, clock = () => Math.
     let host, boundModel;
     try {
       const pins = JSON.parse(row.pins);
+       if (pins?.format === SHARED_MANIFEST || isTaskBundle(pins?.format)) return; // The shared attempt owns this transition.
       host = definitionForPins(pins);
       if (host.pins.hook !== row.hook_id) return;
       boundModel = bindingFor(host);

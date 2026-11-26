@@ -144,7 +144,7 @@ for (const [label, newer] of [['identical new input', 'Help me customize a task 
       const requests = writes(page);
       await navigate(page, 'Customizations');
       const selected = (await api(page, 'extensions')).selection;
-      await page.getByRole('button', { name: 'New customization', exact: true }).click();
+      await openEarlierPersonalEditor(page, fixture);
       await page.route('**/api/authoring/turn', async route => {
         const response = await route.fetch(); expect(response.status()).toBe(202);
         arrived.resolve(await response.json()); await gate.promise;
@@ -172,8 +172,8 @@ for (const [label, newer] of [['identical new input', 'Help me customize a task 
       expect(await api(page, `extensions/${id}`)).toEqual(saved);
       expect(requests.map(request => request.path)).toEqual(['/api/authoring/turn']);
       expect(requests[0].body.text).toBe(submitted);
-      expect(fixture.requests.map(request => request.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
-      expect(requests[0].body.intent).toBe('auto');
+      expect(fixture.requests.map(request => request.name)).toEqual(['discover_catalog', 'ask_clarification']);
+      expect(requests[0].body).not.toHaveProperty('intent');
     } finally { gate.resolve(); await page.close(); await fixture.close(); }
   });
 }
@@ -212,7 +212,7 @@ test('a new component recovering an accepted request keeps a restored newer iden
     await enter(page, fixture);
     const requests = writes(page);
     await navigate(page, 'Customizations');
-    await page.getByRole('button', { name: 'New customization', exact: true }).click();
+    await openEarlierPersonalEditor(page, fixture);
     await page.route('**/api/authoring/turn', async route => {
       const response = await route.fetch(); expect(response.status()).toBe(202); await route.abort('failed');
     }, { times: 1 });
@@ -240,7 +240,7 @@ test('a new component recovering an accepted request keeps a restored newer iden
     expect(recoveries.length).toBeGreaterThanOrEqual(2);
     for (const request of recoveries) expect(request.body).toEqual(requests[0].body);
     expect(requests.every(request => ['/api/authoring/turn', '/api/authoring/recover'].includes(request.path))).toBe(true);
-    expect(fixture.requests.map(request => request.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(request => request.name)).toEqual(['discover_catalog', 'ask_clarification']);
   } finally { gate.resolve(); await page.close(); await fixture.close(); }
 });
 
@@ -345,6 +345,7 @@ test('accepted text stays cleared across route remounts when removing its persis
     expect(discussion.transcript.messages.filter(message => message.role === 'user').map(message => message.text)).toEqual([submitted]);
     expect(requests.map(request => request.path)).toEqual(['/api/authoring/turn']);
     expect(requests[0].body.text).toBe(submitted);
-    expect(fixture.requests.map(request => request.name)).toEqual(['resolve_intent', 'discover_catalog', 'ask_clarification']);
+    expect(fixture.requests.map(request => request.name)).toEqual(['discover_catalog', 'ask_clarification']);
   } finally { await page.close(); await fixture.close(); }
 });
+import { openEarlierPersonalEditor } from '../fixtures/workspace-ui.mjs';

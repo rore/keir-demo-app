@@ -1,9 +1,20 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Collection, State, StudioTarget } from "./Studio";
 import { pendingRequests, taskTriggerGroup } from "./Studio";
 import { describeRule } from "./rule-description";
 
-export default function Customizations({ request, changed, beforeSelectionChange, open, projects, focusAction = "", notice = "" }: {
+export function CustomizationsPage({ scopeControl, action, children }: { scopeControl?: ReactNode; action?: ReactNode; children: ReactNode }) {
+  return <main className="customizations-main" aria-labelledby="customizations-heading">
+    <header className="collection-heading">
+      <h1 id="customizations-heading" tabIndex={-1}>Customizations</h1>
+      {action}
+    </header>
+    {scopeControl}
+    {children}
+  </main>;
+}
+
+export default function Customizations({ request, changed, beforeSelectionChange, open, projects, focusAction = "", notice = "", scopeControl }: {
   request: <T>(path: string, method?: string, body?: object) => Promise<T>;
   changed: (generation: number) => void;
   beforeSelectionChange: () => void;
@@ -11,6 +22,7 @@ export default function Customizations({ request, changed, beforeSelectionChange
   projects: { id: string; name: string }[];
   focusAction?: string;
   notice?: string;
+  scopeControl?: ReactNode;
 }) {
   const [state, setState] = useState<Collection | null>(null);
   const [loadingMore, setLoadingMore] = useState("");
@@ -143,19 +155,14 @@ export default function Customizations({ request, changed, beforeSelectionChange
           : "Deletion could not be confirmed. It may have finished. Check deletion with the same confirmation before making another change." });
     } finally { if (lifetime.current === turn) { deletingRef.current = false; setDeleting(false); } }
   }
-  return <main className="customizations-main" aria-labelledby="customizations-heading">
-    <div className="collection-heading">
-    <div><p className="eyebrow">Your workspace</p>
-    <h1 id="customizations-heading" tabIndex={-1}>Customizations</h1>
-    <p className="page-intro">Make Daymark work your way. Start a change or return to a saved customization.</p></div>
-    <button id="new-customization" className="primary customization-start" onClick={() => open()}>New customization</button>
-    </div>
+  return <CustomizationsPage scopeControl={scopeControl}
+    action={<button id="new-customization" className="primary customization-start" onClick={() => open()}>New customization</button>}>
     {state?.executionAvailability?.available === false && <p role="status">{state.executionAvailability.message || "Task customizations cannot run in this installation yet. Your tasks still work."}</p>}
     {notice && <p role="status">{notice}</p>}
     {deleteNotice && <p role="status">{deleteNotice} <button className="quiet-button" onClick={() => setRetry(old => old + 1)}>Refresh collection</button></p>}
     <div className="customization-list">
     {error ? <div className="error" role="alert">Customizations could not be checked. <button onClick={() => setRetry(old => old + 1)}>Try again</button></div>
-      : !state ? <p role="status">Loading your customizations…</p> : !state.items.length ? <p className="customization-empty">Your customizations will appear here.</p> : state.items.map(item => {
+      : !state ? <p className="customization-empty" role="status">Loading your customizations…</p> : !state.items.length ? <p className="customization-empty">No Personal customizations yet. Start one to change how your tasks work.</p> : state.items.map(item => {
         const selection = state.selections ? state.selections[item.extension!.hookId ?? ""] : state.selection;
         const selected = selection?.revision;
         const selectedItem = selected?.extensionId === item.extension!.id;
@@ -203,5 +210,5 @@ export default function Customizations({ request, changed, beforeSelectionChange
       {recoveries.map((item, index) => <p key={item.entryId}><button onClick={() => open({ extensionId: item.turn.target.kind === "create" ? null : item.turn.target.extensionId,
         conversationId: item.turn.conversationId, recoveryId: item.entryId })}>Check submitted request {index + 1}</button></p>)}
     </section>}
-  </main>;
+  </CustomizationsPage>;
 }

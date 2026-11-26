@@ -4,12 +4,24 @@ import { loadHost, readCurrentDefinition, readDefinitionForPins, definitionForPi
 import { runTaskEffectSimulation, taskEffectProofMatches, preflightTaskEffectScenarios, taskEffectExpected, taskEffectVersions } from './task-effect-simulation.mjs';
 import { taskRuleDescription } from './task-rule-description.mjs';
 import { evidenceSummary } from './authoring-example.mjs';
+import { SHARED_MANIFEST, completionOffer, completionProofMatches, completionReportMatches, readCompletionManifest, scopedCompletionManifest, sharedHook, sharedHost } from './shared-completion-contract.mjs';
+import { checkSharedCompletion } from './shared-completion.mjs';
+import { BUNDLE_MANIFEST, COMPOSED_MANIFEST, isTaskBundle, bundleHooks, presentHooks, primaryHook, cachedBundleProof, cachedTaskBundle, checkTaskBundle, compileTaskBundle } from './shared-task-bundle.mjs';
 
 const conflict = () => { throw new AppError(409, 'This extension changed. Review the current version before trying again.'); };
 const deleted = () => { const error = new AppError(410, 'This customization was deleted. Return to your customizations.'); error.code = 'CUSTOMIZATION_DELETED'; throw error; };
 const retired = () => { throw Object.assign(new AppError(410, 'This earlier customization is read-only. Start a new customization to change task behavior.'), { code: 'LEGACY_CUSTOMIZATION_RETIRED' }); };
 const abort = signal => { if (signal?.aborted) throw new AppError(499, 'Preparation stopped. Check saved state before trying again.'); };
+export const sharedStudioCreationHash = operationId => digest('shared-studio-personal:' + operationId);
+function sharedStudioItem(state, revision) {
+  if (!revision) return !!state.creation_operation_id && state.creation_hash === sharedStudioCreationHash(state.creation_operation_id);
+  try {
+    const format = JSON.parse(revision.identity)?.format;
+    return format === SHARED_MANIFEST || isTaskBundle(format);
+  } catch { return false; }
+}
 export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulation, compiler } = {}) {
+  const readTaskBundle = cachedTaskBundle(), verifiedBundleProof = cachedBundleProof();
   const hosts = new Map(), savedDefinitions = new Map(), availableDefinitions = new Set();
   for (const hook of TASK_HOOKS) {
     try {
@@ -38,7 +50,9 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       && Object.entries(candidate.pins).every(([key, value]) => json(pins[key]) === json(value));
   }
   function definition(row) {
-    const pins = JSON.parse(row.identity), key = definitionKey(pins);
+    const identity = JSON.parse(row.identity), pins = identity.format === SHARED_MANIFEST ? identity.hooks?.[sharedHook(identity)]
+      : isTaskBundle(identity.format) ? identity.hooks[primaryHook(identity)] : identity;
+    const key = definitionKey(pins);
     if (!savedDefinitions.has(key)) {
       savedDefinitions.set(key, readDefinitionForPins(pins));
       try { definitionForPins(pins); availableDefinitions.add(key); }
@@ -48,12 +62,47 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     if (!matchesHost(saved, pins)) throw new Error('Host definition mismatch');
     return saved;
   }
+  function sharedBinding(row, value = content(row)) {
+    const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(value.source);
+    return readCompletionManifest('PERSONAL', row.owner_id, JSON.parse(row.identity), source,
+      value.artifact, JSON.parse(value.suite));
+  }
+  function personalBundle(row, value, manifest) {
+    const decode = bytes => new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    const primary = primaryHook(manifest);
+    const sources = { [primary]: decode(value.source) }, artifacts = { [primary]: value.artifact };
+    for (const part of db.prepare('SELECT hook_id,source,artifact FROM shared_personal_hook_payloads WHERE owner_id=? AND revision_id=?').all(row.owner_id, row.id)) {
+      if (Object.hasOwn(sources, part.hook_id)) conflict();
+      sources[part.hook_id] = decode(part.source);
+      artifacts[part.hook_id] = part.artifact;
+    }
+    return readTaskBundle('PERSONAL', row.owner_id, sources, artifacts, JSON.parse(value.suite), manifest);
+  }
+  const bundlePins = (bundle, hook, approvedEvidenceId) => ({ ...bundle.manifest.hooks[hook], format: bundle.manifest.format,
+    manifestDigest: bundle.executableIdentity, suiteDigest: bundle.manifest.caseDigest, approvedEvidenceId,
+    ...(bundle.manifest.format === COMPOSED_MANIFEST && { lifetimeCompletion: !!bundle.bindings[TASK_HOOK] && presentHooks(bundle.manifest).length > 1 }) });
   function stored(row) {
     if (row?.template_id !== 'authored') return null;
     try {
       const value = content(row);
       if (!value) return null;
       const savedPins = JSON.parse(row.identity), legacy = savedPins.modelRef?.format === 'keir-dcm/1';
+      if (isTaskBundle(savedPins.format)) {
+        const bundle = personalBundle(row, value, savedPins);
+        const primary = primaryHook(savedPins);
+        definition(row);
+        return { id: row.id, kind: 'authored', label: value.label, identity: row.identity, bundle, binding: bundle.bindings[primary],
+          pins: bundlePins(bundle, primary), artifactBytes: Buffer.from(value.artifact), source: Buffer.from(value.source).toString('utf8'), suite: value.suite };
+      }
+      if (savedPins.format === SHARED_MANIFEST) {
+        const binding = sharedBinding(row, value);
+        definition(row);
+        const pins = { ...binding.manifest.hooks[binding.hook], format: SHARED_MANIFEST, manifestDigest: binding.executableIdentity,
+          suiteDigest: binding.manifest.caseDigest };
+        return { id: row.id, kind: 'authored', label: value.label, identity: row.identity, pins, binding,
+          artifactBytes: Buffer.from(value.artifact), source: Buffer.from(value.source).toString('utf8'), suite: value.suite };
+      }
+      if (Object.hasOwn(savedPins, 'format')) return null;
       const pins = legacy ? savedPins : authoredPins(value, definition(row));
       if (legacy) {
         const artifact = JSON.parse(Buffer.from(value.artifact).toString('utf8'));
@@ -107,6 +156,8 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     if (item.draft_id) {
       try {
         const pins = JSON.parse(revision(owner, item.draft_id, extensionId).identity);
+        if (pins.format === SHARED_MANIFEST && item.hook_id === sharedHook(pins)
+            || isTaskBundle(pins.format) && item.hook_id === primaryHook(pins)) return true;
         if (pins.hook === item.hook_id && pins.definitionId === TASK_DEFINITION && ['keir-dcm/2', 'keir-dcm/3', 'keir-dcm/4'].includes(pins.modelRef?.format)) return true;
       } catch { /* The original conversation can still identify a repairable current draft. */ }
     }
@@ -137,8 +188,30 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     return row;
   }
   const latestEvidence = row => db.prepare('SELECT * FROM extension_evidence WHERE owner_id=? AND revision_id=? ORDER BY rowid DESC LIMIT 1').get(row.owner_id, row.id);
-  function passing(row, proof) {
-    try { return taskEffectProofMatches(row, content(row), proof, definition(row)); }
+  function sharedEvidenceStatus(row, proof, exactBinding) {
+    try {
+      const manifest = JSON.parse(row.identity);
+      if (isTaskBundle(manifest.format)) {
+        const bundle = exactBinding?.bindings ? exactBinding : stored(row)?.bundle;
+        const report = proof?.owner_id === row.owner_id && proof.revision_id === row.id && proof.identity === row.identity
+          && proof.suite_identity === manifest.caseDigest && JSON.parse(proof.payload);
+        return { passed: !!report && proof.passed === 1 && report.passed === true,
+          eligible: !!report && proof.passed === 1 && !!bundle && verifiedBundleProof(bundle, row.id, proof.payload) };
+      }
+      if (manifest.format !== SHARED_MANIFEST) return null;
+      const binding = exactBinding ?? sharedBinding(row);
+      const report = proof?.owner_id === row.owner_id && proof.revision_id === row.id && proof.identity === row.identity
+        && proof.suite_identity === binding.manifest.caseDigest && proof.passed === 1 && JSON.parse(proof.payload);
+      const passed = completionReportMatches(binding, row.id, report);
+      return { passed: !!passed, eligible: !!passed && completionProofMatches(binding, row.id, report) };
+    } catch { return { passed: false, eligible: false }; }
+  }
+  function passing(row, proof, exactBinding) {
+    try {
+      const status = sharedEvidenceStatus(row, proof, exactBinding);
+      if (status) return status.eligible;
+      return taskEffectProofMatches(row, content(row), proof, definition(row));
+    }
     catch { return false; }
   }
   function eligible(row) {
@@ -167,6 +240,8 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
   }
   function change(owner, generation, row, operation, hookId = TASK_HOOK, expectedEvidenceId) {
     const selected = selection(owner, hookId), outgoing = selected.revision_id;
+    if (outgoing && isTaskBundle(JSON.parse(revision(owner, outgoing).identity).format)
+        || row && isTaskBundle(JSON.parse(row.identity).format)) conflict();
     if (selected.generation !== generation || selected.generation === Number.MAX_SAFE_INTEGER) conflict();
     if (row && (!eligible(row) || stored(row).pins.hook !== hookId)) conflict();
     let pins = null;
@@ -176,19 +251,37 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       if (operation === 'activate' && expectedEvidenceId !== approvedEvidenceId) conflict();
       pins = json({ ...item.pins, approvedEvidenceId });
     }
-    db.prepare('UPDATE extension_selections SET revision_id=?,generation=generation+1,binding_pins=? WHERE owner_id=? AND hook_id=?').run(row?.id ?? null, pins, owner, hookId);
+    if (db.prepare('UPDATE extension_selections SET revision_id=?,generation=generation+1,binding_pins=? WHERE owner_id=? AND hook_id=? AND generation=?')
+      .run(row?.id ?? null, pins, owner, hookId, generation).changes !== 1) conflict();
     db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)').run(owner, row?.id ?? outgoing, generation + 1, operation);
   }
-  function saveAuthored(owner, extensionId, value, definition = host) {
-    const id = randomUUID(), identity = json(authoredPins(value, definition));
+  function switchBundle(owner, row, generations, evidenceId) {
+    const item = stored(row), bundle = item?.bundle, proof = evidence(owner, evidenceId);
+    if (!bundle || latestEvidence(row)?.id !== evidenceId || !passing(row, proof, bundle)
+        || !db.prepare('SELECT 1 FROM extension_approvals WHERE owner_id=? AND revision_id=? AND evidence_id=?').get(owner, row.id, evidenceId)) conflict();
+    const hooks = presentHooks(bundle.manifest), selected = hooks.map(hook => selection(owner, hook));
+    if (api.bundleOccupied(owner, bundle.manifest, row.id)
+        || !generations || json(Object.keys(generations).sort()) !== json([...hooks].sort())
+        || selected.some(s => s.generation !== generations?.[s.hook_id] || s.generation === Number.MAX_SAFE_INTEGER)) conflict();
+    for (const s of selected) {
+      if (db.prepare('UPDATE extension_selections SET revision_id=?,generation=generation+1,binding_pins=? WHERE owner_id=? AND hook_id=? AND generation=?')
+        .run(row.id, json(bundlePins(bundle, s.hook_id, evidenceId)), owner, s.hook_id, s.generation).changes !== 1) conflict();
+    }
+    db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)')
+      .run(owner, row.id, selected.find(s => s.hook_id === primaryHook(bundle.manifest)).generation + 1, 'activate');
+  }
+  function saveAuthored(owner, extensionId, value, definition = host, manifest) {
+    const id = randomUUID(), identity = json(manifest ?? authoredPins(value, definition));
     db.prepare('INSERT INTO extension_revisions VALUES (?,?,?,?,?)').run(id, owner, 'authored', identity, 'customer');
     db.prepare('INSERT INTO extension_authored VALUES (?,?,?,?,?,?)').run(id, owner, value.label, value.source, value.artifact, value.suite);
-    saveHead(owner, extensionId, id, definition.pins.hook);
+    saveHead(owner, extensionId, id, definition.pins.hook, manifest?.format === COMPOSED_MANIFEST);
     return id;
   }
-  function saveHead(owner, extensionId, revisionId, hookId) {
+  function saveHead(owner, extensionId, revisionId, hookId, composed = false) {
     const state = draft(owner, extensionId);
-    if (state.hook_id !== null && state.hook_id !== hookId) conflict();
+    if (state.hook_id !== null && state.hook_id !== hookId && (!composed || db.prepare(`SELECT 1
+      FROM extension_selections s JOIN extension_revision_links l ON l.owner_id=s.owner_id AND l.revision_id=s.revision_id
+      WHERE s.owner_id=? AND l.extension_id=?`).get(owner, extensionId))) conflict();
     db.prepare('INSERT INTO extension_revision_links VALUES (?,?,?)').run(revisionId, owner, extensionId);
     const result = db.prepare('UPDATE extensions SET draft_revision_id=?,draft_version=draft_version+1,hook_id=? WHERE owner_id=? AND id=? AND draft_version=?').run(revisionId, hookId, owner, extensionId, state.draft_version);
     if (result.changes !== 1) conflict();
@@ -282,13 +375,13 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         || typeof hash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(hash)) throw new AppError(400, 'Use a valid creation operation.');
     if (typeof name !== 'string' || !name.trim() || Array.from(name).length > 80) throw new AppError(400, 'Use a name of 1–80 characters.');
   }
-  async function compileValue(input, authorize, signal) {
+  async function compileValue(input, authorize, signal, internalHost) {
     if (typeof input.source !== 'string' || !input.source.length || Buffer.byteLength(input.source) > 65536
         || Buffer.from(input.source).toString('utf8') !== input.source) throw new AppError(400, 'Source must be 1–65,536 valid UTF-8 bytes.');
     const label = input.label ?? 'Authored extension';
     if (typeof label !== 'string' || !label.trim() || label.length > 80) throw new AppError(400, 'Use a label of 1–80 characters.');
     let chosenHost;
-    try { if (hosts.has(input.hookId)) chosenHost = authoringDefinition(input.hookId, input.modelDigest); }
+    try { chosenHost = internalHost ?? (hosts.has(input.hookId) ? authoringDefinition(input.hookId, input.modelDigest) : null); }
     catch { throw new AppError(400, 'Choose a discovered authoring model.'); }
     if (!compiler || !chosenHost) throw new AppError(503, 'Source compilation is unavailable. Native tasks and saved extensions still work.');
     let result;
@@ -306,11 +399,11 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       error.diagnostics = result.diagnostics; throw error;
     }
     const value = { label: label.trim(), source: Buffer.from(input.source), artifact: Buffer.from(result.artifact), suite: null };
-    try { admitArtifact(value.artifact, chosenHost); authoredPins(value, chosenHost); } catch { throw new AppError(422, 'The compiled program does not match the host contract.'); }
+    try { admitArtifact(value.artifact, chosenHost); if (!internalHost) authoredPins(value, chosenHost); } catch { throw new AppError(422, 'The compiled program does not match the host contract.'); }
     return { value, chosenHost };
   }
-  function checkScenarios(row, item, rawCases) {
-    try { preflightTaskEffectScenarios(item.artifactBytes, definition(row), rawCases); }
+  function checkScenarios(artifact, host, rawCases) {
+    try { preflightTaskEffectScenarios(artifact, host, rawCases); }
     catch (cause) {
       const duplicate = cause?.code === 'DUPLICATE_SCENARIO_ID';
       const error = new AppError(400, duplicate ? 'Scenario IDs must be unique.' : 'A scenario is invalid for the task workflow contract.');
@@ -321,7 +414,14 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
   }
   const api = {
     assertAvailable(owner, extensionId, terminal = false) { draft(owner, extensionId, terminal); },
-    assertWritable(owner, extensionId) { requireTask(owner, extensionId); },
+    assertWritable(owner, extensionId, { earlierOnly = false } = {}) {
+      if (earlierOnly) {
+        const item = draft(owner, extensionId);
+        const candidate = item.draft_id && revision(owner, item.draft_id, extensionId);
+        if (sharedStudioItem(item, candidate)) throw new AppError(409, 'Continue this customization in Shared Studio.');
+      }
+      requireTask(owner, extensionId);
+    },
     executionAvailability() {
       const available = !!host;
       return { available, message: available ? null : 'Task customizations cannot run in this installation yet. Your tasks still work.' };
@@ -341,7 +441,9 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       return boundedPage(rows, row => {
         const state = draft(owner, row.id), candidate = state.draft_id ? revision(owner, state.draft_id, row.id) : null;
         const excerpt = requestExcerpt(owner, row.id);
-        return { retired: !taskItem(owner, state.id), extension: { id: state.id, name: state.name, hookId: state.hook_id, creationOperationId: state.creation_operation_id },
+         const sharedStudio = sharedStudioItem(state, candidate);
+         return { retired: !sharedStudio && !taskItem(owner, state.id), ...(sharedStudio && { sharedStudio }),
+           extension: { id: state.id, name: state.name, hookId: state.hook_id, creationOperationId: state.creation_operation_id },
           draftVersion: state.draft_version, draft: view(candidate), approved: approved(candidate),
           ...(excerpt === undefined ? {} : { requestExcerpt: excerpt }) };
       }, row => cursor('collection', owner, undefined, row), base, 'items');
@@ -376,12 +478,15 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       const legacy = db.prepare(`SELECT s.revision_id,s.generation FROM legacy_extension_selections s
         JOIN extension_revision_links l ON l.owner_id=s.owner_id AND l.revision_id=s.revision_id
         WHERE s.owner_id=? AND s.hook_id=? AND l.extension_id=?`).get(owner, state.hook_id ?? TASK_HOOK, extensionId);
-      return { retired: !taskItem(owner, state.id), executionAvailability: api.executionAvailability(), owner: ownerView(owner), extension: { id: state.id, name: state.name, hookId: state.hook_id, creationOperationId: state.creation_operation_id },
+       const sharedStudio = sharedStudioItem(state, candidate);
+       return { retired: !sharedStudio && !taskItem(owner, state.id), ...(sharedStudio && { sharedStudio }),
+         executionAvailability: api.executionAvailability(), owner: ownerView(owner), extension: { id: state.id, name: state.name, hookId: state.hook_id, creationOperationId: state.creation_operation_id },
         ...(legacy ? { legacySelection: { generation: legacy.generation, revision: view(revision(owner, legacy.revision_id, extensionId)), eligible: false } } : {}),
         creationRevisionId: first?.revision_id ?? null, creationReceipt: first ? { extensionId, revisionId: first.revision_id, draftVersion: 1 } : null,
         catalog: choices(), hostCatalog: host?.catalog ?? { hooks: [] }, draftVersion: state.draft_version,
         revisionId: candidate?.id ?? null, suiteDigest: candidate?.template_id === 'authored' ? stored(candidate)?.pins.suiteDigest ?? null : null,
-        draft: view(candidate), evidence: latest ? { id: latest.id, revisionId: candidate.id, passed: passing(candidate, latest) } : null,
+        draft: view(candidate), evidence: latest ? { id: latest.id, revisionId: candidate.id,
+          ...(sharedEvidenceStatus(candidate, latest) ?? { passed: passing(candidate, latest) }) } : null,
         approved: approved(candidate), approvedEvidenceId: approvedProof && passing(candidate, approvedProof) ? approvedProof.id : null,
         selection: selectionView(owner, state.hook_id ?? TASK_HOOK), restoreTargets: targets.rows, restoreTargetsNext: targets.next,
         history: history.rows, historyNext: history.next, evidenceHistory: proofs.rows, evidenceHistoryNext: proofs.next };
@@ -412,7 +517,9 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         if (db.prepare("SELECT 1 FROM authoring_conversations c JOIN extension_conversation_links l ON l.conversation_id=c.id AND l.owner_id=c.owner_id WHERE l.owner_id=? AND l.extension_id=? AND c.status IN ('RUNNING','CANCELLING')").get(owner, input.extensionId)) {
           const error = new AppError(409, 'Open this customization and use Stop, then wait for authoring to settle before deleting it.'); error.code = 'CUSTOMIZATION_BUSY'; throw error;
         }
-        if (active.revision_id && db.prepare('SELECT 1 FROM extension_revision_links WHERE owner_id=? AND extension_id=? AND revision_id=?').get(owner, input.extensionId, active.revision_id)) change(owner, active.generation, null, 'disable', state.hook_id ?? TASK_HOOK);
+        if (active.revision_id && db.prepare('SELECT 1 FROM extension_revision_links WHERE owner_id=? AND extension_id=? AND revision_id=?')
+          .get(owner, input.extensionId, active.revision_id) && !isTaskBundle(JSON.parse(active.binding_pins)?.format))
+          change(owner, active.generation, null, 'disable', state.hook_id ?? TASK_HOOK);
         const deletedAt = Date.now();
         revokeTaskAdmissions(db, owner, input.extensionId);
         db.prepare('UPDATE extensions SET deleted_at=? WHERE owner_id=? AND id=?').run(deletedAt, owner, input.extensionId);
@@ -432,23 +539,138 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         if (state.name !== name) db.prepare('UPDATE extensions SET name=? WHERE owner_id=? AND id=?').run(name, owner, input.extensionId);
       }); return api.state(owner, input.extensionId);
     },
-    async compile(owner, input, authorize, { signal } = {}) {
+    async compile(owner, input, authorize, { signal, confirmed } = {}) {
       authorize(); abort(signal); const state = draft(owner, input.extensionId);
       requireTask(owner, input.extensionId);
       if (!TASK_HOOKS.includes(input.hookId) || state.hook_id !== null && state.hook_id !== input.hookId) throw new AppError(400, 'Choose the discovered task trigger.');
       if (state.draft_version !== input.draftVersion) conflict();
       const { value, chosenHost } = await compileValue(input, authorize, signal);
+      if (confirmed) {
+        checkScenarios(value.artifact, chosenHost, confirmed.cases);
+        value.suite = json(confirmed.cases);
+      }
       commit(owner, input.extensionId, authorize, () => {
         abort(signal); if (draft(owner, input.extensionId).draft_version !== input.draftVersion) conflict();
-        saveAuthored(owner, input.extensionId, value, chosenHost);
+        const id = saveAuthored(owner, input.extensionId, value, chosenHost);
+        confirmed?.saved({ revisionId: id, draftVersion: input.draftVersion + 1, suiteDigest: authoredPins(value, chosenHost).suiteDigest });
       }); return api.state(owner, input.extensionId);
+    },
+    async confirmSharedCompletion(owner, input, authorize, { signal, saved, checked, prepared } = {}) {
+      const { extensionId, revisionId, draftVersion, generation, offer } = input;
+      const { source, cases, hook, harness } = completionOffer(offer), chosenHost = sharedHost('PERSONAL', harness);
+      const snapshot = () => {
+        authorize(); abort(signal);
+        const item = draft(owner, extensionId);
+        if ((item.hook_id !== null && item.hook_id !== hook) || item.draft_version !== draftVersion
+            || item.draft_id !== revisionId || selection(owner, hook).generation !== generation) conflict();
+      };
+      snapshot();
+      const { value } = await compileValue({ source }, snapshot, signal, chosenHost);
+      const manifest = scopedCompletionManifest('PERSONAL', owner, source, value.artifact, cases, harness);
+      readCompletionManifest('PERSONAL', owner, manifest, source, value.artifact, cases);
+      prepared?.(manifest.hooks[hook].artifactDigest);
+      value.suite = json(cases);
+      const id = commit(owner, extensionId, () => { authorize(); abort(signal); }, () => {
+        snapshot();
+        const revisionId = saveAuthored(owner, extensionId, value, chosenHost, manifest);
+        saved?.({ revisionId, draftVersion: draftVersion + 1 });
+        return revisionId;
+      }, false);
+      const exact = () => {
+        authorize(); abort(signal);
+        if (selection(owner, hook).generation !== generation) conflict();
+        return currentDraft(owner, { extensionId, revisionId: id, draftVersion: draftVersion + 1 });
+      };
+      const row = exact(), binding = sharedBinding(row);
+      const report = await checkSharedCompletion(binding, id, owner, [], exact), proofId = randomUUID();
+      const result = { revisionId: id, draftVersion: draftVersion + 1, evidenceId: proofId, passed: report.passed,
+        eligible: completionProofMatches(binding, id, report) };
+      commit(owner, extensionId, exact, () => {
+        db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)')
+          .run(proofId, owner, id, row.identity, manifest.caseDigest, json(report), Number(report.passed));
+        checked?.(result);
+      });
+      return result;
+    },
+    bundleSelection(owner) {
+      return Object.fromEntries(bundleHooks.map(hook => {
+        const { revision_id, generation } = selection(owner, hook);
+        return [hook, { revisionId: revision_id, generation }];
+      }));
+    },
+    bundleOccupied(owner, manifest, candidate) {
+      const hooks = presentHooks(manifest), current = api.bundleSelection(owner);
+      const outgoing = current[hooks[0]].revisionId;
+      if (hooks.some(hook => current[hook].revisionId !== outgoing)) return true;
+      if (!outgoing) return false;
+      if (bundleHooks.some(hook => !hooks.includes(hook) && current[hook].revisionId === outgoing)) return true;
+      if (outgoing === candidate) return false;
+      const link = db.prepare('SELECT extension_id FROM extension_revision_links WHERE owner_id=? AND revision_id=?').get(owner, candidate);
+      const previous = db.prepare('SELECT extension_id FROM extension_revision_links WHERE owner_id=? AND revision_id=?').get(owner, outgoing);
+      if (!link || link.extension_id !== previous?.extension_id) return true;
+      const prior = JSON.parse(revision(owner, outgoing, link.extension_id).identity);
+      return !isTaskBundle(prior.format) || json(presentHooks(prior)) !== json(hooks);
+    },
+    bundleOccupantNames(owner, hooks) {
+      const rows = db.prepare(`SELECT DISTINCT CAST(e.name AS BLOB) AS name FROM extension_selections s
+        JOIN extension_revision_links l ON l.owner_id=s.owner_id AND l.revision_id=s.revision_id
+        JOIN extensions e ON e.owner_id=l.owner_id AND e.id=l.extension_id
+        WHERE s.owner_id=? AND s.hook_id IN (${hooks.map(() => '?').join(',')}) ORDER BY name`).all(owner, ...hooks);
+      return rows.map(({ name }) => Buffer.from(name).toString('utf8'));
+    },
+    async confirmTaskBundle(owner, input, authorize, { signal, saved, checked, prepared } = {}) {
+      const { extensionId, revisionId, draftVersion, selections, offer, format = BUNDLE_MANIFEST } = input;
+      const exact = (version, id) => {
+        authorize(); abort(signal);
+        const state = draft(owner, extensionId);
+        const identity = state.draft_id && JSON.parse(revision(owner, state.draft_id, extensionId).identity);
+        const live = api.bundleSelection(owner);
+        if (state.draft_id !== id || state.draft_version !== version
+          || (format === BUNDLE_MANIFEST ? state.hook_id !== null && state.hook_id !== TASK_HOOK || identity && identity.format !== BUNDLE_MANIFEST
+            : identity && identity.format !== SHARED_MANIFEST && !isTaskBundle(identity.format))
+          || Object.entries(selections).some(([hook, selected]) => json(selected) !== json(live[hook]))) conflict();
+      };
+      const before = () => exact(draftVersion, revisionId);
+      const bundle = await compileTaskBundle(compiler, 'PERSONAL', owner, offer, before, signal, format);
+      const primary = primaryHook(bundle.manifest), hooks = presentHooks(bundle.manifest);
+      if (json(Object.keys(selections).sort()) !== json([...hooks].sort())) conflict();
+      prepared?.(bundle.executableIdentity);
+      const id = commit(owner, extensionId, authorize, () => {
+        before();
+        const value = { label: format === BUNDLE_MANIFEST ? 'Task lifecycle rule' : 'Task rule',
+          source: Buffer.from(bundle.sources[primary]), artifact: bundle.artifacts[primary], suite: json(bundle.cases) };
+        const id = saveAuthored(owner, extensionId, value, bundle.bindings[primary].host, bundle.manifest);
+        for (const hook of hooks.filter(hook => hook !== primary))
+          db.prepare('INSERT INTO shared_personal_hook_payloads VALUES (?,?,?,?,?)')
+            .run(owner, id, hook, Buffer.from(bundle.sources[hook]), bundle.artifacts[hook]);
+        saved?.({ revisionId: id, draftVersion: draftVersion + 1 });
+        return id;
+      }, false);
+      const current = () => exact(draftVersion + 1, id);
+      const report = await checkTaskBundle(bundle, id, owner, [], current), evidenceId = randomUUID();
+      const result = { revisionId: id, draftVersion: draftVersion + 1, evidenceId, passed: report.passed, eligible: report.eligible };
+      commit(owner, extensionId, current, () => {
+        db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)')
+          .run(evidenceId, owner, id, json(bundle.manifest), bundle.manifest.caseDigest, json(report), Number(report.passed));
+        checked?.(result);
+      });
+      return result;
+    },
+    activateTaskBundle(owner, input, authorize) {
+      return commit(owner, input.extensionId, authorize, () =>
+        switchBundle(owner, currentDraft(owner, input), input.generations, input.evidenceId));
+    },
+    taskBundleSource(owner, id, extensionId) {
+      const record = revision(owner, id, extensionId), item = stored(record);
+      if (!item?.bundle) throw notFound();
+      return item.bundle;
     },
     restart(owner, input, authorize) {
       commit(owner, input.extensionId, authorize, () => {
         const state = draft(owner, input.extensionId), active = selection(owner, state.hook_id ?? TASK_HOOK);
         if (state.draft_version !== input.draftVersion || active.generation !== input.generation || active.revision_id !== input.revisionId) conflict();
         const row = revision(owner, input.revisionId, input.extensionId);
-        if (!eligible(row)) conflict();
+        if (!eligible(row) || stored(row).binding) conflict();
         if (state.draft_id && state.draft_id !== row.id) db.prepare('INSERT INTO extension_history(owner_id,revision_id,generation,operation) VALUES (?,?,?,?)')
           .run(owner, state.draft_id, active.generation, 'draft-superseded');
         saveAuthored(owner, input.extensionId, content(row), definition(row));
@@ -456,13 +678,14 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     },
     async proposeScenarios(owner, input, authorize, { signal } = {}) {
       authorize(); abort(signal); const row = currentDraft(owner, input), item = stored(row);
+      if (item.binding) conflict();
       if (!Array.isArray(input.cases) || input.cases.length < 1 || input.cases.length > 8
           || input.cases.some(text => typeof text !== 'string' || !text.length || Buffer.byteLength(text) > 65536 || Buffer.from(text).toString('utf8') !== text))
         throw new AppError(400, 'Supply 1–8 case JSON strings, at most 65,536 UTF-8 bytes each.');
       const suiteBytes = json(input.cases);
       if (Buffer.byteLength(suiteBytes) > 131072) throw new AppError(413, 'The complete scenario suite exceeds 128 KiB.');
       authorize(); abort(signal);
-      checkScenarios(row, item, input.cases);
+      checkScenarios(item.artifactBytes, definition(row), input.cases);
       commit(owner, input.extensionId, authorize, () => {
         abort(signal); currentDraft(owner, input);
         const value = content(row); saveAuthored(owner, input.extensionId, { ...value, suite: suiteBytes }, definition(row));
@@ -475,14 +698,15 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       return { extensionId, revisionId: id, source: item.source, artifact: item.artifactBytes.toString('utf8'), pins: JSON.parse(row.identity),
         cases: item.suite ? JSON.parse(item.suite) : [], suiteDigest: item.pins.suiteDigest, hostCases: [], ruleDescription: description(row, item) };
     },
-    async simulate(owner, input, authorize, { signal } = {}) {
+    async simulate(owner, input, authorize, { signal, checked } = {}) {
       authorize(); abort(signal); const row = currentDraft(owner, input), item = stored(row);
+      if (item.binding) conflict();
       if (!item.suite) throw new AppError(409, 'Save independent examples for this revision before running checks.');
       if (simulations.has(owner) || simulations.size >= 2) throw new AppError(429, 'Sample checks are busy. Try again after the current check finishes.');
       simulations.add(owner);
       try {
         const rawCases = JSON.parse(item.suite);
-        checkScenarios(row, item, rawCases);
+        checkScenarios(item.artifactBytes, definition(row), rawCases);
         const result = await runTaskSimulation({ artifactBytes: item.artifactBytes, host: definition(row), scenarios: rawCases, signal });
         authorize(); abort(signal);
         const { reports } = result;
@@ -492,20 +716,23 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         commit(owner, input.extensionId, authorize, () => {
           abort(signal); currentDraft(owner, input);
           const proof = { owner_id: owner, revision_id: row.id, identity: row.identity, suite_identity: suiteDigest, payload, passed: reports.length === rawCases.length && reports.every(entry => entry.report.status === 'PASS') ? 1 : 0 };
-          db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)').run(randomUUID(), owner, row.id, proof.identity, suiteDigest, payload, passing(row, proof) ? 1 : 0);
+           const id = randomUUID(), passed = passing(row, proof);
+           db.prepare('INSERT INTO extension_evidence VALUES (?,?,?,?,?,?,?)').run(id, owner, row.id, proof.identity, suiteDigest, payload, passed ? 1 : 0);
+           checked?.({ evidenceId: id, eligible: passed });
         }); return api.state(owner, input.extensionId);
       } finally { simulations.delete(owner); }
     },
     approve(owner, input, authorize) {
       commit(owner, input.extensionId, authorize, () => {
         const row = currentDraft(owner, input), proof = evidence(owner, input.evidenceId, input.extensionId);
-        if (!passing(row, proof)) conflict();
+        if (!passing(row, proof) || stored(row)?.binding && latestEvidence(row)?.id !== proof.id) conflict();
         db.prepare('INSERT INTO extension_approvals VALUES (?,?,?) ON CONFLICT(owner_id,revision_id) DO UPDATE SET evidence_id=excluded.evidence_id').run(owner, row.id, proof.id);
       }); return api.state(owner, input.extensionId);
     },
     activate(owner, input, authorize) {
       commit(owner, input.extensionId, authorize, () => {
         const row = currentDraft(owner, input);
+        if (stored(row)?.binding && latestEvidence(row)?.id !== input.evidenceId) conflict();
         change(owner, input.generation, row, 'activate', definition(row).pins.hook, input.evidenceId);
       });
       return api.state(owner, input.extensionId);
@@ -515,7 +742,10 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         const state = draft(owner, input.extensionId), active = selection(owner, state.hook_id ?? TASK_HOOK);
         if (!active.revision_id) conflict();
         revision(owner, active.revision_id, input.extensionId);
-        change(owner, input.generation, null, 'disable', state.hook_id ?? TASK_HOOK);
+        if (isTaskBundle(JSON.parse(active.binding_pins)?.format)) {
+          if (active.generation !== input.generation || presentHooks(JSON.parse(revision(owner, active.revision_id).identity))
+            .some(hook => selection(owner, hook).revision_id !== active.revision_id)) conflict();
+        } else change(owner, input.generation, null, 'disable', state.hook_id ?? TASK_HOOK);
         revokeTaskAdmissions(db, owner, input.extensionId);
       }, false); return api.state(owner, input.extensionId);
     },
@@ -524,7 +754,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         const row = revision(owner, input.revisionId, input.extensionId);
         if (!db.prepare("SELECT 1 FROM extension_history WHERE owner_id=? AND revision_id=? AND operation IN ('operator','activate','rollback')").get(owner, row.id)) conflict();
         const item = stored(row);
-        if (!item || item.legacy) conflict();
+        if (!item || item.legacy || item.binding) conflict();
         change(owner, input.generation, row, 'rollback', item.pins.hook);
       }); return api.state(owner, input.extensionId);
     },
@@ -541,6 +771,9 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
       draft(owner, extensionId);
       const proof = evidence(owner, id, extensionId), row = revision(owner, proof.revision_id, extensionId);
       const payload = JSON.parse(proof.payload);
+      if (sharedStudioItem({}, row))
+        return { id, revisionId: row.id, ...payload, ...sharedEvidenceStatus(row, proof) };
+      if (!Array.isArray(payload?.reports)) throw new AppError(503, 'The exact saved example results are unavailable.');
       let originals = [], associated = false;
       try {
         const item = stored(row);
@@ -554,7 +787,7 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
         const original = originals.find(example => example.id === item.id);
         if (!original) return item;
         const projectName = id => typeof id === 'string'
-          ? db.prepare('SELECT name FROM projects WHERE owner_id=? AND id=?').get(owner, id)?.name ?? 'Example project' : undefined;
+          ? db.prepare("SELECT name FROM projects WHERE owner_id=? AND id=? AND mode='PERSONAL'").get(owner, id)?.name ?? 'Example project' : undefined;
         const decorate = rows => rows === null ? null : rows?.map(value => ({ ...value, projectName: projectName(value.projectId) }));
         const scenario = item.report.scenario;
         return { ...item, expected: { ...item.expected, createdTasks: decorate(item.expected.createdTasks) },
@@ -605,11 +838,72 @@ export function createLifecycle(db, { runTaskSimulation = runTaskEffectSimulatio
     admissionCurrent(context) {
       try {
         const state = draft(context.owner, context.itemId), row = revision(context.owner, context.revisionId, context.itemId), item = stored(row);
-        if (state.hook_id !== context.hookId || !item || !eligible(row) || !matchesHost(definition(row), context.pins)) return false;
+        if (state.hook_id !== context.hookId || !item || item.binding || !eligible(row) || !matchesHost(definition(row), context.pins)) return false;
         if (!Object.entries(item.pins).every(([key, value]) => json(context.pins[key]) === json(value))) return false;
         const capturedProof = context.pins.approvedEvidenceId && evidence(context.owner, context.pins.approvedEvidenceId, context.itemId);
         return !!capturedProof && capturedProof.revision_id === row.id && passing(row, capturedProof);
       } catch { return false; }
+    },
+    sharedBeforeCreateBinding(owner, selected) {
+      if (isTaskBundle(JSON.parse(selected.binding_pins)?.format))
+        return api.selectedTaskBundle(owner, selected).bindings.TaskBeforeCreate;
+      const row = revision(owner, selected.revision_id), item = stored(row);
+      if (item?.binding?.hook !== 'TaskBeforeCreate' || !db.prepare(`SELECT 1 FROM extensions e JOIN extension_revision_links l
+         ON l.extension_id=e.id AND l.owner_id=e.owner_id WHERE l.owner_id=? AND l.revision_id=?
+         AND e.deleted_at IS NULL AND e.hook_id='TaskBeforeCreate'`).get(owner, row.id)) conflict();
+      const active = JSON.parse(selected.binding_pins);
+      const proof = active.approvedEvidenceId && evidence(owner, active.approvedEvidenceId);
+      if (!proof || json(active) !== json({ ...item.pins, approvedEvidenceId: proof.id })
+          || !db.prepare('SELECT 1 FROM extension_approvals WHERE owner_id=? AND revision_id=? AND evidence_id=?').get(owner, row.id, proof.id)
+          || !passing(row, proof, item.binding)) conflict();
+      return item.binding;
+    },
+    selectedTaskBundle(owner, selected) {
+      const row = revision(owner, selected.revision_id), bundle = stored(row)?.bundle;
+      if (!bundle) conflict();
+      const active = JSON.parse(selected.binding_pins), proof = evidence(owner, active.approvedEvidenceId);
+      const hooks = presentHooks(bundle.manifest);
+      if (!hooks.includes(selected.hook_id) || selected.owner_id !== owner || json(active) !== json(bundlePins(bundle, selected.hook_id, proof.id))
+        || hooks.some(hook => {
+        const live = selection(owner, hook);
+        return live.revision_id !== row.id || live.binding_pins !== json(bundlePins(bundle, hook, proof.id))
+          || hook === selected.hook_id && live.generation !== selected.generation;
+      })
+          || !db.prepare(`SELECT 1 FROM extension_approvals a JOIN extension_revision_links l ON l.owner_id=a.owner_id AND l.revision_id=a.revision_id
+            JOIN extensions e ON e.owner_id=l.owner_id AND e.id=l.extension_id
+            WHERE a.owner_id=? AND a.revision_id=? AND a.evidence_id=? AND e.deleted_at IS NULL`).get(owner, row.id, proof.id)
+          || !passing(row, proof, bundle)) conflict();
+      return bundle;
+    },
+    pinnedTaskBundle(event) {
+      const { owner_id: owner, revision_id: id, item_id: item, hook_id: hook } = event;
+      const row = revision(owner, id, item), bundle = stored(row)?.bundle, pins = JSON.parse(event.pins);
+      if (!bundle?.bindings[hook] || event.revoked_at !== null || draft(owner, item).deleted_at !== null) conflict();
+      const proof = evidence(owner, pins.approvedEvidenceId, item);
+      const exact = bundlePins(bundle, hook, proof.id);
+      if (pins.completionPin === true && hook === 'TaskCreated' && exact.lifetimeCompletion) exact.completionPin = true;
+      if (json(pins) !== json(exact) || !passing(row, proof, bundle)) conflict();
+      return bundle;
+    },
+    completionBundlePins(event) {
+      const bundle = api.pinnedTaskBundle(event);
+      if (!bundle.bindings[TASK_HOOK]) conflict();
+      return json(bundlePins(bundle, TASK_HOOK, JSON.parse(event.pins).approvedEvidenceId));
+    },
+    completionAdmission(owner, anchor) {
+      const bundle = api.selectedTaskBundle(owner, anchor);
+      if (bundle.bindings.TaskCreated && anchor.hook_id !== 'TaskCreated') conflict();
+      const selected = selection(owner, TASK_HOOK);
+      return { revisionId: selected.revision_id, generation: selected.generation, pins: selected.binding_pins };
+    },
+    sharedCompletionBinding(event) {
+      const { owner_id: owner, revision_id: id, item_id: item } = event;
+      const row = revision(owner, id, item), storedItem = stored(row), pins = JSON.parse(event.pins);
+      const proof = pins.approvedEvidenceId && evidence(owner, pins.approvedEvidenceId, item);
+      if (draft(owner, item).hook_id !== TASK_HOOK || event.hook_id !== TASK_HOOK || event.revoked_at !== null
+          || !storedItem?.binding || json(pins) !== json({ ...storedItem.pins, approvedEvidenceId: proof?.id })
+          || !passing(row, proof, storedItem.binding)) conflict();
+      return storedItem.binding;
     },
   };
   return api;

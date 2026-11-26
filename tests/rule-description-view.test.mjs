@@ -132,7 +132,7 @@ test('fixed creation fields, empty notes and lookup conditions describe the new 
   assert.equal(result.complete, true);
   for (const phrase of ['When a task is completed in any project', 'create a new task titled “Review launch” in “Reviews”',
     'set the new task’s priority to Low', 'tags “review” and “next”', 'leave the new task’s notes empty',
-    'set the new task’s due date to 2027-01-01 00:00:00.000 UTC', 'only if “Reviews” has no open task titled exactly “Review launch” when checked',
+    'set the new task’s due date to Jan 1, 2027, 12:00 AM UTC', 'only if “Reviews” has no open task titled exactly “Review launch” when checked',
     'The triggering task stays unchanged', 'The new task starts open']) assert.ok(result.summary.includes(phrase), phrase);
   assert.doesNotMatch(result.summary, /no duplicates|prevent.*duplicate/);
 });

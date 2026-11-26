@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readAuthoringConfig } from '../src/authoring-config.mjs';
 import { AuthoringError, createAuthoringProvider } from '../src/authoring-provider.mjs';
+import { teamConversationTools } from '../src/team-authoring-host.mjs';
+import { linkedOffer } from './fixtures/team-authored.mjs';
 
 const secret = 'provider-test-secret';
 const config = provider => readAuthoringConfig({ KEIR_AI_PROVIDER: provider,
@@ -94,25 +96,59 @@ test('Anthropic preserves thinking and places matching tool result before new in
   assert.deepEqual(messages[index + 1].content[1], { type: 'text', text: 'Explain' });
 });
 
-test('rejects unsupported output, malformed calls, refusals and incomplete responses', async () => {
+test('both wire formats carry the same strict Team business offer and preserve its structured arguments', async () => {
+  const name = 'offer_proposal', input = linkedOffer();
+  const tool = teamConversationTools.find(tool => tool.name === name);
+  for (const vendor of ['openai', 'anthropic']) {
+    const provider = createAuthoringProvider(config(vendor), { fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body), [wire] = body.tools;
+      assert.equal(wire.strict, true);
+      assert.deepEqual(wire.parameters ?? wire.input_schema, tool.parameters);
+      assert.doesNotMatch(JSON.stringify(wire), /maxItems|BEFORE_WRITE|LOST_REPLY|receipt|claimId/);
+      return json(vendor === 'openai' ? openai([{ type: 'function_call', name, arguments: JSON.stringify(input), call_id: 'c1' }])
+        : anthropic([{ type: 'tool_use', name, input, id: 'c1' }], 'tool_use'));
+    } });
+    const reply = await provider.complete({ ...request, tools: [tool] });
+    assert.deepEqual(reply.calls, [{ id: 'c1', name, arguments: input }]);
+  }
+});
+
+test('classifies rejected replies without leaving provider content in diagnostics', async () => {
   const call = { type: 'function_call', name: 'lookup', arguments: '{}', call_id: 'c1' };
-  const invalid = [openai([{ ...call, arguments: '{' }]), openai([{ ...call, arguments: '[]' }]),
-    openai([{ ...call, call_id: '' }]), openai([{ ...call, call_id: 'id\n' }]), openai([call, { ...call, call_id: 'c2' }]),
-    openai([{ type: 'unknown' }]), openai([{ type: 'message', role: 'developer', content: [{ type: 'output_text', text: 'Untrusted role' }] }]),
-    openai([{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: 'No' }] }]),
-    { ...openai([]), status: 'incomplete' }, { ...openai([]), usage: undefined },
-    { ...openai([]), usage: { input_tokens: -1, output_tokens: 1 } }];
-  for (const body of invalid) await assert.rejects(complete(body), errorCode('PROVIDER_RESPONSE_INVALID'));
-  for (const body of [anthropic([], 'max_tokens'), anthropic([{ type: 'unknown' }]),
-    anthropic([{ type: 'tool_use', id: 'a', name: 'lookup', input: {} }], 'end_turn'),
-    anthropic([], 'tool_use'), anthropic([{ type: 'refusal', text: 'No' }])]) {
-    await assert.rejects(complete(body, 'anthropic'), errorCode('PROVIDER_RESPONSE_INVALID'));
+  const tool = 'PROVIDER_REPLY_TOOL_INVALID', part = 'PROVIDER_REPLY_PART_UNSUPPORTED',
+    format = 'PROVIDER_REPLY_FORMAT', incomplete = 'PROVIDER_REPLY_INCOMPLETE', usage = 'PROVIDER_REPLY_USAGE_INVALID';
+  const privateText = 'private-wire-marker';
+  for (const [vendor, body, code] of [
+    ...[
+      [openai([{ ...call, arguments: privateText }]), tool], [openai([{ ...call, arguments: '[]' }]), tool],
+      [openai([{ ...call, call_id: '' }]), tool], [openai([{ ...call, call_id: 'id\n' }]), tool],
+      [openai([call, { ...call, call_id: 'c2' }]), tool],
+      [openai([{ type: privateText }]), part],
+      [openai([{ type: 'message', role: 'developer', content: [{ type: 'output_text', text: privateText }] }]), part],
+      [openai([{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: privateText }] }]), part],
+      [{ ...openai([]), status: 'incomplete', incomplete_details: { reason: privateText } }, incomplete],
+      [{ ...openai([]), status: privateText }, format], [{ ...openai([]), output: null }, format],
+      [{ ...openai([]), usage: undefined }, usage], [{ ...openai([]), usage: { input_tokens: -1, output_tokens: 1 } }, usage],
+    ].map(([body, code]) => ['openai', body, code]),
+    ...[
+      [anthropic([], 'max_tokens'), incomplete], [anthropic([], 'pause_turn'), incomplete],
+      [anthropic([], 'refusal'), part], [anthropic([{ type: privateText }]), part],
+      [anthropic([{ type: 'tool_use', id: 'a', name: 'lookup', input: {} }], 'end_turn'), tool],
+      [anthropic([], 'tool_use'), tool], [anthropic([{ type: 'refusal', text: privateText }]), part],
+      [anthropic([], privateText), format],
+      [{ ...anthropic([]), usage: { input_tokens: 5, output_tokens: 1, cache_read_input_tokens: -1 } }, usage],
+    ].map(([body, code]) => ['anthropic', body, code]),
+  ]) {
+    await assert.rejects(complete({ ...body, id: privateText }, vendor), error => {
+      assert.doesNotMatch(String(error) + JSON.stringify(error), /private-wire-marker/);
+      return errorCode(code)(error);
+    });
   }
 });
 
 test('requires bounded integer usage', async () => {
   for (const [input_tokens, output_tokens, code] of [[135169, 1, 'TOKEN_LIMIT'], [1, 4097, 'TOKEN_LIMIT'],
-    [1.5, 1, 'PROVIDER_RESPONSE_INVALID'], [1, undefined, 'PROVIDER_RESPONSE_INVALID']]) {
+    [1.5, 1, 'PROVIDER_REPLY_USAGE_INVALID'], [1, undefined, 'PROVIDER_REPLY_USAGE_INVALID']]) {
     await assert.rejects(complete({ ...openai([]), usage: { input_tokens, output_tokens } }), errorCode(code));
   }
 });
@@ -162,11 +198,78 @@ test('bounds request and chunked response bytes and rejects non-JSON content', a
     cancel() { cancelled = true; } });
   await assert.rejects(createAuthoringProvider(config('openai'), { maxBytes: 2048,
     fetchImpl: async () => new Response(stream, { headers: { 'content-type': 'application/json' } }) })
-    .complete(request), errorCode('BYTE_LIMIT'));
+    .complete(request), errorCode('PROVIDER_REPLY_BODY_LIMIT'));
   assert.equal(cancelled, true);
   await assert.rejects(createAuthoringProvider(config('openai'), {
     fetchImpl: async () => new Response('{}', { headers: { 'content-type': 'text/html' } }) })
-    .complete(request), errorCode('PROVIDER_RESPONSE_INVALID'));
+    .complete(request), errorCode('PROVIDER_REPLY_FORMAT'));
+});
+
+test('OpenAI accepts measured response envelopes without retaining outer fields', async () => {
+  const size = value => Buffer.byteLength(JSON.stringify(value));
+  for (const [requestBytes, responseBytes, outputBytes] of [[58434, 149007, 12930], [95726, 181799, 5985]]) {
+    const output = [
+      { type: 'reasoning', id: 'reason', summary: [], encrypted_content: '' },
+      { type: 'function_call', call_id: 'offer', name: 'offer_proposal', arguments: '{"witness":true}' },
+    ];
+    output[0].encrypted_content = 'r'.repeat(outputBytes - size(output));
+    const reply = { ...openai(output), instructions: '' };
+    reply.instructions = 'x'.repeat(responseBytes - size(reply));
+    let requestPadding;
+    const provider = createAuthoringProvider(config('openai'), { fetchImpl: async (_url, init) => {
+      assert.equal(Buffer.byteLength(init.body), requestBytes);
+      return json(reply);
+    } });
+    const probe = createAuthoringProvider(config('openai'), { fetchImpl: async (_url, init) => {
+      requestPadding = requestBytes - Buffer.byteLength(init.body);
+      return json(openai([]));
+    } });
+    await probe.complete({ ...request, input: '' });
+    const result = await provider.complete({ ...request, input: 'i'.repeat(requestPadding) });
+    assert.equal(size(output), outputBytes);
+    assert.equal(size(reply), responseBytes);
+    assert.deepEqual(result.calls, [{ id: 'offer', name: 'offer_proposal', arguments: { witness: true } }]);
+    assert.deepEqual(result.continuation.items.slice(1), output);
+    assert.equal(Object.hasOwn(result, 'instructions'), false);
+  }
+});
+
+test('keeps OpenAI envelope/output limits distinct and Anthropic at its original reply limit', async () => {
+  const declared = createAuthoringProvider(config('openai'), { fetchImpl: async () => new Response('{}', {
+    headers: { 'content-type': 'application/json', 'content-length': '262145' },
+  }) });
+  await assert.rejects(declared.complete(request), errorCode('PROVIDER_REPLY_DECLARED_LIMIT'));
+
+  const oversized = createAuthoringProvider(config('openai'), {
+    fetchImpl: async () => json({ ...openai([]), instructions: 'x'.repeat(262144) }),
+  });
+  await assert.rejects(oversized.complete(request), errorCode('PROVIDER_REPLY_BODY_LIMIT'));
+
+  const oversizedOutput = createAuthoringProvider(config('openai'), {
+    fetchImpl: async () => json(openai([{ type: 'function_call', call_id: 'offer', name: 'offer_proposal',
+      arguments: 'x'.repeat(131072) }])),
+  });
+  await assert.rejects(oversizedOutput.complete(request), errorCode('PROVIDER_REPLY_OUTPUT_LIMIT'));
+
+  const anthropicEnvelope = createAuthoringProvider(config('anthropic'), {
+    fetchImpl: async () => json({ ...anthropic([]), metadata: { padding: 'x'.repeat(131072) } }),
+  });
+  await assert.rejects(anthropicEnvelope.complete(request), errorCode('PROVIDER_REPLY_BODY_LIMIT'));
+});
+
+test('keeps the normalized-result limit even with an in-limit request and OpenAI output', async () => {
+  const argument = 'a'.repeat(3800);
+  const reply = openai([
+    { type: 'reasoning', id: 'reasoning', summary: [], encrypted_content: 'x'.repeat(125800) },
+    { type: 'function_call', call_id: 'offer', name: 'offer_proposal', arguments: JSON.stringify({ argument }) },
+  ]);
+  const normalized = createAuthoringProvider(config('openai'), { fetchImpl: async (_url, init) => {
+    assert.ok(Buffer.byteLength(init.body) < 131072);
+    assert.ok(Buffer.byteLength(JSON.stringify(reply)) < 131072);
+    return json(reply);
+  } });
+  await assert.rejects(normalized.complete({ ...request, input: 'x'.repeat(130000), tools: [] }),
+    errorCode('PROVIDER_REPLY_NORMALIZED_LIMIT'));
 });
 
 for (const name of ['openai', 'anthropic']) test(`${name} preflight checks the exact full wire envelope at its UTF-8 byte boundary without fetching`, async () => {

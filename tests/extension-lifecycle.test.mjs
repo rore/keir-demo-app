@@ -315,6 +315,11 @@ test('oversized evidence is rejected before persistence and invalid assets never
   const good = create(db), { state: checked } = await approved(good), selected = activate(good, checked);
   db.prepare("UPDATE extension_revisions SET identity='malformed' WHERE id=?").run(selected.draft.id);
   assert.equal(good.state('maya', selected.extension.id).selection.eligible, false); assert.equal(good.capture('maya'), null);
+  const listed = good.collection('maya').items.find(item => item.extension.id === selected.extension.id);
+  assert.equal(listed.draft.ruleDescription.coverage, 'unavailable');
+  const historical = good.evidence('maya', checked.approvedEvidenceId, selected.extension.id);
+  assert.equal(historical.passed, false);
+  assert.equal(historical.summary, null);
   assert.throws(() => good.rollback('maya', { extensionId: selected.extension.id, revisionId: selected.draft.id,
     generation: selected.selection.generation }, authorized), { status: 409 });
 });

@@ -36,7 +36,7 @@ test('task authoring admits immutable definition authority before failed compile
   assert.equal(TASK_DEFINITION, 'daymark.task-workflow/1');
   const db = openData(':memory:'), lease = { sessionId: 'task-definition-test', current: () => true };
   const definitionConfig = { ...config, maxMicros: 5_000_000 };
-  let service, attempts = 0, requests = 0;
+  let service, attempts = 0;
   const lifecycle = { ...createLifecycle(db), async compile(owner, input) {
     const row = db.prepare('SELECT state FROM authoring_conversations WHERE owner_id=? ORDER BY rowid DESC LIMIT 1').get(owner);
     assert.equal(JSON.parse(row.state).definitionId, TASK_DEFINITION);
@@ -46,8 +46,8 @@ test('task authoring admits immutable definition authority before failed compile
     const failure = new AppError(422, 'Invalid source'); failure.diagnostics = [{ code: 'SYNTAX_INVALID', path: '/source' }]; throw failure;
   } };
   const providerFactory = () => ({ reserveMicros: definitionConfig.reserveMicros, maxMicros: definitionConfig.maxMicros, complete: async () => {
-    const compile = requests++ % 2 === 0;
-    return { calls: compile ? [{ id: 'compile-test', name: 'compile_draft', arguments: { hookId: TASK_HOOK, sourceJson: 'invalid source', expectedDraftVersion: 0 } }] : [],
+    return { calls: [{ id: 'offer-test', name: 'offer_proposal', arguments: { hookId: TASK_HOOK, sourceJson: 'invalid source',
+      cases: ['{}'], expectedDraftVersion: 0, summary: 'An invalid source candidate.' } }],
       text: 'The draft needs correction; your tasks have not changed.', usage: { inputTokens: 1, outputTokens: 1 } };
   } });
   const open = () => createAuthoringService({ db, lifecycle, config: definitionConfig, providerFactory });
@@ -55,7 +55,16 @@ test('task authoring admits immutable definition authority before failed compile
   service = open();
   const original = taskTurn('definition-create'), started = await service.turn('maya', original, lease);
   let current = await service.wait('maya', started.conversation.id);
-  assert.equal(current.status, 'IDLE'); assert.equal(current.retired, false); assert.equal(attempts, 1);
+  async function confirm(offered) {
+    assert.equal(offered.status, 'AWAITING_USER');
+    service.confirm('maya', offered.id, { runId: offered.runId, expectedVersion: offered.version, offerDigest: offered.offer.digest }, lease);
+    const stopped = await service.wait('maya', offered.id);
+    assert.equal(stopped.confirmation, 'unsaved');
+    return stopped;
+  }
+  assert.equal(attempts, 0);
+  current = await confirm(current);
+  assert.equal(current.retired, false); assert.equal(attempts, 1);
   const itemId = current.extensionId, held = db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros;
   assert.ok(held > 0);
   assert.equal(db.prepare('SELECT hook_id FROM extensions WHERE id=?').get(itemId).hook_id, null);
@@ -64,7 +73,7 @@ test('task authoring admits immutable definition authority before failed compile
   assert.equal(current.retired, false);
   const continued = await service.turn('maya', { conversationId: current.id, operationId: 'definition-continue', text: 'Please correct the draft.',
     expectedVersion: current.version, expectedDraftVersion: 0, target: { kind: 'resume', extensionId: itemId } }, lease);
-  current = await service.wait('maya', continued.conversation.id);
+  current = await confirm(await service.wait('maya', continued.conversation.id));
   assert.equal(current.extensionId, itemId); assert.equal(attempts, 2);
   assert.equal(JSON.parse(db.prepare('SELECT state FROM authoring_conversations WHERE id=?').get(current.id).state).definitionId, TASK_DEFINITION);
   assert.ok(db.prepare('SELECT reserved_micros FROM authoring_budget').get().reserved_micros >= held);
@@ -74,8 +83,7 @@ test('task authoring admits immutable definition authority before failed compile
   const item = lifecycle.state('maya', itemId);
   const fresh = await service.turn('maya', { conversationId: null, operationId: 'definition-fresh-discussion', text: 'Start a fresh discussion about this draft.',
     expectedVersion: 0, expectedDraftVersion: 0, target: { kind: 'revise', extensionId: itemId, baseRevisionId: null, selectionGeneration: item.selection.generation } }, lease);
-  const freshResult = await service.wait('maya', fresh.conversation.id);
-  assert.equal(freshResult.status, 'IDLE');
+  const freshResult = await confirm(await service.wait('maya', fresh.conversation.id));
   assert.notEqual(freshResult.id, current.id); assert.equal(freshResult.extensionId, itemId); assert.equal(freshResult.retired, false);
   assert.equal(attempts, 3);
 });
@@ -95,7 +103,7 @@ for (const definitionId of [undefined, 'daymark.task-completed/1']) test(`task a
   else saved.definitionId = definitionId;
   saved.continuation = { opaque: 'legacy-private' };
   db.prepare("UPDATE authoring_conversations SET state=?,status='RUNNING' WHERE id=?").run(JSON.stringify(saved), current.id);
-  db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?)').run(current.id, 'maya', current.runId, 99, 'provider', null, 1, 'UNKNOWN');
+   db.prepare('INSERT INTO authoring_dispatches VALUES (?,?,?,?,?,?,?,?,NULL)').run(current.id, 'maya', current.runId, 99, 'provider', null, 1, 'UNKNOWN');
   const before = authoringStorage(db), count = requests;
   service = open();
   assert.deepEqual(authoringStorage(db), before, 'startup does not rewrite retired continuation, receipts or accounting');
@@ -299,10 +307,13 @@ test('rediscovery carries the saved task-creation proposal and clarified intent 
   for (const key of ['artifact', 'pins', 'hostCases', 'extensionId']) assert.equal(Object.hasOwn(discovered.currentProposal, key), false);
   assert.equal(discovered.currentProposal.source, source);
   assert.deepEqual(discovered.currentProposal.cases, cases);
-  assert.deepEqual(discovered.conversationContext.messages.map(item => item.text), [
-    'When a task in my project is completed, create the follow-up task.', 'Should tasks in another project create nothing?', 'Yes, create nothing for other projects.',
+  const envelope = JSON.parse(requests[1].input[0].content);
+  assert.deepEqual(envelope.transcript.messages.map(item => item.text), [
+    'When a task in my project is completed, create the follow-up task.', 'Should tasks in another project create nothing?',
   ]);
-  assert.equal(discovered.conversationContext.truncated, false);
+  assert.equal(envelope.currentUserMessage, 'Yes, create nothing for other projects.');
+  assert.equal(envelope.transcript.truncated, false);
+  assert.equal(Object.hasOwn(discovered, 'conversationContext'), false);
   assert.equal(JSON.stringify(result).includes(source), false, 'raw proposal remains out of the transcript DTO');
   assert.equal(db.prepare('SELECT count(*) n FROM extension_authored WHERE owner_id=?').get('maya').n, 2);
   assert.equal(db.prepare('SELECT count(*) n FROM extension_authored WHERE owner_id=?').get('leo').n, 0);

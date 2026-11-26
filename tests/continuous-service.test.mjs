@@ -237,7 +237,7 @@ for (const kind of ['provider', 'tool']) test(`context capacity preserves defini
   assert.deepEqual(saved(db, stopped.id).usage, { inputTokens: expectedCalls, outputTokens: expectedCalls, reservedMicros: expectedCalls * config.reserveMicros });
   assert.equal(saved(db, stopped.id).counts.calls, expectedCalls);
   assert.equal(saved(db, stopped.id).counts.tools, kind === 'tool' ? 1 : 0);
-  assert.deepEqual(saved(db, stopped.id).continuation, kind === 'tool' ? { provider: 'openai', items: [] } : undefined);
+  assert.equal(saved(db, stopped.id).continuation, undefined);
   assert.equal(saved(db, stopped.id).pending, undefined);
   assert.equal(held(db), expectedCalls * config.reserveMicros);
   const continued = await turn(service, resume(stopped, `continue-capacity-${kind}`));

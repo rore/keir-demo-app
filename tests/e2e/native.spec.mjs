@@ -31,7 +31,6 @@ async function signIn(page, name) {
   await expect(page.getByRole('status').filter({ hasText: 'Gathering your tasks' })).toHaveCount(0);
 }
 async function newProject(page, name, mobile = false) {
-  await openWorkspaceTool(page, '.project-tools');
   await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('New project name', { exact: true }).fill(name);
   await page.getByRole('button', { name: 'Save project', exact: true }).click();
@@ -55,7 +54,9 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     demo.db.exec('UPDATE extension_selections SET revision_id = NULL, binding_pins = NULL');
     const studioCalls = [];
     page.on('request', request => {
-      if (/^\/api\/(authoring|extensions)(\/|$)/.test(new URL(request.url()).pathname)) studioCalls.push(request.url());
+      const { pathname, search } = new URL(request.url());
+      if (/^\/api\/(?:extensions|(?:projects\/[^/]+\/)?authoring)(?:\/|$)/.test(pathname))
+        studioCalls.push(`${request.method()} ${pathname}${search}`);
     });
     await page.goto(demo.origin);
     await signIn(page, 'Maya');
@@ -64,7 +65,15 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     const priority = page.getByLabel('Priority', { exact: true });
     const dueTime = page.getByLabel('Due time (optional)', { exact: true });
     const detail = page.getByRole('dialog', { name: 'Task details' });
-    await task.click();
+    async function openWithoutRule() {
+      const selection = page.waitForResponse(r => r.url() === `${demo.origin}/api/extensions` && r.request().method() === 'GET');
+      await task.click();
+      const response = await selection;
+      expect(response.ok()).toBe(true);
+      expect((await response.json()).selection.revision).toBeNull();
+      await expect(detail.getByRole('button', { name: 'Customization Studio', exact: true })).toHaveCount(0);
+    }
+    await openWithoutRule();
     await expect(priority).toHaveValue('normal');
     await expect(dueTime).toHaveValue('');
     await tags.fill('  Material, priority, MATERIAL  ');
@@ -73,9 +82,9 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await taskButton(page, 'Save changes').click();
     await expect(detail).not.toBeVisible();
     await expect(task).toBeFocused();
-    await expect(page.locator('time[datetime="2028-02-29T17:42:37.123Z"]')).toContainText('12:42:37.123 PM GMT-5');
+    await expect(page.locator('time[datetime="2028-02-29T17:42:37.123Z"]')).toHaveText(/Due .*12:42 PM GMT-5$/);
     expect(demo.db.prepare("SELECT due_at FROM tasks WHERE title='Gather material references'").get().due_at).toBe('2028-02-29T17:42:37.123Z');
-    await task.click();
+    await openWithoutRule();
     await expect(tags).toHaveValue('material, priority');
     await taskButton(page, 'Close task details').click();
 
@@ -87,10 +96,10 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(searchHeading(page)).toBeVisible();
     await expect(task).toBeVisible();
     await screenshot(page, `native-tags-search-${layout}`);
-    await task.click();
+    await openWithoutRule();
     await expect(tags).toHaveValue('material, priority');
     await expect(priority).toHaveValue('high');
-    await expect(dueTime).toHaveValue('2028-02-29T12:42:37.123');
+    await expect(dueTime).toHaveValue('2028-02-29T12:42');
     await tags.fill('material');
     await dueTime.fill('');
     await taskButton(page, 'Save changes').click();
@@ -100,12 +109,132 @@ for (const [layout, viewport] of Object.entries({ desktop: { width: 1440, height
     await taskButton(page, 'Clear').click();
     await expect(searchHeading(page)).toHaveCount(0);
     await expect(page.getByLabel('Filter by tag', { exact: true })).toHaveValue('');
-    await task.click();
+    await openWithoutRule();
     await expect(tags).toHaveValue('material');
     await expect(priority).toHaveValue('high');
     await expect(dueTime).toHaveValue('');
-    expect(studioCalls).toEqual([]);
+    // One read per open to confirm the selection. No authoring or extension mutations.
+    expect(studioCalls).toEqual(Array(4).fill('GET /api/extensions'));
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test('an unavailable Personal selection is not shown as verified absence', async ({ page, demo }) => {
+  await page.goto(demo.origin);
+  await signIn(page, 'Maya');
+  await page.route(`${demo.origin}/api/extensions`, route => route.fulfill({ status: 503, json: { message: 'Selection unavailable.' } }), { times: 1 });
+  const detail = page.getByRole('dialog', { name: 'Task details' });
+  const task = taskButton(page, 'Gather material references');
+  const studio = detail.getByRole('button', { name: 'Customization Studio', exact: true });
+  await task.click();
+  await expect(studio).toBeVisible();
+  await detail.getByRole('button', { name: 'Close task details' }).click();
+  const available = page.waitForResponse(r => r.url() === `${demo.origin}/api/extensions` && r.request().method() === 'GET');
+  await task.click();
+  const response = await available;
+  expect(response.ok()).toBe(true);
+  expect((await response.json()).selection.revision).toBeNull();
+  await expect(studio).toHaveCount(0);
+});
+
+for (const width of [1440, 390]) {
+  test(`normal workspace and shared assistant setup without a provider at ${width}px`, async ({ browser, demo }, info) => {
+    const context = await browser.newContext({ hasTouch: width === 390, viewport: { width, height: width === 390 ? 844 : 900 } });
+    const page = await context.newPage();
+    const writes = [];
+    page.on('request', request => {
+      const { pathname } = new URL(request.url());
+      if (request.method() !== 'GET' && /\/authoring(?:\/|$)/.test(pathname)) writes.push(pathname);
+    });
+    try {
+      await page.goto(demo.origin);
+      await signIn(page, 'Maya');
+      const nav = page.getByRole('navigation', { name: 'Main navigation' });
+      const customizations = () => nav.getByRole('button', { name: 'Customizations', exact: true }).click();
+      const tasks = () => nav.getByRole('button', { name: 'Tasks', exact: true }).click();
+      const collection = page.getByRole('heading', { name: 'Customizations', exact: true });
+      const studioButton = name => page.locator('.collection-heading').getByRole('button', { name, exact: true });
+      const configure = page.getByRole('button', { name: 'Configure', exact: true });
+      const setup = page.getByRole('dialog', { name: 'Set up the assistant', exact: true });
+      async function checkSetup() {
+        await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+        await configure.click();
+        await expect(setup).toContainText('Current settings: Not configured');
+        await expect(setup.getByLabel('API key', { exact: true })).toHaveValue('');
+        await setup.getByRole('button', { name: 'Cancel', exact: true }).click();
+        await expect(configure).toBeFocused();
+      }
+      await expect(page.getByText('Personal project', { exact: true })).toBeVisible();
+      await customizations();
+      await expect(collection).toBeVisible();
+      await expect(studioButton('New customization')).toBeInViewport();
+      await page.screenshot({ path: info.outputPath('personal-customizations.png') });
+      await studioButton('New customization').click();
+      await checkSetup();
+      await tasks();
+      await page.getByRole('button', { name: 'New project', exact: true }).click();
+      await page.getByLabel('Who is this for?', { exact: true }).selectOption('TEAM');
+      await page.getByLabel('New project name', { exact: true }).fill('Launch team');
+      await page.getByRole('button', { name: 'Save project', exact: true }).click();
+      await expect(page.getByRole('heading', { name: 'Launch team', exact: true })).toBeFocused();
+      await expect(page.getByText('Team project', { exact: true })).toBeVisible();
+      if (width === 390) {
+        expect(await page.getByLabel('Project', { exact: true }).locator('optgroup').evaluateAll(groups => groups.map(g => g.label)))
+          .toEqual(['Personal projects', 'Team projects']);
+      } else {
+        await expect(page.getByRole('group', { name: 'Personal projects', exact: true })).toBeVisible();
+        await expect(page.getByRole('group', { name: 'Team projects', exact: true }).getByRole('button', { name: 'Launch team', exact: true }))
+          .toHaveAttribute('aria-current', 'true');
+      }
+      const menus = await openWorkspaceTool(page, '.project-tools');
+      await menus.getByRole('button', { name: 'Manage members', exact: true }).click();
+      const members = page.getByRole('dialog', { name: 'Launch team · Team', exact: true });
+      await members.getByLabel('Teammate', { exact: true }).selectOption('leo');
+      await members.getByRole('button', { name: 'Add member', exact: true }).click();
+      await expect(members.getByText('Leo · Member', { exact: true })).toBeVisible();
+      await members.getByRole('button', { name: 'Done', exact: true }).click();
+      await expect(page.locator('.project-tools > summary')).toBeFocused();
+      const quickAdd = page.locator('.quick-add');
+      await expect(quickAdd).toHaveCount(1);
+      await quickAdd.getByLabel('New task title', { exact: true }).fill('Write the brief');
+      await quickAdd.getByRole('button', { name: 'Add task', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Write the brief', exact: true })).toBeVisible();
+      await search(page, 'brief');
+      await expect(searchHeading(page)).toBeVisible();
+      await page.getByRole('button', { name: 'Write the brief', exact: true }).click();
+      await expect(page.getByRole('dialog', { name: 'Task details', exact: true }).getByLabel('Task title', { exact: true })).toHaveValue('Write the brief');
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('button', { name: 'Write the brief', exact: true })).toBeFocused();
+      await page.screenshot({ path: info.outputPath('team-tasks.png') });
+      await customizations();
+      await expect(collection).toBeVisible();
+      await expect(studioButton('New customization')).toBeEnabled();
+      await expect(studioButton('New customization')).toBeInViewport();
+      await page.screenshot({ path: info.outputPath('team-customizations.png') });
+      await studioButton('New customization').click();
+      await expect(page.getByRole('button', { name: 'Turn off for new tasks', exact: true })).toHaveCount(0);
+      await checkSetup();
+      await expect(page.getByText('Advanced: emergency revocation', { exact: true })).toHaveCount(0);
+      await page.screenshot({ path: info.outputPath('team-studio-unconfigured.png') });
+      await switchPerson(page, 'leo');
+      await expect(page.getByRole('button', { name: 'Write the brief', exact: true })).toBeVisible();
+      await quickAdd.getByLabel('New task title', { exact: true }).fill('Read the brief');
+      await quickAdd.getByRole('button', { name: 'Add task', exact: true }).click();
+      await page.getByRole('button', { name: 'Read the brief', exact: true }).click();
+      const detail = page.getByRole('dialog', { name: 'Task details', exact: true });
+      await expect(detail.getByText('Unassigned', { exact: true })).toBeVisible();
+      await detail.getByRole('button', { name: 'Complete task', exact: true }).click();
+      await expect(detail.getByText('✓ Completed', { exact: true })).toBeVisible();
+      await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Read the brief, completed', exact: true })).toBeDisabled();
+      await customizations();
+      await expect(studioButton(/^(Open Studio|New customization)$/)).toHaveCount(0);
+      await expect(page.getByRole('region', { name: 'Team customization access' })).toContainText('Only project admins');
+      await expect(page.getByText('Leo · Member', { exact: true })).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      expect(writes).toEqual([]);
+      await page.screenshot({ path: info.outputPath('member-customizations.png') });
+    } finally { await context.close(); }
   });
 }
 
@@ -274,7 +403,8 @@ test('a delayed metadata save merges normalized tags without overwriting newer e
 });
 
 for (const fallback of [false, true]) test(`local due time rejects gaps and repeated times with ${fallback ? 'the fallback' : 'native Temporal'}`, async ({ page, demo }) => {
-  const saved = '2025-11-02T06:30:00.123Z';
+  await page.setViewportSize({ width: 390, height: 844 });
+  const saved = '2025-11-02T06:30:37.123Z';
   const task = demo.db.prepare("SELECT id FROM tasks WHERE title='Gather material references'").get();
   demo.db.prepare('UPDATE tasks SET due_at=? WHERE id=?').run(saved, task.id);
   const stored = () => demo.db.prepare('SELECT due_at FROM tasks WHERE id=?').get(task.id).due_at;
@@ -290,10 +420,10 @@ for (const fallback of [false, true]) test(`local due time rejects gaps and repe
   const save = taskButton(page, 'Save changes');
   const dueTime = page.getByLabel('Due time (optional)', { exact: true });
   const detail = page.getByRole('dialog', { name: 'Task details' });
-  await expect(page.locator(`time[datetime="${saved}"]`)).toContainText('GMT-5');
+  await expect(page.locator(`time[datetime="${saved}"]`)).toHaveText(/Due .*1:30 AM GMT-5$/);
   await open.click();
-  await expect(dueTime).toHaveValue('2025-11-02T01:30:00.123');
-  await expect(dueTime).toHaveAccessibleDescription(/America\/New_York.*GMT-5/);
+  await expect(dueTime).toHaveValue('2025-11-02T01:30');
+  await expect(dueTime).toHaveAccessibleDescription(/local time.*1:30 AM GMT-5/);
   await page.getByLabel('Priority', { exact: true }).selectOption('high');
   await save.click();
   await expect(detail).not.toBeVisible();
@@ -350,19 +480,14 @@ test('completion observations preserve edits and recover from failed or stale de
   await page.goto(demo.origin);
   await signIn(page, 'Maya');
   await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Gather material references, completed', exact: true })).toBeDisabled();
+  await page.route('**/api/tasks/*/reaction', route => route.fulfill({ status: 503, contentType: 'application/json',
+    body: JSON.stringify({ message: 'The saved observation is temporarily unavailable.' }) }));
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   const detail = page.getByRole('dialog', { name: 'Task details', exact: true });
   const outcome = detail.getByRole('region', { name: 'Customization outcome', exact: true });
-  const noBinding = 'No customization was recorded for this completion.';
-  await expect(outcome.getByRole('status')).toHaveText(noBinding);
-  await page.getByLabel('Task title', { exact: true }).fill('Unsaved title stays');
-  await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
-  await expect(outcome.getByRole('status')).toHaveText(noBinding);
-  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved title stays');
-  await page.route('**/api/tasks/*/reaction', route => route.fulfill({ status: 503, contentType: 'application/json',
-    body: JSON.stringify({ message: 'The saved observation is temporarily unavailable.' }) }));
-  await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
   await expect(outcome.getByRole('alert')).toContainText('The customization result could not be checked. Your task stays completed.');
+  await page.getByLabel('Task title', { exact: true }).fill('Unsaved title stays');
   await expect(outcome.getByRole('button', { name: /^Open task:/ })).toHaveCount(0);
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Unsaved title stays');
   await page.unroute('**/api/tasks/*/reaction');
@@ -380,13 +505,12 @@ test('completion observations preserve edits and recover from failed or stale de
   }, { times: 1 });
   await outcome.getByRole('button', { name: 'Check result', exact: true }).click();
   await started;
-  await expect(outcome.getByRole('alert')).toHaveCount(0);
   await page.getByRole('button', { name: 'Close task details' }).click();
   await page.getByRole('button', { name: 'Gather material references', exact: true }).click();
   await page.getByLabel('Task title', { exact: true }).fill('Newer unsaved title');
-  await expect(outcome.getByRole('status')).toHaveText(noBinding);
+  await expect(outcome).toHaveCount(0);
   release(); await finished;
-  await expect(outcome.getByRole('button', { name: 'Check result', exact: true })).toBeEnabled();
+  await expect(outcome).toHaveCount(0);
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue('Newer unsaved title');
   await expect(outcome.getByRole('alert')).toHaveCount(0);
   await page.unroute('**/api/tasks/*/reaction');
@@ -395,7 +519,7 @@ test('completion observations preserve edits and recover from failed or stale de
   await expect(page.getByRole('button', { name: 'Plan the Saturday session', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Complete Plan the Saturday session', exact: true }).click();
   await page.getByRole('button', { name: 'Plan the Saturday session', exact: true }).click();
-  await expect(outcome.getByRole('status')).toHaveText(noBinding);
+  await expect(outcome).toHaveCount(0);
   await expect(outcome.getByRole('button', { name: /^Open task:/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Check task advice', exact: true })).toHaveCount(0);
   await screenshot(page, 'native-completion-outcome');
@@ -405,7 +529,7 @@ test('a completion observation pending across a user switch never enters the new
   await page.goto(demo.origin);
   await signIn(page, 'Maya');
   await page.getByRole('button', { name: 'Complete Gather material references', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Customization outcome', exact: true }).getByRole('status')).toHaveText('No customization was recorded for this completion.');
+  await expect(page.getByRole('button', { name: 'Gather material references, completed', exact: true })).toBeDisabled();
   let release, entered, delivered;
   const started = new Promise(resolve => { entered = resolve; });
   const finished = new Promise(resolve => { delivered = resolve; });
@@ -438,7 +562,7 @@ test('three people create, rename, edit and complete tasks; all data survives re
     await signIn(page, name);
     if (name === 'Maya') await screenshot(page, 'tasks-desktop');
     await newProject(page, `${name} project`);
-    await expect(page.getByText('Room for something good.')).toBeVisible();
+    await expect(page.getByText('No tasks yet. Add the first one above.')).toBeVisible();
     await openWorkspaceTool(page, '.project-tools');
     await page.getByRole('button', { name: 'Rename project' }).click();
     await page.getByLabel('Project name', { exact: true }).fill(`${name} notebook`);
@@ -582,7 +706,6 @@ test('initial project list must finish before project creation becomes available
   await page.getByRole('button', { name: 'Continue as Maya' }).click();
   await intercepted;
   try {
-    await openWorkspaceTool(page, '.project-tools');
     await expect(page.getByRole('button', { name: 'New project', exact: true })).toBeDisabled();
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole('button', { name: 'New project', exact: true })).toBeDisabled();
