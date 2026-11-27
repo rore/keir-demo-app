@@ -20,6 +20,8 @@ Under **Submitted requests**, choose **Check submitted request** to look up an e
 
 If a confirmation reply is lost, use **Read saved state** in Shared Studio or **Check authoring status** in the earlier Personal editor. A draft can be saved even when its checks are unavailable. Read the saved result before requesting another change.
 
+If Shared Studio cannot read or use the assistant’s reply, choose **Check saved work** to see what was kept. This does not send the message again or confirm what the provider charged.
+
 ## Personal: check before creating in a project you own
 
 In Shared Studio, a Personal after-save or after-completion rule can create a follow-up in the triggering task’s project or another Personal project you own. You can optionally check for an open task with an exact, case-sensitive title before creating it. Choose the lookup project separately: it can be the source project, the destination, or another Personal project you own. The lookup checks only that project and does not guarantee uniqueness.
