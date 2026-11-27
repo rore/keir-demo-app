@@ -85,7 +85,7 @@ test(`Personal and Team settle the same durable allowance, preserving ${failure}
   assert.equal(stopped.code, incomplete ? 'PROVIDER_REPLY_INCOMPLETE' : failure === 'lost replies' ? 'PROVIDER_UNAVAILABLE' : null);
   const dispatches = 3;
   if (incomplete) {
-    assert.match(stopped.messages.at(-1).text, /stopped without retrying/);
+    assert.equal(stopped.messages.at(-1).text, 'Daymark couldn’t use the assistant’s answer. Your saved work is still here. Check it before sending another message.');
     assert.equal(stopped.agreement, null);
     assert.equal(db.prepare('SELECT count(*) AS n FROM team_revisions').get().n, 0);
     assert.deepEqual(db.prepare('SELECT kind,outcome FROM authoring_dispatches WHERE run_id=? ORDER BY ordinal')

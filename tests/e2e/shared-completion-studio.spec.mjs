@@ -13,6 +13,7 @@ import { teamProjectService } from '../../src/team-native.mjs';
 import { installTeamRevision } from '../../src/team-runtime.mjs';
 import { seedTaskEffectBinding } from '../fixtures/task-effect-schema.mjs';
 import { admitTaskDraft, seedEarlierTeamDiscussion } from '../fixtures/task-authoring.mjs';
+import { startAuthoringFixture } from '../fixtures/authoring-server.mjs';
 import { handoffArgs, handoffExpected } from '../fixtures/shared-creation.mjs';
 import { beforeCreateOffer, correction, guardRequest } from '../fixtures/shared-before-create.mjs';
 import { authoredTaskBundle, bundleRequest, completedUpdateRequest, composedOffer, createdUpdateOffer, createdUpdateRequest, exactCreateOffer, exactCreateRequest,
@@ -283,6 +284,71 @@ async function send(page, text) {
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await expect(box).toHaveValue('');
 }
+
+for (const { scope, width, code, failureText } of [
+  { scope: 'PERSONAL', width: 390, code: 'PROVIDER_REPLY_BODY_INTERRUPTED', failureText: 'Daymark couldn’t read the assistant’s full reply.' },
+  { scope: 'TEAM', width: 1440, code: 'PROVIDER_REPLY_FORMAT', failureText: 'Daymark couldn’t use the assistant’s answer.' },
+]) test(`${scope} reads saved Studio history after an unusable provider reply`, async ({ page }) => {
+  let transportCalls = 0, posts = 0;
+  const privateMarker = 'synthetic-private-wire-marker';
+  const headers = { 'content-type': 'application/json' };
+  const earlierReply = 'Earlier saved assistant reply.';
+  const host = await startAuthoringFixture({ authoringOverride: {
+    async fetchImpl() {
+      if (++transportCalls === 1) return Response.json({ status: 'completed',
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: earlierReply }] }],
+        usage: { input_tokens: 20, output_tokens: 10 } });
+      if (scope === 'TEAM') return new Response(privateMarker, { headers });
+      let started = false;
+      return new Response(new ReadableStream({
+        pull(controller) {
+          if (started) controller.error(new Error(privateMarker));
+          else { started = true; controller.enqueue(new TextEncoder().encode('{"output":')); }
+        },
+      }), { headers });
+    },
+  } });
+  try {
+    if (scope === 'TEAM') host.team = taskService(host.db).createProject('maya', { name: 'Fulfillment Team', mode: scope });
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+    page.on('request', request => {
+      const path = new URL(request.url()).pathname;
+      if (request.method() === 'POST' && /^\/api\/shared-studio\/[^/]+\/(?:turn|confirm)$/.test(path)) posts++;
+    });
+    await enter(page, host, scope);
+    await send(page, 'Earlier discussion.');
+    await expect(page.getByText(earlierReply, { exact: true })).toBeVisible();
+    const held = () => host.db.prepare('SELECT reserved_micros FROM authoring_budget WHERE id=1').get().reserved_micros;
+    const before = held(), text = 'Keep this message when a reply cannot be read.';
+    await send(page, text);
+    const read = page.getByRole('button', { name: 'Check saved work', exact: true });
+    const checked = page.getByRole('status').filter({ hasText: 'Checked. This message is saved; no new proposal was received.' });
+    await expect(read).toHaveAccessibleDescription('See what Daymark kept. Checking won’t send your message again.');
+    await expect(page.getByText(`${failureText} Your saved work is still here. Check it before sending another message.`, { exact: true })).toBeVisible();
+    await expect(checked).toHaveCount(0);
+    const refreshed = page.waitForResponse(response => response.request().method() === 'GET' &&
+      new URL(response.url()).pathname.startsWith('/api/shared-studio/'));
+    await read.click();
+    const saved = await (await refreshed).json();
+    expect(saved.conversation).toMatchObject({ status: 'BLOCKED', code, offer: null });
+    expect(saved.review.draftVersion).toBe(0);
+    await expect(checked).toBeVisible();
+    await expect(read).toHaveAccessibleDescription('Checked. This message is saved; no new proposal was received. Checking won’t send your message again.');
+    await page.reload();
+    await expect(read).toHaveAccessibleDescription(/won’t send your message again/);
+    await expect(checked).toHaveCount(0);
+    await expect(page.getByText(earlierReply, { exact: true })).toBeVisible();
+    await expect(page.getByText(text, { exact: true })).toHaveCount(1);
+    await expect(page.locator('body')).not.toContainText(privateMarker);
+    await expect(page.getByRole('button', { name: 'Confirm and check', exact: true })).toHaveCount(0);
+    const dispatches = host.db.prepare('SELECT ordinal,kind,outcome,reserved_micros,estimated_micros FROM authoring_dispatches WHERE run_id=?')
+      .all(saved.conversation.runId);
+    expect(dispatches).toEqual([{ ordinal: 1, kind: 'provider', outcome: 'UNKNOWN', reserved_micros: 387072, estimated_micros: null }]);
+    expect(held() - before).toBe(387072);
+    expect(posts).toBe(2);
+    expect(transportCalls).toBe(2);
+  } finally { await page.close(); await host.close(); }
+});
 
 for (const width of [1440, 390]) test(`single new-authoring route and earlier saved access at ${width}px`, async ({ page, request, browser }) => {
   const host = await fixture();

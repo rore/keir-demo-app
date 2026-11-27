@@ -41,7 +41,7 @@ type Behavior = CompletionBehavior | { gate: { when: GateCondition; linked: bool
 type ConfirmResult = { status: string; passed: boolean | null; eligible: boolean | null };
 type Message = { sequence: number; id: string; role: string; text: string; offer?: Behavior | null };
 type Page = { messages: Message[]; before: number | null };
-type Conversation = Page & { version: number; runId: string; status: string; offer: (Behavior & { digest: string }) | null;
+type Conversation = Page & { version: number; runId: string; status: string; code?: string | null; offer: (Behavior & { digest: string }) | null;
   canConfirm: boolean; offerStale?: boolean; confirmation: ConfirmResult | null };
 type Check = { known: boolean; task: TaskResult | Decision | null };
 export type ActiveTeam = { status: "off" | "unavailable" } | { status: "on"; behavior: Behavior | null; label: string | null };
@@ -353,6 +353,7 @@ export default function SharedCompletionStudio({ target, request, back, backToTa
     catch { return ""; }
   });
   const [history, setHistory] = useState<Page | null>(null), [error, setError] = useState("");
+  const [replyReadback, setReplyReadback] = useState<{ runId: string; checked: boolean } | null>(null);
   const [busy, setBusy] = useState(""), [atEnd, setAtEnd] = useState(true), [uncertain, setUncertain] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false), [stopToken, setStopToken] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(false);
@@ -394,7 +395,9 @@ export default function SharedCompletionStudio({ target, request, back, backToTa
   };
   async function refresh(signal = lifecycle.current?.signal) {
     const next = await requestRef.current<Snapshot>(path, "GET", undefined, signal);
-    if (!signal?.aborted) accept(next);
+    if (signal?.aborted) return;
+    accept(next);
+    if (snapshotRef.current === next) return next;
   }
   useEffect(() => {
     const controller = new AbortController();
@@ -410,6 +413,30 @@ export default function SharedCompletionStudio({ target, request, back, backToTa
     requestAnimationFrame(() => (setupInvoker.current?.isConnected ? setupInvoker.current : heading.current)?.focus({ preventScroll: true }));
   }
   const live = running(conversation);
+  const replyFailed = conversation?.status === "BLOCKED" && !!conversation.code &&
+    (conversation.code.startsWith("PROVIDER_REPLY_") || ["PROVIDER_RESPONSE_INVALID", "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"].includes(conversation.code));
+  const replyRecovery = replyFailed && !uncertain && !error ? conversation : null;
+  const checkedReply = replyRecovery && replyReadback?.runId === replyRecovery.runId ? replyReadback : null;
+  async function readSavedState() {
+    if (!replyRecovery) {
+      setError("");
+      await refresh().catch(() => setError("Saved state is unavailable."));
+      return;
+    }
+    const { runId, version, code, messages } = replyRecovery;
+    const message = messages.filter(item => item.role === "user").at(-1);
+    const signal = lifecycle.current?.signal;
+    setReplyReadback(null);
+    try {
+      const saved = (await refresh(signal))?.conversation;
+      if (saved?.runId === runId && saved.version === version && saved.status === "BLOCKED" &&
+          saved.code === code && !saved.offer && !saved.offerStale && message &&
+          saved.messages.filter(item => item.role === "user").at(-1)?.id === message.id)
+        setReplyReadback({ runId, checked: true });
+    } catch {
+      if (!signal?.aborted) setReplyReadback({ runId, checked: false });
+    }
+  }
   const [includeTaskNotes, setIncludeTaskNotes] = useState(false);
   useEffect(() => setIncludeTaskNotes(false), [path]);
   useEffect(() => {
@@ -534,7 +561,13 @@ export default function SharedCompletionStudio({ target, request, back, backToTa
     }}>Jump to latest</button>}
     <div className="shared-studio-tools">
       {live && <button type="button" onClick={() => void stop()} disabled={conversation?.status === "CANCELLING"}>Stop</button>}
-      <button type="button" onClick={() => { setError(""); void refresh().catch(() => setError("Saved state is unavailable.")); }}>Read saved state</button>
+      {replyRecovery && <p id="studio-reply-recovery" role="status">
+        {checkedReply?.checked ? "Checked. This message is saved; no new proposal was received."
+          : checkedReply ? "Daymark couldn’t check saved work." : "See what Daymark kept."}{" "}
+        Checking won’t send your message again.
+      </p>}
+      <button type="button" aria-describedby={replyRecovery ? "studio-reply-recovery" : undefined}
+        onClick={() => void readSavedState()}>{replyRecovery ? "Check saved work" : "Read saved state"}</button>
     </div>
     {!teamControls && review?.disableToken && <div>
       {stopToken === review.disableToken ? <>

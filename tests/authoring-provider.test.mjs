@@ -173,6 +173,23 @@ test('HTTP and network failures have fixed secret-safe errors without retries', 
   assert.equal(cancelled, true, 'unread HTTP failure bodies are cancelled');
 });
 
+test('distinguishes a response body interruption and unexpected normalization from other failures', async () => {
+  await assert.rejects(complete(null, 'openai', { fetchImpl: async () => ({
+    status: 200, get headers() { throw new Error(secret); },
+  }) }), errorCode('PROVIDER_RESPONSE_INVALID'));
+
+  const locked = json(openai([]));
+  const reader = locked.body.getReader();
+  try {
+    await assert.rejects(complete(null, 'openai', { fetchImpl: async () => locked }), errorCode('PROVIDER_REPLY_BODY_INTERRUPTED'));
+  } finally { await reader.cancel(); }
+
+  // JSON.parse accepts this in-limit nesting; serializing the normalized arguments throws.
+  const argumentsJson = '{"nested":' + '['.repeat(14_000) + '0' + ']'.repeat(14_000) + '}';
+  await assert.rejects(complete(openai([{ type: 'function_call', call_id: 'call', name: 'lookup', arguments: argumentsJson }])),
+    errorCode('PROVIDER_REPLY_NORMALIZATION_FAILED'));
+});
+
 test('caller abort and timeout abort fetch with distinct fixed errors', async () => {
   const waitingFetch = async (_url, { signal }) => new Promise((resolve, reject) => {
     if (signal.aborted) reject(signal.reason);

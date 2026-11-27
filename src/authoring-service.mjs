@@ -18,8 +18,10 @@ export const AUTHORING_CODES = Object.freeze(['AI_NOT_CONFIGURED', 'AI_CONFIG_IN
   'PROVIDER_UNAVAILABLE', 'CREDENTIALS_INVALID', 'PROVIDER_RATE_LIMIT', 'PROVIDER_REDIRECT', ...PROVIDER_REPLY_CODES,
   'HOST_RESULT_INVALID', 'INVALID_TOOL_ARGUMENTS', 'TEAM_OFFER_INVALID', 'PERSONAL_OFFER_INVALID', 'SHARED_OFFER_INVALID', 'REVIEW_NOT_READY', 'CHECKPOINT_UNCERTAIN', 'TOOL_FAILED', 'AI_CONFIG_SAVE_FAILED']);
 const codeFor = value => AUTHORING_CODES.includes(value) ? value : 'TOOL_FAILED';
-const safeMessage = code => PROVIDER_REPLY_CODES.includes(code)
-  ? 'Daymark couldn’t use the assistant’s reply. It stopped without retrying. Your saved work is kept. Ask whoever manages assistant settings to check what happened before you send another request.'
+const safeMessage = code => code === 'PROVIDER_REPLY_BODY_INTERRUPTED'
+  ? 'Daymark couldn’t read the assistant’s full reply. Your saved work is still here. Check it before sending another message.'
+  : PROVIDER_REPLY_CODES.includes(code)
+  ? 'Daymark couldn’t use the assistant’s answer. Your saved work is still here. Check it before sending another message.'
   : ({
   AI_NOT_CONFIGURED: 'AI authoring is not configured. Configure the assistant to create a customization. Native tasks remain available.',
   LEGACY_CUSTOMIZATION_RETIRED: 'This earlier customization is read-only. Its saved discussion and results are kept. Start a new customization to change task behavior.',
